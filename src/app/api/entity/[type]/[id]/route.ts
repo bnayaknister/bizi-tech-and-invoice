@@ -1,0 +1,240 @@
+import { NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getSessionAndProfile } from "@/lib/profile";
+import {
+  ENTITY_CONFIG,
+  ENTITY_TYPES,
+  canEditField,
+  canViewField,
+  editableKeys,
+  selectColumns,
+  type EntityType,
+} from "@/lib/entities";
+
+// EntityDrawer backend. Everything flows through the user's own client so
+// RLS and the 0010 column-guard triggers are the real gates; the field
+// registry decides which columns are even selected (a field without view
+// permission is never in the response), and events are written through the
+// service client stamped with the acting user.
+
+function parseType(type: string): EntityType | null {
+  return (ENTITY_TYPES as string[]).includes(type) ? (type as EntityType) : null;
+}
+
+export async function GET(
+  _request: Request,
+  { params }: { params: { type: string; id: string } }
+) {
+  const type = parseType(params.type);
+  if (!type) return NextResponse.json({ error: "סוג ישות לא מוכר" }, { status: 400 });
+  const { user, profile } = await getSessionAndProfile();
+  if (!user || !profile?.approved) return NextResponse.json({ error: "לא מחובר" }, { status: 401 });
+
+  const supabase = createClient();
+  const config = ENTITY_CONFIG[type];
+
+  const { data: entity, error } = await supabase
+    .from(config.table)
+    .select(selectColumns(type, profile))
+    .eq("id", params.id)
+    .maybeSingle();
+  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+  if (!entity) return NextResponse.json({ error: "לא נמצא או שאין הרשאה" }, { status: 404 });
+
+  // field metadata the drawer renders from — only fields this viewer may see
+  const fields = config.fields
+    .filter((f) => canViewField(profile, f.view))
+    .map((f) => ({
+      key: f.key,
+      label: f.label,
+      type: f.type,
+      editable: canEditField(profile, f.edit),
+      options: typeof f.options === "string" ? f.options : f.options ?? null,
+    }));
+
+  // select options (names only — RLS permits both audiences to read these)
+  const needsClients = fields.some((f) => f.options === "clients");
+  const needsShows = fields.some((f) => f.options === "shows");
+  const [clients, shows] = await Promise.all([
+    needsClients ? supabase.from("clients").select("id,name").order("name") : Promise.resolve({ data: null }),
+    needsShows ? supabase.from("shows").select("id,name").order("name") : Promise.resolve({ data: null }),
+  ]);
+
+  // type-specific extras
+  let stages: unknown[] | null = null;
+  let linked: unknown[] | null = null;
+  let milestones: unknown[] | null = null;
+  if (type === "production" && profile.can_view_stages) {
+    const { data } = await supabase
+      .from("stages")
+      .select("id,track,step,status,assignee_id,done_at")
+      .eq("production_id", params.id)
+      .order("track")
+      .order("step");
+    stages = data;
+  }
+  if (type === "production" && profile.can_view_money) {
+    const { data: links } = await supabase
+      .from("job_productions")
+      .select("job_id")
+      .eq("production_id", params.id);
+    if (links?.length) {
+      const { data } = await supabase
+        .from("jobs")
+        .select("id,date,campaign,amount")
+        .in("id", links.map((l) => l.job_id));
+      linked = data;
+    } else linked = [];
+  }
+  if (type === "job" && profile.can_view_money) {
+    const { data: links } = await supabase
+      .from("job_productions")
+      .select("production_id")
+      .eq("job_id", params.id);
+    if (links?.length) {
+      const { data } = await supabase
+        .from("productions")
+        .select("id,podcast_name,record_date,guest")
+        .in("id", links.map((l) => l.production_id));
+      linked = data;
+    } else linked = [];
+  }
+  if (type === "contract" && profile.can_view_money) {
+    const { data } = await supabase
+      .from("contract_milestones")
+      .select("id,name,amount,expected_date,status")
+      .eq("contract_id", params.id)
+      .order("expected_date");
+    milestones = data;
+  }
+
+  // change history — events RLS is owner-only; mirror that here
+  let history: unknown[] | null = null;
+  if (profile.role === "owner") {
+    const admin = createAdminClient();
+    const { data: events } = await admin
+      .from("events")
+      .select("id,event_type,actor_id,payload,created_at")
+      .eq("entity_type", type)
+      .eq("entity_id", params.id)
+      .order("created_at", { ascending: false })
+      .limit(20);
+    const actorIds = Array.from(new Set((events ?? []).map((e) => e.actor_id).filter(Boolean)));
+    const { data: actors } = actorIds.length
+      ? await admin.from("profiles").select("id,name").in("id", actorIds)
+      : { data: [] };
+    const actorName: Record<string, string> = {};
+    for (const a of actors ?? []) actorName[a.id] = a.name;
+    history = (events ?? []).map((e) => ({
+      id: e.id,
+      event_type: e.event_type,
+      actor: e.actor_id ? actorName[e.actor_id] ?? "—" : "מערכת",
+      payload: e.payload,
+      created_at: e.created_at,
+    }));
+  }
+
+  return NextResponse.json({
+    type,
+    icon: config.icon,
+    label: config.label,
+    title: (entity as unknown as Record<string, unknown>)[config.titleKey] ?? "—",
+    entity,
+    fields,
+    optionsData: { clients: clients.data ?? [], shows: shows.data ?? [] },
+    stages,
+    linked,
+    milestones,
+    history,
+  });
+}
+
+export async function POST(
+  request: Request,
+  { params }: { params: { type: string; id: string } }
+) {
+  const type = parseType(params.type);
+  if (!type) return NextResponse.json({ error: "סוג ישות לא מוכר" }, { status: 400 });
+  const { user, profile } = await getSessionAndProfile();
+  if (!user || !profile?.approved) return NextResponse.json({ error: "לא מחובר" }, { status: 401 });
+
+  const body = (await request.json()) as {
+    patch?: Record<string, unknown>;
+    stage?: { id: string; patch: Record<string, unknown> };
+    undoOf?: string; // event id this change reverts, for the audit trail
+  };
+  const supabase = createClient();
+  const admin = createAdminClient();
+  const config = ENTITY_CONFIG[type];
+
+  // --- stage sub-update (production drawer): RLS on stages is the gate ---
+  if (type === "production" && body.stage) {
+    const allowed = ["status", "assignee_id"];
+    const stagePatch = Object.fromEntries(
+      Object.entries(body.stage.patch).filter(([k]) => allowed.includes(k))
+    );
+    if (!Object.keys(stagePatch).length)
+      return NextResponse.json({ error: "אין שדות מותרים בעדכון" }, { status: 400 });
+    const { data, error } = await supabase
+      .from("stages")
+      .update(stagePatch)
+      .eq("id", body.stage.id)
+      .eq("production_id", params.id)
+      .select("id,track,step,status,assignee_id,done_at");
+    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    if (!data?.length) return NextResponse.json({ error: "אין הרשאה לעדכן שלבים" }, { status: 403 });
+    await admin.from("events").insert({
+      entity_type: "production",
+      entity_id: params.id,
+      event_type: "stage_updated",
+      actor_id: user.id,
+      payload: { stage_id: body.stage.id, patch: stagePatch, source: "entity_drawer" },
+    });
+    return NextResponse.json({ ok: true, stage: data[0] });
+  }
+
+  // --- entity field update ---
+  const patch = body.patch ?? {};
+  const allowed = editableKeys(type, profile);
+  const rejected = Object.keys(patch).filter((k) => !allowed.has(k));
+  if (rejected.length) {
+    return NextResponse.json(
+      { error: `אין הרשאה לערוך: ${rejected.join(", ")}` },
+      { status: 403 }
+    );
+  }
+  if (!Object.keys(patch).length)
+    return NextResponse.json({ error: "אין שינויים" }, { status: 400 });
+
+  const { data: before, error: beforeErr } = await supabase
+    .from(config.table)
+    .select(selectColumns(type, profile))
+    .eq("id", params.id)
+    .maybeSingle();
+  if (beforeErr || !before)
+    return NextResponse.json({ error: "לא נמצא או שאין הרשאה" }, { status: 404 });
+
+  const { data: updated, error } = await supabase
+    .from(config.table)
+    .update(patch)
+    .eq("id", params.id)
+    .select(selectColumns(type, profile));
+  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+  if (!updated?.length) return NextResponse.json({ error: "אין הרשאה לעדכן" }, { status: 403 });
+
+  const beforeRec = before as unknown as Record<string, unknown>;
+  const changes: Record<string, { from: unknown; to: unknown }> = {};
+  for (const k of Object.keys(patch)) {
+    changes[k] = { from: beforeRec[k] ?? null, to: patch[k] ?? null };
+  }
+  await admin.from("events").insert({
+    entity_type: type,
+    entity_id: params.id,
+    event_type: body.undoOf ? "entity_update_reverted" : "entity_updated",
+    actor_id: user.id,
+    payload: { changes, source: "entity_drawer", ...(body.undoOf ? { undo_of: body.undoOf } : {}) },
+  });
+
+  return NextResponse.json({ ok: true, entity: updated[0] });
+}

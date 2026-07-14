@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Heebo } from "next/font/google";
+import { DrawerProvider } from "@/components/EntityDrawer";
 import "./globals.css";
 
 const heebo = Heebo({
@@ -20,7 +21,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="he" dir="rtl">
-      <body className={`${heebo.variable} antialiased`}>{children}</body>
+      <body className={`${heebo.variable} antialiased`}>
+        <DrawerProvider>{children}</DrawerProvider>
+      </body>
     </html>
   );
 }

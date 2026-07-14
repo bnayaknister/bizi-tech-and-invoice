@@ -30,22 +30,34 @@ export default async function ShowsPage() {
     canViewMoney ? supabase.from("clients").select("id,name").order("name") : Promise.resolve({ data: [] }),
   ]);
 
-  // cumulative revenue per show: jobs → production → show. Live jobs only;
-  // archive never enters any calculation. (Today 0 jobs carry production_id,
-  // so this starts empty and fills as approvals create linked jobs.)
+  // cumulative revenue per show: jobs → job_productions → production → show.
+  // Live jobs only; archive never enters any calculation. A job linked to
+  // several productions splits its amount equally between them, so a
+  // "2 פרקים" job never counts twice.
   const revenueByShow: Record<string, number> = {};
   if (canViewMoney) {
-    const { data: jobs } = await supabase
-      .from("jobs")
-      .select("amount,production_id")
-      .not("production_id", "is", null);
+    const [{ data: jobs }, { data: links }] = await Promise.all([
+      supabase.from("jobs").select("id,amount"),
+      supabase.from("job_productions").select("job_id,production_id"),
+    ]);
     const showByProduction: Record<string, string> = {};
     for (const p of productions ?? []) {
       if (p.show_id) showByProduction[p.id] = p.show_id;
     }
+    const amountByJob: Record<string, number> = {};
     for (const j of jobs ?? []) {
-      const showId = showByProduction[j.production_id as string];
-      if (showId && j.amount) revenueByShow[showId] = (revenueByShow[showId] ?? 0) + Number(j.amount);
+      if (j.amount) amountByJob[j.id] = Number(j.amount);
+    }
+    const linkCountByJob: Record<string, number> = {};
+    for (const l of links ?? []) {
+      linkCountByJob[l.job_id] = (linkCountByJob[l.job_id] ?? 0) + 1;
+    }
+    for (const l of links ?? []) {
+      const showId = showByProduction[l.production_id];
+      const amount = amountByJob[l.job_id];
+      if (showId && amount) {
+        revenueByShow[showId] = (revenueByShow[showId] ?? 0) + amount / linkCountByJob[l.job_id];
+      }
     }
   }
 

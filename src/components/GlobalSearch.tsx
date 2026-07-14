@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useDrawer } from "@/components/EntityDrawer";
 
 type Results = {
   clients: { id: string; name: string }[];
@@ -15,6 +16,13 @@ export default function GlobalSearch() {
   const [results, setResults] = useState<Results>(EMPTY);
   const [open, setOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
+  const { openEntity } = useDrawer();
+
+  // a search result is active: clicking opens the entity drawer in place
+  function pick(type: string, id: string) {
+    setOpen(false);
+    openEntity({ type, id });
+  }
 
   useEffect(() => {
     if (q.trim().length < 2) {
@@ -58,9 +66,13 @@ export default function GlobalSearch() {
             <div className="p-2">
               <div className="text-[10px] text-[var(--faint)] font-bold px-1 mb-1">לקוחות</div>
               {results.clients.map((c) => (
-                <div key={c.id} className="px-2 py-1.5 text-sm hover:bg-[var(--panel3)] rounded">
+                <button
+                  key={c.id}
+                  onClick={() => pick("client", c.id)}
+                  className="block w-full text-right px-2 py-1.5 text-sm hover:bg-[var(--panel3)] rounded"
+                >
                   {c.name}
-                </div>
+                </button>
               ))}
             </div>
           )}
@@ -68,10 +80,14 @@ export default function GlobalSearch() {
             <div className="p-2 border-t border-[var(--rule)]">
               <div className="text-[10px] text-[var(--faint)] font-bold px-1 mb-1">חיובים</div>
               {results.jobs.map((j) => (
-                <div key={j.id} className="px-2 py-1.5 text-sm hover:bg-[var(--panel3)] rounded flex justify-between">
+                <button
+                  key={j.id}
+                  onClick={() => pick("job", j.id)}
+                  className="w-full text-right px-2 py-1.5 text-sm hover:bg-[var(--panel3)] rounded flex justify-between"
+                >
                   <span>{j.campaign}</span>
                   {j.amount != null && <span className="text-[var(--dim)]">₪{j.amount.toLocaleString("he-IL")}</span>}
-                </div>
+                </button>
               ))}
             </div>
           )}
@@ -79,9 +95,13 @@ export default function GlobalSearch() {
             <div className="p-2 border-t border-[var(--rule)]">
               <div className="text-[10px] text-[var(--faint)] font-bold px-1 mb-1">הפקות</div>
               {results.productions.map((p) => (
-                <div key={p.id} className="px-2 py-1.5 text-sm hover:bg-[var(--panel3)] rounded">
+                <button
+                  key={p.id}
+                  onClick={() => pick("production", p.id)}
+                  className="block w-full text-right px-2 py-1.5 text-sm hover:bg-[var(--panel3)] rounded"
+                >
                   {p.podcast_name} {p.guest ? `· ${p.guest}` : ""}
-                </div>
+                </button>
               ))}
             </div>
           )}
