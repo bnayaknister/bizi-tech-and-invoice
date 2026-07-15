@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 export type ShowRow = {
   id: string;
@@ -108,6 +109,14 @@ export default function ShowsClient({
           {activeCount} פעילות · {oneoffCount} חד־פעמיות
         </span>
         <div className="flex-1" />
+        {canEditMoney && (
+          <Link
+            href="/shows/assign"
+            className="text-xs border border-[var(--rule)] rounded px-3 py-1.5 text-[var(--dim)] hover:bg-[var(--panel3)]"
+          >
+            שיוך יתומות
+          </Link>
+        )}
         {canEdit && (
           <button
             onClick={() => setMergeOpen(true)}
