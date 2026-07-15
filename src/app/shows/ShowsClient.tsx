@@ -586,7 +586,7 @@ function MergeModal({
           <button
             onClick={merge}
             disabled={!ready || busy}
-            className="bg-[var(--signal)] text-[#0C1410] font-bold rounded px-4 py-2 text-sm disabled:opacity-40"
+            className="bg-[var(--signal)] text-[var(--on-accent)] font-bold rounded px-4 py-2 text-sm disabled:opacity-40"
           >
             מזג
           </button>

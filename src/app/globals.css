@@ -2,19 +2,26 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Design tokens — see DESIGN.md. Restrained bi-zi identity: warm stone
+   neutrals, desaturated accents, red as signature (not wallpaper). */
 :root {
-  --panel: #16181D;
-  --panel2: #1E212A;
-  --panel3: #252935;
-  --rule: #2F3542;
-  --rule2: #3D4454;
-  --signal: #3FD68C;
-  --warn: #F2B441;
-  --peak: #FF4D4D;
-  --cue: #56C8E8;
-  --ink: #E8EAF0;
-  --dim: #8A91A3;
-  --faint: #5B6273;
+  /* warm stone neutrals */
+  --panel: #1C1917;   /* ink-0, page background */
+  --panel2: #23201D;  /* ink-1, raised surface */
+  --panel3: #2B2723;  /* ink-2, second surface / hover */
+  --rule: #37322D;    /* hairline */
+  --rule2: #4A443D;   /* stronger border */
+  --ink: #ECE7E1;     /* primary text, warm off-white */
+  --dim: #A69E95;     /* secondary text */
+  --faint: #6E655C;   /* tertiary text, labels */
+
+  /* restrained, calibrated accents */
+  --peak: #C23223;      /* critical + the bi-zi signature red */
+  --red-core: #C23223;  /* alias — the signature */
+  --warn: #C4922E;      /* deep amber/mustard (not bright yellow) */
+  --signal: #6E9E77;    /* muted sage — OK, not neon */
+  --cue: #6C93A6;       /* muted slate-blue — info */
+  --on-accent: #1C1917; /* dark text on an accent-filled control */
 }
 
 html, body {
@@ -25,6 +32,17 @@ body {
   color: var(--ink);
   background: var(--panel);
   font-family: var(--font-heebo), system-ui, sans-serif;
+}
+
+/* Discipline is the seriousness: headings are precise, not shouty. */
+h1, h2, h3 {
+  letter-spacing: -0.01em;
+}
+
+/* Numbers are the instrument. Roboto Mono, tabular, calibrated. */
+.font-mono {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
 }
 
 @layer utilities {

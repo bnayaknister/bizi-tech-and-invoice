@@ -53,7 +53,7 @@ export default function ResetPasswordPage() {
             {error && <div className="text-[var(--peak)] text-xs">{error}</div>}
             <button
               type="submit"
-              className="bg-[var(--signal)] text-[#0C1410] font-bold rounded px-3 py-2 text-sm mt-2"
+              className="bg-[var(--signal)] text-[var(--on-accent)] font-bold rounded px-3 py-2 text-sm mt-2"
             >
               שמור סיסמה
             </button>

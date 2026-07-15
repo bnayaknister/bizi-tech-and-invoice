@@ -29,10 +29,11 @@ export default function ModuleCard({
         <span className="font-bold text-sm">{title}</span>
       </div>
       <div>
-        <div className="text-2xl font-black font-mono" style={{ color: toneColor[metric.tone] }}>
+        {/* calibrated number, not a shouty headline (DESIGN.md §3) */}
+        <div className="text-3xl font-medium font-mono tracking-tight" style={{ color: toneColor[metric.tone] }}>
           {metric.value}
         </div>
-        <div className="text-xs text-[var(--faint)] mt-0.5">{metric.label}</div>
+        <div className="text-xs text-[var(--faint)] mt-1">{metric.label}</div>
       </div>
     </Link>
   );

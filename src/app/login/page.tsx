@@ -49,13 +49,13 @@ export default function LoginPage() {
       <div className="w-full max-w-sm border border-[var(--rule)] rounded bg-[var(--panel2)] p-8">
         <div className="flex items-center gap-3 mb-6 justify-center">
           <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <rect x="2" y="9" width="2.5" height="6" rx="1" fill="#3FD68C" />
-            <rect x="6.5" y="5" width="2.5" height="14" rx="1" fill="#3FD68C" />
-            <rect x="11" y="2" width="2.5" height="20" rx="1" fill="#F2B441" />
-            <rect x="15.5" y="6" width="2.5" height="12" rx="1" fill="#FF4D4D" />
-            <rect x="20" y="10" width="2.5" height="4" rx="1" fill="#56C8E8" />
+            <rect x="2" y="9" width="2" height="6" rx="1" fill="#6E9E77" />
+            <rect x="6.5" y="5" width="2" height="14" rx="1" fill="#6E9E77" />
+            <rect x="11" y="2" width="2" height="20" rx="1" fill="#C4922E" />
+            <rect x="15.5" y="6" width="2" height="12" rx="1" fill="#C23223" />
+            <rect x="20" y="10" width="2" height="4" rx="1" fill="#6E655C" />
           </svg>
-          <h1 className="text-lg font-black">ביזי סטודיו</h1>
+          <h1 className="text-lg font-bold tracking-tight">ביזי סטודיו</h1>
         </div>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
@@ -86,7 +86,7 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="bg-[var(--signal)] text-[#0C1410] font-bold rounded px-3 py-2 text-sm mt-2 disabled:opacity-60"
+            className="bg-[var(--signal)] text-[var(--on-accent)] font-bold rounded px-3 py-2 text-sm mt-2 disabled:opacity-60"
           >
             {loading ? "מתחבר…" : "התחברות"}
           </button>
