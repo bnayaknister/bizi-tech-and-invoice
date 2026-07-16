@@ -12,6 +12,8 @@ export type ShowRow = {
   aliases: string[];
   default_rate: number | null; // null when the viewer lacks can_view_money
   default_studio: string | null;
+  camera_count: number | null;
+  notes: string | null;
   active: boolean;
   is_oneoff: boolean;
   color: string | null;
@@ -454,7 +456,37 @@ function ShowCard({
               className="w-full h-8 bg-[var(--panel)] border border-[var(--rule)] rounded cursor-pointer"
             />
           </label>
+          <label className="text-xs">
+            <span className="block text-[var(--faint)] mb-1">מספר מצלמות</span>
+            <input
+              type="number"
+              min={0}
+              defaultValue={show.camera_count ?? ""}
+              disabled={!canEdit}
+              onBlur={(e) => {
+                const v = e.target.value === "" ? null : Number(e.target.value);
+                if (v !== show.camera_count) onSave(show.id, { camera_count: v });
+              }}
+              placeholder="—"
+              className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1.5"
+            />
+          </label>
         </div>
+
+        <label className="block text-xs mb-5">
+          <span className="block text-[var(--faint)] mb-1">הערות</span>
+          <textarea
+            defaultValue={show.notes ?? ""}
+            disabled={!canEdit}
+            rows={2}
+            onBlur={(e) => {
+              const v = e.target.value.trim() || null;
+              if (v !== show.notes) onSave(show.id, { notes: v });
+            }}
+            placeholder="הערות חופשיות על התוכנית…"
+            className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1.5 text-xs resize-y"
+          />
+        </label>
 
         {canViewMoney && (
           <div className="grid grid-cols-4 gap-2 mb-5 text-center">

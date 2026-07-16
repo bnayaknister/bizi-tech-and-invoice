@@ -18,8 +18,8 @@ export default async function ShowsPage() {
   // money columns are simply never selected without the permission —
   // "not hidden, not present in the response" (screens spec, section 12)
   const showColumns = canViewMoney
-    ? "id,name,client_id,aliases,default_rate,default_studio,active,is_oneoff,color"
-    : "id,name,aliases,default_studio,active,is_oneoff,color";
+    ? "id,name,client_id,aliases,default_rate,default_studio,camera_count,notes,active,is_oneoff,color"
+    : "id,name,aliases,default_studio,camera_count,notes,active,is_oneoff,color";
 
   const [{ data: shows }, { data: productions }, { data: clients }] = await Promise.all([
     supabase.from("shows").select(showColumns).order("name"),
@@ -73,6 +73,8 @@ export default async function ShowsPage() {
     aliases: (s.aliases as string[]) ?? [],
     default_rate: canViewMoney ? ((s.default_rate as number) ?? null) : null,
     default_studio: (s.default_studio as string) ?? null,
+    camera_count: (s.camera_count as number) ?? null,
+    notes: (s.notes as string) ?? null,
     active: s.active as boolean,
     is_oneoff: s.is_oneoff as boolean,
     color: (s.color as string) ?? null,

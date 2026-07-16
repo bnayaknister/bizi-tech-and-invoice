@@ -5,7 +5,10 @@ import { createAdminClient } from "@/lib/supabase/admin";
 // stage-level fields vs money fields — the DB trigger (trg_guard_show_money)
 // is the real enforcement; this check just returns a clean error instead of
 // a raw postgres exception
-const STAGE_FIELDS = new Set(["name", "aliases", "active", "is_oneoff", "default_studio", "default_editor_id", "color"]);
+const STAGE_FIELDS = new Set([
+  "name", "aliases", "active", "is_oneoff", "default_studio", "default_editor_id", "color",
+  "camera_count", "notes", "settings",
+]);
 // billing_mode + client_id are money classification — both guarded by DB
 // triggers (0008 trg_guard_show_money, 0012 trg_guard_show_billing)
 const MONEY_FIELDS = new Set(["default_rate", "client_id", "billing_mode"]);
@@ -49,7 +52,7 @@ export async function POST(request: Request) {
     .from("shows")
     .update(patch)
     .eq("id", id)
-    .select("id,name,aliases,active,is_oneoff,default_studio,color,client_id,billing_mode")
+    .select("id,name,aliases,active,is_oneoff,default_studio,camera_count,notes,color,client_id,billing_mode")
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 

@@ -18,29 +18,30 @@ export type SyncPlan = {
   toFlagRemoved: string[]; // production ids whose calendar_uid vanished from the feed
   toUnflagRemoved: string[]; // previously flagged removed, event is back
   skippedNoMatch: number; // titles matching no alias — silently absent from the system
-  skippedTooOld: number; // matched an alias, but predates the sync window and was never tracked before
 };
 
 // Pure — no DB access, so the exact same code path runs against a real
 // fetched feed or a fake test ICS (screens-spec §11 owner rule: "permit,
 // not block" + the 4-case conflict resolution).
 //
+// Owner decision 2026-07-17: the sync window is "today only" — a production
+// is created on the morning of its own recording day, never ahead, never
+// behind. That scoping happens entirely at the caller: `events` must
+// already be filtered to today's Israel calendar day, and `existingByUid`
+// must already be filtered to productions whose own record_date is today.
+// Because both sides are pre-scoped this way, this function needs no date
+// awareness of its own — a production from another day simply never
+// appears in either input, so it's never touched, created, or (critically)
+// wrongly flagged "removed" just for falling outside today's fetch.
+//
 // `touchedIds` is precomputed by the caller: any production with a
 // non-calendar-prefixed event already logged against it (drawer edit, kanban
 // move, hold, stage update) — "מה שהיומן יצר, היומן מעדכן, כל עוד לא נגעו בו".
-//
-// `cutoffDate`: the studio's real calendar turned out to hold years of
-// history (owner found this in a dry check, 2026-07-16) — the sync only
-// ever CREATES from events at/after the cutoff. A production that's
-// already tracked keeps getting updated/flagged regardless of its date,
-// since aging out of the window is not the same thing as being removed
-// from the calendar.
 export function buildSyncPlan(
   events: CalendarEvent[],
   shows: ShowForMatch[],
   existingByUid: Map<string, ExistingProductionRow>,
-  touchedIds: Set<string>,
-  cutoffDate: Date | null = null
+  touchedIds: Set<string>
 ): SyncPlan {
   const plan: SyncPlan = {
     toCreate: [],
@@ -49,7 +50,6 @@ export function buildSyncPlan(
     toFlagRemoved: [],
     toUnflagRemoved: [],
     skippedNoMatch: 0,
-    skippedTooOld: 0,
   };
   const seenUids = new Set<string>();
 
@@ -62,17 +62,10 @@ export function buildSyncPlan(
       plan.skippedNoMatch++;
       continue;
     }
-
-    const existing = existingByUid.get(event.uid);
-    const isNew = !existing;
-    const tooOld = !!(isNew && cutoffDate && event.start && event.start < cutoffDate);
-    if (tooOld) {
-      plan.skippedTooOld++;
-      continue;
-    }
     seenUids.add(event.uid);
 
-    if (isNew) {
+    const existing = existingByUid.get(event.uid);
+    if (!existing) {
       plan.toCreate.push({ event, show: match.show });
       continue;
     }

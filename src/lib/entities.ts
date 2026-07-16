@@ -94,6 +94,8 @@ export const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
       },
       { key: "default_rate", label: "מחיר לפרק", type: "number", view: "money", edit: "money" },
       { key: "default_studio", label: "אולפן קבוע", type: "text", view: "any", edit: "stages" },
+      { key: "camera_count", label: "מספר מצלמות", type: "number", view: "any", edit: "stages" },
+      { key: "notes", label: "הערות", type: "text", view: "any", edit: "stages" },
       { key: "color", label: "צבע", type: "text", view: "any", edit: "stages" },
       { key: "active", label: "פעילה", type: "boolean", view: "any", edit: "stages" },
       { key: "is_oneoff", label: "חד־פעמית", type: "boolean", view: "any", edit: "stages" },

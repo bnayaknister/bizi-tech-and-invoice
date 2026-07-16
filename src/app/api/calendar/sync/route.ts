@@ -5,13 +5,14 @@ import { fetchAndParseIcs, parseIcsText, type CalendarEvent } from "@/lib/calend
 import { buildSyncPlan, type ExistingProductionRow } from "@/lib/calendar/sync";
 import type { ShowForMatch } from "@/lib/calendar/match";
 
-// Google Calendar sync (screens-spec §11, owner rules 2026-07-16):
+// Google Calendar sync (screens-spec §11, owner rules 2026-07-16/17):
 //   GET  — Vercel Cron trigger. Authorizes via CRON_SECRET, always reads
 //          the real STUDIO_ICS_URL.
 //   POST — manual "sync now" button. Authorizes via the caller's own
 //          session (can_edit_stages). May pass `icsText` to test against a
 //          fake calendar instead of the real one — this is how the fake-ICS
-//          verification runs before the real URL is ever wired in.
+//          verification runs, and it's exempt from the on/off gate below
+//          (a test never touches the real calendar regardless).
 // Either path funnels into the same runSync() so cron and manual behave
 // identically; only auth and the event source differ.
 //
@@ -19,9 +20,19 @@ import type { ShowForMatch } from "@/lib/calendar/match";
 // exactly 06:00 Israel time year-round, across the DST transition.
 // vercel.json fires this route twice daily (03:00 UTC and 04:00 UTC); one
 // of the two lands on 06:00 Israel depending on the season, the other on
-// 05:00 or 07:00. isIsraelSixAM() below is the gate: only the trigger that
+// 05:00 or 07:00. israelNow() below is the gate: only the trigger that
 // actually lands on local 06:00 proceeds. alreadySyncedToday() is a second,
 // independent guard against any retry/duplicate firing running it twice.
+//
+// Window (owner decision 2026-07-17): "today only" — a production is
+// created on the morning of its own recording day, never ahead, never
+// behind. The real calendar turned out to hold 8 years of history, and an
+// earlier grace-window design still let months-ahead bookings in (found
+// in review) — today's Israel calendar day, exactly, closes both gaps.
+//
+// calendar_sync_enabled (app_settings, owner decision 2026-07-17): the
+// owner is still populating show aliases: until this flag is on, neither
+// the cron nor a real manual sync may touch the live calendar at all.
 
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 
@@ -31,6 +42,22 @@ function israelNow(now: Date): { hour: number; date: string } {
   );
   const date = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jerusalem" }).format(now); // yyyy-mm-dd
   return { hour, date };
+}
+
+// [start, end) of today's Israel calendar day, as UTC instants — used both
+// to filter the fetched calendar events and to scope which already-synced
+// productions are even eligible for update/flag/removed handling.
+function israelDayWindow(now: Date): { date: string; start: Date; end: Date } {
+  const date = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jerusalem" }).format(now);
+  const offsetParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Jerusalem",
+    timeZoneName: "shortOffset",
+  }).formatToParts(now);
+  const offsetStr = offsetParts.find((p) => p.type === "timeZoneName")?.value ?? "GMT+2";
+  const offsetHours = Number(offsetStr.replace("GMT", "")) || 2;
+  const start = new Date(`${date}T00:00:00.000${offsetHours >= 0 ? "+" : "-"}${String(Math.abs(offsetHours)).padStart(2, "0")}:00`);
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  return { date, start, end };
 }
 
 async function alreadySyncedToday(admin: ReturnType<typeof createAdminClient>, israelDate: string): Promise<boolean> {
@@ -45,6 +72,11 @@ async function alreadySyncedToday(admin: ReturnType<typeof createAdminClient>, i
   return (data ?? []).some((e) => (e.payload as { date?: string } | null)?.date === israelDate);
 }
 
+async function syncEnabled(admin: ReturnType<typeof createAdminClient>): Promise<boolean> {
+  const { data } = await admin.from("app_settings").select("calendar_sync_enabled").eq("id", true).maybeSingle();
+  return data?.calendar_sync_enabled === true;
+}
+
 type ShowRow = {
   id: string;
   name: string;
@@ -52,16 +84,17 @@ type ShowRow = {
   client_id: string | null;
   billing_mode: string;
   default_studio: string | null;
+  camera_count: number | null;
   default_editor_id: string | null;
   active: boolean;
 };
 
-async function runSync(events: CalendarEvent[]) {
+async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
   const admin = createAdminClient();
 
   const { data: shows } = await admin
     .from("shows")
-    .select("id,name,aliases,client_id,billing_mode,default_studio,default_editor_id,active");
+    .select("id,name,aliases,client_id,billing_mode,default_studio,camera_count,default_editor_id,active");
   const showRows = (shows ?? []) as ShowRow[];
   // only active shows open the gate — an archived/retired show's old alias
   // shouldn't start pulling in new recordings again
@@ -70,10 +103,16 @@ async function runSync(events: CalendarEvent[]) {
     .map((s) => ({ id: s.id, name: s.name, aliases: s.aliases ?? [] }));
   const showById = new Map(showRows.map((s) => [s.id, s]));
 
+  // "today only": existing productions are eligible for update/flag/removed
+  // handling ONLY if their own record_date is today — a production from
+  // another day is invisible to this run either way, so it can never be
+  // wrongly flagged "removed" just for falling outside a scan it was never
+  // part of to begin with
   const { data: existingRows } = await admin
     .from("productions")
     .select("id,calendar_uid,status,calendar_removed")
-    .not("calendar_uid", "is", null);
+    .not("calendar_uid", "is", null)
+    .eq("record_date", todayIsraelDate);
   const existingByUid = new Map(
     (existingRows ?? []).map((r) => [r.calendar_uid as string, r as ExistingProductionRow])
   );
@@ -93,14 +132,7 @@ async function runSync(events: CalendarEvent[]) {
     );
   }
 
-  // the studio's real calendar turned out to hold years of history (owner
-  // dry-check, 2026-07-16) — never CREATE from anything older than a small
-  // grace window; already-tracked productions are exempt (see sync.ts)
-  const cutoffDate = new Date();
-  cutoffDate.setUTCDate(cutoffDate.getUTCDate() - 2);
-  cutoffDate.setUTCHours(0, 0, 0, 0);
-
-  const plan = buildSyncPlan(events, showsForMatch, existingByUid, touchedIds, cutoffDate);
+  const plan = buildSyncPlan(events, showsForMatch, existingByUid, touchedIds);
 
   let created = 0, updated = 0, flaggedChanged = 0, flaggedRemoved = 0, unflaggedRemoved = 0;
 
@@ -108,7 +140,7 @@ async function runSync(events: CalendarEvent[]) {
     const show = showById.get(action.show.id);
     if (!show) continue;
     const kind = show.billing_mode === "contract" ? "contract" : show.billing_mode === "per_episode" && show.client_id ? "client" : "internal";
-    const recordDate = action.event.start ? action.event.start.toISOString().slice(0, 10) : null;
+    const recordDate = action.event.start ? action.event.start.toISOString().slice(0, 10) : todayIsraelDate;
     const { data: inserted, error } = await admin
       .from("productions")
       .insert({
@@ -117,7 +149,10 @@ async function runSync(events: CalendarEvent[]) {
         client_id: show.client_id,
         kind,
         record_date: recordDate,
+        // LOCATION on the calendar event overrides the show's default —
+        // camera_count has no such override, it's a straight copy
         studio: action.event.location || show.default_studio || null,
+        camera_count: show.camera_count,
         calendar_uid: action.event.uid,
         calendar_synced_at: new Date().toISOString(),
         legacy: false,
@@ -139,9 +174,7 @@ async function runSync(events: CalendarEvent[]) {
   }
 
   for (const action of plan.toUpdate) {
-    const recordDate = action.event.start ? action.event.start.toISOString().slice(0, 10) : null;
     const patch: Record<string, unknown> = { calendar_synced_at: new Date().toISOString() };
-    if (recordDate) patch.record_date = recordDate;
     if (action.event.location) patch.studio = action.event.location;
     const { error } = await admin.from("productions").update(patch).eq("id", action.productionId);
     if (error) throw new Error(error.message);
@@ -190,7 +223,6 @@ async function runSync(events: CalendarEvent[]) {
     flaggedRemoved,
     unflaggedRemoved,
     skippedNoMatch: plan.skippedNoMatch,
-    skippedTooOld: plan.skippedTooOld,
   };
 }
 
@@ -210,6 +242,9 @@ export async function GET(request: Request) {
   }
 
   const admin = createAdminClient();
+  if (!(await syncEnabled(admin))) {
+    return NextResponse.json({ ok: true, skipped: "calendar-sync-disabled" });
+  }
   if (await alreadySyncedToday(admin, date)) {
     return NextResponse.json({ ok: true, skipped: "already-synced-today", israelDate: date });
   }
@@ -217,8 +252,10 @@ export async function GET(request: Request) {
   const url = process.env.STUDIO_ICS_URL;
   if (!url) return NextResponse.json({ error: "STUDIO_ICS_URL לא מוגדר" }, { status: 500 });
   try {
-    const events = await fetchAndParseIcs(url);
-    const summary = await runSync(events);
+    const { start, end } = israelDayWindow(new Date());
+    const allEvents = await fetchAndParseIcs(url);
+    const events = allEvents.filter((e) => e.start && e.start >= start && e.start < end);
+    const summary = await runSync(events, date);
     await admin.from("events").insert({
       entity_type: "calendar_cron",
       entity_id: NIL_UUID,
@@ -233,7 +270,8 @@ export async function GET(request: Request) {
 
 // Manual "סנכרן עכשיו" button. Session-authenticated; accepts an optional
 // `icsText` override so the whole pipeline can be exercised against a fake
-// calendar before the real STUDIO_ICS_URL is ever configured.
+// calendar — that path is exempt from calendar_sync_enabled, since a test
+// never reads the real calendar regardless of the flag.
 export async function POST(request: Request) {
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -244,16 +282,23 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
   const testIcsText = typeof body.icsText === "string" ? body.icsText : null;
 
+  const admin = createAdminClient();
+  if (!testIcsText && !(await syncEnabled(admin))) {
+    return NextResponse.json({ error: "סנכרון היומן כבוי (calendar_sync_enabled=false)" }, { status: 403 });
+  }
+
   try {
+    const { date, start, end } = israelDayWindow(new Date());
     let events: CalendarEvent[];
     if (testIcsText) {
-      events = parseIcsText(testIcsText);
+      events = parseIcsText(testIcsText).filter((e) => !e.start || (e.start >= start && e.start < end));
     } else {
       const url = process.env.STUDIO_ICS_URL;
       if (!url) return NextResponse.json({ error: "STUDIO_ICS_URL לא מוגדר" }, { status: 500 });
-      events = await fetchAndParseIcs(url);
+      const allEvents = await fetchAndParseIcs(url);
+      events = allEvents.filter((e) => e.start && e.start >= start && e.start < end);
     }
-    const summary = await runSync(events);
+    const summary = await runSync(events, date);
     return NextResponse.json({ ok: true, ...summary });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "שגיאת סנכרון" }, { status: 500 });
