@@ -139,6 +139,14 @@ export type RowPlan = {
   changes: FieldChange[];
   values: Record<string, string | number | null>; // importable values (for apply)
   hasInfoLoss: boolean;
+  // only meaningful for bucket === "new": this row is already closed
+  // (paid + tax invoice already issued — spec §7's exact archiving rule,
+  // the one that already classified 106+1 historical jobs) so it must be
+  // created directly in archive, never as a live row. A brand-new row has
+  // no app-tracked payment state to protect, so reading paid/invoice_tax
+  // straight from the CSV here is correct — unlike an update to an
+  // existing row, where the app's own workflow may have moved further.
+  archiveDestined?: boolean;
 };
 
 // CSV is a strict, non-identical substring of what's already in the DB —
@@ -210,7 +218,9 @@ export function buildPlan(
     }
 
     if (!match) {
-      plan.push({ externalId, title, bucket: "new", matchedId: null, changes: [], values, hasInfoLoss: false });
+      const archiveDestined =
+        kind === "job" && (r["שולם"] || "").trim() === "כן" && (r["חשבונית מס"] || "").trim() !== "";
+      plan.push({ externalId, title, bucket: "new", matchedId: null, changes: [], values, hasInfoLoss: false, archiveDestined });
       continue;
     }
 

@@ -11,6 +11,7 @@ type RowPlan = {
   matchedId: string | null;
   changes: FieldChange[];
   hasInfoLoss: boolean;
+  archiveDestined?: boolean;
 };
 type Preview = {
   kind: "production" | "job";
@@ -70,7 +71,7 @@ export default function ImportClient() {
     }
     const d = await res.json();
     const a = d.applied;
-    setDone(`יובאו: ${a.created} נוצרו · ${a.updated} עודכנו · ${a.unchanged} ללא שינוי · ${a.archiveSkipped} בארכיון דולגו${a.infoLossSkipped ? ` · ${a.infoLossSkipped} 🟠 דולגו (אובדן מידע, לא אושרו)` : ""}${a.skipped ? ` · ${a.skipped} דולגו` : ""}`);
+    setDone(`יובאו: ${a.created} נוצרו (חי) · ${a.createdArchived ?? 0} נוצרו בארכיון (שולם+חשבונית) · ${a.updated} עודכנו · ${a.unchanged} ללא שינוי · ${a.archiveSkipped} בארכיון דולגו${a.infoLossSkipped ? ` · ${a.infoLossSkipped} 🟠 דולגו (אובדן מידע, לא אושרו)` : ""}${a.skipped ? ` · ${a.skipped} דולגו` : ""}`);
     setPreview(null);
     setText(null);
     router.refresh();
@@ -208,13 +209,20 @@ export default function ImportClient() {
             </Section>
           )}
 
-          {/* new */}
+          {/* new — rows already paid+invoiced (spec §7) route straight to
+              archive on apply, never live; shown here so nothing surprises
+              at apply time */}
           {newRows.length > 0 && (
             <Section title={`🟢 חדשות (${newRows.length})`}>
               {newRows.slice(0, 50).map((r, i) => (
                 <div key={(r.externalId ?? "") + i} className="flex items-center gap-2 px-3 py-2 text-xs border-b border-[var(--rule)] last:border-b-0">
                   <span className="font-mono text-[var(--faint)]">{r.externalId ?? "חדש"}</span>
-                  <span>{r.title}</span>
+                  <span className="flex-1">{r.title}</span>
+                  {r.archiveDestined && (
+                    <span className="text-[10px] text-[var(--faint)] border border-[var(--rule)] rounded px-1.5 py-0.5">
+                      🗄️ ייכנס ישירות לארכיון — שולם + חשבונית מס
+                    </span>
+                  )}
                 </div>
               ))}
               {newRows.length > 50 && <div className="px-3 py-2 text-[11px] text-[var(--faint)]">ועוד {newRows.length - 50}…</div>}

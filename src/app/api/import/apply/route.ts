@@ -32,7 +32,7 @@ export async function POST(request: Request) {
   const genId = nextExternalId(kind, dbRows.map((d) => d.external_id));
   let genCounter = 1;
 
-  const applied = { created: 0, updated: 0, unchanged: 0, archiveSkipped: 0, skipped: 0, infoLossSkipped: 0 };
+  const applied = { created: 0, createdArchived: 0, updated: 0, unchanged: 0, archiveSkipped: 0, skipped: 0, infoLossSkipped: 0 };
   const table = kind === "production" ? "productions" : "jobs";
 
   // plan.rows is in the same order as the parsed CSV rows (buildPlan iterates
@@ -70,7 +70,34 @@ export async function POST(request: Request) {
 
     if (row.bucket === "new") {
       const clientName = kind === "job" ? raw["לקוח"] ?? "" : "";
-      const insert = buildInsert(kind, row.values, row.externalId ?? genId(genCounter++), nameLookup, clientName);
+      const externalId = row.externalId ?? genId(genCounter++);
+
+      // spec §7's exact archiving rule, applied at creation time: a new job
+      // that arrives already paid + tax-invoiced never touches public.jobs —
+      // it's closed history, same as its siblings (0015/0016 backfill).
+      if (row.archiveDestined) {
+        const clientId = nameLookup.get(norm(clientName));
+        if (!clientId) { applied.skipped++; continue; }
+        const { error } = await admin.rpc("insert_archive_job", {
+          p_job: {
+            client_id: clientId,
+            date: row.values.date,
+            campaign: row.values.campaign,
+            amount: row.values.amount,
+            invoice_biz: row.values.invoice_biz,
+            invoice_tax: row.values.invoice_tax,
+            paid: (raw["שולם"] ?? "").trim(),
+            notes: row.values.notes,
+            external_id: externalId,
+          },
+        });
+        if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+        applied.createdArchived++;
+        continue;
+      }
+
+      const paidRaw = kind === "job" ? (raw["שולם"] ?? "").trim() : "";
+      const insert = buildInsert(kind, row.values, externalId, nameLookup, clientName, paidRaw);
       if (insert === null) { applied.skipped++; continue; } // e.g. job with no matching client
       const { error } = await admin.from(table).insert(insert);
       if (error) return NextResponse.json({ error: error.message }, { status: 400 });
@@ -105,12 +132,22 @@ async function buildNameLookup(admin: ReturnType<typeof createAdminClient>, kind
   return byName;
 }
 
+// maps the raw שולם CSV cell to the paid_status enum — same shape as the
+// original seed.py mapping. A brand-new row has no app-tracked payment
+// state yet, so the CSV is the only source of truth for it.
+function mapPaid(raw: string): string {
+  if (raw === "כן" || raw === "לא") return raw;
+  if (raw.startsWith("ללא חיוב")) return "ללא חיוב";
+  return "לא ידוע";
+}
+
 function buildInsert(
   kind: ImportKind,
   values: Record<string, string | number | null>,
   externalId: string,
   nameLookup: Map<string, string>,
-  clientName: string
+  clientName: string,
+  paidRaw: string
 ): Record<string, unknown> | null {
   if (kind === "production") {
     // new work from today — legacy=false, enters the automation chain.
@@ -142,6 +179,7 @@ function buildInsert(
     invoice_tax: values.invoice_tax,
     notes: values.notes,
     client_id: clientId,
+    paid: mapPaid(paidRaw),
     legacy: false,
     manual_only: false,
     external_id: externalId,
