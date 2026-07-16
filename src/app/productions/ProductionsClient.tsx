@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useDrawer } from "@/components/EntityDrawer";
 
 export type BoardProduction = {
@@ -81,6 +82,7 @@ export default function ProductionsClient({
   canEditStages: boolean;
 }) {
   const { openEntity } = useDrawer();
+  const router = useRouter();
   const [rows, setRows] = useState(board);
   const [tab, setTab] = useState<"today" | "kanban">("today");
   const [onlyMine, setOnlyMine] = useState(isTech); // default on for technicians
@@ -90,6 +92,30 @@ export default function ProductionsClient({
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [holdFor, setHoldFor] = useState<BoardProduction | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<string | null>(null);
+
+  async function syncNow() {
+    setSyncing(true);
+    setSyncResult(null);
+    setError(null);
+    const res = await fetch("/api/calendar/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    setSyncing(false);
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      setError(d.error ?? "שגיאת סנכרון");
+      return;
+    }
+    const d = await res.json();
+    setSyncResult(
+      `נוצרו ${d.created} · עודכנו ${d.updated} · דגל שינוי ${d.flaggedChanged} · דגל הוסר ${d.flaggedRemoved} · דולגו בשקט ${d.skippedNoMatch}`
+    );
+    router.refresh();
+  }
 
   useEffect(() => setRows(board), [board]);
 
@@ -180,10 +206,23 @@ export default function ProductionsClient({
           placeholder="חיפוש תוכנית, אורח, אולפן…"
           className="mr-auto w-60 max-w-full bg-[var(--panel2)] border border-[var(--rule)] rounded-lg px-3 py-1.5 text-sm"
         />
+
+        {canEditStages && (
+          <button
+            onClick={syncNow}
+            disabled={syncing}
+            className="text-xs border border-[var(--rule)] rounded-lg px-3 py-1.5 text-[var(--dim)] hover:bg-[var(--panel3)] disabled:opacity-50"
+          >
+            {syncing ? "מסנכרן…" : "סנכרן יומן עכשיו"}
+          </button>
+        )}
       </div>
 
       {error && (
         <div className="mb-3 text-xs text-[var(--peak)] border border-[var(--peak)] rounded-lg px-3 py-2">{error}</div>
+      )}
+      {syncResult && (
+        <div className="mb-3 text-xs text-[var(--dim)] border border-[var(--rule)] rounded-lg px-3 py-2 font-mono">{syncResult}</div>
       )}
 
       {tab === "today" ? (
