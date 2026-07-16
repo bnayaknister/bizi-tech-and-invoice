@@ -2,26 +2,34 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Design tokens — see DESIGN.md. Restrained bi-zi identity: warm stone
-   neutrals, desaturated accents, red as signature (not wallpaper). */
+/* Design tokens — see DESIGN.md. "Music player that manages money":
+   near-black navy, electric violet accent, restrained glow. */
 :root {
-  /* warm stone neutrals */
-  --panel: #1C1917;   /* ink-0, page background */
-  --panel2: #23201D;  /* ink-1, raised surface */
-  --panel3: #2B2723;  /* ink-2, second surface / hover */
-  --rule: #37322D;    /* hairline */
-  --rule2: #4A443D;   /* stronger border */
-  --ink: #ECE7E1;     /* primary text, warm off-white */
-  --dim: #A69E95;     /* secondary text */
-  --faint: #6E655C;   /* tertiary text, labels */
+  /* navy near-black surfaces */
+  --panel: #0A0E1A;   /* bg-0, page background */
+  --panel2: #141929;  /* panels, cards, header */
+  --panel3: #1E2740;  /* raised surface / hover */
+  --rule: #262F49;    /* hairline */
+  --rule2: #38426A;   /* stronger border / active frame */
+  --ink: #F0F2FF;     /* primary text */
+  --dim: #A9B0D0;     /* secondary text */
+  --faint: #6B7394;   /* tertiary text, labels */
 
-  /* restrained, calibrated accents */
-  --peak: #C23223;      /* critical + the bi-zi signature red */
-  --red-core: #C23223;  /* alias — the signature */
-  --warn: #C4922E;      /* deep amber/mustard (not bright yellow) */
-  --signal: #6E9E77;    /* muted sage — OK, not neon */
-  --cue: #6C93A6;       /* muted slate-blue — info */
-  --on-accent: #1C1917; /* dark text on an accent-filled control */
+  /* electric accents */
+  --violet: #7C5CFF;        /* primary accent */
+  --violet-light: #A78BFA;  /* hover / secondary highlight */
+  --cyan: #38BDF8;          /* info / open commitment */
+  --red: #FF5A6E;           /* critical (neon) */
+  --green: #4ADE80;         /* VU ok / saved */
+  --amber: #FCD34D;         /* VU warn */
+
+  /* back-compat aliases mapped onto existing class usages */
+  --signal: var(--violet);
+  --warn: var(--amber);
+  --peak: var(--red);
+  --red-core: var(--red);
+  --cue: var(--cyan);
+  --on-accent: #F0F2FF;     /* text on a filled violet control */
 }
 
 html, body {
@@ -30,8 +38,13 @@ html, body {
 
 body {
   color: var(--ink);
-  background: var(--panel);
   font-family: var(--font-heebo), system-ui, sans-serif;
+  /* subtle fixed gradient: violet glow top, cyan glow bottom (DESIGN §3.2) */
+  background:
+    radial-gradient(1100px 620px at 82% -8%, rgba(124, 92, 255, 0.16), transparent 60%),
+    radial-gradient(1000px 600px at 12% 112%, rgba(56, 189, 248, 0.10), transparent 62%),
+    var(--panel);
+  background-attachment: fixed;
 }
 
 /* Discipline is the seriousness: headings are precise, not shouty. */
@@ -49,4 +62,59 @@ h1, h2, h3 {
   .text-balance {
     text-wrap: balance;
   }
+
+  /* restrained violet halo on money figures — a whisper, not a spotlight */
+  .num-glow {
+    text-shadow: 0 0 14px rgba(124, 92, 255, 0.35);
+  }
+
+  /* violet→cyan gradient wordmark */
+  .grad-text {
+    background: linear-gradient(90deg, var(--violet-light), var(--cyan));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* cards / rows light up on hover */
+  .lift {
+    transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+  .lift:hover {
+    border-color: var(--rule2);
+    box-shadow: 0 0 0 1px rgba(124, 92, 255, 0.10), 0 12px 30px -18px rgba(124, 92, 255, 0.5);
+  }
+}
+
+/* ---- motion (DESIGN §6) ---- */
+
+/* staggered card entrance on load */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.stagger {
+  opacity: 0;
+  animation: rise 0.42s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* live VU bars for the animated logo (hub/login only) */
+@keyframes vu {
+  0%, 100% { transform: scaleY(0.45); }
+  50%      { transform: scaleY(1); }
+}
+.vu-bar { transform-box: fill-box; transform-origin: center bottom; }
+.vu-live .vu-bar { animation: vu 1.1s ease-in-out infinite; }
+
+/* slow pulse for a critical VU channel (radar, step 4) */
+@keyframes pulse-crit {
+  0%, 100% { opacity: 0.72; filter: drop-shadow(0 0 2px rgba(255, 90, 110, 0.5)); }
+  50%      { opacity: 1;    filter: drop-shadow(0 0 9px rgba(255, 90, 110, 0.85)); }
+}
+.pulse-crit { animation: pulse-crit 1.9s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .stagger { opacity: 1; animation: none; }
+  .vu-live .vu-bar,
+  .pulse-crit { animation: none; }
 }

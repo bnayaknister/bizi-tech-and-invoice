@@ -3,7 +3,7 @@ import type { ModuleDef } from "@/modules/types";
 export const showsModule: ModuleDef = {
   key: "shows",
   title: "תוכניות",
-  icon: "📺",
+  icon: "shows",
   href: "/shows",
   hasAccess: (profile) => profile.approved && (profile.can_view_stages || profile.can_view_money),
   getMetric: async (supabase) => {

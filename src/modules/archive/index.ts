@@ -3,7 +3,7 @@ import type { ModuleDef } from "@/modules/types";
 export const archiveModule: ModuleDef = {
   key: "archive",
   title: "ארכיון",
-  icon: "🗄️",
+  icon: "archive",
   href: "/archive",
   hasAccess: (profile) => profile.approved && profile.role === "owner",
   getMetric: async () => ({

@@ -4,7 +4,7 @@ import { getAlertCounts } from "./alerts";
 export const radarModule: ModuleDef = {
   key: "radar",
   title: "רדאר",
-  icon: "📊",
+  icon: "radar",
   href: "/radar",
   hasAccess: (profile) => profile.approved && profile.can_view_money,
   getMetric: async (supabase) => {

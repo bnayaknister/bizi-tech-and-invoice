@@ -16,7 +16,7 @@ export default async function Home() {
 
   return (
     <div className="min-h-screen">
-      <AppHeader profile={profile} />
+      <AppHeader profile={profile} animatedLogo />
       <main className="max-w-5xl mx-auto p-6">
         <h1 className="text-sm font-bold text-[var(--dim)] mb-4">מודולים</h1>
         {visibleModules.length === 0 ? (
@@ -26,7 +26,7 @@ export default async function Home() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {visibleModules.map((m, i) => (
-              <ModuleCard key={m.key} title={m.title} icon={m.icon} href={m.href} metric={metrics[i]} />
+              <ModuleCard key={m.key} title={m.title} icon={m.icon} href={m.href} metric={metrics[i]} index={i} />
             ))}
           </div>
         )}

@@ -3,7 +3,7 @@ import type { ModuleDef } from "@/modules/types";
 export const usersModule: ModuleDef = {
   key: "users",
   title: "משתמשים",
-  icon: "👥",
+  icon: "users",
   href: "/users",
   hasAccess: (profile) => profile.approved && profile.can_manage_users,
   getMetric: async (supabase) => {

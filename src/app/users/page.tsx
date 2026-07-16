@@ -11,7 +11,7 @@ export default async function UsersPage() {
   return (
     <ModulePlaceholder
       profile={profile}
-      icon="👥"
+      icon="users"
       title="משתמשים"
       stepNote="מסך אישור משתמשים ותיבות הרשאה הוא שלב 7."
     />

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import SoundWaveLogo from "@/components/SoundWaveLogo";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -48,14 +49,10 @@ export default function LoginPage() {
     <main className="min-h-screen flex items-center justify-center p-6">
       <div className="w-full max-w-sm border border-[var(--rule)] rounded bg-[var(--panel2)] p-8">
         <div className="flex items-center gap-3 mb-6 justify-center">
-          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <rect x="2" y="9" width="2" height="6" rx="1" fill="#6E9E77" />
-            <rect x="6.5" y="5" width="2" height="14" rx="1" fill="#6E9E77" />
-            <rect x="11" y="2" width="2" height="20" rx="1" fill="#C4922E" />
-            <rect x="15.5" y="6" width="2" height="12" rx="1" fill="#C23223" />
-            <rect x="20" y="10" width="2" height="4" rx="1" fill="#6E655C" />
-          </svg>
-          <h1 className="text-lg font-bold tracking-tight">ביזי סטודיו</h1>
+          <SoundWaveLogo size={28} animated />
+          <h1 className="text-lg font-bold tracking-tight">
+            ביזי <span className="grad-text">סטודיו</span>
+          </h1>
         </div>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">

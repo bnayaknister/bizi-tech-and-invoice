@@ -11,7 +11,7 @@ export default async function ContractsPage() {
   return (
     <ModulePlaceholder
       profile={profile}
-      icon="📄"
+      icon="contracts"
       title="חוזים"
       stepNote="מסך חוזים ואבני דרך הוא שלב 6."
     />

@@ -13,7 +13,7 @@ export default async function FinancePage() {
     <div>
       <ModulePlaceholder
         profile={profile}
-        icon="💰"
+        icon="finance"
         title="כספים"
         stepNote="מסך חיובים/חשבוניות/גבייה/ייצוא CSV הוא שלב 6."
       />

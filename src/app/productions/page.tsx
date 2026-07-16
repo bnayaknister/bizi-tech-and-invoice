@@ -11,7 +11,7 @@ export default async function ProductionsPage() {
   return (
     <ModulePlaceholder
       profile={profile}
-      icon="🎬"
+      icon="productions"
       title="הפקות"
       stepNote="הקנבן (6 עמודות, גרירה, bulk edit) הוא שלב 5."
     />

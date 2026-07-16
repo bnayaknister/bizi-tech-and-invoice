@@ -11,7 +11,7 @@ export default async function RadarPage() {
   return (
     <ModulePlaceholder
       profile={profile}
-      icon="📊"
+      icon="radar"
       title="רדאר"
       stepNote="המסך המלא (VU + התראות + חוב לגבייה/התחייבות פתוחה) הוא שלב 4."
     />

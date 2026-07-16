@@ -5,7 +5,7 @@ const money = (n: number) => `₪${Math.round(n).toLocaleString("he-IL")}`;
 export const financeModule: ModuleDef = {
   key: "finance",
   title: "כספים",
-  icon: "💰",
+  icon: "finance",
   href: "/finance",
   hasAccess: (profile) => profile.approved && profile.can_view_money,
   getMetric: async (supabase) => {

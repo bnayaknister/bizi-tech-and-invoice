@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import LineIcon from "@/components/LineIcon";
 
 export type ShowRow = {
   id: string;
@@ -104,7 +105,10 @@ export default function ShowsClient({
   return (
     <div className="max-w-5xl mx-auto p-6">
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <h1 className="text-lg font-bold">📺 תוכניות</h1>
+        <h1 className="text-lg font-bold flex items-center gap-2">
+          <span className="text-[var(--violet-light)]"><LineIcon name="shows" size={19} /></span>
+          תוכניות
+        </h1>
         <span className="text-xs text-[var(--dim)]">
           {activeCount} פעילות · {oneoffCount} חד־פעמיות
         </span>

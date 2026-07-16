@@ -11,7 +11,7 @@ export default async function ArchivePage() {
   return (
     <ModulePlaceholder
       profile={profile}
-      icon="🗄️"
+      icon="archive"
       title="ארכיון"
       stepNote="מסך חיפוש בארכיון (owner בלבד, קריאה בלבד) ייבנה בהמשך — לא נדרש בסדר הביצוע המפורש."
     />
