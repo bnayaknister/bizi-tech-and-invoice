@@ -6,14 +6,44 @@ import { buildSyncPlan, type ExistingProductionRow } from "@/lib/calendar/sync";
 import type { ShowForMatch } from "@/lib/calendar/match";
 
 // Google Calendar sync (screens-spec §11, owner rules 2026-07-16):
-//   GET  — Vercel Cron trigger (daily 06:00). Authorizes via CRON_SECRET,
-//          always reads the real STUDIO_ICS_URL.
+//   GET  — Vercel Cron trigger. Authorizes via CRON_SECRET, always reads
+//          the real STUDIO_ICS_URL.
 //   POST — manual "sync now" button. Authorizes via the caller's own
 //          session (can_edit_stages). May pass `icsText` to test against a
 //          fake calendar instead of the real one — this is how the fake-ICS
 //          verification runs before the real URL is ever wired in.
 // Either path funnels into the same runSync() so cron and manual behave
 // identically; only auth and the event source differ.
+//
+// Vercel Cron is UTC-only, no timezone support — but the owner wants
+// exactly 06:00 Israel time year-round, across the DST transition.
+// vercel.json fires this route twice daily (03:00 UTC and 04:00 UTC); one
+// of the two lands on 06:00 Israel depending on the season, the other on
+// 05:00 or 07:00. isIsraelSixAM() below is the gate: only the trigger that
+// actually lands on local 06:00 proceeds. alreadySyncedToday() is a second,
+// independent guard against any retry/duplicate firing running it twice.
+
+const NIL_UUID = "00000000-0000-0000-0000-000000000000";
+
+function israelNow(now: Date): { hour: number; date: string } {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Jerusalem", hour: "2-digit", hour12: false }).format(now)
+  );
+  const date = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jerusalem" }).format(now); // yyyy-mm-dd
+  return { hour, date };
+}
+
+async function alreadySyncedToday(admin: ReturnType<typeof createAdminClient>, israelDate: string): Promise<boolean> {
+  const { data } = await admin
+    .from("events")
+    .select("payload")
+    .eq("entity_type", "calendar_cron")
+    .eq("entity_id", NIL_UUID)
+    .eq("event_type", "cron_sync_completed")
+    .order("created_at", { ascending: false })
+    .limit(1);
+  return (data ?? []).some((e) => (e.payload as { date?: string } | null)?.date === israelDate);
+}
 
 type ShowRow = {
   id: string;
@@ -149,19 +179,37 @@ async function runSync(events: CalendarEvent[]) {
   return { created, updated, flaggedChanged, flaggedRemoved, unflaggedRemoved, skippedNoMatch: plan.skippedNoMatch };
 }
 
-// Vercel Cron triggers with GET, daily 06:00 (vercel.json). Vercel injects
-// `Authorization: Bearer $CRON_SECRET` automatically when CRON_SECRET is set.
+// Vercel Cron triggers with GET, twice daily (03:00 + 04:00 UTC — see the
+// DST note above). Vercel injects `Authorization: Bearer $CRON_SECRET`
+// automatically when CRON_SECRET is set.
 export async function GET(request: Request) {
   const cronSecret = process.env.CRON_SECRET;
   const authHeader = request.headers.get("authorization");
   if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
     return NextResponse.json({ error: "לא מורשה" }, { status: 401 });
   }
+
+  const { hour, date } = israelNow(new Date());
+  if (hour !== 6) {
+    return NextResponse.json({ ok: true, skipped: "not-6am-israel", israelHour: hour });
+  }
+
+  const admin = createAdminClient();
+  if (await alreadySyncedToday(admin, date)) {
+    return NextResponse.json({ ok: true, skipped: "already-synced-today", israelDate: date });
+  }
+
   const url = process.env.STUDIO_ICS_URL;
   if (!url) return NextResponse.json({ error: "STUDIO_ICS_URL לא מוגדר" }, { status: 500 });
   try {
     const events = await fetchAndParseIcs(url);
     const summary = await runSync(events);
+    await admin.from("events").insert({
+      entity_type: "calendar_cron",
+      entity_id: NIL_UUID,
+      event_type: "cron_sync_completed",
+      payload: { date, ...summary },
+    });
     return NextResponse.json({ ok: true, ...summary });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "שגיאת סנכרון" }, { status: 500 });
