@@ -18,6 +18,7 @@ export type SyncPlan = {
   toFlagRemoved: string[]; // production ids whose calendar_uid vanished from the feed
   toUnflagRemoved: string[]; // previously flagged removed, event is back
   skippedNoMatch: number; // titles matching no alias — silently absent from the system
+  skippedTooOld: number; // matched an alias, but predates the sync window and was never tracked before
 };
 
 // Pure — no DB access, so the exact same code path runs against a real
@@ -27,11 +28,19 @@ export type SyncPlan = {
 // `touchedIds` is precomputed by the caller: any production with a
 // non-calendar-prefixed event already logged against it (drawer edit, kanban
 // move, hold, stage update) — "מה שהיומן יצר, היומן מעדכן, כל עוד לא נגעו בו".
+//
+// `cutoffDate`: the studio's real calendar turned out to hold years of
+// history (owner found this in a dry check, 2026-07-16) — the sync only
+// ever CREATES from events at/after the cutoff. A production that's
+// already tracked keeps getting updated/flagged regardless of its date,
+// since aging out of the window is not the same thing as being removed
+// from the calendar.
 export function buildSyncPlan(
   events: CalendarEvent[],
   shows: ShowForMatch[],
   existingByUid: Map<string, ExistingProductionRow>,
-  touchedIds: Set<string>
+  touchedIds: Set<string>,
+  cutoffDate: Date | null = null
 ): SyncPlan {
   const plan: SyncPlan = {
     toCreate: [],
@@ -40,6 +49,7 @@ export function buildSyncPlan(
     toFlagRemoved: [],
     toUnflagRemoved: [],
     skippedNoMatch: 0,
+    skippedTooOld: 0,
   };
   const seenUids = new Set<string>();
 
@@ -52,10 +62,17 @@ export function buildSyncPlan(
       plan.skippedNoMatch++;
       continue;
     }
-    seenUids.add(event.uid);
 
     const existing = existingByUid.get(event.uid);
-    if (!existing) {
+    const isNew = !existing;
+    const tooOld = !!(isNew && cutoffDate && event.start && event.start < cutoffDate);
+    if (tooOld) {
+      plan.skippedTooOld++;
+      continue;
+    }
+    seenUids.add(event.uid);
+
+    if (isNew) {
       plan.toCreate.push({ event, show: match.show });
       continue;
     }

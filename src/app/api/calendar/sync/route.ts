@@ -93,7 +93,14 @@ async function runSync(events: CalendarEvent[]) {
     );
   }
 
-  const plan = buildSyncPlan(events, showsForMatch, existingByUid, touchedIds);
+  // the studio's real calendar turned out to hold years of history (owner
+  // dry-check, 2026-07-16) — never CREATE from anything older than a small
+  // grace window; already-tracked productions are exempt (see sync.ts)
+  const cutoffDate = new Date();
+  cutoffDate.setUTCDate(cutoffDate.getUTCDate() - 2);
+  cutoffDate.setUTCHours(0, 0, 0, 0);
+
+  const plan = buildSyncPlan(events, showsForMatch, existingByUid, touchedIds, cutoffDate);
 
   let created = 0, updated = 0, flaggedChanged = 0, flaggedRemoved = 0, unflaggedRemoved = 0;
 
@@ -176,7 +183,15 @@ async function runSync(events: CalendarEvent[]) {
     unflaggedRemoved++;
   }
 
-  return { created, updated, flaggedChanged, flaggedRemoved, unflaggedRemoved, skippedNoMatch: plan.skippedNoMatch };
+  return {
+    created,
+    updated,
+    flaggedChanged,
+    flaggedRemoved,
+    unflaggedRemoved,
+    skippedNoMatch: plan.skippedNoMatch,
+    skippedTooOld: plan.skippedTooOld,
+  };
 }
 
 // Vercel Cron triggers with GET, twice daily (03:00 + 04:00 UTC — see the
