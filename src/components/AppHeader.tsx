@@ -24,6 +24,11 @@ export default function AppHeader({
       </Link>
       <GlobalSearch />
       <span className="flex-1" />
+      {profile.can_import && (
+        <Link href="/import" className="text-xs text-[var(--dim)] hover:text-[var(--violet-light)]">
+          ייבוא
+        </Link>
+      )}
       <span className="text-xs text-[var(--dim)]">{profile.name || profile.email}</span>
       <SignOutButton />
     </header>
