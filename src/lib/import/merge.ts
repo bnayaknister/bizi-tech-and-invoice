@@ -119,7 +119,18 @@ function dbValue(map: FieldMap, v: unknown): string | number | null {
   return String(v);
 }
 
-export type FieldChange = { field: string; label: string; from: unknown; to: unknown };
+export type FieldChange = {
+  field: string;
+  label: string;
+  from: unknown;
+  to: unknown;
+  // true when `from` (DB) is free text that fully contains `to` (CSV) as a
+  // substring plus more — the CSV is a partial/stale version of what the
+  // system already knows (e.g. a manual note enriched after seeding).
+  // Applying the update would DESTROY that extra information, so this is
+  // never bundled into a bulk "approve all" — the owner confirms it alone.
+  infoLoss?: boolean;
+};
 export type RowPlan = {
   externalId: string | null;
   title: string;
@@ -127,7 +138,19 @@ export type RowPlan = {
   matchedId: string | null; // DB id when update/unchanged
   changes: FieldChange[];
   values: Record<string, string | number | null>; // importable values (for apply)
+  hasInfoLoss: boolean;
 };
+
+// CSV is a strict, non-identical substring of what's already in the DB —
+// the field would lose information if this update were applied blindly.
+// Scoped to text fields; dates/numbers don't have meaningful "substring"
+// semantics for this kind of partial-data detection.
+function isInfoLoss(mapKind: FieldMap["kind"], from: unknown, to: unknown): boolean {
+  if (mapKind !== "text") return false;
+  if (typeof from !== "string" || typeof to !== "string") return false;
+  if (from.length === 0 || from === to) return false;
+  return from.includes(to);
+}
 
 export type ImportPlan = {
   kind: ImportKind;
@@ -182,12 +205,12 @@ export function buildPlan(
 
     // archive rule: if the id lives in archive, never touch — flag for decision
     if (externalId && archiveIds.has(externalId) && !match) {
-      plan.push({ externalId, title, bucket: "archive", matchedId: null, changes: [], values });
+      plan.push({ externalId, title, bucket: "archive", matchedId: null, changes: [], values, hasInfoLoss: false });
       continue;
     }
 
     if (!match) {
-      plan.push({ externalId, title, bucket: "new", matchedId: null, changes: [], values });
+      plan.push({ externalId, title, bucket: "new", matchedId: null, changes: [], values, hasInfoLoss: false });
       continue;
     }
 
@@ -196,7 +219,15 @@ export function buildPlan(
       const to = values[m.db];
       const from = dbValue(m, (match as Record<string, unknown>)[m.db]);
       const same = (from ?? null) === (to ?? null);
-      if (!same) changes.push({ field: m.db, label: m.csv, from: from ?? null, to: to ?? null });
+      if (!same) {
+        changes.push({
+          field: m.db,
+          label: m.csv,
+          from: from ?? null,
+          to: to ?? null,
+          infoLoss: isInfoLoss(m.kind, from ?? null, to ?? null),
+        });
+      }
     }
     plan.push({
       externalId: externalId ?? match.external_id,
@@ -205,6 +236,7 @@ export function buildPlan(
       matchedId: match.id,
       changes,
       values,
+      hasInfoLoss: changes.some((c) => c.infoLoss),
     });
   }
 

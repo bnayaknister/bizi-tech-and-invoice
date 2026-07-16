@@ -3,13 +3,14 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-type FieldChange = { field: string; label: string; from: unknown; to: unknown };
+type FieldChange = { field: string; label: string; from: unknown; to: unknown; infoLoss?: boolean };
 type RowPlan = {
   externalId: string | null;
   title: string;
   bucket: "new" | "update" | "unchanged" | "archive";
   matchedId: string | null;
   changes: FieldChange[];
+  hasInfoLoss: boolean;
 };
 type Preview = {
   kind: "production" | "job";
@@ -26,7 +27,7 @@ export default function ImportClient() {
   const [text, setText] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string>("");
   const [preview, setPreview] = useState<Preview | null>(null);
-  const [decisions, setDecisions] = useState<Record<string, "skip" | "restore" | "update">>({});
+  const [decisions, setDecisions] = useState<Record<string, "skip" | "restore" | "update" | "confirm_overwrite">>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -69,7 +70,7 @@ export default function ImportClient() {
     }
     const d = await res.json();
     const a = d.applied;
-    setDone(`יובאו: ${a.created} נוצרו · ${a.updated} עודכנו · ${a.unchanged} ללא שינוי · ${a.archiveSkipped} בארכיון דולגו${a.skipped ? ` · ${a.skipped} דולגו` : ""}`);
+    setDone(`יובאו: ${a.created} נוצרו · ${a.updated} עודכנו · ${a.unchanged} ללא שינוי · ${a.archiveSkipped} בארכיון דולגו${a.infoLossSkipped ? ` · ${a.infoLossSkipped} 🟠 דולגו (אובדן מידע, לא אושרו)` : ""}${a.skipped ? ` · ${a.skipped} דולגו` : ""}`);
     setPreview(null);
     setText(null);
     router.refresh();
@@ -77,7 +78,10 @@ export default function ImportClient() {
 
   const archiveRows = preview?.rows.filter((r) => r.bucket === "archive") ?? [];
   const newRows = preview?.rows.filter((r) => r.bucket === "new") ?? [];
-  const updateRows = preview?.rows.filter((r) => r.bucket === "update") ?? [];
+  const allUpdateRows = preview?.rows.filter((r) => r.bucket === "update") ?? [];
+  const flaggedRows = allUpdateRows.filter((r) => r.hasInfoLoss);
+  const cleanUpdateRows = allUpdateRows.filter((r) => !r.hasInfoLoss);
+  const unconfirmedFlagged = flaggedRows.filter((r) => decisions[r.externalId ?? ""] !== "confirm_overwrite");
 
   return (
     <div className="max-w-3xl mx-auto p-6">
@@ -104,9 +108,10 @@ export default function ImportClient() {
           </div>
 
           {/* bucket summary */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-5">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-5">
             <Bucket color="var(--green)" label="🟢 חדשות" n={preview.counts.new} sub="ייווצרו" />
-            <Bucket color="var(--amber)" label="🟡 מתעדכנות" n={preview.counts.update} sub="שדות שהשתנו" />
+            <Bucket color="var(--amber)" label="🟡 מתעדכנות" n={cleanUpdateRows.length} sub="שדות שהשתנו" />
+            <Bucket color="#F59E0B" label="🟠 אובדן מידע" n={flaggedRows.length} sub="דורש אישור פרטני" />
             <Bucket color="var(--faint)" label="⚪ ללא שינוי" n={preview.counts.unchanged} sub="לא ייגעו" />
             <Bucket color="var(--red)" label="🔴 בארכיון" n={preview.counts.archive} sub="דורש החלטה" />
           </div>
@@ -136,10 +141,52 @@ export default function ImportClient() {
             </Section>
           )}
 
+          {/* 🟠 flagged: CSV is a stale/partial version of an existing free-text
+              field — never bundled into bulk apply, owner confirms per row */}
+          {flaggedRows.length > 0 && (
+            <Section title={`🟠 אובדן מידע — דורש אישור פרטני (${flaggedRows.length})`}>
+              {flaggedRows.map((r) => {
+                const confirmed = decisions[r.externalId ?? ""] === "confirm_overwrite";
+                return (
+                  <div key={r.externalId ?? r.matchedId} className="px-3 py-2 text-xs border-b border-[var(--rule)] last:border-b-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-mono text-[var(--faint)]">{r.externalId}</span>
+                      <span className="font-bold">{r.title}</span>
+                    </div>
+                    <div className="flex flex-col gap-0.5 pr-4 mb-2">
+                      {r.changes.map((c) => (
+                        <div key={c.field} className="flex items-center gap-2 text-[var(--dim)]">
+                          <span className="text-[var(--faint)] w-24 shrink-0">{c.label}</span>
+                          <span className={c.infoLoss ? "text-[#F59E0B]" : "line-through text-[var(--faint)]"}>{val(c.from)}</span>
+                          <span>←</span>
+                          <span className="text-[var(--ink)]">{val(c.to)}</span>
+                          {c.infoLoss && <span className="text-[10px] text-[#F59E0B]">ה-CSV חסר מידע שקיים במערכת</span>}
+                        </div>
+                      ))}
+                    </div>
+                    <label className="flex items-center gap-1.5 text-[11px] text-[#F59E0B] cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={confirmed}
+                        onChange={(e) =>
+                          setDecisions((d) => ({
+                            ...d,
+                            [r.externalId ?? ""]: e.target.checked ? "confirm_overwrite" : "skip",
+                          }))
+                        }
+                      />
+                      אני מבין/ה שזה דורס מידע קיים — עדכן בכל זאת
+                    </label>
+                  </div>
+                );
+              })}
+            </Section>
+          )}
+
           {/* updates with field diffs */}
-          {updateRows.length > 0 && (
-            <Section title={`🟡 מתעדכנות (${updateRows.length})`}>
-              {updateRows.slice(0, 50).map((r) => (
+          {cleanUpdateRows.length > 0 && (
+            <Section title={`🟡 מתעדכנות (${cleanUpdateRows.length})`}>
+              {cleanUpdateRows.slice(0, 50).map((r) => (
                 <div key={r.externalId ?? r.matchedId} className="px-3 py-2 text-xs border-b border-[var(--rule)] last:border-b-0">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="font-mono text-[var(--faint)]">{r.externalId}</span>
@@ -157,7 +204,7 @@ export default function ImportClient() {
                   </div>
                 </div>
               ))}
-              {updateRows.length > 50 && <div className="px-3 py-2 text-[11px] text-[var(--faint)]">ועוד {updateRows.length - 50}…</div>}
+              {cleanUpdateRows.length > 50 && <div className="px-3 py-2 text-[11px] text-[var(--faint)]">ועוד {cleanUpdateRows.length - 50}…</div>}
             </Section>
           )}
 
@@ -174,10 +221,21 @@ export default function ImportClient() {
             </Section>
           )}
 
-          <div className="flex gap-2 mt-6">
+          {unconfirmedFlagged.length > 0 && (
+            <p className="text-[11px] text-[#F59E0B] mb-2">
+              {unconfirmedFlagged.length} שורות 🟠 לא יעודכנו — לא אושרו פרטנית.
+            </p>
+          )}
+          <div className="flex gap-2 mt-2">
             <button
               onClick={apply}
-              disabled={busy || (preview.counts.new === 0 && preview.counts.update === 0 && archiveRows.every((r) => (decisions[r.externalId ?? ""] ?? "skip") === "skip"))}
+              disabled={
+                busy ||
+                (preview.counts.new === 0 &&
+                  cleanUpdateRows.length === 0 &&
+                  flaggedRows.every((r) => decisions[r.externalId ?? ""] !== "confirm_overwrite") &&
+                  archiveRows.every((r) => (decisions[r.externalId ?? ""] ?? "skip") === "skip"))
+              }
               className="bg-[var(--violet)] text-white font-bold rounded-lg px-5 py-2 text-sm disabled:opacity-40"
             >
               אשר וייבא

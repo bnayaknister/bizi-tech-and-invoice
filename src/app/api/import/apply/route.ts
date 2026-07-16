@@ -4,7 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { parseCsv, detectKind, buildPlan, norm, type ImportKind } from "@/lib/import/merge";
 import { loadDbRows, archiveIdSet, nextExternalId } from "@/lib/import/server";
 
-type Decision = "skip" | "restore" | "update";
+type Decision = "skip" | "restore" | "update" | "confirm_overwrite";
 
 export async function POST(request: Request) {
   const supabase = createClient();
@@ -32,7 +32,7 @@ export async function POST(request: Request) {
   const genId = nextExternalId(kind, dbRows.map((d) => d.external_id));
   let genCounter = 1;
 
-  const applied = { created: 0, updated: 0, unchanged: 0, archiveSkipped: 0, skipped: 0 };
+  const applied = { created: 0, updated: 0, unchanged: 0, archiveSkipped: 0, skipped: 0, infoLossSkipped: 0 };
   const table = kind === "production" ? "productions" : "jobs";
 
   // plan.rows is in the same order as the parsed CSV rows (buildPlan iterates
@@ -52,6 +52,13 @@ export async function POST(request: Request) {
     }
 
     if (row.bucket === "update" && row.matchedId) {
+      // 🟠 CSV is a stale/partial version of a free-text field the system
+      // already knows more about — never bundled into bulk apply; the owner
+      // must opt in per row (decisions[externalId] === "confirm_overwrite").
+      if (row.hasInfoLoss && decisions[row.externalId ?? ""] !== "confirm_overwrite") {
+        applied.infoLossSkipped++;
+        continue;
+      }
       const patch: Record<string, unknown> = {};
       for (const c of row.changes) patch[c.field] = c.to;
       if (Object.keys(patch).length === 0) { applied.unchanged++; continue; }
