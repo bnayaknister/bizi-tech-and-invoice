@@ -17,6 +17,9 @@ const toneColor: Record<ModuleMetric["tone"], string> = {
 // commitment gets cyan, radar=alerts gets rose.
 type CardAccent = "violet" | "cyan" | "rose" | "debt" | "muted";
 
+// glow orb + hover-shadow opacities softened ~35% from the first hi-fi pass
+// (owner note: "indirect luxury lighting, not a neon tube"). The gradient
+// fills and borders — the semantic hue itself — are untouched.
 const CARD_ACCENTS: Record<
   Exclude<CardAccent, "muted">,
   { gradient: string; border: string; glow: string; hoverBorder: string; hoverShadow: string }
@@ -24,32 +27,44 @@ const CARD_ACCENTS: Record<
   violet: {
     gradient: "linear-gradient(135deg, rgba(139,92,246,0.20), rgba(30,20,55,0.42))",
     border: "rgba(192,132,252,0.30)",
-    glow: "rgba(192,132,252,0.42)",
+    glow: "rgba(192,132,252,0.26)",
     hoverBorder: "var(--violet-light)",
-    hoverShadow: "rgba(139,92,246,0.45)",
+    hoverShadow: "rgba(139,92,246,0.29)",
   },
   cyan: {
     gradient: "linear-gradient(135deg, rgba(56,189,248,0.18), rgba(18,28,48,0.42))",
     border: "rgba(56,189,248,0.30)",
-    glow: "rgba(56,189,248,0.40)",
+    glow: "rgba(56,189,248,0.25)",
     hoverBorder: "var(--cyan)",
-    hoverShadow: "rgba(56,189,248,0.42)",
+    hoverShadow: "rgba(56,189,248,0.27)",
   },
   rose: {
     gradient: "linear-gradient(135deg, rgba(251,113,133,0.20), rgba(45,18,32,0.42))",
     border: "rgba(251,113,133,0.32)",
-    glow: "rgba(251,113,133,0.42)",
+    glow: "rgba(251,113,133,0.26)",
     hoverBorder: "var(--red)",
-    hoverShadow: "rgba(251,113,133,0.45)",
+    hoverShadow: "rgba(251,113,133,0.29)",
   },
   // debt: violet→rose, the two-color blend that visually reads "money at risk"
   debt: {
     gradient: "linear-gradient(135deg, rgba(251,113,133,0.20), rgba(139,92,246,0.15), rgba(30,20,55,0.42))",
     border: "rgba(251,113,133,0.32)",
-    glow: "rgba(251,113,133,0.42)",
+    glow: "rgba(251,113,133,0.26)",
     hoverBorder: "var(--red)",
-    hoverShadow: "rgba(251,113,133,0.45)",
+    hoverShadow: "rgba(251,113,133,0.29)",
   },
+};
+
+// a 0 / inactive module is RESTING, not dead (owner note): same glass, a
+// very-low-saturation violet tint, a faint violet border, and a small dim
+// orb — alive frame, calm contents. It brightens on hover and, once its
+// value is > 0, switches to the full accent above.
+const RESTING = {
+  gradient: "linear-gradient(135deg, rgba(139,92,246,0.075), rgba(30,20,55,0.30))",
+  border: "rgba(139,92,246,0.16)",
+  glow: "rgba(139,92,246,0.12)",
+  hoverBorder: "rgba(139,92,246,0.4)",
+  hoverShadow: "rgba(139,92,246,0.16)",
 };
 
 // per-module theme: the card's semantic hue + the icon tile's hue (icon
@@ -82,32 +97,37 @@ export default function ModuleCard({
 }) {
   const theme = MODULE_THEME[moduleKey] ?? { card: "violet" as CardAccent, tile: "violet" as IconAccent };
   const isEmpty = metric.value === "0";
-  // a 0 / inactive module stays flat and gray (DESIGN.md §4) — no colored
-  // gradient, no glow orb; archive is always muted for the same reason
-  const showAccent = !isEmpty && theme.card !== "muted";
-  const accent = showAccent ? CARD_ACCENTS[theme.card as Exclude<CardAccent, "muted">] : null;
+  const hasAccent = !isEmpty && theme.card !== "muted";
+  const accent = hasAccent ? CARD_ACCENTS[theme.card as Exclude<CardAccent, "muted">] : null;
+
+  // empty -> resting violet frame; accented -> full semantic hue; archive
+  // (muted, non-empty) -> plain secondary glass, no orb
+  const surface = accent ?? (isEmpty ? RESTING : null);
 
   const style: CSSProperties = { animationDelay: `${index * 60}ms` };
-  if (accent) {
+  if (surface) {
     Object.assign(style, {
-      background: accent.gradient,
-      borderColor: accent.border,
-      ["--card-accent"]: accent.hoverBorder,
-      ["--card-glow-shadow"]: accent.hoverShadow,
+      background: surface.gradient,
+      borderColor: surface.border,
+      ["--card-accent"]: surface.hoverBorder,
+      ["--card-glow-shadow"]: surface.hoverShadow,
     } as CSSProperties);
   }
+
+  // resting orb is smaller + dimmer than a live one
+  const orbStyle: CSSProperties | null = surface
+    ? ({ ["--glow-color"]: surface.glow, ...(isEmpty ? { width: 84, height: 84 } : {}) } as CSSProperties)
+    : null;
 
   return (
     <Link
       href={href}
       // stagger entrance + float-up hover signature (DESIGN.md §5)
-      className={`stagger float-card float-card-secondary group flex flex-col gap-3 ${
-        isEmpty ? "glass-card-dim" : "glass-card-secondary"
-      }`}
+      className="stagger float-card float-card-secondary glass-card-secondary group flex flex-col gap-3"
       style={style}
     >
       {/* corner glow orb — the mood-app signature, under the content */}
-      {accent && <span className="corner-glow" style={{ ["--glow-color"]: accent.glow } as CSSProperties} />}
+      {orbStyle && <span className="corner-glow" style={orbStyle} />}
 
       <div className="glass-content flex flex-col gap-3">
         <div className="flex items-center gap-2.5">
@@ -115,8 +135,12 @@ export default function ModuleCard({
           <span className="float-label font-bold text-sm">{title}</span>
         </div>
         <div>
-          {/* calibrated number with a restrained violet halo (DESIGN.md §2) */}
-          <div className="num-glow text-3xl font-medium font-mono" style={{ color: toneColor[metric.tone] }}>
+          {/* calibrated number with a restrained violet halo (DESIGN.md §2);
+              a resting 0 keeps a dim number even though its frame is alive */}
+          <div
+            className="num-glow text-3xl font-medium font-mono"
+            style={{ color: isEmpty ? "var(--faint)" : toneColor[metric.tone] }}
+          >
             {metric.value}
           </div>
           <div className="text-xs text-[var(--faint)] mt-1">{metric.label}</div>
