@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useDrawer } from "@/components/EntityDrawer";
+import LineIcon from "@/components/LineIcon";
 
 type Results = {
   clients: { id: string; name: string }[];
@@ -48,6 +49,9 @@ export default function GlobalSearch() {
 
   return (
     <div ref={boxRef} className="relative w-full max-w-md">
+      <span className="absolute inset-y-0 right-3 flex items-center text-[var(--faint)] pointer-events-none">
+        <LineIcon name="search" size={16} />
+      </span>
       <input
         type="text"
         value={q}
@@ -57,10 +61,14 @@ export default function GlobalSearch() {
         }}
         onFocus={() => setOpen(true)}
         placeholder="חיפוש גלובלי — לקוח, חיוב, פודקאסט…"
-        className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded px-3 py-2 text-sm"
+        className="w-full rounded-xl pr-9 pl-3 py-2 text-sm text-[var(--ink)] placeholder:text-[var(--faint)] border border-[var(--rule)] focus:border-[var(--violet-light)] outline-none transition-colors"
+        style={{ background: "rgba(255,255,255,0.05)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
       />
       {open && q.trim().length >= 2 && (
-        <div className="absolute z-20 mt-1 w-full bg-[var(--panel2)] border border-[var(--rule2)] rounded shadow-lg max-h-80 overflow-y-auto">
+        <div
+          className="absolute z-20 mt-2 w-full border border-[var(--rule2)] rounded-xl shadow-2xl max-h-80 overflow-y-auto"
+          style={{ background: "rgba(15,13,28,0.85)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)" }}
+        >
           {!hasResults && <div className="p-3 text-xs text-[var(--faint)]">אין תוצאות</div>}
           {results.clients.length > 0 && (
             <div className="p-2">

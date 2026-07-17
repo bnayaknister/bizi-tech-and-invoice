@@ -62,9 +62,9 @@ body {
   /* fixed atmosphere gradient (DESIGN.md §3) — the depth signature, present
      on every screen */
   background:
-    radial-gradient(ellipse 60% 50% at 80% 0%, rgba(139, 92, 246, 0.28), transparent 60%),
-    radial-gradient(ellipse 50% 40% at 8% 100%, rgba(56, 189, 248, 0.22), transparent 55%),
-    radial-gradient(ellipse 40% 35% at 50% 55%, rgba(236, 72, 153, 0.08), transparent 55%),
+    radial-gradient(ellipse 60% 50% at 80% 0%, rgba(139, 92, 246, 0.38), transparent 60%),
+    radial-gradient(ellipse 50% 40% at 8% 100%, rgba(56, 189, 248, 0.30), transparent 55%),
+    radial-gradient(ellipse 40% 35% at 50% 55%, rgba(236, 72, 153, 0.10), transparent 55%),
     var(--panel);
   background-attachment: fixed;
 }
