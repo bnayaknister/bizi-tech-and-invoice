@@ -15,11 +15,14 @@ export default function AppHeader({
   animatedLogo?: boolean;
 }) {
   return (
-    <header className="flex items-center gap-4 flex-wrap px-5 py-3 border-b border-[var(--rule)] bg-[var(--panel2)]">
+    <header
+      className="flex items-center gap-4 flex-wrap px-5 py-3 border-b border-[var(--rule)]"
+      style={{ background: "rgba(15, 13, 28, 0.6)", backdropFilter: "blur(16px)" }}
+    >
       <Link href="/" className="flex items-center gap-2 shrink-0">
         <SoundWaveLogo size={22} animated={animatedLogo} />
-        <span className="font-bold text-sm tracking-tight">
-          ביזי <span className="grad-text">סטודיו</span>
+        <span className="font-mono font-bold text-sm" dir="ltr">
+          <span className="grad-text">BiziPodclub</span> <span className="text-[var(--faint)] font-normal">Manage</span>
         </span>
       </Link>
       <GlobalSearch />

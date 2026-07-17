@@ -24,7 +24,7 @@ export default function SoundWaveLogo({
       viewBox="0 0 24 24"
       fill="none"
       aria-hidden="true"
-      style={{ filter: "drop-shadow(0 0 5px rgba(124, 92, 255, 0.55))" }}
+      style={{ filter: "drop-shadow(0 0 5px rgba(139, 92, 246, 0.55))" }}
     >
       <g className={animated ? "vu-live" : undefined}>
         {BARS.map((b) => (
