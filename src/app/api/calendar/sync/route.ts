@@ -339,6 +339,18 @@ export async function POST(request: Request) {
       events = allEvents.filter((e) => e.start && e.start >= start && e.start < end);
     }
     const summary = await runSync(events, date);
+    // a real (non-test) manual run — logged separately from cron_sync_completed
+    // (which alreadySyncedToday() keys off) so the settings screen can show
+    // "last sync run" across both trigger sources without touching that gate
+    if (!testIcsText) {
+      await admin.from("events").insert({
+        entity_type: "calendar_cron",
+        entity_id: NIL_UUID,
+        event_type: "manual_sync_completed",
+        actor_id: user.id,
+        payload: { date, ...summary },
+      });
+    }
     return NextResponse.json({ ok: true, ...summary });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "שגיאת סנכרון" }, { status: 500 });
