@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Heebo, Roboto_Mono } from "next/font/google";
+import { Heebo, Space_Grotesk } from "next/font/google";
 import { DrawerProvider } from "@/components/EntityDrawer";
 import "./globals.css";
 
@@ -9,16 +9,17 @@ const heebo = Heebo({
   weight: ["300", "400", "500", "700", "900"],
 });
 
-// Numbers are the instrument (DESIGN.md §3): money, days, counts render in
-// Roboto Mono, tabular, calibrated.
-const robotoMono = Roboto_Mono({
+// Numbers + Latin headings are the instrument (DESIGN.md §1): every number
+// (money, days, counts, dates) and the logo wordmark render in Space
+// Grotesk, geometric, tabular, calibrated, always LTR.
+const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
-  variable: "--font-mono",
-  weight: ["400", "500", "700"],
+  variable: "--font-geo",
+  weight: ["400", "500", "600", "700"],
 });
 
 export const metadata: Metadata = {
-  title: "BIZI STUDIO · PODCLUB",
+  title: "BiziPodclub Manage",
   description: "מערכת ענן לניהול בית הפודקאסטים",
 };
 
@@ -29,7 +30,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="he" dir="rtl">
-      <body className={`${heebo.variable} ${robotoMono.variable} antialiased`}>
+      <body className={`${heebo.variable} ${spaceGrotesk.variable} antialiased`}>
         <DrawerProvider>{children}</DrawerProvider>
       </body>
     </html>

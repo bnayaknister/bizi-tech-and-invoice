@@ -2,34 +2,54 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Design tokens — see DESIGN.md. "Music player that manages money":
-   near-black navy, electric violet accent, restrained glow. */
+/* Design tokens — see DESIGN.md v3. "Music player that manages money":
+   glassmorphism, electric gradients, corner glow orbs, geometric sharpness.
+   Names are kept stable across the v2 -> v3 redesign so every existing
+   className in the app re-themes automatically; only new surfaces (glass
+   cards, icon tiles, corner glow) need new utility classes below. */
 :root {
-  /* navy near-black surfaces */
-  --panel: #0A0E1A;   /* bg-0, page background */
-  --panel2: #141929;  /* panels, cards, header */
-  --panel3: #1E2740;  /* raised surface / hover */
-  --rule: #262F49;    /* hairline */
-  --rule2: #38426A;   /* stronger border / active frame */
-  --ink: #F0F2FF;     /* primary text */
-  --dim: #A9B0D0;     /* secondary text */
-  --faint: #6B7394;   /* tertiary text, labels */
+  /* deep near-black surfaces (DESIGN.md §2) */
+  --panel: #080611;   /* bg-base, page background */
+  --panel2: #0F0D1C;  /* bg-panel, large panels */
+  --panel3: #16132A;  /* bg-elevated, raised cards */
+  --rule: rgba(255, 255, 255, 0.1);   /* glass hairline */
+  --rule2: rgba(255, 255, 255, 0.18); /* stronger / active glass border */
+  --ink: #FFFFFF;      /* primary text */
+  --dim: #B4B9D0;      /* secondary text (ink-soft) */
+  --faint: #8B8FA8;    /* tertiary text, labels (ink-dim) */
+
+  /* spec-named aliases — same values, exact DESIGN.md token names for new code */
+  --bg-base: var(--panel);
+  --bg-panel: var(--panel2);
+  --bg-elevated: var(--panel3);
+  --ink-soft: var(--dim);
+  --ink-dim: var(--faint);
+  --ink-faint: #64748B;
 
   /* electric accents */
-  --violet: #7C5CFF;        /* primary accent */
-  --violet-light: #A78BFA;  /* hover / secondary highlight */
-  --cyan: #38BDF8;          /* info / open commitment */
-  --red: #FF5A6E;           /* critical (neon) */
+  --violet: #8B5CF6;        /* primary accent */
+  --violet-light: #C084FC;  /* violet-lt: hover / secondary highlight / glow */
+  --violet-dk: #6D28D9;     /* gradient dark stop */
+  --cyan: #38BDF8;          /* info / open commitment (never debt) */
+  --cyan-dk: #0284C7;
+  --red: #FB7185;           /* rose: critical, overdue debt */
+  --red-dk: #E11D48;
   --green: #4ADE80;         /* VU ok / saved */
   --amber: #FCD34D;         /* VU warn */
 
   /* back-compat aliases mapped onto existing class usages */
+  --violet-lt: var(--violet-light);
+  --rose: var(--red);
+  --rose-dk: var(--red-dk);
+  --vu-green: var(--green);
+  --vu-amber: var(--amber);
+  --vu-red: var(--red);
   --signal: var(--violet);
   --warn: var(--amber);
   --peak: var(--red);
   --red-core: var(--red);
   --cue: var(--cyan);
-  --on-accent: #F0F2FF;     /* text on a filled violet control */
+  --on-accent: #FFFFFF;     /* text on a filled violet control */
 }
 
 html, body {
@@ -39,10 +59,12 @@ html, body {
 body {
   color: var(--ink);
   font-family: var(--font-heebo), system-ui, sans-serif;
-  /* subtle fixed gradient: violet glow top, cyan glow bottom (DESIGN §3.2) */
+  /* fixed atmosphere gradient (DESIGN.md §3) — the depth signature, present
+     on every screen */
   background:
-    radial-gradient(1100px 620px at 82% -8%, rgba(124, 92, 255, 0.16), transparent 60%),
-    radial-gradient(1000px 600px at 12% 112%, rgba(56, 189, 248, 0.10), transparent 62%),
+    radial-gradient(ellipse 60% 50% at 80% 0%, rgba(139, 92, 246, 0.28), transparent 60%),
+    radial-gradient(ellipse 50% 40% at 8% 100%, rgba(56, 189, 248, 0.22), transparent 55%),
+    radial-gradient(ellipse 40% 35% at 50% 55%, rgba(236, 72, 153, 0.08), transparent 55%),
     var(--panel);
   background-attachment: fixed;
 }
@@ -52,10 +74,15 @@ h1, h2, h3 {
   letter-spacing: -0.01em;
 }
 
-/* Numbers are the instrument. Roboto Mono, tabular, calibrated. */
+/* Numbers are the instrument (DESIGN.md §1): Space Grotesk, tabular,
+   calibrated, always LTR. Same utility name as before the v3 redesign —
+   every existing numeric span re-fonts automatically. */
 .font-mono {
+  font-family: var(--font-geo), sans-serif;
   font-variant-numeric: tabular-nums;
-  letter-spacing: 0;
+  letter-spacing: -0.02em;
+  direction: ltr;
+  unicode-bidi: isolate;
 }
 
 @layer utilities {
@@ -65,10 +92,10 @@ h1, h2, h3 {
 
   /* restrained violet halo on money figures — a whisper, not a spotlight */
   .num-glow {
-    text-shadow: 0 0 14px rgba(124, 92, 255, 0.35);
+    text-shadow: 0 0 14px rgba(139, 92, 246, 0.35);
   }
 
-  /* violet→cyan gradient wordmark */
+  /* violet→cyan gradient wordmark (logo "BiziPodclub", DESIGN.md §6) */
   .grad-text {
     background: linear-gradient(90deg, var(--violet-light), var(--cyan));
     -webkit-background-clip: text;
@@ -76,17 +103,109 @@ h1, h2, h3 {
     color: transparent;
   }
 
-  /* cards / rows light up on hover */
+  /* plain (non-glass) hover lift — still used by rows/links that aren't
+     full glass cards */
   .lift {
     transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
   }
   .lift:hover {
     border-color: var(--rule2);
-    box-shadow: 0 0 0 1px rgba(124, 92, 255, 0.10), 0 12px 30px -18px rgba(124, 92, 255, 0.5);
+    box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.14), 0 12px 30px -18px rgba(139, 92, 246, 0.55);
   }
 }
 
-/* ---- motion (DESIGN §6) ---- */
+/* ---- glassmorphism cards (DESIGN.md §4) ---- */
+
+/* primary glass card — big numbers, radar */
+.glass-card {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.22), rgba(30, 20, 55, 0.4));
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(192, 132, 252, 0.3);
+  border-radius: 22px;
+  padding: 22px 24px;
+  box-shadow: 0 8px 32px rgba(139, 92, 246, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  position: relative;
+  overflow: hidden;
+}
+
+/* secondary glass card — module tiles, small cards */
+.glass-card-secondary {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 18px;
+  padding: 16px 18px;
+  position: relative;
+  overflow: hidden;
+}
+
+/* a card with nothing in it / an inactive module — flat, no accent */
+.glass-card-dim {
+  opacity: 0.5;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* corner glow orb — the mood-app signature inside every primary glass
+   card. Set --glow-color per instance to match the card's accent. */
+.corner-glow {
+  position: absolute;
+  inset-inline-start: -30px;
+  top: -30px;
+  width: 120px;
+  height: 120px;
+  background: radial-gradient(circle, var(--glow-color, rgba(192, 132, 252, 0.4)), transparent 70%);
+  border-radius: 50%;
+  filter: blur(20px);
+  pointer-events: none;
+  z-index: 0;
+}
+.glass-content {
+  position: relative;
+  z-index: 1;
+}
+
+/* icon tile — geometric gradient-boxed icon (DESIGN.md §7) */
+.icon-tile {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, var(--tile-a, var(--violet)), var(--tile-b, var(--violet-dk)));
+  box-shadow: 0 4px 14px var(--tile-shadow, rgba(139, 92, 246, 0.45));
+  color: #fff;
+}
+.icon-tile.icon-tile-muted {
+  background: linear-gradient(135deg, #4B5563, #374151);
+  box-shadow: none;
+}
+
+/* ---- float-up on hover (DESIGN.md §5) — the signature motion: the card
+   lifts, and its label lifts a bit further on top of that ---- */
+.float-card {
+  transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s, border-color 0.3s;
+}
+.float-card .float-label {
+  transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s;
+}
+.float-card:hover {
+  transform: translateY(-4px);
+}
+.float-card:hover .float-label {
+  transform: translateY(-3px);
+}
+/* secondary (module) cards float a touch further and pick up the accent */
+.float-card-secondary:hover {
+  transform: translateY(-5px);
+  border-color: var(--card-accent, var(--violet-light));
+  box-shadow: 0 14px 32px -10px var(--card-glow-shadow, rgba(139, 92, 246, 0.4));
+}
+
+/* ---- motion (DESIGN §5) ---- */
 
 /* staggered card entrance on load */
 @keyframes rise {
@@ -108,8 +227,8 @@ h1, h2, h3 {
 
 /* slow pulse for a critical VU channel (radar, step 4) */
 @keyframes pulse-crit {
-  0%, 100% { opacity: 0.72; filter: drop-shadow(0 0 2px rgba(255, 90, 110, 0.5)); }
-  50%      { opacity: 1;    filter: drop-shadow(0 0 9px rgba(255, 90, 110, 0.85)); }
+  0%, 100% { opacity: 0.72; filter: drop-shadow(0 0 2px rgba(251, 113, 133, 0.5)); }
+  50%      { opacity: 1;    filter: drop-shadow(0 0 9px rgba(251, 113, 133, 0.85)); }
 }
 .pulse-crit { animation: pulse-crit 1.9s ease-in-out infinite; }
 
@@ -117,4 +236,9 @@ h1, h2, h3 {
   .stagger { opacity: 1; animation: none; }
   .vu-live .vu-bar,
   .pulse-crit { animation: none; }
+  .float-card,
+  .float-card .float-label,
+  .float-card-secondary {
+    transition: none;
+  }
 }
