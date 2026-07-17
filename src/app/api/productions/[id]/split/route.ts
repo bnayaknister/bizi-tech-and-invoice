@@ -148,10 +148,14 @@ export async function DELETE(_request: Request, { params }: { params: { id: stri
       .in("id", siblingIds);
     if (mergeErr) return NextResponse.json({ error: mergeErr.message }, { status: 400 });
   }
-  const { error: resetErr } = await supabase
-    .from("productions")
-    .update({ split_index: null, split_count: null })
-    .eq("id", original.id);
+  // a synthetic uid (generated only because this production had none of its
+  // own when split) has no reason to linger once the family is back down to
+  // one row — clearing it keeps a since-undone split from ever looking like
+  // a calendar duplicate later. A real, calendar-derived uid is left alone.
+  const resetPatch: Record<string, unknown> = { split_index: null, split_count: null };
+  if (row.calendar_uid.startsWith("manual-split-")) resetPatch.calendar_uid = null;
+
+  const { error: resetErr } = await supabase.from("productions").update(resetPatch).eq("id", original.id);
   if (resetErr) return NextResponse.json({ error: resetErr.message }, { status: 400 });
 
   const admin = createAdminClient();

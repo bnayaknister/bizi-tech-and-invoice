@@ -16,6 +16,12 @@ Acceptance test for the multi-episode session feature (migration 0019):
     DELETE the same route (undo) -> expect the 2 created siblings soft-
     hidden (merged_into) and the original's split_index/split_count reset.
 
+  Scenario C — merge a calendar duplicate away, then undo:
+    another two calendar events, same show/day -> POST duplicate-group
+    {action:"merge"} -> expect the newer row soft-hidden (merged_into =
+    survivor) -> DELETE duplicate-group on the merged-away id (undo) ->
+    expect merged_into reset to null.
+
 Runs against the real dev server (so the actual route code — guest
 extraction, sibling-uid expansion, RLS, the 0019 guard trigger — is what's
 being exercised, not a reimplementation of it) plus a throwaway show and a
@@ -213,6 +219,65 @@ END:VCALENDAR
           str(after_undo))
     check("B9. the 2 created siblings are soft-hidden (merged_into = original)",
           all(after_undo[cid]["merged_into"] == original_id for cid in created_ids), str(after_undo))
+
+    # ---- Scenario C: merge a calendar duplicate away, then undo the merge ----
+    uid3, uid4 = f"ztest-{uuid.uuid4().hex}@bizi", f"ztest-{uuid.uuid4().hex}@bizi"
+    ics_c = f"""BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:{uid3}
+DTSTART;TZID=Asia/Jerusalem:{today}T110000
+DTEND;TZID=Asia/Jerusalem:{today}T120000
+SUMMARY:ZTEST_SFI מרים
+END:VEVENT
+BEGIN:VEVENT
+UID:{uid4}
+DTSTART;TZID=Asia/Jerusalem:{today}T160000
+DTEND;TZID=Asia/Jerusalem:{today}T170000
+SUMMARY:ZTEST_SFI רועי
+END:VEVENT
+END:VCALENDAR
+"""
+    r = requests.post(f"{APP_URL}/api/calendar/sync", cookies=cookies, headers={"Content-Type": "application/json"},
+                       json={"icsText": ics_c})
+    ok = r.status_code == 200
+    body = r.json() if ok else {"error": r.text}
+    check("C1. second fake-ICS sync accepted", ok, str(body))
+    check("C2. sync created exactly 2 more productions", body.get("created") == 2, str(body))
+
+    r = requests.get(rest("productions"), headers=ADMIN,
+                      params={"select": "id,guest,created_at", "show_id": f"eq.{show_id}",
+                              "guest": "in.(מרים,רועי)"})
+    pair = r.json()
+    production_ids.extend(row["id"] for row in pair)
+    check("C3. two distinct rows for the merge pair", len(pair) == 2, str(pair))
+
+    if len(pair) == 2:
+        r = requests.post(f"{APP_URL}/api/productions/{pair[0]['id']}/duplicate-group", cookies=cookies,
+                           headers={"Content-Type": "application/json"}, json={"action": "merge"})
+        ok = r.status_code == 200
+        merge_body = r.json() if ok else {"error": r.text}
+        check("C4. technician 'merge to 1' accepted", ok, str(merge_body))
+        survivor_id = merge_body.get("survivor")
+        removed = merge_body.get("removed", [])
+        check("C5. exactly one row removed, one survivor", len(removed) == 1 and survivor_id, str(merge_body))
+
+        r = requests.get(rest("productions"), headers=ADMIN,
+                          params={"select": "id,merged_into", "id": f"in.({','.join(p['id'] for p in pair)})"})
+        after_merge = {row["id"]: row for row in r.json()}
+        check("C6. merged-away row points at the survivor",
+              removed and after_merge.get(removed[0], {}).get("merged_into") == survivor_id, str(after_merge))
+        check("C7. survivor itself is not merged away",
+              survivor_id and after_merge.get(survivor_id, {}).get("merged_into") is None, str(after_merge))
+
+        if removed:
+            r = requests.delete(f"{APP_URL}/api/productions/{removed[0]}/duplicate-group", cookies=cookies)
+            check("C8. undo merge accepted (no work started yet)", r.status_code == 200, r.text)
+            r = requests.get(rest("productions"), headers=ADMIN,
+                              params={"select": "id,merged_into", "id": f"eq.{removed[0]}"})
+            restored = r.json()
+            check("C9. merged_into reset to null after undo",
+                  bool(restored) and restored[0]["merged_into"] is None, str(restored))
 
 finally:
     if production_ids:

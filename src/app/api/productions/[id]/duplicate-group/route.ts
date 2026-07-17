@@ -36,11 +36,15 @@ async function findDupGroup(
     .maybeSingle();
   if (!origin?.show_id || !origin.record_date) return null;
 
+  // calendar_dup_ack=false scopes this to still-unresolved rows only — an
+  // earlier confirmed/settled group for the same show+day (calendar_dup_ack
+  // already true) must never get swept into a *new* confirm/merge action
   const { data: group } = await supabase
     .from("productions")
     .select("id,calendar_uid,created_at")
     .eq("show_id", origin.show_id)
     .eq("record_date", origin.record_date)
+    .eq("calendar_dup_ack", false)
     .is("merged_into", null)
     .not("calendar_uid", "is", null);
   const rows = group ?? [];
