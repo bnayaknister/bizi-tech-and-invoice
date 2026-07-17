@@ -40,3 +40,21 @@ export function matchTitleToShow(title: string, shows: ShowForMatch[]): MatchRes
   }
   return best;
 }
+
+// Multi-episode session support (owner request 2026-07-17): when the
+// calendar title carries a guest name after the alias ("SFI יוסי"), pull
+// it out so two same-day recordings of the same show read differently on
+// the card. Matches on the alias's own raw text against the raw title —
+// simpler and more reliable than mapping an index back from the
+// normalized copy, since the normalization step never reorders characters.
+export function extractGuestFromTitle(title: string, alias: string): string | null {
+  const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(escaped, "i");
+  const m = re.exec(title);
+  if (!m) return null;
+  const rest = title
+    .slice(m.index + m[0].length)
+    .replace(/^[\s\-–:,]+/, "")
+    .trim();
+  return rest.length > 0 ? rest : null;
+}

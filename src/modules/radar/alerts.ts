@@ -86,9 +86,14 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
       supabase, "contract_milestones", "id,amount,status,expected_date,is_estimated"
     ),
     fetchAll<{ id: string; date_is_estimated: boolean }>(supabase, "invoices", "id,date_is_estimated"),
-    fetchAll<{ id: string; kind: string; show_id: string | null; on_hold: boolean; on_hold_since: string | null }>(
-      supabase, "productions", "id,kind,show_id,on_hold,on_hold_since"
-    ),
+    fetchAll<{
+      id: string;
+      kind: string;
+      show_id: string | null;
+      on_hold: boolean;
+      on_hold_since: string | null;
+      merged_into: string | null;
+    }>(supabase, "productions", "id,kind,show_id,on_hold,on_hold_since,merged_into"),
     fetchAll<{ production_id: string; status: string }>(supabase, "stages", "production_id,status"),
     fetchAll<{ production_id: string }>(supabase, "job_productions", "production_id"),
     fetchAll<{ id: string; billing_mode: string }>(supabase, "shows", "id,billing_mode"),
@@ -144,6 +149,10 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     stagesByProd.set(st.production_id, arr);
   }
   const producedNotBilled = productions.filter((p) => {
+    // merged-away (calendar duplicate merged, or split undone) is soft-
+    // hidden from the whole app, including the board this alert links to —
+    // it must never surface a billing alert for a row nobody can see
+    if (p.merged_into) return false;
     if (p.kind !== "client") return false;
     const ss = stagesByProd.get(p.id) ?? [];
     if (ss.length < 6 || !ss.every((s) => s === "done")) return false;

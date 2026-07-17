@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { fetchAndParseIcs, parseIcsText, type CalendarEvent } from "@/lib/calendar/parse";
 import { buildSyncPlan, type ExistingProductionRow } from "@/lib/calendar/sync";
-import type { ShowForMatch } from "@/lib/calendar/match";
+import { extractGuestFromTitle, type ShowForMatch } from "@/lib/calendar/match";
 
 // Google Calendar sync (screens-spec §11, owner rules 2026-07-16/17):
 //   GET  — Vercel Cron trigger. Authorizes via CRON_SECRET, always reads
@@ -35,6 +35,18 @@ import type { ShowForMatch } from "@/lib/calendar/match";
 // the cron nor a real manual sync may touch the live calendar at all.
 
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";
+
+// "HH:MM" in Israel local time — stored on the production so two same-day
+// recordings of the same show read differently on the card (screens-spec,
+// multi-episode session support, owner request 2026-07-17).
+function israelTimeHHMM(d: Date): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Jerusalem",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(d);
+}
 
 function israelNow(now: Date): { hour: number; date: string } {
   const hour = Number(
@@ -108,15 +120,38 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
   // another day is invisible to this run either way, so it can never be
   // wrongly flagged "removed" just for falling outside a scan it was never
   // part of to begin with
+  // merged-away productions (calendar duplicate merged, or split undone) are
+  // soft-hidden from the board — they must stay invisible to the sync too
   const { data: existingRows } = await admin
     .from("productions")
     .select("id,calendar_uid,status,calendar_removed")
     .not("calendar_uid", "is", null)
+    .is("merged_into", null)
     .eq("record_date", todayIsraelDate);
   const existingByUid = new Map(
     (existingRows ?? []).map((r) => [r.calendar_uid as string, r as ExistingProductionRow])
   );
   const existingIds = (existingRows ?? []).map((r) => r.id);
+
+  // Split siblings deliberately share one calendar_uid (screens-spec: a
+  // technician-split production stays linked to the source calendar event),
+  // so existingByUid above only ever holds one representative row per uid.
+  // Expand any per-uid flag/unflag action to every row sharing that uid, or
+  // a removed/changed calendar event would only ever be caught on whichever
+  // sibling buildSyncPlan happened to see.
+  const siblingIdsByUid = new Map<string, string[]>();
+  const uidByProductionId = new Map<string, string>();
+  for (const r of existingRows ?? []) {
+    const uid = r.calendar_uid as string;
+    uidByProductionId.set(r.id, uid);
+    const arr = siblingIdsByUid.get(uid) ?? [];
+    arr.push(r.id);
+    siblingIdsByUid.set(uid, arr);
+  }
+  const expandToSiblings = (id: string): string[] => {
+    const uid = uidByProductionId.get(id);
+    return uid ? siblingIdsByUid.get(uid) ?? [id] : [id];
+  };
 
   // "touched" = any event logged against the production that ISN'T the
   // sync's own bookkeeping — exactly "אין events של שינוי ידני"
@@ -149,6 +184,8 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
         client_id: show.client_id,
         kind,
         record_date: recordDate,
+        record_time: action.event.start ? israelTimeHHMM(action.event.start) : null,
+        guest: extractGuestFromTitle(action.event.title, action.alias),
         // LOCATION on the calendar event overrides the show's default —
         // camera_count has no such override, it's a straight copy
         studio: action.event.location || show.default_studio || null,
@@ -187,19 +224,21 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
     });
   }
 
-  for (const row of plan.toFlagChanged) {
-    const { error } = await admin.from("productions").update({ calendar_changed: true }).eq("id", row.productionId);
+  const changedIds = new Set(plan.toFlagChanged.flatMap((row) => expandToSiblings(row.productionId)));
+  for (const id of Array.from(changedIds)) {
+    const { error } = await admin.from("productions").update({ calendar_changed: true }).eq("id", id);
     if (error) throw new Error(error.message);
     flaggedChanged++;
     await admin.from("events").insert({
       entity_type: "production",
-      entity_id: row.productionId,
+      entity_id: id,
       event_type: "calendar_flagged_changed",
       payload: {},
     });
   }
 
-  for (const id of plan.toFlagRemoved) {
+  const removedIds = new Set(plan.toFlagRemoved.flatMap((id) => expandToSiblings(id)));
+  for (const id of Array.from(removedIds)) {
     const { error } = await admin.from("productions").update({ calendar_removed: true }).eq("id", id);
     if (error) throw new Error(error.message);
     flaggedRemoved++;
@@ -211,7 +250,8 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
     });
   }
 
-  for (const id of plan.toUnflagRemoved) {
+  const unflaggedIds = new Set(plan.toUnflagRemoved.flatMap((id) => expandToSiblings(id)));
+  for (const id of Array.from(unflaggedIds)) {
     await admin.from("productions").update({ calendar_removed: false }).eq("id", id);
     unflaggedRemoved++;
   }

@@ -44,6 +44,7 @@ export const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
       { key: "podcast_name", label: "פודקאסט", type: "text", view: "any", edit: "stages" },
       { key: "guest", label: "אורח", type: "text", view: "any", edit: "stages" },
       { key: "record_date", label: "תאריך הקלטה", type: "date", view: "any", edit: "stages" },
+      { key: "record_time", label: "שעת הקלטה", type: "text", view: "any", edit: "stages" },
       { key: "studio", label: "אולפן", type: "text", view: "any", edit: "stages" },
       // derived from the 6 stages; the only manual transition (client
       // approval) gets a dedicated flow later, not a free-text edit

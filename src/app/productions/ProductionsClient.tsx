@@ -8,6 +8,7 @@ export type BoardProduction = {
   id: string;
   status: string;
   record_date: string | null;
+  record_time: string | null;
   guest: string | null;
   studio: string | null;
   on_hold: boolean;
@@ -22,6 +23,10 @@ export type BoardProduction = {
   stages_total: number;
   in_progress: { track: string; step: string; assignee: string | null }[];
   mine: boolean;
+  split_index: number | null;
+  split_count: number | null;
+  dup_group: { count: number; ids: string[] } | null;
+  absorbed: { id: string }[];
 };
 
 // the 9-state machine, in flow order (screens-spec §1)
@@ -91,9 +96,65 @@ export default function ProductionsClient({
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [holdFor, setHoldFor] = useState<BoardProduction | null>(null);
+  const [splitFor, setSplitFor] = useState<BoardProduction | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
+
+  // these four all change the SET of board rows (create/hide productions),
+  // not just a field on one — router.refresh() re-seeds `board` from the
+  // server rather than trying to reconcile optimistic local state
+  async function splitProduction(id: string, count: number) {
+    setError(null);
+    const res = await fetch(`/api/productions/${id}/split`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ count }),
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      setError(d.error ?? "פיצול נכשל");
+      return;
+    }
+    router.refresh();
+  }
+
+  async function undoSplit(id: string) {
+    setError(null);
+    const res = await fetch(`/api/productions/${id}/split`, { method: "DELETE" });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      setError(d.error ?? "ביטול פיצול נכשל");
+      return;
+    }
+    router.refresh();
+  }
+
+  async function dupAction(id: string, action: "confirm" | "merge") {
+    setError(null);
+    const res = await fetch(`/api/productions/${id}/duplicate-group`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      setError(d.error ?? "הפעולה נכשלה");
+      return;
+    }
+    router.refresh();
+  }
+
+  async function unmerge(id: string) {
+    setError(null);
+    const res = await fetch(`/api/productions/${id}/duplicate-group`, { method: "DELETE" });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      setError(d.error ?? "ביטול מיזוג נכשל");
+      return;
+    }
+    router.refresh();
+  }
 
   async function syncNow() {
     setSyncing(true);
@@ -226,7 +287,17 @@ export default function ProductionsClient({
       )}
 
       {tab === "today" ? (
-        <TodayView rows={filtered} onOpen={(id) => openEntity({ type: "production", id })} onHold={setHold} onFreezeAsk={setHoldFor} canEditStages={canEditStages} />
+        <TodayView
+          rows={filtered}
+          onOpen={(id) => openEntity({ type: "production", id })}
+          onHold={setHold}
+          onFreezeAsk={setHoldFor}
+          canEditStages={canEditStages}
+          onSplitAsk={setSplitFor}
+          onUndoSplit={undoSplit}
+          onDupAction={dupAction}
+          onUnmerge={unmerge}
+        />
       ) : (
         <Kanban
           rows={activeOnly ? filtered.filter((p) => p.show_active) : filtered}
@@ -239,6 +310,10 @@ export default function ProductionsClient({
           onOpen={(id) => openEntity({ type: "production", id })}
           onFreezeAsk={setHoldFor}
           onUnfreeze={(id) => setHold(id, false)}
+          onSplitAsk={setSplitFor}
+          onUndoSplit={undoSplit}
+          onDupAction={dupAction}
+          onUnmerge={unmerge}
         />
       )}
 
@@ -249,6 +324,17 @@ export default function ProductionsClient({
           onConfirm={(reason) => {
             setHold(holdFor.id, true, reason);
             setHoldFor(null);
+          }}
+        />
+      )}
+
+      {splitFor && (
+        <SplitModal
+          production={splitFor}
+          onClose={() => setSplitFor(null)}
+          onConfirm={(count) => {
+            void splitProduction(splitFor.id, count);
+            setSplitFor(null);
           }}
         />
       )}
@@ -280,6 +366,11 @@ function ProductionCard({
   onDragStart,
   onDragEnd,
   showStatus,
+  canEditStages,
+  onSplitAsk,
+  onUndoSplit,
+  onDupAction,
+  onUnmerge,
 }: {
   p: BoardProduction;
   onOpen: (id: string) => void;
@@ -289,9 +380,15 @@ function ProductionCard({
   onDragStart?: () => void;
   onDragEnd?: () => void;
   showStatus?: boolean;
+  canEditStages: boolean;
+  onSplitAsk: (p: BoardProduction) => void;
+  onUndoSplit: (id: string) => void;
+  onDupAction: (id: string, action: "confirm" | "merge") => void;
+  onUnmerge: (id: string) => void;
 }) {
   const heldDays = daysSince(p.on_hold_since);
   const ip = p.in_progress[0];
+  const isSplit = !!p.split_count && p.split_count > 1;
   return (
     <div
       draggable={draggable}
@@ -311,6 +408,7 @@ function ProductionCard({
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[var(--dim)]">
         {showStatus && <StatusPill status={p.status} />}
         {p.record_date && <span className="font-mono">{p.record_date}</span>}
+        {p.record_time && <span className="font-mono">{p.record_time}</span>}
         {p.studio && <span>{p.studio}</span>}
         {p.guest && <span className="text-[var(--faint)]">· {p.guest}</span>}
       </div>
@@ -331,7 +429,74 @@ function ProductionCard({
           &quot;{p.on_hold_reason}&quot;{heldDays != null ? ` · ${heldDays} ימים` : ""}
         </div>
       )}
-      <div className="mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+
+      {isSplit && (
+        <div className="mt-1.5 flex items-center gap-1.5">
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--panel3)] text-[var(--dim)]">
+            פרק {p.split_index} מתוך {p.split_count}
+          </span>
+          {canEditStages && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onUndoSplit(p.id);
+              }}
+              className="text-[10px] text-[var(--faint)] hover:text-[var(--dim)] underline"
+            >
+              בטל פיצול
+            </button>
+          )}
+        </div>
+      )}
+
+      {p.dup_group && (
+        <div className="mt-1.5 border border-[var(--amber)] rounded px-2 py-1.5">
+          <div className="text-[10px] text-[var(--amber)] mb-1">
+            זוהו {p.dup_group.count} הקלטות של {p.show_name} היום
+          </div>
+          {canEditStages && (
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDupAction(p.id, "confirm");
+                }}
+                className="text-[10px] border border-[var(--rule)] rounded px-1.5 py-0.5 hover:bg-[var(--panel3)]"
+              >
+                מאשר {p.dup_group.count} פרקים
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDupAction(p.id, "merge");
+                }}
+                className="text-[10px] border border-[var(--rule)] rounded px-1.5 py-0.5 hover:bg-[var(--panel3)]"
+              >
+                מזג ל-1 — טעות ביומן
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {p.absorbed.length > 0 && (
+        <div className="mt-1 text-[10px] text-[var(--faint)]">
+          מוזגו לכאן {p.absorbed.length}
+          {canEditStages && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onUnmerge(p.absorbed[0].id);
+              }}
+              className="underline mr-1"
+            >
+              בטל
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className="mt-2 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
         {p.on_hold ? (
           <button
             onClick={(e) => {
@@ -353,6 +518,17 @@ function ProductionCard({
             הקפא
           </button>
         )}
+        {canEditStages && !isSplit && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onSplitAsk(p);
+            }}
+            className="text-[10px] text-[var(--dim)] border border-[var(--rule)] rounded px-2 py-0.5 hover:bg-[var(--panel3)]"
+          >
+            פצל
+          </button>
+        )}
       </div>
     </div>
   );
@@ -363,12 +539,21 @@ function TodayView({
   onOpen,
   onHold,
   onFreezeAsk,
+  canEditStages,
+  onSplitAsk,
+  onUndoSplit,
+  onDupAction,
+  onUnmerge,
 }: {
   rows: BoardProduction[];
   onOpen: (id: string) => void;
   onHold: (id: string, on: boolean) => void;
   onFreezeAsk: (p: BoardProduction) => void;
   canEditStages: boolean;
+  onSplitAsk: (p: BoardProduction) => void;
+  onUndoSplit: (id: string) => void;
+  onDupAction: (id: string, action: "confirm" | "merge") => void;
+  onUnmerge: (id: string) => void;
 }) {
   const today = todayISO();
   const attention = rows.filter((p) => p.needs_attention);
@@ -389,7 +574,19 @@ function TodayView({
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
           {items.map((p) => (
-            <ProductionCard key={p.id} p={p} onOpen={onOpen} onFreezeAsk={onFreezeAsk} onUnfreeze={(id) => onHold(id, false)} showStatus />
+            <ProductionCard
+              key={p.id}
+              p={p}
+              onOpen={onOpen}
+              onFreezeAsk={onFreezeAsk}
+              onUnfreeze={(id) => onHold(id, false)}
+              showStatus
+              canEditStages={canEditStages}
+              onSplitAsk={onSplitAsk}
+              onUndoSplit={onUndoSplit}
+              onDupAction={onDupAction}
+              onUnmerge={onUnmerge}
+            />
           ))}
         </div>
       )}
@@ -420,6 +617,10 @@ function Kanban({
   onOpen,
   onFreezeAsk,
   onUnfreeze,
+  onSplitAsk,
+  onUndoSplit,
+  onDupAction,
+  onUnmerge,
 }: {
   rows: BoardProduction[];
   canEditStages: boolean;
@@ -431,6 +632,10 @@ function Kanban({
   onOpen: (id: string) => void;
   onFreezeAsk: (p: BoardProduction) => void;
   onUnfreeze: (id: string) => void;
+  onSplitAsk: (p: BoardProduction) => void;
+  onUndoSplit: (id: string) => void;
+  onDupAction: (id: string, action: "confirm" | "merge") => void;
+  onUnmerge: (id: string) => void;
 }) {
   const byStatus = useMemo(() => {
     const m = new Map<string, BoardProduction[]>();
@@ -479,6 +684,11 @@ function Kanban({
                     draggable={canEditStages}
                     onDragStart={() => setDragId(p.id)}
                     onDragEnd={() => setDragId(null)}
+                    canEditStages={canEditStages}
+                    onSplitAsk={onSplitAsk}
+                    onUndoSplit={onUndoSplit}
+                    onDupAction={onDupAction}
+                    onUnmerge={onUnmerge}
                   />
                 ))}
                 {items.length > COLUMN_CAP && (
@@ -534,6 +744,56 @@ function HoldModal({
             ביטול
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function SplitModal({
+  production,
+  onClose,
+  onConfirm,
+}: {
+  production: BoardProduction;
+  onClose: () => void;
+  onConfirm: (count: number) => void;
+}) {
+  const [custom, setCustom] = useState("");
+  const customCount = Number(custom);
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm border border-[var(--rule2)] rounded-xl bg-[var(--panel2)] p-5">
+        <h3 className="font-bold mb-1">פיצול הפקה</h3>
+        <p className="text-xs text-[var(--dim)] mb-4">{production.show_name} — כמה פרקים בפועל?</p>
+        <div className="flex gap-2 mb-3">
+          {[2, 3, 4].map((n) => (
+            <button
+              key={n}
+              onClick={() => onConfirm(n)}
+              className="flex-1 border border-[var(--rule)] rounded-lg py-2 text-sm font-bold hover:bg-[var(--panel3)]"
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <input
+            value={custom}
+            onChange={(e) => setCustom(e.target.value.replace(/\D/g, ""))}
+            placeholder="מספר אחר"
+            className="flex-1 bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-3 py-2 text-sm"
+          />
+          <button
+            onClick={() => onConfirm(customCount)}
+            disabled={!custom || customCount < 2}
+            className="bg-[var(--violet)] text-white font-bold rounded-lg px-4 py-2 text-sm disabled:opacity-40"
+          >
+            אישור
+          </button>
+        </div>
+        <button onClick={onClose} className="mt-3 text-xs text-[var(--dim)] border border-[var(--rule)] rounded-lg px-3 py-1.5">
+          ביטול
+        </button>
       </div>
     </div>
   );

@@ -8,7 +8,7 @@ export type ExistingProductionRow = {
   calendar_removed: boolean;
 };
 
-export type CreateAction = { event: CalendarEvent; show: ShowForMatch };
+export type CreateAction = { event: CalendarEvent; show: ShowForMatch; alias: string };
 export type UpdateAction = { productionId: string; event: CalendarEvent };
 
 export type SyncPlan = {
@@ -66,7 +66,7 @@ export function buildSyncPlan(
 
     const existing = existingByUid.get(event.uid);
     if (!existing) {
-      plan.toCreate.push({ event, show: match.show });
+      plan.toCreate.push({ event, show: match.show, alias: match.alias });
       continue;
     }
 

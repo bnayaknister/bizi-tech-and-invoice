@@ -20,6 +20,7 @@ type ProdRow = {
   id: string;
   status: string;
   record_date: string | null;
+  record_time: string | null;
   guest: string | null;
   studio: string | null;
   on_hold: boolean;
@@ -28,6 +29,11 @@ type ProdRow = {
   needs_attention: boolean;
   show_id: string | null;
   client_id?: string | null;
+  calendar_uid: string | null;
+  split_index: number | null;
+  split_count: number | null;
+  calendar_dup_ack: boolean;
+  merged_into: string | null;
 };
 
 export default async function ProductionsPage() {
@@ -41,16 +47,51 @@ export default async function ProductionsPage() {
 
   // money columns (client) are only ever selected with the permission —
   // the board never carries money for a stages-only viewer
-  const prodSelect = canViewMoney
-    ? "id,status,record_date,guest,studio,on_hold,on_hold_reason,on_hold_since,needs_attention,show_id,client_id"
-    : "id,status,record_date,guest,studio,on_hold,on_hold_reason,on_hold_since,needs_attention,show_id";
+  const commonCols =
+    "id,status,record_date,record_time,guest,studio,on_hold,on_hold_reason,on_hold_since,needs_attention,show_id,calendar_uid,split_index,split_count,calendar_dup_ack,merged_into";
+  const prodSelect = canViewMoney ? `${commonCols},client_id` : commonCols;
 
+  // fetched without a merged_into filter — a merged-away / un-split-away
+  // row must still surface as "absorbed" on its survivor's card, it just
+  // never becomes a board entry of its own (see split below)
   const [prodsRes, { data: shows }, { data: stages }] = await Promise.all([
     supabase.from("productions").select(prodSelect),
     supabase.from("shows").select("id,name,color,active"),
     supabase.from("stages").select("production_id,status,track,step,assignee_id"),
   ]);
-  const prods = (prodsRes.data ?? []) as unknown as ProdRow[];
+  const allProds = (prodsRes.data ?? []) as unknown as ProdRow[];
+  const prods = allProds.filter((p) => !p.merged_into);
+
+  // productions absorbed into a survivor (calendar-duplicate merge, or an
+  // undone split) — surfaced on the survivor's card with an undo action
+  const absorbedBySurvivor = new Map<string, { id: string }[]>();
+  for (const p of allProds) {
+    if (!p.merged_into) continue;
+    const arr = absorbedBySurvivor.get(p.merged_into) ?? [];
+    arr.push({ id: p.id });
+    absorbedBySurvivor.set(p.merged_into, arr);
+  }
+
+  // calendar duplicate detection (screens-spec, owner request 2026-07-17):
+  // two DISTINCT calendar_uid values for the same show on the same day is
+  // a real duplicate — a split family shares exactly one uid, so it never
+  // trips this. Silenced once every member of the group is acknowledged.
+  const dupGroups = new Map<string, ProdRow[]>();
+  for (const p of prods) {
+    if (!p.show_id || !p.record_date || !p.calendar_uid) continue;
+    const key = `${p.show_id}|${p.record_date}`;
+    const arr = dupGroups.get(key) ?? [];
+    arr.push(p);
+    dupGroups.set(key, arr);
+  }
+  const dupInfoByProdId = new Map<string, { count: number; ids: string[] }>();
+  for (const group of Array.from(dupGroups.values())) {
+    const distinctUids = new Set(group.map((p) => p.calendar_uid));
+    if (distinctUids.size < 2) continue;
+    if (group.every((p) => p.calendar_dup_ack)) continue;
+    const info = { count: distinctUids.size, ids: group.map((p) => p.id) };
+    for (const p of group) dupInfoByProdId.set(p.id, info);
+  }
 
   const showById = new Map((shows ?? []).map((s) => [s.id, s]));
 
@@ -98,6 +139,7 @@ export default async function ProductionsPage() {
       id: p.id,
       status: p.status,
       record_date: p.record_date,
+      record_time: p.record_time,
       guest: p.guest,
       studio: p.studio,
       on_hold: p.on_hold,
@@ -115,6 +157,10 @@ export default async function ProductionsPage() {
       stages_total: r?.total ?? 0,
       in_progress: inProgress,
       mine: r ? r.assigneeIds.has(user.id) : false,
+      split_index: p.split_index,
+      split_count: p.split_count,
+      dup_group: dupInfoByProdId.get(p.id) ?? null,
+      absorbed: absorbedBySurvivor.get(p.id) ?? [],
     };
   });
 
