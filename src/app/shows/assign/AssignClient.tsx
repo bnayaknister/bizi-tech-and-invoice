@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import Link from "next/link";
+import ClientCombobox from "@/components/ClientCombobox";
 
 export type OrphanRow = {
   id: string;
@@ -19,12 +20,13 @@ const BILLING_LABEL: Record<OrphanRow["billing_mode"], string> = {
   none: "ללא חיוב",
 };
 
-export default function AssignClient({ rows, clients }: { rows: OrphanRow[]; clients: Client[] }) {
+export default function AssignClient({ rows, clients: initialClients }: { rows: OrphanRow[]; clients: Client[] }) {
   const [state, setState] = useState<Record<string, RowState>>(() =>
     Object.fromEntries(rows.map((r) => [r.id, { client_id: "", billing_mode: r.billing_mode, status: "idle" as const }]))
   );
-  // one ref per row's client <select>, so Enter can jump to the next row
-  const clientRefs = useRef<(HTMLSelectElement | null)[]>([]);
+  const [clients, setClients] = useState(initialClients);
+  // one ref per row's client field, so Enter can jump to the next row
+  const clientRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   const assignedCount = Object.values(state).filter((s) => s.client_id).length;
 
@@ -94,27 +96,17 @@ export default function AssignClient({ rows, clients }: { rows: OrphanRow[]; cli
                   <td className="px-3 py-2 font-medium">{row.name}</td>
                   <td className="px-3 py-2 text-[var(--dim)]">{row.episodes}</td>
                   <td className="px-3 py-2">
-                    <select
+                    <ClientCombobox
                       ref={(el) => {
                         clientRefs.current[i] = el;
                       }}
-                      value={rs.client_id}
-                      onChange={(e) => onClientChange(row, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          focusNextRow(i);
-                        }
-                      }}
-                      className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1.5 text-sm focus:border-[var(--signal)] outline-none"
-                    >
-                      <option value="">— בחר לקוח —</option>
-                      {clients.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
+                      clients={clients}
+                      value={rs.client_id || null}
+                      placeholder="— בחר לקוח —"
+                      onChange={(clientId) => onClientChange(row, clientId ?? "")}
+                      onCreated={(c) => setClients((cs) => [...cs, c].sort((a, b) => a.name.localeCompare(b.name, "he")))}
+                      onEnterNext={() => focusNextRow(i)}
+                    />
                   </td>
                   <td className="px-3 py-2">
                     <select

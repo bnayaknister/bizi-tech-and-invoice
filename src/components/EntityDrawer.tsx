@@ -20,6 +20,7 @@ import {
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
+import ClientCombobox from "@/components/ClientCombobox";
 
 type EntityRef = { type: string; id: string };
 
@@ -211,6 +212,20 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
           />
         );
       case "select":
+        if (f.options === "clients") {
+          return (
+            <ClientCombobox
+              clients={data?.optionsData.clients ?? []}
+              value={(v as string) ?? null}
+              onChange={(clientId) => void saveField(f.key, clientId)}
+              onCreated={(c) =>
+                setData((d) =>
+                  d ? { ...d, optionsData: { ...d.optionsData, clients: [...d.optionsData.clients, c] } } : d
+                )
+              }
+            />
+          );
+        }
         return (
           <select
             value={(v as string) ?? ""}

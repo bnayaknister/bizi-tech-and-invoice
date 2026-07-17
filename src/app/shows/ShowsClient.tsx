@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import LineIcon from "@/components/LineIcon";
+import ClientCombobox from "@/components/ClientCombobox";
 
 export type ShowRow = {
   id: string;
@@ -42,7 +43,7 @@ function money(n: number | null | undefined): string {
 export default function ShowsClient({
   shows: initialShows,
   episodes,
-  clients,
+  clients: initialClients,
   canViewMoney,
   canEditMoney,
   canEditStages,
@@ -56,6 +57,7 @@ export default function ShowsClient({
 }) {
   const router = useRouter();
   const [shows, setShows] = useState(initialShows);
+  const [clients, setClients] = useState(initialClients);
   const [tab, setTab] = useState<"active" | "oneoff" | "all">("active");
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
@@ -245,6 +247,7 @@ export default function ShowsClient({
           canEdit={canEdit}
           onSave={save}
           onClose={() => setOpenId(null)}
+          onClientCreated={(c) => setClients((cs) => [...cs, c].sort((a, b) => a.name.localeCompare(b.name, "he")))}
         />
       )}
 
@@ -350,6 +353,7 @@ function ShowCard({
   canEdit,
   onSave,
   onClose,
+  onClientCreated,
 }: {
   show: ShowRow;
   episodes: EpisodeRow[];
@@ -359,6 +363,7 @@ function ShowCard({
   canEdit: boolean;
   onSave: (id: string, patch: Record<string, unknown>) => Promise<boolean>;
   onClose: () => void;
+  onClientCreated: (client: Client) => void;
 }) {
   const studioHours = episodes.reduce((t, e) => t + (e.studio_hours ?? 0), 0);
   const editHours = episodes.reduce((t, e) => t + (e.edit_hours ?? 0), 0);
@@ -402,19 +407,14 @@ function ShowCard({
           {canViewMoney && (
             <label className="text-xs">
               <span className="block text-[var(--faint)] mb-1">לקוח</span>
-              <select
-                value={show.client_id ?? ""}
+              <ClientCombobox
+                clients={clients}
+                value={show.client_id}
                 disabled={!canEditMoney}
-                onChange={(e) => onSave(show.id, { client_id: e.target.value || null })}
-                className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1.5"
-              >
-                <option value="">— פנימי / ללא לקוח —</option>
-                {clients.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
+                placeholder="— פנימי / ללא לקוח —"
+                onChange={(clientId) => void onSave(show.id, { client_id: clientId })}
+                onCreated={onClientCreated}
+              />
             </label>
           )}
           {canViewMoney && (
