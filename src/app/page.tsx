@@ -26,7 +26,15 @@ export default async function Home() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {visibleModules.map((m, i) => (
-              <ModuleCard key={m.key} title={m.title} icon={m.icon} href={m.href} metric={metrics[i]} index={i} />
+              <ModuleCard
+                key={m.key}
+                moduleKey={m.key}
+                title={m.title}
+                icon={m.icon}
+                href={m.href}
+                metric={metrics[i]}
+                index={i}
+              />
             ))}
           </div>
         )}

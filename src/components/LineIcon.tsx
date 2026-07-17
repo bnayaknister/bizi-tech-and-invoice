@@ -23,18 +23,17 @@ const PATHS: Record<IconName, React.ReactNode> = {
       <circle cx="15.5" cy="9" r="0.9" fill="currentColor" stroke="none" />
     </>
   ),
-  // shows = waveform (podcast titles)
+  // shows = camera (DESIGN.md §7)
   shows: (
     <>
-      <path d="M4 12 L4 12" />
-      <path d="M4 10.5v3M7.3 7v10M10.6 9v6M13.9 5v14M17.2 8.5v7M20.5 11v2" />
+      <path d="M8 6.5 9 4.5h6l1 2h2.5a1.5 1.5 0 0 1 1.5 1.5v9.5a1.5 1.5 0 0 1-1.5 1.5H4.5A1.5 1.5 0 0 1 3 17.5V8a1.5 1.5 0 0 1 1.5-1.5Z" />
+      <circle cx="12" cy="12.5" r="4" />
     </>
   ),
-  // productions = play triangle in a rounded frame
+  // productions = waveform (DESIGN.md §7)
   productions: (
     <>
-      <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
-      <path d="M10.5 9.2 L15 12 L10.5 14.8 Z" fill="currentColor" stroke="none" />
+      <path d="M4 10.5v3M7.3 7v10M10.6 9v6M13.9 5v14M17.2 8.5v7M20.5 11v2" />
     </>
   ),
   // finance = banknote
