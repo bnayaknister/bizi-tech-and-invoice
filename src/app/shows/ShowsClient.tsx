@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import LineIcon from "@/components/LineIcon";
+import IconTile from "@/components/IconTile";
 import ClientCombobox from "@/components/ClientCombobox";
 
 export type ShowRow = {
@@ -109,18 +109,18 @@ export default function ShowsClient({
   return (
     <div className="max-w-5xl mx-auto p-6">
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <h1 className="text-lg font-bold flex items-center gap-2">
-          <span className="text-[var(--violet-light)]"><LineIcon name="shows" size={19} /></span>
+        <h1 className="text-lg font-bold flex items-center gap-2.5">
+          <IconTile icon="shows" accent="cyan" size={30} iconSize={17} />
           תוכניות
         </h1>
         <span className="text-xs text-[var(--dim)]">
-          {activeCount} פעילות · {oneoffCount} חד־פעמיות
+          <span className="font-mono">{activeCount}</span> פעילות · <span className="font-mono">{oneoffCount}</span> חד־פעמיות
         </span>
         <div className="flex-1" />
         {canEditMoney && (
           <Link
             href="/shows/assign"
-            className="text-xs border border-[var(--rule)] rounded px-3 py-1.5 text-[var(--dim)] hover:bg-[var(--panel3)]"
+            className="text-xs border border-[var(--rule)] rounded-xl px-3 py-1.5 text-[var(--dim)] hover:bg-[var(--panel3)] hover:border-[var(--rule2)] transition-colors"
           >
             שיוך יתומות
           </Link>
@@ -128,7 +128,7 @@ export default function ShowsClient({
         {canEdit && (
           <button
             onClick={() => setMergeOpen(true)}
-            className="text-xs border border-[var(--rule)] rounded px-3 py-1.5 text-[var(--dim)] hover:bg-[var(--panel3)]"
+            className="text-xs border border-[var(--rule)] rounded-xl px-3 py-1.5 text-[var(--dim)] hover:bg-[var(--panel3)] hover:border-[var(--rule2)] transition-colors"
           >
             מזג שתי תוכניות
           </button>
@@ -146,9 +146,9 @@ export default function ShowsClient({
           <button
             key={key}
             onClick={() => setTab(key)}
-            className={`text-xs rounded px-3 py-1.5 border ${
+            className={`text-xs rounded-xl px-3 py-1.5 border transition-colors ${
               tab === key
-                ? "border-[var(--signal)] text-[var(--signal)] font-bold"
+                ? "border-[var(--violet)] text-[var(--violet-light)] font-bold bg-[rgba(139,92,246,0.08)]"
                 : "border-[var(--rule)] text-[var(--dim)] hover:bg-[var(--panel3)]"
             }`}
           >
@@ -159,7 +159,8 @@ export default function ShowsClient({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="חיפוש תוכנית, כינוי או לקוח…"
-          className="mr-auto w-64 max-w-full bg-[var(--panel2)] border border-[var(--rule)] rounded px-3 py-1.5 text-sm"
+          className="mr-auto w-64 max-w-full border border-[var(--rule)] rounded-xl px-3 py-1.5 text-sm focus:border-[var(--violet-light)] outline-none transition-colors"
+          style={{ background: "rgba(255,255,255,0.04)", backdropFilter: "blur(8px)" }}
         />
       </div>
 
@@ -169,17 +170,20 @@ export default function ShowsClient({
         </div>
       )}
 
-      <div className="overflow-x-auto border border-[var(--rule)] rounded">
+      <div
+        className="overflow-x-auto border border-[var(--rule)] rounded-2xl"
+        style={{ background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
+      >
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-right text-xs text-[var(--faint)] border-b border-[var(--rule)] bg-[var(--panel2)]">
-              <th className="px-3 py-2 font-normal">תוכנית</th>
-              {canViewMoney && <th className="px-3 py-2 font-normal">לקוח</th>}
-              <th className="px-3 py-2 font-normal">פרקים</th>
-              <th className="px-3 py-2 font-normal">כינויים</th>
-              {canViewMoney && <th className="px-3 py-2 font-normal">מחיר/פרק</th>}
-              {canViewMoney && <th className="px-3 py-2 font-normal">הכנסה מצטברת</th>}
-              <th className="px-3 py-2 font-normal">פעיל</th>
+            <tr className="text-right text-[10px] uppercase tracking-wider text-[var(--faint)] border-b border-[var(--rule)] bg-[var(--panel3)]">
+              <th className="px-3 py-2.5 font-semibold">תוכנית</th>
+              {canViewMoney && <th className="px-3 py-2.5 font-semibold">לקוח</th>}
+              <th className="px-3 py-2.5 font-semibold">פרקים</th>
+              <th className="px-3 py-2.5 font-semibold">כינויים</th>
+              {canViewMoney && <th className="px-3 py-2.5 font-semibold">מחיר/פרק</th>}
+              {canViewMoney && <th className="px-3 py-2.5 font-semibold">הכנסה מצטברת</th>}
+              <th className="px-3 py-2.5 font-semibold">פעיל</th>
             </tr>
           </thead>
           <tbody>
@@ -187,9 +191,9 @@ export default function ShowsClient({
               <tr
                 key={s.id}
                 onClick={() => setOpenId(s.id)}
-                className="border-b border-[var(--rule)] last:border-b-0 hover:bg-[var(--panel3)] cursor-pointer"
+                className="border-b border-[var(--rule)] last:border-b-0 hover:bg-[rgba(255,255,255,0.03)] cursor-pointer transition-colors"
               >
-                <td className="px-3 py-2">
+                <td className="px-3 py-2.5">
                   <span className="inline-flex items-center gap-2">
                     <span
                       className="inline-block w-2.5 h-2.5 rounded-full shrink-0"
@@ -200,23 +204,23 @@ export default function ShowsClient({
                   </span>
                 </td>
                 {canViewMoney && (
-                  <td className="px-3 py-2 text-[var(--dim)]">
+                  <td className="px-3 py-2.5 text-[var(--dim)]">
                     {s.client_id ? clientName[s.client_id] ?? "—" : "—"}
                   </td>
                 )}
-                <td className="px-3 py-2">{s.episodes}</td>
-                <td className="px-3 py-2 text-xs text-[var(--dim)]">
+                <td className="px-3 py-2.5 font-mono">{s.episodes}</td>
+                <td className="px-3 py-2.5 text-xs text-[var(--dim)]">
                   {s.aliases.length === 0
                     ? "—"
                     : s.aliases.length <= 2
                     ? s.aliases.join(", ")
                     : `${s.aliases.slice(0, 2).join(", ")} +${s.aliases.length - 2}`}
                 </td>
-                {canViewMoney && <td className="px-3 py-2">{money(s.default_rate)}</td>}
+                {canViewMoney && <td className="px-3 py-2.5 font-mono">{money(s.default_rate)}</td>}
                 {canViewMoney && (
-                  <td className="px-3 py-2 font-bold">{s.revenue ? money(s.revenue) : "—"}</td>
+                  <td className="px-3 py-2.5 font-mono font-bold">{s.revenue ? money(s.revenue) : "—"}</td>
                 )}
-                <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
                   <input
                     type="checkbox"
                     checked={s.active}
@@ -228,7 +232,7 @@ export default function ShowsClient({
             ))}
             {visible.length === 0 && (
               <tr>
-                <td colSpan={canViewMoney ? 7 : 4} className="px-3 py-6 text-center text-[var(--faint)] text-xs">
+                <td colSpan={canViewMoney ? 7 : 4} className="px-3 py-8 text-center text-[var(--faint)] text-xs">
                   אין תוכניות תואמות
                 </td>
               </tr>
@@ -370,10 +374,15 @@ function ShowCard({
   const perEpisode = show.revenue && episodes.length > 0 ? Math.round(show.revenue / episodes.length) : null;
 
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50" onClick={onClose}>
+    <div
+      className="fixed inset-0 flex items-center justify-center p-4 z-50"
+      style={{ background: "rgba(3,2,10,0.66)", backdropFilter: "blur(6px)" }}
+      onClick={onClose}
+    >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-xl max-h-[88vh] overflow-y-auto border border-[var(--rule2)] rounded bg-[var(--panel2)] p-5"
+        className="w-full max-w-xl max-h-[88vh] overflow-y-auto border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl"
+        style={{ background: "rgba(15,13,28,0.92)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}
       >
         <div className="flex items-center gap-3 mb-4">
           <span
@@ -385,10 +394,10 @@ function ShowCard({
           {canEdit && (
             <button
               onClick={() => onSave(show.id, { active: !show.active })}
-              className={`text-xs border rounded px-3 py-1.5 ${
+              className={`text-xs border rounded-xl px-3 py-1.5 transition-colors ${
                 show.active
                   ? "border-[var(--rule)] text-[var(--dim)] hover:bg-[var(--panel3)]"
-                  : "border-[var(--signal)] text-[var(--signal)]"
+                  : "border-[var(--violet)] text-[var(--violet-light)]"
               }`}
             >
               {show.active ? "ארכב תוכנית" : "הפעל תוכנית"}
@@ -496,9 +505,13 @@ function ShowCard({
               ["שעות עריכה", editHours ? String(editHours) : "—"],
               ["הכנסה לפרק", perEpisode ? money(perEpisode) : "—"],
             ].map(([label, value]) => (
-              <div key={label} className="border border-[var(--rule)] rounded p-2">
+              <div
+                key={label}
+                className="border border-[var(--rule)] rounded-xl p-2"
+                style={{ background: "rgba(255,255,255,0.03)" }}
+              >
                 <div className="text-[10px] text-[var(--faint)] mb-1">{label}</div>
-                <div className="text-sm font-bold">{value}</div>
+                <div className="text-sm font-bold font-mono">{value}</div>
               </div>
             ))}
           </div>
@@ -564,10 +577,15 @@ function MergeModal({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50" onClick={onClose}>
+    <div
+      className="fixed inset-0 flex items-center justify-center p-4 z-50"
+      style={{ background: "rgba(3,2,10,0.66)", backdropFilter: "blur(6px)" }}
+      onClick={onClose}
+    >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md border border-[var(--rule2)] rounded bg-[var(--panel2)] p-5"
+        className="w-full max-w-md border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl"
+        style={{ background: "rgba(15,13,28,0.92)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}
       >
         <h3 className="font-bold mb-1">מיזוג שתי תוכניות</h3>
         <p className="text-xs text-[var(--dim)] mb-4">
@@ -622,11 +640,12 @@ function MergeModal({
           <button
             onClick={merge}
             disabled={!ready || busy}
-            className="bg-[var(--signal)] text-[var(--on-accent)] font-bold rounded px-4 py-2 text-sm disabled:opacity-40"
+            className="text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-40"
+            style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))", boxShadow: "0 4px 14px rgba(139,92,246,0.3)" }}
           >
             מזג
           </button>
-          <button onClick={onClose} className="border border-[var(--rule)] rounded px-4 py-2 text-sm text-[var(--dim)]">
+          <button onClick={onClose} className="border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)] hover:bg-[var(--panel3)] transition-colors">
             ביטול
           </button>
         </div>

@@ -69,19 +69,22 @@ export default function AssignClient({ rows, clients: initialClients }: { rows: 
         <h1 className="text-lg font-bold">שיוך תוכניות יתומות</h1>
       </div>
       <p className="text-xs text-[var(--dim)] mb-4">
-        {rows.length} תוכניות פעילות ללא לקוח · שויכו {assignedCount} · שמירה מיידית בכל שינוי ·
-        Tab בין שדות · Enter לשורה הבאה
+        <span className="font-mono">{rows.length}</span> תוכניות פעילות ללא לקוח · שויכו{" "}
+        <span className="font-mono">{assignedCount}</span> · שמירה מיידית בכל שינוי · Tab בין שדות · Enter לשורה הבאה
       </p>
 
-      <div className="overflow-x-auto border border-[var(--rule)] rounded">
+      <div
+        className="overflow-x-auto border border-[var(--rule)] rounded-2xl"
+        style={{ background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
+      >
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-right text-xs text-[var(--faint)] border-b border-[var(--rule)] bg-[var(--panel2)]">
-              <th className="px-3 py-2 font-normal">תוכנית</th>
-              <th className="px-3 py-2 font-normal w-16">פרקים</th>
-              <th className="px-3 py-2 font-normal">לקוח</th>
-              <th className="px-3 py-2 font-normal w-32">אופן חיוב</th>
-              <th className="px-3 py-2 font-normal w-24">סטטוס</th>
+            <tr className="text-right text-[10px] uppercase tracking-wider text-[var(--faint)] border-b border-[var(--rule)] bg-[var(--panel3)]">
+              <th className="px-3 py-2.5 font-semibold">תוכנית</th>
+              <th className="px-3 py-2.5 font-semibold w-16">פרקים</th>
+              <th className="px-3 py-2.5 font-semibold">לקוח</th>
+              <th className="px-3 py-2.5 font-semibold w-32">אופן חיוב</th>
+              <th className="px-3 py-2.5 font-semibold w-24">סטטוס</th>
             </tr>
           </thead>
           <tbody>
@@ -91,10 +94,10 @@ export default function AssignClient({ rows, clients: initialClients }: { rows: 
               return (
                 <tr
                   key={row.id}
-                  className={`border-b border-[var(--rule)] last:border-b-0 ${done ? "bg-[var(--panel)]/40" : ""}`}
+                  className={`border-b border-[var(--rule)] last:border-b-0 transition-colors ${done ? "bg-[rgba(74,222,128,0.05)]" : ""}`}
                 >
-                  <td className="px-3 py-2 font-medium">{row.name}</td>
-                  <td className="px-3 py-2 text-[var(--dim)]">{row.episodes}</td>
+                  <td className="px-3 py-2.5 font-medium">{row.name}</td>
+                  <td className="px-3 py-2.5 text-[var(--dim)] font-mono">{row.episodes}</td>
                   <td className="px-3 py-2">
                     <ClientCombobox
                       ref={(el) => {
