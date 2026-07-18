@@ -8,15 +8,20 @@ import { usersModule } from "@/modules/users";
 import { archiveModule } from "@/modules/archive";
 import { settingsModule } from "@/modules/settings";
 
-// This is module 7 proving the architecture: one new folder
-// (src/modules/shows), one new line below. Nothing above changed.
+// Order = importance, not module count (owner note 2026-07-18). The hub
+// grid fills this array into a 3-col RTL grid, so the first row (and, in
+// RTL, its right side first) is the most prominent real estate. Productions
+// is the team's central daily screen and users belongs beside it up top;
+// archive and settings are barely touched and sit last. In RTL the
+// right-most card of row 1 is read first, so productions is placed to land
+// there, with users next to it, and archive/settings anchored at the end.
 export const MODULES: ModuleDef[] = [
   radarModule,
-  showsModule,
+  usersModule,
   productionsModule,
   financeModule,
   contractsModule,
-  usersModule,
+  showsModule,
   archiveModule,
   settingsModule,
 ];

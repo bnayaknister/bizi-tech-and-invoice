@@ -55,17 +55,6 @@ const CARD_ACCENTS: Record<
   },
 };
 
-// a 0 / inactive module is RESTING, not dead (owner note): same glass, a
-// very-low-saturation violet tint, a faint violet border, and a small dim
-// orb — alive frame, calm contents. It brightens on hover and, once its
-// value is > 0, switches to the full accent above.
-const RESTING = {
-  gradient: "linear-gradient(135deg, rgba(139,92,246,0.075), rgba(30,20,55,0.30))",
-  border: "rgba(139,92,246,0.16)",
-  glow: "rgba(139,92,246,0.12)",
-  hoverBorder: "rgba(139,92,246,0.4)",
-  hoverShadow: "rgba(139,92,246,0.16)",
-};
 
 // per-module theme: the card's semantic hue + the icon tile's hue (icon
 // hues follow DESIGN.md §7, which don't all match the card semantics)
@@ -97,26 +86,25 @@ export default function ModuleCard({
 }) {
   const theme = MODULE_THEME[moduleKey] ?? { card: "violet" as CardAccent, tile: "violet" as IconAccent };
   const isEmpty = metric.value === "0";
-  const hasAccent = !isEmpty && theme.card !== "muted";
-  const accent = hasAccent ? CARD_ACCENTS[theme.card as Exclude<CardAccent, "muted">] : null;
-
-  // empty -> resting violet frame; accented -> full semantic hue; archive
-  // (muted, non-empty) -> plain secondary glass, no orb
-  const surface = accent ?? (isEmpty ? RESTING : null);
+  // A 0 is NOT "unimportant" (owner note): an accented module keeps its FULL
+  // glass — gradient, orb, accent border — whether its count is 0 or 500.
+  // The ONLY thing a 0 changes is the number's own color (dim, not white):
+  // the card is alive, just the number is quiet. Only 'muted' modules
+  // (archive) are genuinely secondary and stay gray.
+  const accent = theme.card !== "muted" ? CARD_ACCENTS[theme.card as Exclude<CardAccent, "muted">] : null;
 
   const style: CSSProperties = { animationDelay: `${index * 60}ms` };
-  if (surface) {
+  if (accent) {
     Object.assign(style, {
-      background: surface.gradient,
-      borderColor: surface.border,
-      ["--card-accent"]: surface.hoverBorder,
-      ["--card-glow-shadow"]: surface.hoverShadow,
+      background: accent.gradient,
+      borderColor: accent.border,
+      ["--card-accent"]: accent.hoverBorder,
+      ["--card-glow-shadow"]: accent.hoverShadow,
     } as CSSProperties);
   }
 
-  // resting orb is smaller + dimmer than a live one
-  const orbStyle: CSSProperties | null = surface
-    ? ({ ["--glow-color"]: surface.glow, ...(isEmpty ? { width: 84, height: 84 } : {}) } as CSSProperties)
+  const orbStyle: CSSProperties | null = accent
+    ? ({ ["--glow-color"]: accent.glow } as CSSProperties)
     : null;
 
   return (
@@ -131,12 +119,12 @@ export default function ModuleCard({
 
       <div className="glass-content flex flex-col gap-3">
         <div className="flex items-center gap-2.5">
-          <IconTile icon={icon} accent={isEmpty ? "muted" : theme.tile} />
+          <IconTile icon={icon} accent={theme.tile} />
           <span className="float-label font-bold text-sm">{title}</span>
         </div>
         <div>
           {/* calibrated number with a restrained violet halo (DESIGN.md §2);
-              a resting 0 keeps a dim number even though its frame is alive */}
+              a 0 keeps a dim number even though its card is fully alive */}
           <div
             className="num-glow text-3xl font-medium font-mono"
             style={{ color: isEmpty ? "var(--faint)" : toneColor[metric.tone] }}
