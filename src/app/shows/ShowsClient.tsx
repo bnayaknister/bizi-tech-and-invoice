@@ -47,6 +47,8 @@ export default function ShowsClient({
   canViewMoney,
   canEditMoney,
   canEditStages,
+  canManageUsers,
+  pendingShowIds,
 }: {
   shows: ShowRow[];
   episodes: EpisodeRow[];
@@ -54,6 +56,8 @@ export default function ShowsClient({
   canViewMoney: boolean;
   canEditMoney: boolean;
   canEditStages: boolean;
+  canManageUsers: boolean;
+  pendingShowIds: string[];
 }) {
   const router = useRouter();
   const [shows, setShows] = useState(initialShows);
@@ -62,9 +66,44 @@ export default function ShowsClient({
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
   const [mergeOpen, setMergeOpen] = useState(false);
+  const [deleteFor, setDeleteFor] = useState<ShowRow | null>(null);
+  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set(pendingShowIds));
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const canEdit = canEditStages || canEditMoney;
+
+  // Delete a show. An admin (user-manager) does it directly; a technician
+  // can only REQUEST it — the request lands in the approval queue with a
+  // mandatory reason (owner rule 2026-07-18). Either way the modal collects
+  // the reason first.
+  async function deleteOrRequest(show: ShowRow, reason: string) {
+    setError(null);
+    setNotice(null);
+    if (canManageUsers) {
+      const res = await fetch(`/api/shows/${show.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setError(d.error ?? "המחיקה נכשלה");
+        return;
+      }
+      setShows((prev) => prev.filter((s) => s.id !== show.id));
+      setNotice(`התוכנית "${show.name}" נמחקה.`);
+    } else {
+      const res = await fetch("/api/approvals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action_type: "show_delete", entity_type: "show", entity_id: show.id, reason }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setError(d.error ?? "שליחת הבקשה נכשלה");
+        return;
+      }
+      setPendingIds((prev) => new Set(prev).add(show.id));
+      setNotice("הבקשה נשלחה לאישור מנהל.");
+    }
+  }
   const clientName = useMemo(() => {
     const m: Record<string, string> = {};
     for (const c of clients) m[c.id] = c.name;
@@ -165,8 +204,13 @@ export default function ShowsClient({
       </div>
 
       {error && (
-        <div className="mb-3 text-xs text-[var(--peak)] border border-[var(--peak)] rounded px-3 py-2">
+        <div className="mb-3 text-xs text-[var(--peak)] border border-[var(--peak)] rounded-xl px-3 py-2">
           {error}
+        </div>
+      )}
+      {notice && (
+        <div className="mb-3 text-xs text-[var(--green)] border border-[var(--green)] rounded-xl px-3 py-2">
+          {notice}
         </div>
       )}
 
@@ -201,6 +245,11 @@ export default function ShowsClient({
                     />
                     <span className={s.active ? "" : "text-[var(--dim)]"}>{s.name}</span>
                     {s.is_oneoff && <span className="text-[10px] text-[var(--faint)]">חד־פעמית</span>}
+                    {pendingIds.has(s.id) && (
+                      <span className="text-[10px] text-[var(--amber)] border border-[var(--amber)] rounded-full px-1.5 py-0.5">
+                        ממתין לאישור
+                      </span>
+                    )}
                   </span>
                 </td>
                 {canViewMoney && (
@@ -252,6 +301,24 @@ export default function ShowsClient({
           onSave={save}
           onClose={() => setOpenId(null)}
           onClientCreated={(c) => setClients((cs) => [...cs, c].sort((a, b) => a.name.localeCompare(b.name, "he")))}
+          canManageUsers={canManageUsers}
+          isPending={pendingIds.has(open.id)}
+          onDeleteAsk={(s) => {
+            setOpenId(null);
+            setDeleteFor(s);
+          }}
+        />
+      )}
+
+      {deleteFor && (
+        <DeleteRequestModal
+          show={deleteFor}
+          canManageUsers={canManageUsers}
+          onClose={() => setDeleteFor(null)}
+          onConfirm={(reason) => {
+            void deleteOrRequest(deleteFor, reason);
+            setDeleteFor(null);
+          }}
         />
       )}
 
@@ -358,6 +425,9 @@ function ShowCard({
   onSave,
   onClose,
   onClientCreated,
+  canManageUsers,
+  isPending,
+  onDeleteAsk,
 }: {
   show: ShowRow;
   episodes: EpisodeRow[];
@@ -368,6 +438,9 @@ function ShowCard({
   onSave: (id: string, patch: Record<string, unknown>) => Promise<boolean>;
   onClose: () => void;
   onClientCreated: (client: Client) => void;
+  canManageUsers: boolean;
+  isPending: boolean;
+  onDeleteAsk: (show: ShowRow) => void;
 }) {
   const studioHours = episodes.reduce((t, e) => t + (e.studio_hours ?? 0), 0);
   const editHours = episodes.reduce((t, e) => t + (e.edit_hours ?? 0), 0);
@@ -403,6 +476,19 @@ function ShowCard({
               {show.active ? "ארכב תוכנית" : "הפעל תוכנית"}
             </button>
           )}
+          {canEdit &&
+            (isPending ? (
+              <span className="text-[10px] text-[var(--amber)] border border-[var(--amber)] rounded-xl px-2.5 py-1.5">
+                ממתין לאישור
+              </span>
+            ) : (
+              <button
+                onClick={() => onDeleteAsk(show)}
+                className="text-xs border border-[var(--red)] text-[var(--red)] rounded-xl px-3 py-1.5 hover:bg-[rgba(251,113,133,0.08)] transition-colors"
+              >
+                {canManageUsers ? "מחק תוכנית" : "בקש מחיקה"}
+              </button>
+            ))}
           <button onClick={onClose} className="text-[var(--faint)] hover:text-[var(--ink)]" aria-label="סגור">
             ✕
           </button>
@@ -644,6 +730,67 @@ function MergeModal({
             style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))", boxShadow: "0 4px 14px rgba(139,92,246,0.3)" }}
           >
             מזג
+          </button>
+          <button onClick={onClose} className="border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)] hover:bg-[var(--panel3)] transition-colors">
+            ביטול
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Delete/request modal: reason is mandatory for BOTH paths (an admin's
+// direct delete and a technician's request), so the audit trail always has
+// a "why". The button label + copy adapt to whether this user can delete
+// directly or is filing a request.
+function DeleteRequestModal({
+  show,
+  canManageUsers,
+  onClose,
+  onConfirm,
+}: {
+  show: ShowRow;
+  canManageUsers: boolean;
+  onClose: () => void;
+  onConfirm: (reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  return (
+    <div
+      className="fixed inset-0 flex items-center justify-center p-4 z-50"
+      style={{ background: "rgba(3,2,10,0.66)", backdropFilter: "blur(6px)" }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl"
+        style={{ background: "rgba(15,13,28,0.92)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}
+      >
+        <h3 className="font-bold mb-1">{canManageUsers ? "מחיקת תוכנית" : "בקשת מחיקת תוכנית"}</h3>
+        <p className="text-xs text-[var(--dim)] mb-1">{show.name}</p>
+        <p className="text-[11px] text-[var(--faint)] mb-3">
+          {canManageUsers
+            ? "פעולה בלתי הפיכה. למה למחוק?"
+            : "פעולה זו דורשת אישור מנהל. למה אתה רוצה למחוק?"}
+        </p>
+        <textarea
+          autoFocus
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          rows={2}
+          placeholder="סיבה (חובה)"
+          className="w-full border border-[var(--rule)] rounded-xl px-3 py-2 text-sm mb-4 resize-y"
+          style={{ background: "rgba(255,255,255,0.05)" }}
+        />
+        <div className="flex gap-2">
+          <button
+            onClick={() => onConfirm(reason)}
+            disabled={!reason.trim()}
+            className="text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-40"
+            style={{ background: "linear-gradient(135deg, var(--red), var(--red-dk))" }}
+          >
+            {canManageUsers ? "מחק" : "שלח בקשה"}
           </button>
           <button onClick={onClose} className="border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)] hover:bg-[var(--panel3)] transition-colors">
             ביטול

@@ -11,7 +11,8 @@ type IconName =
   | "users"
   | "archive"
   | "search"
-  | "settings";
+  | "settings"
+  | "approvals";
 
 const PATHS: Record<IconName, React.ReactNode> = {
   // radar sweep: rings + a sweeping arm + blip
@@ -80,6 +81,15 @@ const PATHS: Record<IconName, React.ReactNode> = {
     <>
       <circle cx="12" cy="12" r="3.2" />
       <path d="M12 3.5v2.4M12 18.1v2.4M20.5 12h-2.4M5.9 12H3.5M17.7 6.3l-1.7 1.7M8 16l-1.7 1.7M17.7 17.7 16 16M8 8 6.3 6.3" />
+    </>
+  ),
+  // approvals = checklist / clipboard with a check
+  approvals: (
+    <>
+      <rect x="4.5" y="4" width="15" height="17" rx="2.5" />
+      <path d="M9 4V3h6v1" />
+      <path d="M8 11.5l2 2 4-4.5" />
+      <path d="M8 17h5" />
     </>
   ),
 };

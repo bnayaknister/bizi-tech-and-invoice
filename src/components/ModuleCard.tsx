@@ -66,6 +66,7 @@ const MODULE_THEME: Record<string, { card: CardAccent; tile: IconAccent }> = {
   contracts: { card: "cyan", tile: "violet-light" },
   users: { card: "violet", tile: "violet" },
   settings: { card: "violet", tile: "violet" },
+  approvals: { card: "rose", tile: "rose" },
   archive: { card: "muted", tile: "muted" },
 };
 
