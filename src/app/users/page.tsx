@@ -30,6 +30,7 @@ export default async function UsersPage() {
     can_edit_stages: r.can_edit_stages,
     can_manage_users: r.can_manage_users,
     can_import: r.can_import,
+    created_at: r.created_at,
   }));
 
   return (
