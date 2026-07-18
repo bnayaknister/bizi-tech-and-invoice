@@ -150,10 +150,14 @@ finally:
     # matter what happened above, then remove the two throwaway users
     requests.patch(rest("app_settings"), headers=ADMIN, params={"id": "eq.true"},
                     json={"calendar_sync_enabled": original_value})
-    if tech_id:
-        requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{tech_id}", headers=ADMIN)
-    if owner_id:
-        requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{owner_id}", headers=ADMIN)
+    # delete each user's events first (events.actor_id is FK-RESTRICT — the
+    # toggle route logs calendar_sync_toggled) or the auth delete silently
+    # fails; see the test-data-cleanup-rule memory
+    for uid in [i for i in (tech_id, owner_id) if i]:
+        requests.delete(rest("events"), headers=ADMIN, params={"actor_id": f"eq.{uid}"})
+        r = requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{uid}", headers=ADMIN)
+        if r.status_code >= 300:
+            print("WARNING: user delete failed:", uid, r.status_code)
     print("cleaned up test users and restored calendar_sync_enabled to", original_value)
 
 print()

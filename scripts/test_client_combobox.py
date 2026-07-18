@@ -176,10 +176,13 @@ try:
 finally:
     if client_ids:
         requests.delete(rest("clients"), headers=ADMIN, params={"id": f"in.({','.join(client_ids)})"})
-    if tech_id:
-        requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{tech_id}", headers=ADMIN)
-    if money_id:
-        requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{money_id}", headers=ADMIN)
+    # delete each user's events first (events.actor_id is FK-RESTRICT) or the
+    # auth-user delete silently fails — see the test-data-cleanup-rule memory
+    for uid in [i for i in (tech_id, money_id) if i]:
+        requests.delete(rest("events"), headers=ADMIN, params={"actor_id": f"eq.{uid}"})
+        r = requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{uid}", headers=ADMIN)
+        if r.status_code >= 300:
+            print("WARNING: user delete failed:", uid, r.status_code)
     print("cleaned up test clients and users")
 
 print()

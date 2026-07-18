@@ -167,10 +167,13 @@ try:
 finally:
     if show_id:
         requests.delete(rest("shows"), headers=ADMIN, params={"id": f"eq.{show_id}"})
-    if stages_id:
-        requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{stages_id}", headers=ADMIN)
-    if money_id:
-        requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{money_id}", headers=ADMIN)
+    # events first (FK-RESTRICT), then the auth user; verify — see the
+    # test-data-cleanup-rule memory
+    for uid in [i for i in (stages_id, money_id) if i]:
+        requests.delete(rest("events"), headers=ADMIN, params={"actor_id": f"eq.{uid}"})
+        r = requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{uid}", headers=ADMIN)
+        if r.status_code >= 300:
+            print("WARNING: user delete failed:", uid, r.status_code)
     print("cleaned up test show and users")
 
 print()

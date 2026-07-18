@@ -285,7 +285,13 @@ finally:
                          params={"id": f"in.({','.join(production_ids)})"})
     if show_id:
         requests.delete(rest("shows"), headers=ADMIN, params={"id": f"eq.{show_id}"})
-    requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}", headers=ADMIN)
+    # delete this user's events first (events.actor_id is FK-RESTRICT to
+    # profiles) or the auth-user delete silently fails — see the
+    # test-data-cleanup-rule memory
+    requests.delete(rest("events"), headers=ADMIN, params={"actor_id": f"eq.{user_id}"})
+    r = requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}", headers=ADMIN)
+    if r.status_code >= 300:
+        print("WARNING: user delete failed:", r.status_code, r.text[:120])
     print("cleaned up test show, productions and technician user")
 
 print()

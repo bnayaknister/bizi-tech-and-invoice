@@ -221,17 +221,30 @@ try:
     check("M5. money user still sees clients", r.status_code < 300, f"{r.status_code}")
 
 finally:
+    # cleanup MUST be complete even if an assertion failed mid-run. Order
+    # matters: child data first, then the FK-RESTRICT dependencies on
+    # profiles (events.actor_id, approval_requests.requested_by/reviewed_by),
+    # only then the auth user (which cascades its profile). Deleting a user
+    # with leftover events/requests silently FAILS, which is exactly how 15
+    # test users once accumulated — see the test-data-cleanup-rule memory.
     if created_prods:
         requests.delete(rest(f"productions?id=in.({','.join(created_prods)})"), headers=ADMIN)
     if created_jobs:
         requests.delete(rest(f"jobs?id=in.({','.join(created_jobs)})"), headers=ADMIN)
     if created_shows:
         requests.delete(rest(f"shows?id=in.({','.join(created_shows)})"), headers=ADMIN)
-    # approval_requests reference profiles(requested_by) -> delete them before users
     if created_users:
-        requests.delete(rest(f"approval_requests?requested_by=in.({','.join(created_users)})"), headers=ADMIN)
+        idl = ",".join(created_users)
+        requests.delete(rest(f"events?actor_id=in.({idl})"), headers=ADMIN)
+        requests.delete(rest(f"approval_requests?requested_by=in.({idl})"), headers=ADMIN)
+        requests.delete(rest(f"approval_requests?reviewed_by=in.({idl})"), headers=ADMIN)
+        failed = []
         for uid in created_users:
-            requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{uid}", headers=ADMIN)
+            r = requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{uid}", headers=ADMIN)
+            if r.status_code >= 300:
+                failed.append((uid, r.status_code))
+        if failed:
+            print("WARNING: user deletes failed:", failed)
     print("cleaned up test users, shows, productions, jobs, requests")
 
 print()
