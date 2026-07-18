@@ -93,7 +93,10 @@ export const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
           { value: "none", label: "ללא חיוב" },
         ],
       },
-      { key: "default_rate", label: "מחיר לפרק", type: "number", view: "money", edit: "money" },
+      // default_rate is intentionally NOT here: its SELECT privilege is
+      // revoked from the authenticated role (0021), so it's edited only on
+      // the dedicated show card (via the service-role path), never through
+      // this generic session-selecting drawer.
       { key: "default_studio", label: "אולפן קבוע", type: "text", view: "any", edit: "stages" },
       { key: "camera_count", label: "מספר מצלמות", type: "number", view: "any", edit: "stages" },
       { key: "notes", label: "הערות", type: "text", view: "any", edit: "stages" },

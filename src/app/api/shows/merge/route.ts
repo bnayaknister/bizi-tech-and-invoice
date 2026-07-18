@@ -21,9 +21,13 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "לא מחובר" }, { status: 401 });
 
+  // explicit columns (never "*"): default_rate's SELECT privilege is revoked
+  // from the authenticated role (0021 money compartmentalization), so a
+  // "select *" here would be denied for every caller. The merge doesn't need
+  // the price anyway.
   const { data: rows, error: fetchErr } = await supabase
     .from("shows")
-    .select("*")
+    .select("id,name,aliases,client_id,billing_mode,default_studio,camera_count,notes,color,active,is_oneoff")
     .in("id", [sourceId, targetId]);
   if (fetchErr) return NextResponse.json({ error: fetchErr.message }, { status: 400 });
   const source = rows?.find((s) => s.id === sourceId);

@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getSessionAndProfile } from "@/lib/profile";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import ShowsClient, { type EpisodeRow, type ShowRow } from "./ShowsClient";
 
@@ -15,10 +16,13 @@ export default async function ShowsPage() {
   const supabase = createClient();
   const canViewMoney = profile.can_view_money;
 
-  // money columns are simply never selected without the permission —
-  // "not hidden, not present in the response" (screens spec, section 12)
+  // default_rate's SELECT privilege is revoked from the authenticated role
+  // (0021) — even a money user's own session can't read it — so the session
+  // query never mentions it. Money users get the rate through the service
+  // role instead, below, gated on canViewMoney here. Everything else is the
+  // same "not present in the response for a stages viewer" pattern.
   const showColumns = canViewMoney
-    ? "id,name,client_id,aliases,default_rate,default_studio,camera_count,notes,active,is_oneoff,color"
+    ? "id,name,client_id,aliases,default_studio,camera_count,notes,active,is_oneoff,color"
     : "id,name,aliases,default_studio,camera_count,notes,active,is_oneoff,color";
 
   const [{ data: shows }, { data: productions }, { data: clients }] = await Promise.all([
@@ -29,6 +33,14 @@ export default async function ShowsPage() {
       .order("record_date", { ascending: false }),
     canViewMoney ? supabase.from("clients").select("id,name").order("name") : Promise.resolve({ data: [] }),
   ]);
+
+  // default_rate via the service role, money-gated — the one money column
+  // that lives on an otherwise stages-readable table (0021)
+  const rateByShow: Record<string, number | null> = {};
+  if (canViewMoney) {
+    const { data: rateRows } = await createAdminClient().from("shows").select("id,default_rate");
+    for (const r of rateRows ?? []) rateByShow[r.id as string] = (r.default_rate as number) ?? null;
+  }
 
   // cumulative revenue per show: jobs → job_productions → production → show.
   // Live jobs only; archive never enters any calculation. A job linked to
@@ -71,7 +83,7 @@ export default async function ShowsPage() {
     name: s.name as string,
     client_id: (s.client_id as string) ?? null,
     aliases: (s.aliases as string[]) ?? [],
-    default_rate: canViewMoney ? ((s.default_rate as number) ?? null) : null,
+    default_rate: canViewMoney ? (rateByShow[s.id as string] ?? null) : null,
     default_studio: (s.default_studio as string) ?? null,
     camera_count: (s.camera_count as number) ?? null,
     notes: (s.notes as string) ?? null,
@@ -94,6 +106,15 @@ export default async function ShowsPage() {
       edit_hours: p.edit_hours,
     }));
 
+  // shows this viewer already has a pending destructive request on (RLS
+  // returns the viewer's own pending rows) — the card shows "ממתין לאישור"
+  const { data: myPending } = await supabase
+    .from("approval_requests")
+    .select("entity_id")
+    .eq("status", "pending")
+    .eq("entity_type", "show");
+  const pendingShowIds = (myPending ?? []).map((r) => r.entity_id).filter(Boolean) as string[];
+
   return (
     <div className="min-h-screen">
       <AppHeader profile={profile} />
@@ -105,6 +126,8 @@ export default async function ShowsPage() {
           canViewMoney={canViewMoney}
           canEditMoney={profile.can_edit_money}
           canEditStages={profile.can_edit_stages}
+          canManageUsers={profile.can_manage_users}
+          pendingShowIds={pendingShowIds}
         />
       </main>
     </div>
