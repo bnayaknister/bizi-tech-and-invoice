@@ -175,6 +175,13 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     return od < 0 && od >= -7; // due within the next 7 days
   });
   const openMilestones = milestones.filter((m) => m.status === "pending");
+  // a milestone whose expected date is within the next 14 days — a heads-up
+  // to invoice before it slips into the overdue (red) bucket
+  const milestoneApproaching = milestones.filter((m) => {
+    if (m.status !== "pending" || !m.expected_date) return false;
+    const days = Math.floor((new Date(m.expected_date).getTime() - todayMid) / DAY);
+    return days >= 0 && days <= 14;
+  });
   const stuckStage = stages.filter((s) => s.status === "in_progress"); // no timestamp yet → all in_progress
   const onHoldLong = productions.filter(
     (p) => p.on_hold && p.on_hold_since && todayMid - new Date(p.on_hold_since).getTime() > 14 * DAY
@@ -197,6 +204,7 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     { key: "open_commitment", severity: "blue", title: "התחייבות פתוחה", count: openMilestones.length, amount: openCommitment, href: "/contracts" },
     { key: "unknown_payment", severity: "yellow", title: "סטטוס תשלום חסר", count: unknownPayment.length, amount: sum(unknownPayment), href: "/finance?filter=unknown_payment" },
     { key: "estimated_invoice_date", severity: "yellow", title: "תאריך חשבונית משוער", count: estimatedInvoiceDate.length, amount: null, href: "/finance?filter=estimated" },
+    { key: "milestone_approaching", severity: "yellow", title: "אבן דרך בעוד 14 יום", count: milestoneApproaching.length, amount: milestoneApproaching.reduce((s, m) => s + num(m.amount), 0), href: "/contracts" },
     { key: "approaching_due", severity: "yellow", title: "מתקרב לפירעון (7 ימים) ואין חשבונית", count: approachingDue.length, amount: approachingDue.reduce((s, j) => s + num(j.amount), 0), href: "/finance?vu=green" },
     { key: "duplicate_clients", severity: "yellow", title: "אותו לקוח בשמות שונים", count: duplicateClientNames, amount: null, href: "/finance" },
     { key: "stuck_stage", severity: "yellow", title: "שלב תקוע מעל 14 יום", count: stuckStage.length, amount: null, href: "/productions" },
