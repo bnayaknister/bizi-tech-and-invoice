@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useDrawer } from "@/components/EntityDrawer";
+import IconTile from "@/components/IconTile";
 
 export type BoardProduction = {
   id: string;
@@ -230,8 +231,11 @@ export default function ProductionsClient({
   return (
     <div className="max-w-[1400px] mx-auto p-6">
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <h1 className="text-lg font-bold">הפקות</h1>
-        <div className="flex rounded-lg border border-[var(--rule)] overflow-hidden">
+        <h1 className="text-lg font-bold flex items-center gap-2.5">
+          <IconTile icon="productions" accent="violet" size={30} iconSize={17} />
+          הפקות
+        </h1>
+        <div className="flex rounded-xl border border-[var(--rule)] overflow-hidden">
           {(
             [
               ["today", "היום"],
@@ -241,9 +245,12 @@ export default function ProductionsClient({
             <button
               key={key}
               onClick={() => setTab(key)}
-              className={`text-xs px-4 py-1.5 ${
-                tab === key ? "bg-[var(--violet)] text-white font-bold" : "text-[var(--dim)] hover:bg-[var(--panel3)]"
+              className={`text-xs px-4 py-1.5 transition-colors ${
+                tab === key
+                  ? "text-white font-bold"
+                  : "text-[var(--dim)] hover:bg-[var(--panel3)]"
               }`}
+              style={tab === key ? { background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" } : undefined}
             >
               {label}
             </button>
@@ -265,14 +272,15 @@ export default function ProductionsClient({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="חיפוש תוכנית, אורח, אולפן…"
-          className="mr-auto w-60 max-w-full bg-[var(--panel2)] border border-[var(--rule)] rounded-lg px-3 py-1.5 text-sm"
+          className="mr-auto w-60 max-w-full border border-[var(--rule)] rounded-xl px-3 py-1.5 text-sm focus:border-[var(--violet-light)] outline-none transition-colors"
+          style={{ background: "rgba(255,255,255,0.04)", backdropFilter: "blur(8px)" }}
         />
 
         {canEditStages && (
           <button
             onClick={syncNow}
             disabled={syncing}
-            className="text-xs border border-[var(--rule)] rounded-lg px-3 py-1.5 text-[var(--dim)] hover:bg-[var(--panel3)] disabled:opacity-50"
+            className="text-xs border border-[var(--rule)] rounded-xl px-3 py-1.5 text-[var(--dim)] hover:bg-[var(--panel3)] hover:border-[var(--rule2)] disabled:opacity-50 transition-colors"
           >
             {syncing ? "מסנכרן…" : "סנכרן יומן עכשיו"}
           </button>
@@ -280,10 +288,10 @@ export default function ProductionsClient({
       </div>
 
       {error && (
-        <div className="mb-3 text-xs text-[var(--peak)] border border-[var(--peak)] rounded-lg px-3 py-2">{error}</div>
+        <div className="mb-3 text-xs text-[var(--peak)] border border-[var(--peak)] rounded-xl px-3 py-2">{error}</div>
       )}
       {syncResult && (
-        <div className="mb-3 text-xs text-[var(--dim)] border border-[var(--rule)] rounded-lg px-3 py-2 font-mono">{syncResult}</div>
+        <div className="mb-3 text-xs text-[var(--dim)] border border-[var(--rule)] rounded-xl px-3 py-2 font-mono">{syncResult}</div>
       )}
 
       {tab === "today" ? (
@@ -395,10 +403,16 @@ function ProductionCard({
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onClick={() => onOpen(p.id)}
-      className={`lift group text-right w-full rounded-lg border bg-[var(--panel2)] p-3 cursor-pointer ${
+      className={`lift group text-right w-full rounded-xl border p-3 cursor-pointer ${
         p.on_hold ? "opacity-60 border-[var(--rule)]" : "border-[var(--rule)]"
       }`}
-      style={{ borderInlineStartWidth: 3, borderInlineStartColor: p.show_color ?? "var(--rule2)" }}
+      style={{
+        borderInlineStartWidth: 3,
+        borderInlineStartColor: p.show_color ?? "var(--rule2)",
+        background: "rgba(255,255,255,0.035)",
+        backdropFilter: "blur(10px)",
+        WebkitBackdropFilter: "blur(10px)",
+      }}
     >
       <div className="flex items-center gap-1.5 mb-1">
         {p.needs_attention && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: "var(--red)" }} title="דורש טיפול" />}
@@ -568,7 +582,7 @@ function TodayView({
         <span className="text-xs text-[var(--faint)] font-mono">{items.length}</span>
       </div>
       {items.length === 0 ? (
-        <div className="text-xs text-[var(--faint)] border border-dashed border-[var(--rule)] rounded-lg px-3 py-4 text-center">
+        <div className="text-xs text-[var(--faint)] border border-dashed border-[var(--rule)] rounded-2xl px-3 py-5 text-center">
           אין פריטים
         </div>
       ) : (
@@ -665,12 +679,17 @@ function Kanban({
                 if (dragId) onDropTo(dragId, status);
                 setDragId(null);
               }}
-              className={`w-64 shrink-0 rounded-lg border p-2 transition-colors ${
-                isOver ? "border-[var(--violet)] bg-[var(--panel3)]" : "border-[var(--rule)] bg-[var(--panel2)]/40"
+              className={`w-64 shrink-0 rounded-2xl border p-2 transition-colors ${
+                isOver ? "border-[var(--violet)]" : "border-[var(--rule)]"
               }`}
+              style={{
+                background: isOver ? "rgba(139,92,246,0.08)" : "rgba(255,255,255,0.02)",
+                backdropFilter: "blur(8px)",
+                WebkitBackdropFilter: "blur(8px)",
+              }}
             >
-              <div className="flex items-center justify-between px-1 py-1.5 mb-1">
-                <span className="text-xs font-bold">{STATUS_LABEL[status]}</span>
+              <div className="flex items-center justify-between px-1.5 py-1.5 mb-1">
+                <span className="text-[11px] font-bold uppercase tracking-wide text-[var(--dim)]">{STATUS_LABEL[status]}</span>
                 <span className="text-[11px] text-[var(--faint)] font-mono">{items.length}</span>
               </div>
               <div className="flex flex-col gap-2">
@@ -717,8 +736,16 @@ function HoldModal({
 }) {
   const [reason, setReason] = useState("");
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm border border-[var(--rule2)] rounded-xl bg-[var(--panel2)] p-5">
+    <div
+      className="fixed inset-0 flex items-center justify-center p-4 z-50"
+      style={{ background: "rgba(3,2,10,0.66)", backdropFilter: "blur(6px)" }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl"
+        style={{ background: "rgba(15,13,28,0.92)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}
+      >
         <h3 className="font-bold mb-1">הקפאת הפקה</h3>
         <p className="text-xs text-[var(--dim)] mb-1">{production.show_name}</p>
         <p className="text-[11px] text-[var(--faint)] mb-4">
@@ -730,17 +757,18 @@ function HoldModal({
           onChange={(e) => setReason(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && reason.trim() && onConfirm(reason)}
           placeholder="סיבה (למשל: ממתין לחומרים)"
-          className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-3 py-2 text-sm mb-4"
+          className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded-xl px-3 py-2 text-sm mb-4"
         />
         <div className="flex gap-2">
           <button
             onClick={() => onConfirm(reason)}
             disabled={!reason.trim()}
-            className="bg-[var(--violet)] text-white font-bold rounded-lg px-4 py-2 text-sm disabled:opacity-40"
+            className="text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-40"
+            style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))", boxShadow: "0 4px 14px rgba(139,92,246,0.3)" }}
           >
             הקפא
           </button>
-          <button onClick={onClose} className="border border-[var(--rule)] rounded-lg px-4 py-2 text-sm text-[var(--dim)]">
+          <button onClick={onClose} className="border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)]">
             ביטול
           </button>
         </div>
@@ -761,8 +789,16 @@ function SplitModal({
   const [custom, setCustom] = useState("");
   const customCount = Number(custom);
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm border border-[var(--rule2)] rounded-xl bg-[var(--panel2)] p-5">
+    <div
+      className="fixed inset-0 flex items-center justify-center p-4 z-50"
+      style={{ background: "rgba(3,2,10,0.66)", backdropFilter: "blur(6px)" }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl"
+        style={{ background: "rgba(15,13,28,0.92)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}
+      >
         <h3 className="font-bold mb-1">פיצול הפקה</h3>
         <p className="text-xs text-[var(--dim)] mb-4">{production.show_name} — כמה פרקים בפועל?</p>
         <div className="flex gap-2 mb-3">
@@ -770,7 +806,7 @@ function SplitModal({
             <button
               key={n}
               onClick={() => onConfirm(n)}
-              className="flex-1 border border-[var(--rule)] rounded-lg py-2 text-sm font-bold hover:bg-[var(--panel3)]"
+              className="flex-1 border border-[var(--rule)] rounded-xl py-2 text-sm font-bold hover:bg-[var(--panel3)]"
             >
               {n}
             </button>
@@ -781,17 +817,18 @@ function SplitModal({
             value={custom}
             onChange={(e) => setCustom(e.target.value.replace(/\D/g, ""))}
             placeholder="מספר אחר"
-            className="flex-1 bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-3 py-2 text-sm"
+            className="flex-1 bg-[var(--panel)] border border-[var(--rule)] rounded-xl px-3 py-2 text-sm"
           />
           <button
             onClick={() => onConfirm(customCount)}
             disabled={!custom || customCount < 2}
-            className="bg-[var(--violet)] text-white font-bold rounded-lg px-4 py-2 text-sm disabled:opacity-40"
+            className="text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-40"
+            style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))", boxShadow: "0 4px 14px rgba(139,92,246,0.3)" }}
           >
             אישור
           </button>
         </div>
-        <button onClick={onClose} className="mt-3 text-xs text-[var(--dim)] border border-[var(--rule)] rounded-lg px-3 py-1.5">
+        <button onClick={onClose} className="mt-3 text-xs text-[var(--dim)] border border-[var(--rule)] rounded-xl px-3 py-1.5">
           ביטול
         </button>
       </div>
