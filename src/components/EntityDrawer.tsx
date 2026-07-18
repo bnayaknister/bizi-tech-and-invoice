@@ -21,6 +21,23 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import ClientCombobox from "@/components/ClientCombobox";
+import IconTile, { type IconAccent } from "@/components/IconTile";
+
+// entity type -> line icon + tile accent (no emoji, DESIGN.md §12)
+const ENTITY_ICON: Record<string, string> = {
+  production: "productions",
+  job: "finance",
+  show: "shows",
+  client: "users",
+  contract: "contracts",
+};
+const ENTITY_ACCENT: Record<string, IconAccent> = {
+  production: "violet",
+  job: "rose",
+  show: "cyan",
+  client: "violet",
+  contract: "violet-light",
+};
 
 type EntityRef = { type: string; id: string };
 
@@ -312,10 +329,16 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
       {children}
       {ref && (
         <>
-          <div className="fixed inset-0 bg-black/40 z-40" onClick={close} />
-          <aside className="fixed inset-y-0 left-0 z-50 w-full max-w-md bg-[var(--panel2)] border-e border-[var(--rule2)] shadow-2xl overflow-y-auto">
-            <div className="sticky top-0 bg-[var(--panel2)] border-b border-[var(--rule)] px-4 py-3 flex items-center gap-2">
-              <span>{data?.icon ?? "⏳"}</span>
+          <div className="fixed inset-0 z-40" style={{ background: "rgba(3,2,10,0.5)", backdropFilter: "blur(4px)" }} onClick={close} />
+          <aside
+            className="fixed inset-y-0 left-0 z-50 w-full max-w-md border-e border-[var(--rule2)] shadow-2xl overflow-y-auto"
+            style={{ background: "rgba(15,13,28,0.92)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}
+          >
+            <div
+              className="sticky top-0 border-b border-[var(--rule)] px-4 py-3 flex items-center gap-2 z-10"
+              style={{ background: "rgba(15,13,28,0.85)", backdropFilter: "blur(16px)" }}
+            >
+              <IconTile icon={ENTITY_ICON[data?.type ?? ""] ?? "search"} accent={ENTITY_ACCENT[data?.type ?? ""] ?? "violet"} size={28} iconSize={15} />
               <div className="flex-1 min-w-0">
                 <div className="text-[10px] text-[var(--faint)]">{data?.label ?? ""}</div>
                 <div className="text-sm font-bold truncate">{loading ? "טוען…" : data?.title ?? ""}</div>

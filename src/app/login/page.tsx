@@ -45,56 +45,70 @@ export default function LoginPage() {
     setResetSent(true);
   }
 
+  const fieldStyle = {
+    background: "rgba(255,255,255,0.05)",
+    backdropFilter: "blur(8px)",
+    WebkitBackdropFilter: "blur(8px)",
+  } as React.CSSProperties;
+
   return (
     <main className="min-h-screen flex items-center justify-center p-6">
-      <div className="w-full max-w-sm border border-[var(--rule)] rounded bg-[var(--panel2)] p-8">
-        <div className="flex items-center gap-3 mb-6 justify-center">
-          <SoundWaveLogo size={28} animated />
-          <h1 className="text-lg font-bold tracking-tight">
-            ביזי <span className="grad-text">סטודיו</span>
-          </h1>
-        </div>
+      <div className="glass-card w-full max-w-sm" style={{ padding: "34px 32px" }}>
+        <span className="corner-glow" style={{ ["--glow-color" as string]: "rgba(192,132,252,0.26)" }} />
+        <div className="glass-content">
+          <div className="flex flex-col items-center gap-3 mb-2">
+            <SoundWaveLogo size={40} animated />
+            <h1 className="text-lg font-bold font-mono" dir="ltr">
+              <span className="grad-text">BiziPodclub</span>{" "}
+              <span className="text-[var(--faint)] font-normal">Manage</span>
+            </h1>
+          </div>
+          <p className="text-center text-[11px] tracking-[0.08em] text-[var(--faint)] mb-7">THE SOUND OF TLV</p>
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-          <input
-            type="email"
-            placeholder="אימייל"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            className="bg-[var(--panel)] border border-[var(--rule)] rounded px-3 py-2 text-sm"
-            dir="ltr"
-          />
-          <input
-            type="password"
-            placeholder="סיסמה"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            className="bg-[var(--panel)] border border-[var(--rule)] rounded px-3 py-2 text-sm"
-            dir="ltr"
-          />
-          {error && <div className="text-[var(--peak)] text-xs">{error}</div>}
-          {resetSent && (
-            <div className="text-[var(--signal)] text-xs">
-              נשלח מייל איפוס סיסמה — בדוק את התיבה.
-            </div>
-          )}
-          <button
-            type="submit"
-            disabled={loading}
-            className="bg-[var(--signal)] text-[var(--on-accent)] font-bold rounded px-3 py-2 text-sm mt-2 disabled:opacity-60"
-          >
-            {loading ? "מתחבר…" : "התחברות"}
-          </button>
-          <button
-            type="button"
-            onClick={handleForgotPassword}
-            className="text-[var(--dim)] text-xs underline mt-1"
-          >
-            שכחתי סיסמה
-          </button>
-        </form>
+          <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+            <input
+              type="email"
+              placeholder="אימייל"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              className="border border-[var(--rule)] rounded-xl px-3 py-2.5 text-sm focus:border-[var(--violet-light)] outline-none transition-colors"
+              style={fieldStyle}
+              dir="ltr"
+            />
+            <input
+              type="password"
+              placeholder="סיסמה"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              className="border border-[var(--rule)] rounded-xl px-3 py-2.5 text-sm focus:border-[var(--violet-light)] outline-none transition-colors"
+              style={fieldStyle}
+              dir="ltr"
+            />
+            {error && <div className="text-[var(--peak)] text-xs">{error}</div>}
+            {resetSent && (
+              <div className="text-[var(--violet-light)] text-xs">
+                נשלח מייל איפוס סיסמה — בדוק את התיבה.
+              </div>
+            )}
+            <button
+              type="submit"
+              disabled={loading}
+              className="text-white font-bold rounded-xl px-3 py-2.5 text-sm mt-2 disabled:opacity-60"
+              style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))", boxShadow: "0 4px 16px rgba(139,92,246,0.35)" }}
+            >
+              {loading ? "מתחבר…" : "התחברות"}
+            </button>
+            <button
+              type="button"
+              onClick={handleForgotPassword}
+              className="text-[var(--dim)] text-xs underline mt-1 hover:text-[var(--violet-light)] transition-colors"
+            >
+              שכחתי סיסמה
+            </button>
+          </form>
+        </div>
       </div>
     </main>
   );

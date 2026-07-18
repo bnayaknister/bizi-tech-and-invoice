@@ -1,5 +1,5 @@
 import AppHeader from "@/components/AppHeader";
-import LineIcon from "@/components/LineIcon";
+import IconTile from "@/components/IconTile";
 import type { Profile } from "@/lib/profile";
 
 export default function ModulePlaceholder({
@@ -17,12 +17,15 @@ export default function ModulePlaceholder({
     <div className="min-h-screen">
       <AppHeader profile={profile} />
       <main className="max-w-3xl mx-auto p-6">
-        <div className="border border-[var(--rule)] rounded-lg bg-[var(--panel2)] p-10 text-center">
-          <div className="flex justify-center mb-3 text-[var(--violet-light)]">
-            <LineIcon name={icon} size={30} />
+        <div className="glass-card text-center" style={{ padding: "40px" }}>
+          <span className="corner-glow" style={{ ["--glow-color" as string]: "rgba(192,132,252,0.22)" }} />
+          <div className="glass-content">
+            <div className="flex justify-center mb-4">
+              <IconTile icon={icon} accent="violet" size={48} iconSize={24} />
+            </div>
+            <h1 className="font-bold mb-2">{title}</h1>
+            <p className="text-[var(--dim)] text-sm">{stepNote}</p>
           </div>
-          <h1 className="font-bold mb-2">{title}</h1>
-          <p className="text-[var(--dim)] text-sm">{stepNote}</p>
         </div>
       </main>
     </div>
