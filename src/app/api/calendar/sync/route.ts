@@ -36,6 +36,32 @@ import { extractGuestFromTitle, type ShowForMatch } from "@/lib/calendar/match";
 
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 
+// Every cron invocation leaves a row in `events` (postmortem 2026-07-19):
+// CRON_SECRET was never set on the Vercel project, so Vercel sent no
+// Authorization header and every invocation 401'd — silently, for a week.
+// With no trace at all we couldn't tell "Vercel never fired" from "it fired
+// and we rejected it". started/skipped/failed/completed is that trail; a
+// missing morning is now a question the events table can answer.
+type CronLogType = "cron_sync_started" | "cron_sync_skipped" | "cron_sync_failed" | "cron_sync_completed";
+
+async function logCron(
+  admin: ReturnType<typeof createAdminClient>,
+  eventType: CronLogType,
+  payload: Record<string, unknown>
+) {
+  // bookkeeping must never be what breaks the sync
+  try {
+    await admin.from("events").insert({
+      entity_type: "calendar_cron",
+      entity_id: NIL_UUID,
+      event_type: eventType,
+      payload,
+    });
+  } catch {
+    // swallowed on purpose
+  }
+}
+
 // "HH:MM" in Israel local time — stored on the production so two same-day
 // recordings of the same show read differently on the card (screens-spec,
 // multi-episode session support, owner request 2026-07-17).
@@ -270,41 +296,66 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
 // DST note above). Vercel injects `Authorization: Bearer $CRON_SECRET`
 // automatically when CRON_SECRET is set.
 export async function GET(request: Request) {
+  // Vercel stamps every cron invocation with the vercel-cron/1.0 user agent
+  // and an x-vercel-cron-schedule header naming the expression that fired.
+  // Those identify a genuine cron hit even when auth fails — the one case we
+  // were blind to. Anonymous internet traffic to this path stays unlogged so
+  // a scanner can't flood `events`.
+  const schedule = request.headers.get("x-vercel-cron-schedule");
+  const userAgent = request.headers.get("user-agent") ?? "";
+  const isVercelCron = schedule !== null || userAgent.startsWith("vercel-cron/");
+
+  const admin = createAdminClient();
+
   const cronSecret = process.env.CRON_SECRET;
   const authHeader = request.headers.get("authorization");
   if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+    if (isVercelCron) {
+      // distinguishes the two failure modes: we never configured the secret,
+      // vs. Vercel sent one that doesn't match what this deployment holds
+      await logCron(admin, "cron_sync_failed", {
+        reason: cronSecret ? "authorization-mismatch" : "CRON_SECRET-not-set",
+        schedule,
+      });
+    }
     return NextResponse.json({ error: "לא מורשה" }, { status: 401 });
   }
 
   const { hour, date } = israelNow(new Date());
+  // logged before the hour gate: both daily triggers must show up, so a
+  // silent morning means Vercel genuinely didn't fire
+  await logCron(admin, "cron_sync_started", { date, israelHour: hour, schedule });
+
   if (hour !== 6) {
+    await logCron(admin, "cron_sync_skipped", { date, reason: "not-6am-israel", israelHour: hour, schedule });
     return NextResponse.json({ ok: true, skipped: "not-6am-israel", israelHour: hour });
   }
 
-  const admin = createAdminClient();
   if (!(await syncEnabled(admin))) {
+    await logCron(admin, "cron_sync_skipped", { date, reason: "calendar-sync-disabled", schedule });
     return NextResponse.json({ ok: true, skipped: "calendar-sync-disabled" });
   }
   if (await alreadySyncedToday(admin, date)) {
+    await logCron(admin, "cron_sync_skipped", { date, reason: "already-synced-today", schedule });
     return NextResponse.json({ ok: true, skipped: "already-synced-today", israelDate: date });
   }
 
   const url = process.env.STUDIO_ICS_URL;
-  if (!url) return NextResponse.json({ error: "STUDIO_ICS_URL לא מוגדר" }, { status: 500 });
+  if (!url) {
+    await logCron(admin, "cron_sync_failed", { date, reason: "STUDIO_ICS_URL-not-set", schedule });
+    return NextResponse.json({ error: "STUDIO_ICS_URL לא מוגדר" }, { status: 500 });
+  }
   try {
     const { start, end } = israelDayWindow(new Date());
     const allEvents = await fetchAndParseIcs(url);
     const events = allEvents.filter((e) => e.start && e.start >= start && e.start < end);
     const summary = await runSync(events, date);
-    await admin.from("events").insert({
-      entity_type: "calendar_cron",
-      entity_id: NIL_UUID,
-      event_type: "cron_sync_completed",
-      payload: { date, ...summary },
-    });
+    await logCron(admin, "cron_sync_completed", { date, schedule, ...summary });
     return NextResponse.json({ ok: true, ...summary });
   } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : "שגיאת סנכרון" }, { status: 500 });
+    const message = e instanceof Error ? e.message : "שגיאת סנכרון";
+    await logCron(admin, "cron_sync_failed", { date, reason: message, schedule });
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
