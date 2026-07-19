@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { fetchAndParseIcs, parseIcsText, type CalendarEvent } from "@/lib/calendar/parse";
 import { buildSyncPlan, type ExistingProductionRow } from "@/lib/calendar/sync";
 import { extractGuestFromTitle, type ShowForMatch } from "@/lib/calendar/match";
+import { enqueueDocument } from "@/lib/documents/enqueue";
 
 // Google Calendar sync (screens-spec §11, owner rules 2026-07-16/17):
 //   GET  — Vercel Cron trigger. Authorizes via CRON_SECRET, always reads
@@ -196,6 +197,7 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
   const plan = buildSyncPlan(events, showsForMatch, existingByUid, touchedIds);
 
   let created = 0, updated = 0, flaggedChanged = 0, flaggedRemoved = 0, unflaggedRemoved = 0;
+  let queuedWorkOrders = 0, blockedWorkOrders = 0;
 
   for (const action of plan.toCreate) {
     const show = showById.get(action.show.id);
@@ -234,6 +236,23 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
       event_type: "calendar_created",
       payload: { calendar_uid: action.event.uid, title: action.event.title, show: show.name },
     });
+
+    // A new production owes a work order — but nothing is issued here. It is
+    // QUEUED for the bookkeeper (owner spec 2026-07-19); an ineligible
+    // production is not queued and gets a 🟡 with the reason instead. A
+    // split production is several rows through this same loop, so each
+    // episode queues its own document.
+    const enq = await enqueueDocument(admin, "work_order", {
+      id: inserted!.id,
+      kind,
+      legacy: false,
+      client_id: show.client_id,
+      show_id: show.id,
+      podcast_name: show.name,
+      record_date: recordDate,
+    });
+    if (enq.status === "queued") queuedWorkOrders++;
+    else if (enq.status === "blocked") blockedWorkOrders++;
   }
 
   for (const action of plan.toUpdate) {
@@ -288,6 +307,8 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
     flaggedChanged,
     flaggedRemoved,
     unflaggedRemoved,
+    queuedWorkOrders,
+    blockedWorkOrders,
     skippedNoMatch: plan.skippedNoMatch,
   };
 }

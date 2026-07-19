@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { enqueueDocument } from "@/lib/documents/enqueue";
 
 // Productions board actions (screens-spec §2). The DB is the wall:
 //  - any status move requires can_edit_stages (trg_guard_production_stages)
@@ -89,5 +90,28 @@ export async function POST(request: Request, { params }: { params: { id: string 
     payload: eventPayload,
   });
 
-  return NextResponse.json({ ok: true, production: updated });
+  // Client approval owes a deal invoice (חשבון עסקה) — queued for the
+  // bookkeeper, never issued here (owner spec 2026-07-19). The DB trigger
+  // trg_on_production_approved has already created the job by this point,
+  // so we look it up and attach it; the queue row is what links the two.
+  let queued: string | null = null;
+  if (body.status === 'אושר_ע"י_לקוח') {
+    const { data: prod } = await admin
+      .from("productions")
+      .select("id,kind,legacy,client_id,show_id,podcast_name,record_date")
+      .eq("id", id)
+      .maybeSingle();
+    if (prod) {
+      const { data: link } = await admin
+        .from("job_productions")
+        .select("job_id")
+        .eq("production_id", id)
+        .limit(1)
+        .maybeSingle();
+      const res = await enqueueDocument(admin, "deal_invoice", prod, { jobId: link?.job_id ?? null });
+      queued = res.status;
+    }
+  }
+
+  return NextResponse.json({ ok: true, production: updated, document_queued: queued });
 }

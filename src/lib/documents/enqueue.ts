@@ -1,0 +1,214 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  DOC_TYPE_TO_MORNING_CODE,
+  DOC_TYPE_LABEL,
+  VAT_TYPE_DEFAULT,
+  type MorningDocumentRequest,
+  type PendingDocType,
+} from "@/lib/morning/types";
+
+// Enqueueing, not issuing. Nothing in this file talks to Morning — it
+// decides whether a document is OWED, builds the exact payload that would
+// be sent, and parks it for a human (owner spec 2026-07-19). The issuing
+// half lives in the review route.
+//
+// The eligibility gate is deliberately strict and deliberately loud: when a
+// production fails it, we do NOT create anything and we DO record why, on
+// the production itself (billing_block_reason -> 🟡 on the radar). Silence
+// was the old bug.
+
+export type Eligibility =
+  | { ok: true; clientId: string; morningClientId: string; amount: number | null }
+  | { ok: false; reason: string };
+
+export type ProductionForBilling = {
+  id: string;
+  kind: string | null;
+  legacy: boolean | null;
+  client_id: string | null;
+  show_id: string | null;
+  podcast_name: string | null;
+  record_date: string | null;
+};
+
+export type ShowForBilling = {
+  id: string;
+  client_id: string | null;
+  billing_mode: string | null;
+  default_rate: number | null;
+};
+
+export type ClientForBilling = {
+  id: string;
+  name: string | null;
+  morning_client_id: string | null;
+};
+
+/**
+ * The five cumulative conditions (owner spec 2026-07-19). All must hold:
+ *   kind='client' AND show has client_id AND client has morning_client_id
+ *   AND billing_mode <> 'none' AND legacy=false
+ * Any miss returns a human-readable reason — that string is what the
+ * bookkeeper reads on the radar, so it names the fix, not the rule.
+ */
+export function checkEligibility(
+  production: ProductionForBilling,
+  show: ShowForBilling | null,
+  client: ClientForBilling | null
+): Eligibility {
+  if (production.legacy) return { ok: false, reason: "הפקה היסטורית (legacy) — לא מונפקים עליה מסמכים" };
+  if (production.kind !== "client") {
+    return { ok: false, reason: `הפקה מסוג '${production.kind ?? "לא ידוע"}' — הזמנת עבודה נוצרת רק להפקת לקוח` };
+  }
+  if (!show) return { ok: false, reason: "להפקה אין תוכנית משויכת" };
+  if (show.billing_mode === "none") {
+    return { ok: false, reason: "התוכנית מסומנת כפנימית (לא מחויבת)" };
+  }
+  if (!show.client_id) return { ok: false, reason: "לתוכנית אין לקוח משויך" };
+  if (!client) return { ok: false, reason: "הלקוח של התוכנית לא נמצא" };
+  if (!client.morning_client_id) {
+    return { ok: false, reason: `הלקוח '${client.name ?? ""}' לא ממופה למורנינג` };
+  }
+  return {
+    ok: true,
+    clientId: client.id,
+    morningClientId: client.morning_client_id,
+    amount: show.default_rate ?? null,
+  };
+}
+
+/**
+ * The exact body that will be POSTed to /documents. Built at enqueue time
+ * and stored on the row, so the approver approves the real thing rather
+ * than a summary of it.
+ */
+export function buildDocumentPayload(args: {
+  docType: PendingDocType;
+  morningClientId: string;
+  clientName: string | null;
+  description: string;
+  amount: number;
+  date?: string | null;
+}): MorningDocumentRequest {
+  return {
+    type: DOC_TYPE_TO_MORNING_CODE[args.docType],
+    lang: "he",
+    currency: "ILS",
+    vatType: VAT_TYPE_DEFAULT,
+    date: args.date ?? undefined,
+    description: args.description,
+    client: {
+      id: args.morningClientId,
+      name: args.clientName ?? undefined,
+      // never auto-create a client in Morning from a document
+      add: false,
+    },
+    income: [
+      {
+        description: args.description,
+        quantity: 1,
+        price: args.amount,
+        currency: "ILS",
+        vatType: VAT_TYPE_DEFAULT,
+      },
+    ],
+  };
+}
+
+async function setBlockReason(admin: SupabaseClient, productionId: string, reason: string | null) {
+  await admin.from("productions").update({ billing_block_reason: reason }).eq("id", productionId);
+}
+
+export type EnqueueResult =
+  | { status: "queued"; id: string }
+  | { status: "exists" }
+  | { status: "blocked"; reason: string }
+  | { status: "error"; error: string };
+
+/**
+ * Queue one document for one production.
+ *
+ * A split production is several productions sharing a calendar_uid, and
+ * each is billed separately (owner rule 2026-07-19) — this function is
+ * called per production, so splits get one document each for free.
+ *
+ * Re-running is safe: the partial unique index in 0025 allows only one
+ * live (pending/approved/issued) row per (doc_type, production), so a
+ * repeated 06:00 sync or a retried approval cannot double-queue.
+ */
+export async function enqueueDocument(
+  admin: SupabaseClient,
+  docType: PendingDocType,
+  production: ProductionForBilling,
+  opts: { jobId?: string | null; amountOverride?: number | null } = {}
+): Promise<EnqueueResult> {
+  const { data: show } = await admin
+    .from("shows")
+    .select("id,client_id,billing_mode,default_rate")
+    .eq("id", production.show_id ?? "")
+    .maybeSingle();
+
+  const clientId = (show as ShowForBilling | null)?.client_id ?? production.client_id;
+  const { data: client } = clientId
+    ? await admin.from("clients").select("id,name,morning_client_id").eq("id", clientId).maybeSingle()
+    : { data: null };
+
+  const elig = checkEligibility(production, show as ShowForBilling | null, client as ClientForBilling | null);
+  if (!elig.ok) {
+    await setBlockReason(admin, production.id, elig.reason);
+    await admin.from("events").insert({
+      entity_type: "production",
+      entity_id: production.id,
+      event_type: "document_enqueue_blocked",
+      payload: { doc_type: docType, reason: elig.reason },
+    });
+    return { status: "blocked", reason: elig.reason };
+  }
+
+  const amount = opts.amountOverride ?? elig.amount;
+  if (amount === null || amount === undefined) {
+    const reason = "לתוכנית אין מחיר ברירת מחדל — אי אפשר לבנות מסמך";
+    await setBlockReason(admin, production.id, reason);
+    return { status: "blocked", reason };
+  }
+
+  const description = `${DOC_TYPE_LABEL[docType]} — ${production.podcast_name ?? ""} ${production.record_date ?? ""}`.trim();
+  const payload = buildDocumentPayload({
+    docType,
+    morningClientId: elig.morningClientId,
+    clientName: (client as ClientForBilling | null)?.name ?? null,
+    description,
+    amount,
+    date: production.record_date,
+  });
+
+  const { data: inserted, error } = await admin
+    .from("pending_documents")
+    .insert({
+      doc_type: docType,
+      production_id: production.id,
+      job_id: opts.jobId ?? null,
+      client_id: elig.clientId,
+      amount,
+      payload,
+      status: "pending",
+    })
+    .select("id")
+    .single();
+
+  if (error) {
+    // 23505 = the one-live-row-per-production index. Not an error: it means
+    // this document is already queued or already issued.
+    if (error.code === "23505") return { status: "exists" };
+    return { status: "error", error: error.message };
+  }
+
+  await setBlockReason(admin, production.id, null);
+  await admin.from("events").insert({
+    entity_type: "production",
+    entity_id: production.id,
+    event_type: "document_queued",
+    payload: { doc_type: docType, pending_document_id: inserted.id, amount },
+  });
+  return { status: "queued", id: inserted.id };
+}
