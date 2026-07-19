@@ -6,24 +6,29 @@ import type {
 // The Morning HTTP layer. Server-side only — the keys never reach a browser
 // and Morning does not support CORS anyway.
 //
-// Everything here is off by default: MORNING_DRY_RUN must be explicitly set
-// to "false" to make a real call, and MORNING_ENV must be explicitly set to
-// "production" to leave the sandbox. Two independent switches, both failing
-// closed, because the failure mode is a real tax document.
+// The safety switch is MORNING_DRY_RUN: it must be explicitly set to "false"
+// to make a real call. It defaults ON and fails closed, because the failure
+// mode is a real document in the owner's books — there is no sandbox to
+// catch a mistake (owner confirmed 2026-07-20).
 
-const BASE_URLS = {
-  sandbox: "https://sandbox.d.greeninvoice.co.il/api/v1",
-  production: "https://api.greeninvoice.co.il/api/v1",
-} as const;
+// Morning uses TWO hosts by design (verified 2026-07-20 against the live
+// account, both directions):
+//   - the identity host issues tokens          — api.morning.co
+//   - the resource host serves documents/clients — api.greeninvoice.co.il
+// They are not interchangeable: the token host returns an AWS auth error for
+// /documents, and the resource host 404s the token path. So there is exactly
+// one host per purpose, each named once — not a configurable pair.
+//
+// There is no sandbox on a free account (owner confirmed 2026-07-20): API
+// keys can't be minted there. Only production hosts exist, so the base is a
+// constant. MORNING_DRY_RUN is what keeps this safe, not a fake environment.
+const IDP_HOST = "https://api.morning.co";
+const RESOURCE_BASE = "https://api.greeninvoice.co.il/api/v1";
 
-export type MorningEnv = keyof typeof BASE_URLS;
-
-export function morningEnv(): MorningEnv {
-  return process.env.MORNING_ENV === "production" ? "production" : "sandbox";
-}
-
-export function morningBaseUrl(): string {
-  return BASE_URLS[morningEnv()];
+// Kept for display/eventing only — real work always runs against production
+// now, but callers still label rows with it.
+export function morningEnv(): string {
+  return "production";
 }
 
 // Defaults ON: a missing/typo'd env var must not start issuing documents.
@@ -46,7 +51,7 @@ export class MorningError extends Error {
 // auth: OAuth2 client_credentials -> POST /idp/v1/oauth/token
 // Response: { accessToken, tokenType: "Bearer", expiresAt: <unix seconds> }
 // ---------------------------------------------------------------------------
-type CachedToken = { token: string; expiresAtMs: number; env: MorningEnv };
+type CachedToken = { token: string; expiresAtMs: number };
 let cached: CachedToken | null = null;
 
 // Refresh a minute early — a token that expires mid-flight would surface as
@@ -54,9 +59,8 @@ let cached: CachedToken | null = null;
 const EXPIRY_SKEW_MS = 60_000;
 
 export async function getAccessToken(): Promise<string> {
-  const env = morningEnv();
   const now = Date.now();
-  if (cached && cached.env === env && cached.expiresAtMs - EXPIRY_SKEW_MS > now) {
+  if (cached && cached.expiresAtMs - EXPIRY_SKEW_MS > now) {
     return cached.token;
   }
 
@@ -66,7 +70,7 @@ export async function getAccessToken(): Promise<string> {
     throw new MorningError("MORNING_CLIENT_ID / MORNING_CLIENT_SECRET לא מוגדרים", 0, null);
   }
 
-  const res = await fetch(`${morningBaseUrl()}/idp/v1/oauth/token`, {
+  const res = await fetch(`${IDP_HOST}/idp/v1/oauth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -84,19 +88,18 @@ export async function getAccessToken(): Promise<string> {
 
   // expiresAt is a unix timestamp in seconds
   const expiresAtMs = typeof body.expiresAt === "number" ? body.expiresAt * 1000 : now + 25 * 60_000;
-  cached = { token: body.accessToken as string, expiresAtMs, env };
+  cached = { token: body.accessToken as string, expiresAtMs };
   return cached.token;
 }
 
-// Exposed for tests and for the "switch environment" case — a token minted
-// against sandbox must never be replayed at production.
+// Exposed for tests — drop the in-memory token (e.g. after rotating keys).
 export function clearTokenCache() {
   cached = null;
 }
 
 async function request<T>(path: string, init: RequestInit): Promise<T> {
   const token = await getAccessToken();
-  const res = await fetch(`${morningBaseUrl()}${path}`, {
+  const res = await fetch(`${RESOURCE_BASE}${path}`, {
     ...init,
     headers: {
       ...(init.headers ?? {}),
