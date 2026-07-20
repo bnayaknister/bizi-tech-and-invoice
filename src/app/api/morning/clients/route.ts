@@ -42,9 +42,22 @@ export async function GET() {
   }
 
   const takenMorningIds = new Set((ours ?? []).map((c) => c.morning_client_id).filter(Boolean) as string[]);
+  const morningById = new Map(morning.map((m) => [m.id, m]));
 
   const rows = (ours ?? []).map((c) => {
-    if (c.morning_client_id) return { ...c, suggestion: null };
+    if (c.morning_client_id) {
+      // resolve the name/taxId of what it's mapped to so the row can show
+      // it — and flag a mapping that points at a Morning client that no
+      // longer exists (deleted there), which the operator must re-do
+      const m = morningById.get(c.morning_client_id);
+      return {
+        ...c,
+        suggestion: null,
+        mapped_name: m?.name ?? null,
+        mapped_tax_id: m?.taxId ?? null,
+        mapped_missing: !m,
+      };
+    }
     const target = normalizeClientName(c.name);
     let best: { id: string; name: string; distance: number } | null = null;
     for (const m of morning) {

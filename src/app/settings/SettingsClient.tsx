@@ -133,6 +133,23 @@ export default function SettingsClient({
         )}
       </section>
 
+      <section className="glass-card-secondary mt-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-bold">מיפוי לקוחות למורנינג</h2>
+            <p className="text-xs text-[var(--faint)] mt-0.5">
+              שייך כל לקוח שלנו ללקוח המקביל במורנינג. לקוח בלי מיפוי — אף מסמך לא ייצא עבורו.
+            </p>
+          </div>
+          <button
+            onClick={() => router.push("/settings/morning-clients")}
+            className="text-xs font-bold rounded-xl px-4 py-1.5 border border-[var(--rule2)] shrink-0"
+          >
+            פתח מיפוי →
+          </button>
+        </div>
+      </section>
+
       {confirming && (
         <div
           className="fixed inset-0 flex items-center justify-center p-4 z-50"
