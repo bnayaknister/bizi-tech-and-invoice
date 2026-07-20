@@ -147,6 +147,38 @@ export async function createDocument(
   return { result, dryRun: false };
 }
 
+export type MorningSearchDoc = {
+  id: string;
+  type: number;
+  number?: string;
+  status?: number;
+  documentDate?: string;
+  amount?: number;
+  currency?: string;
+  client?: { id?: string; name?: string };
+  url?: { origin?: string; he?: string };
+};
+
+/**
+ * Documents issued since `fromDate` (YYYY-MM-DD), following pagination.
+ * Read-only — runs for real even in DRY_RUN (the daily pull needs live data;
+ * there is nothing to damage). Requires credentials.
+ */
+export async function searchDocuments(fromDate: string, pageSize = 100): Promise<MorningSearchDoc[]> {
+  const out: MorningSearchDoc[] = [];
+  const today = new Date().toISOString().slice(0, 10);
+  for (let page = 1; page <= 100; page++) {
+    const body = await request<{ items?: MorningSearchDoc[] }>("/documents/search", {
+      method: "POST",
+      body: JSON.stringify({ fromDate, toDate: today, page, pageSize, sort: "documentDate" }),
+    });
+    const items = body.items ?? [];
+    out.push(...items);
+    if (items.length < pageSize) break;
+  }
+  return out;
+}
+
 export type MorningClient = {
   id: string;
   name: string;

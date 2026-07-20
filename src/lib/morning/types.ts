@@ -41,6 +41,37 @@ export const DOC_TYPE_LABEL: Record<PendingDocType, string> = {
 // Document-level VAT type (spec: 0 default / 1 exempt / 2 mixed).
 export const VAT_TYPE_DEFAULT = 0;
 
+// The five registry tabs (owner spec 2026-07-19), keyed by Morning type
+// code. Anything else a pull turns up (credit notes 330, quotes 10, …) falls
+// into "other" so nothing is ever dropped from the registry.
+export type RegistryTab = "work_order" | "deal_invoice" | "tax_invoice" | "tax_receipt" | "receipt" | "other";
+
+export function registryTabForType(type: number): RegistryTab {
+  switch (type) {
+    case MORNING_DOC_CODE.order:
+      return "work_order";
+    case MORNING_DOC_CODE.deal_invoice:
+      return "deal_invoice";
+    case MORNING_DOC_CODE.tax_invoice:
+      return "tax_invoice";
+    case MORNING_DOC_CODE.tax_receipt:
+      return "tax_receipt";
+    case MORNING_DOC_CODE.receipt:
+      return "receipt";
+    default:
+      return "other";
+  }
+}
+
+export const REGISTRY_TAB_LABEL: Record<RegistryTab, string> = {
+  work_order: "הזמנות עבודה",
+  deal_invoice: "חשבוניות עסקה",
+  tax_invoice: "חשבוניות מס",
+  tax_receipt: "חשבוניות מס קבלה",
+  receipt: "קבלות",
+  other: "אחר",
+};
+
 export type MorningIncomeRow = {
   description: string;
   quantity: number;

@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createDocument, MorningError, isDryRun, morningEnv } from "@/lib/morning/client";
-import type { MorningDocumentRequest, PendingDocType } from "@/lib/morning/types";
+import { DOC_TYPE_TO_MORNING_CODE, type MorningDocumentRequest, type PendingDocType } from "@/lib/morning/types";
+import { upsertDocument } from "@/lib/documents/registry";
 
 // Turning an APPROVED queue row into a real document. This is the only
 // place in the app that causes a document to exist in Morning.
@@ -139,6 +140,24 @@ export async function issuePendingDocument(
   if (updErr) {
     return { ok: false, error: `המסמך הונפק (${morningDocId}) אך רישומו נכשל: ${updErr.message}` };
   }
+
+  // Write-through to the documents registry (all types, incl. work orders
+  // and receipts) so an app-issued document shows on the 5-tab screen at
+  // once, not only after the next daily pull. Same morning_doc_id the pull
+  // upserts on, so the two never duplicate.
+  await upsertDocument(admin, {
+    morning_doc_id: morningDocId,
+    morning_doc_number: docNumber || null,
+    type: DOC_TYPE_TO_MORNING_CODE[row.doc_type],
+    client_id: row.client_id,
+    amount: row.amount,
+    document_date: issuedAt.slice(0, 10),
+    pdf_url: pdfUrl,
+    source: "app",
+    production_id: row.production_id,
+    job_id: row.job_id,
+    raw: result,
+  });
 
   // Invoices (not work orders) also land in the finance registry, so the
   // existing finance screen keeps showing every document that exists.
