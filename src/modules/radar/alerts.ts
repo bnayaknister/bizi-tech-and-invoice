@@ -94,12 +94,15 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
       on_hold_since: string | null;
       merged_into: string | null;
       billing_block_reason: string | null;
-    }>(supabase, "productions", "id,kind,show_id,on_hold,on_hold_since,merged_into,billing_block_reason"),
+      calendar_removed: boolean;
+    }>(supabase, "productions", "id,kind,show_id,on_hold,on_hold_since,merged_into,billing_block_reason,calendar_removed"),
     fetchAll<{ production_id: string; status: string }>(supabase, "stages", "production_id,status"),
     fetchAll<{ production_id: string }>(supabase, "job_productions", "production_id"),
     fetchAll<{ id: string; billing_mode: string }>(supabase, "shows", "id,billing_mode"),
     fetchAll<{ id: string; normalized_name: string | null; name: string }>(supabase, "clients", "id,normalized_name,name"),
-    fetchAll<{ id: string; status: string; created_at: string }>(supabase, "pending_documents", "id,status,created_at"),
+    fetchAll<{ id: string; status: string; created_at: string; doc_type: string; production_id: string | null }>(
+      supabase, "pending_documents", "id,status,created_at,doc_type,production_id"
+    ),
   ]);
 
   const num = (v: number | null | undefined) => (v == null ? 0 : Number(v));
@@ -209,6 +212,18 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const pending72 = pendingNow.filter((d) => agedHours(d) >= 72);
   const pending24 = pendingNow.filter((d) => agedHours(d) >= 24 && agedHours(d) < 72);
 
+  // ---- 🟡 a production was cancelled AFTER its work order was issued in
+  // Morning (owner 2026-07-19). We never delete anything in Morning — the
+  // owner closes it by hand — so this is a standing reminder, not urgent.
+  // Signal: the production is calendar_removed (kept, not deleted) AND an
+  // issued work_order exists for it.
+  const issuedWorkOrderProds = new Set(
+    pendingDocs.filter((d) => d.doc_type === "work_order" && d.status === "issued" && d.production_id).map((d) => d.production_id as string)
+  );
+  const cancelledWithWorkOrder = productions.filter(
+    (p) => p.calendar_removed && !p.merged_into && issuedWorkOrderProds.has(p.id)
+  );
+
   const sum = (arr: { amount: number | null }[]) => arr.reduce((s, x) => s + num(x.amount), 0);
 
   const allAlerts: RadarAlert[] = [
@@ -220,6 +235,7 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     { key: "produced_not_billed", severity: "blue", title: "הופק ולא חויב", count: producedNotBilled.length, amount: null, href: "/productions" },
     { key: "open_commitment", severity: "blue", title: "התחייבות פתוחה", count: openMilestones.length, amount: openCommitment, href: "/contracts" },
     { key: "billing_blocked", severity: "yellow", title: "הפקת לקוח חסומה לחיוב", count: billingBlocked.length, amount: null, href: "/productions" },
+    { key: "cancelled_with_work_order", severity: "yellow", title: "הפקה בוטלה אחרי שהונפקה הזמנת עבודה — לסגור במורנינג", count: cancelledWithWorkOrder.length, amount: null, href: "/productions" },
     { key: "pending_docs_24h", severity: "yellow", title: "מסמכים ממתינים לאישור מעל 24 שעות", count: pending24.length, amount: null, href: "/documents" },
     { key: "unknown_payment", severity: "yellow", title: "סטטוס תשלום חסר", count: unknownPayment.length, amount: sum(unknownPayment), href: "/finance?filter=unknown_payment" },
     { key: "estimated_invoice_date", severity: "yellow", title: "תאריך חשבונית משוער", count: estimatedInvoiceDate.length, amount: null, href: "/finance?filter=estimated" },

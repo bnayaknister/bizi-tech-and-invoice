@@ -160,6 +160,21 @@ try:
     check("3a. radar shows the >72h red alert", "מעל 72 שעות" in html, "")
     check("3b. radar shows the >24h yellow alert", "מעל 24 שעות" in html, "")
 
+    # 4. cancelled-after-work-order: the client production (pc) gets an ISSUED
+    #    work order, then is calendar_removed. Inserting an issued row directly
+    #    is not a Morning call — safe with DRY_RUN off.
+    if pc:
+        wo = requests.post(rest("pending_documents"), headers={**ADMIN, **REPR},
+                          json={"doc_type": "work_order", "production_id": pc[0]["id"], "client_id": client_id,
+                                "amount": 1200, "payload": {"type": 100}, "status": "issued",
+                                "morning_doc_id": f"dry-{uuid.uuid4()}", "morning_doc_number": "55123"}).json()
+        pending_ids.append(wo[0]["id"])
+        requests.patch(rest(f"productions?id=eq.{pc[0]['id']}"), headers={**ADMIN, **REPR},
+                       json={"calendar_removed": True})
+        html = radar_html(money)
+        check("4. radar flags cancelled production with an issued work order",
+              "לסגור במורנינג" in html, "")
+
 finally:
     print("\n--- cleanup ---")
     for pd in pending_ids:
