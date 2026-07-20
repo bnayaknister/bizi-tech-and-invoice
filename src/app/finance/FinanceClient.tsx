@@ -174,10 +174,18 @@ export default function FinanceClient({
 
   return (
     <div className="max-w-6xl mx-auto p-6">
-      <h1 className="text-lg font-bold mb-4 flex items-center gap-2.5">
-        <IconTile icon="finance" accent="rose" size={30} iconSize={17} />
-        כספים
-      </h1>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-lg font-bold flex items-center gap-2.5">
+          <IconTile icon="finance" accent="rose" size={30} iconSize={17} />
+          כספים
+        </h1>
+        <button
+          onClick={() => router.push("/documents/registry")}
+          className="text-xs font-bold rounded-xl px-4 py-1.5 border border-[var(--rule2)]"
+        >
+          מסמכים →
+        </button>
+      </div>
 
       {/* summary cards — glass + corner orbs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
