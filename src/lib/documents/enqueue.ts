@@ -17,9 +17,13 @@ import {
 // the production itself (billing_block_reason -> 🟡 on the radar). Silence
 // was the old bug.
 
+// `applicable` separates "this should bill but can't" (a fixable problem the
+// radar must surface) from "no document is owed here at all" (internal,
+// legacy, non-client — correct silence, never a flag). Only an applicable
+// block writes billing_block_reason.
 export type Eligibility =
   | { ok: true; clientId: string; morningClientId: string; amount: number | null }
-  | { ok: false; reason: string };
+  | { ok: false; applicable: boolean; reason: string };
 
 export type ProductionForBilling = {
   id: string;
@@ -56,18 +60,20 @@ export function checkEligibility(
   show: ShowForBilling | null,
   client: ClientForBilling | null
 ): Eligibility {
-  if (production.legacy) return { ok: false, reason: "הפקה היסטורית (legacy) — לא מונפקים עליה מסמכים" };
+  // ---- not applicable: no document is owed, and that's correct ----
+  if (production.legacy) return { ok: false, applicable: false, reason: "הפקה היסטורית (legacy)" };
   if (production.kind !== "client") {
-    return { ok: false, reason: `הפקה מסוג '${production.kind ?? "לא ידוע"}' — הזמנת עבודה נוצרת רק להפקת לקוח` };
+    return { ok: false, applicable: false, reason: `הפקה מסוג '${production.kind ?? "לא ידוע"}' — לא מחויבת` };
   }
-  if (!show) return { ok: false, reason: "להפקה אין תוכנית משויכת" };
-  if (show.billing_mode === "none") {
-    return { ok: false, reason: "התוכנית מסומנת כפנימית (לא מחויבת)" };
+  if (show && show.billing_mode === "none") {
+    return { ok: false, applicable: false, reason: "התוכנית מסומנת כפנימית (לא מחויבת)" };
   }
-  if (!show.client_id) return { ok: false, reason: "לתוכנית אין לקוח משויך" };
-  if (!client) return { ok: false, reason: "הלקוח של התוכנית לא נמצא" };
+  // ---- applicable but blocked: a client production that SHOULD bill ----
+  if (!show) return { ok: false, applicable: true, reason: "להפקה אין תוכנית משויכת" };
+  if (!show.client_id) return { ok: false, applicable: true, reason: "לתוכנית אין לקוח משויך" };
+  if (!client) return { ok: false, applicable: true, reason: "הלקוח של התוכנית לא נמצא" };
   if (!client.morning_client_id) {
-    return { ok: false, reason: `הלקוח '${client.name ?? ""}' לא ממופה למורנינג` };
+    return { ok: false, applicable: true, reason: `הלקוח '${client.name ?? ""}' לא ממופה למורנינג` };
   }
   return {
     ok: true,
@@ -155,13 +161,19 @@ export async function enqueueDocument(
 
   const elig = checkEligibility(production, show as ShowForBilling | null, client as ClientForBilling | null);
   if (!elig.ok) {
-    await setBlockReason(admin, production.id, elig.reason);
-    await admin.from("events").insert({
-      entity_type: "production",
-      entity_id: production.id,
-      event_type: "document_enqueue_blocked",
-      payload: { doc_type: docType, reason: elig.reason },
-    });
+    if (elig.applicable) {
+      // a client production that should bill but can't — flag it (🟡 radar)
+      await setBlockReason(admin, production.id, elig.reason);
+      await admin.from("events").insert({
+        entity_type: "production",
+        entity_id: production.id,
+        event_type: "document_enqueue_blocked",
+        payload: { doc_type: docType, reason: elig.reason },
+      });
+    } else {
+      // no document is owed here at all — make sure no stale flag lingers
+      await setBlockReason(admin, production.id, null);
+    }
     return { status: "blocked", reason: elig.reason };
   }
 

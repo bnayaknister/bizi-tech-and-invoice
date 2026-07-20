@@ -209,8 +209,11 @@ try:
         pb = requests.get(rest(f"pending_documents?production_id=eq.{prod_bad[0]['id']}&select=id"),
                           headers=ADMIN).json()
         check("2a. internal show queued NOTHING", len(pb) == 0, json.dumps(pb)[:120])
-        check("2b. it carries a readable block reason",
-              bool(prod_bad[0]["billing_block_reason"]), str(prod_bad[0]["billing_block_reason"]))
+        # internal is "not applicable", not a problem — it must NOT carry a
+        # billing_block_reason (that flag is only for client productions that
+        # should bill but can't; see the radar wiring)
+        check("2b. internal show carries NO block reason (not a problem)",
+              prod_bad[0]["billing_block_reason"] is None, str(prod_bad[0]["billing_block_reason"]))
         check("2c. sync counted it as blocked", bad_body.get("blockedWorkOrders") == 1, json.dumps(bad_body)[:200])
 
     # ---------- 8. permissions ----------

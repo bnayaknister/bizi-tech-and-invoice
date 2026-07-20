@@ -78,7 +78,7 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const today = new Date();
   const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
 
-  const [jobs, milestones, invoices, productions, stages, jobProds, shows, clients] = await Promise.all([
+  const [jobs, milestones, invoices, productions, stages, jobProds, shows, clients, pendingDocs] = await Promise.all([
     fetchAll<{ amount: number | null; paid: string; invoice_tax: string | null; due_date: string | null }>(
       supabase, "jobs", "amount,paid,invoice_tax,due_date"
     ),
@@ -93,11 +93,13 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
       on_hold: boolean;
       on_hold_since: string | null;
       merged_into: string | null;
-    }>(supabase, "productions", "id,kind,show_id,on_hold,on_hold_since,merged_into"),
+      billing_block_reason: string | null;
+    }>(supabase, "productions", "id,kind,show_id,on_hold,on_hold_since,merged_into,billing_block_reason"),
     fetchAll<{ production_id: string; status: string }>(supabase, "stages", "production_id,status"),
     fetchAll<{ production_id: string }>(supabase, "job_productions", "production_id"),
     fetchAll<{ id: string; billing_mode: string }>(supabase, "shows", "id,billing_mode"),
     fetchAll<{ id: string; normalized_name: string | null; name: string }>(supabase, "clients", "id,normalized_name,name"),
+    fetchAll<{ id: string; status: string; created_at: string }>(supabase, "pending_documents", "id,status,created_at"),
   ]);
 
   const num = (v: number | null | undefined) => (v == null ? 0 : Number(v));
@@ -193,15 +195,32 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   }
   const duplicateClientNames = Array.from(nameGroups.values()).filter((n) => n > 1).length;
 
+  // ---- 🟡 a client production that should bill but can't (owner 2026-07-19):
+  // billing_block_reason is set ONLY for applicable blocks (missing client /
+  // unmapped client / no rate), never for internal or legacy — so this
+  // counts real problems, not correct silence. Merged-away rows stay hidden.
+  const billingBlocked = productions.filter((p) => !p.merged_into && p.billing_block_reason);
+
+  // ---- document approval queue aging (owner 2026-07-19): 24h -> the
+  // bookkeeper is nudged, 72h -> the owner too, here on the radar. A queue
+  // nobody empties is the exact leak this system was built to prevent.
+  const pendingNow = pendingDocs.filter((d) => d.status === "pending");
+  const agedHours = (d: { created_at: string }) => (Date.now() - new Date(d.created_at).getTime()) / (DAY / 24);
+  const pending72 = pendingNow.filter((d) => agedHours(d) >= 72);
+  const pending24 = pendingNow.filter((d) => agedHours(d) >= 24 && agedHours(d) < 72);
+
   const sum = (arr: { amount: number | null }[]) => arr.reduce((s, x) => s + num(x.amount), 0);
 
   const allAlerts: RadarAlert[] = [
+    { key: "pending_docs_72h", severity: "red", title: "מסמכים ממתינים לאישור מעל 72 שעות", count: pending72.length, amount: null, href: "/documents" },
     { key: "paid_no_tax", severity: "red", title: "שולם — ואין חשבונית מס", count: paidNoTax.length, amount: sum(paidNoTax), href: "/finance?filter=paid_no_tax" },
     { key: "amount_missing", severity: "red", title: "חיוב ללא סכום", count: amountMissing.length, amount: null, href: "/finance?filter=amount_missing" },
     { key: "overdue_60", severity: "red", title: "60+ יום מעבר לפירעון", count: vuBuckets.red.length, amount: vuBuckets.red.reduce((s, a) => s + a, 0), href: "/finance?vu=red" },
     { key: "milestone_overdue", severity: "red", title: "אבן דרך שעבר מועדה ואין חשבונית", count: milestoneOverdue.length, amount: milestoneOverdue.reduce((s, m) => s + num(m.amount), 0), href: "/contracts" },
     { key: "produced_not_billed", severity: "blue", title: "הופק ולא חויב", count: producedNotBilled.length, amount: null, href: "/productions" },
     { key: "open_commitment", severity: "blue", title: "התחייבות פתוחה", count: openMilestones.length, amount: openCommitment, href: "/contracts" },
+    { key: "billing_blocked", severity: "yellow", title: "הפקת לקוח חסומה לחיוב", count: billingBlocked.length, amount: null, href: "/productions" },
+    { key: "pending_docs_24h", severity: "yellow", title: "מסמכים ממתינים לאישור מעל 24 שעות", count: pending24.length, amount: null, href: "/documents" },
     { key: "unknown_payment", severity: "yellow", title: "סטטוס תשלום חסר", count: unknownPayment.length, amount: sum(unknownPayment), href: "/finance?filter=unknown_payment" },
     { key: "estimated_invoice_date", severity: "yellow", title: "תאריך חשבונית משוער", count: estimatedInvoiceDate.length, amount: null, href: "/finance?filter=estimated" },
     { key: "milestone_approaching", severity: "yellow", title: "אבן דרך בעוד 14 יום", count: milestoneApproaching.length, amount: milestoneApproaching.reduce((s, m) => s + num(m.amount), 0), href: "/contracts" },
