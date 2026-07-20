@@ -52,27 +52,23 @@ export async function upsertDocument(admin: SupabaseClient, doc: UpsertDoc) {
   return { inserted: true };
 }
 
-// resolve a Morning client id to one of OUR clients. Several of ours can map
-// to one Morning entity (brands of one payer), so this is deterministic-first
-// match; null when none of ours map (the "unmatched" case the registry keeps
-// in its own tab).
-async function matchOurClient(admin: SupabaseClient, morningClientId: string | null | undefined): Promise<string | null> {
-  if (!morningClientId) return null;
-  const { data } = await admin
-    .from("clients")
-    .select("id")
-    .eq("morning_client_id", morningClientId)
-    .order("name")
-    .limit(1);
-  return data?.[0]?.id ?? null;
-}
-
 export type PullSummary = { pulled: number; inserted: number; updated: number; unmatched: number };
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
 
 // The daily pull. Asks Morning for documents since the last successful pull
 // (minus a day of overlap — cheap given the morning_doc_id upsert is
-// idempotent, and it closes any boundary gap), upserts each, and matches the
-// client. Read-only against Morning, so safe in DRY_RUN.
+// idempotent, and it closes any boundary gap), matches each to one of our
+// clients, and upserts. Read-only against Morning, so safe in DRY_RUN.
+//
+// Batched deliberately: a first run sweeps ~90 days, which can be hundreds of
+// documents. Per-document DB round-trips timed out (found in verification),
+// so this does a fixed handful of queries regardless of volume — one client
+// map, one existing-rows lookup, chunked upserts.
 export async function runDocumentPull(admin: SupabaseClient): Promise<PullSummary> {
   const { data: settings } = await admin
     .from("app_settings")
@@ -86,33 +82,64 @@ export async function runDocumentPull(admin: SupabaseClient): Promise<PullSummar
   const fromDate = since.toISOString().slice(0, 10);
 
   const docs = await searchDocuments(fromDate);
+  if (!docs.length) {
+    await admin.from("app_settings").update({ documents_pulled_at: new Date().toISOString() }).eq("id", true);
+    return { pulled: 0, inserted: 0, updated: 0, unmatched: 0 };
+  }
 
+  // one query: Morning client id -> our client id (first by name wins when
+  // several of ours share one Morning entity)
+  const { data: clients } = await admin
+    .from("clients")
+    .select("id,morning_client_id")
+    .not("morning_client_id", "is", null)
+    .order("name");
+  const clientByMorning = new Map<string, string>();
+  for (const c of clients ?? []) {
+    if (!clientByMorning.has(c.morning_client_id as string)) clientByMorning.set(c.morning_client_id as string, c.id as string);
+  }
+
+  // one lookup (chunked in-lists): what we already hold for these ids, so we
+  // don't downgrade an 'app' source or drop an already-resolved client
+  const existing = new Map<string, { source: string; client_id: string | null }>();
+  for (const ids of chunk(docs.map((d) => d.id), 200)) {
+    const { data } = await admin.from("documents").select("morning_doc_id,source,client_id").in("morning_doc_id", ids);
+    for (const r of data ?? []) existing.set(r.morning_doc_id as string, { source: r.source as string, client_id: (r.client_id as string | null) ?? null });
+  }
+
+  const now = new Date().toISOString();
   let inserted = 0;
-  let updated = 0;
   let unmatched = 0;
-  for (const d of docs) {
-    const clientId = await matchOurClient(admin, d.client?.id);
-    if (!clientId) unmatched++;
-    const res = await upsertDocument(admin, {
+  const rows = docs.map((d) => {
+    const matched = d.client?.id ? clientByMorning.get(d.client.id) ?? null : null;
+    if (!matched) unmatched++;
+    const ex = existing.get(d.id);
+    if (!ex) inserted++;
+    return {
       morning_doc_id: d.id,
       morning_doc_number: d.number ?? null,
       type: d.type,
       status: d.status ?? null,
-      client_id: clientId,
+      // preserve a stronger source and an already-resolved client
+      source: ex?.source === "app" ? "app" : "pull",
+      client_id: matched ?? ex?.client_id ?? null,
       morning_client_id: d.client?.id ?? null,
       morning_client_name: d.client?.name ?? null,
       amount: d.amount ?? null,
       currency: d.currency ?? "ILS",
       document_date: d.documentDate ?? null,
       pdf_url: d.url?.origin || d.url?.he || null,
-      source: "pull",
       raw: d,
-    });
-    if (res.inserted) inserted++;
-    else updated++;
+      updated_at: now,
+    };
+  });
+
+  for (const batch of chunk(rows, 500)) {
+    const { error } = await admin.from("documents").upsert(batch, { onConflict: "morning_doc_id" });
+    if (error) throw new Error(error.message);
   }
 
-  await admin.from("app_settings").update({ documents_pulled_at: new Date().toISOString() }).eq("id", true);
+  await admin.from("app_settings").update({ documents_pulled_at: now }).eq("id", true);
 
-  return { pulled: docs.length, inserted, updated, unmatched };
+  return { pulled: docs.length, inserted, updated: docs.length - inserted, unmatched };
 }
