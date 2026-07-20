@@ -57,6 +57,10 @@ export default function DocumentsClient({
   // the second gate for a tax document
   const [confirming, setConfirming] = useState<PendingDocRow | null>(null);
   const [taxVariant, setTaxVariant] = useState<"tax_receipt" | "tax_invoice">("tax_receipt");
+  // inline "edit before approve"
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editAmount, setEditAmount] = useState<string>("");
+  const [editDesc, setEditDesc] = useState<string>("");
 
   const groups = useMemo(() => {
     const g = new Map<PendingDocType, PendingDocRow[]>();
@@ -130,6 +134,41 @@ export default function DocumentsClient({
     const reason = window.prompt("סיבת דחייה (חובה):")?.trim();
     if (!reason) return;
     send([r.id], "reject", { reason });
+  }
+
+  function openEdit(r: PendingDocRow) {
+    setEditing(r.id);
+    setEditAmount(r.amount === null ? "" : String(r.amount));
+    const desc = (r.payload as { description?: string })?.description ?? "";
+    setEditDesc(desc);
+  }
+
+  async function saveEdit(r: PendingDocRow) {
+    const amountNum = editAmount.trim() === "" ? undefined : Number(editAmount);
+    if (amountNum !== undefined && !(amountNum > 0)) {
+      setError("סכום חייב להיות מספר חיובי");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/documents/pending/edit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: r.id, amount: amountNum, description: editDesc.trim() || undefined }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setError(body.error ?? "העריכה נכשלה");
+        return;
+      }
+      setEditing(null);
+      router.refresh();
+    } catch {
+      setError("שגיאת רשת");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -222,12 +261,55 @@ export default function DocumentsClient({
                         )}
                       </div>
                       {r.last_error && <div className="mt-1 text-xs text-[var(--peak)]">{r.last_error}</div>}
-                      <button
-                        onClick={() => setExpanded(expanded === r.id ? null : r.id)}
-                        className="mt-1 text-[11px] text-[var(--faint)] underline"
-                      >
-                        {expanded === r.id ? "הסתר" : "מה יישלח למורנינג"}
-                      </button>
+                      <div className="mt-1 flex items-center gap-3">
+                        <button
+                          onClick={() => setExpanded(expanded === r.id ? null : r.id)}
+                          className="text-[11px] text-[var(--faint)] underline"
+                        >
+                          {expanded === r.id ? "הסתר" : "מה יישלח למורנינג"}
+                        </button>
+                        {canApprove && editing !== r.id && (
+                          <button onClick={() => openEdit(r)} className="text-[11px] text-[var(--faint)] underline">
+                            ערוך לפני אישור
+                          </button>
+                        )}
+                      </div>
+                      {editing === r.id && (
+                        <div className="mt-2 border border-[var(--rule)] rounded-xl p-2 flex flex-col gap-2">
+                          <label className="text-[11px]">
+                            <span className="text-[var(--faint)]">סכום (₪)</span>
+                            <input
+                              type="number"
+                              value={editAmount}
+                              onChange={(e) => setEditAmount(e.target.value)}
+                              className="w-full mt-0.5 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1"
+                            />
+                          </label>
+                          <label className="text-[11px]">
+                            <span className="text-[var(--faint)]">תיאור</span>
+                            <input
+                              value={editDesc}
+                              onChange={(e) => setEditDesc(e.target.value)}
+                              className="w-full mt-0.5 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1"
+                            />
+                          </label>
+                          <div className="flex gap-2">
+                            <button
+                              disabled={busy}
+                              onClick={() => saveEdit(r)}
+                              className="text-[11px] bg-[var(--signal)] text-white font-bold rounded-lg px-3 py-1 disabled:opacity-40"
+                            >
+                              שמור
+                            </button>
+                            <button
+                              onClick={() => setEditing(null)}
+                              className="text-[11px] rounded-lg px-3 py-1 border border-[var(--rule)]"
+                            >
+                              ביטול
+                            </button>
+                          </div>
+                        </div>
+                      )}
                       {expanded === r.id && (
                         <pre className="mt-2 text-[10px] bg-[var(--hover)] rounded-xl p-2 overflow-x-auto" dir="ltr">
                           {JSON.stringify(r.payload, null, 2)}
