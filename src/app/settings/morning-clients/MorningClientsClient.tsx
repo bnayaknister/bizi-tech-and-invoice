@@ -13,8 +13,12 @@ type OurClient = {
   mapped_name?: string | null;
   mapped_tax_id?: string | null;
   mapped_missing?: boolean;
+  shared_with?: string[];
   suggestion: { id: string; name: string; distance: number } | null;
 };
+
+// a mapping the server flagged as shared, held while the operator confirms
+type PendingShared = { clientId: string; morningId: string; morningName?: string; sharedWith: string[] };
 
 type MorningClient = { id: string; name: string; taxId: string | null };
 
@@ -29,6 +33,7 @@ export default function MorningClientsClient() {
   const [busyId, setBusyId] = useState<string | null>(null);
   // per-row chosen morning id before confirm (defaults to the suggestion)
   const [choice, setChoice] = useState<Record<string, string>>({});
+  const [pendingShared, setPendingShared] = useState<PendingShared | null>(null);
 
   async function load() {
     setLoading(true);
@@ -73,20 +78,41 @@ export default function MorningClientsClient() {
 
   const mappedCount = clients.filter((c) => c.morning_client_id).length;
 
-  async function save(clientId: string, morningId: string | null, morningName?: string) {
+  async function save(
+    clientId: string,
+    morningId: string | null,
+    morningName?: string,
+    confirmShared = false
+  ) {
     setBusyId(clientId);
     setError(null);
     try {
       const res = await fetch("/api/morning/clients", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client_id: clientId, morning_client_id: morningId, morning_client_name: morningName }),
+        body: JSON.stringify({
+          client_id: clientId,
+          morning_client_id: morningId,
+          morning_client_name: morningName,
+          confirm_shared: confirmShared,
+        }),
       });
       const body = await res.json();
+      if (res.status === 409 && body.needs_confirmation) {
+        // shared mapping — warn, don't block. Hold it for the modal.
+        setPendingShared({
+          clientId,
+          morningId: morningId as string,
+          morningName,
+          sharedWith: body.shared_with ?? [],
+        });
+        return;
+      }
       if (!res.ok) {
         setError(body.error ?? "שמירה נכשלה");
         return;
       }
+      setPendingShared(null);
       await load();
     } catch {
       setError("שגיאת רשת");
@@ -148,10 +174,20 @@ export default function MorningClientsClient() {
                       ממופה למזהה שנמחק במורנינג
                     </span>
                   ) : (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full border border-[var(--signal)] text-[var(--signal)]">
-                      ✓ {c.mapped_name}
-                      {c.mapped_tax_id ? ` · ${c.mapped_tax_id}` : ""}
-                    </span>
+                    <>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full border border-[var(--signal)] text-[var(--signal)]">
+                        ✓ {c.mapped_name}
+                        {c.mapped_tax_id ? ` · ${c.mapped_tax_id}` : ""}
+                      </span>
+                      {c.shared_with && c.shared_with.length > 0 && (
+                        <span
+                          className="text-[10px] px-2 py-0.5 rounded-full border border-[var(--rule2)] text-[var(--dim)]"
+                          title="מחויב לאותו לקוח במורנינג"
+                        >
+                          משותף עם: {c.shared_with.join(", ")}
+                        </span>
+                      )}
+                    </>
                   )
                 ) : (
                   <span className="text-[10px] px-2 py-0.5 rounded-full border border-[var(--warn)] text-[var(--warn)]">
@@ -201,6 +237,37 @@ export default function MorningClientsClient() {
           );
         })}
       </div>
+
+      {/* shared-mapping warning — awareness, not a block */}
+      {pendingShared && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
+          <div className="bg-[var(--bg)] border border-[var(--rule)] rounded-2xl p-5 max-w-md w-full">
+            <h3 className="font-bold text-sm mb-2">לקוח מורנינג משותף</h3>
+            <p className="text-sm mb-3">
+              לקוח זה כבר משויך ל<span className="font-bold">{pendingShared.sharedWith.join(", ")}</span>. שתי
+              הישויות יחויבו לאותו לקוח במורנינג.
+            </p>
+            <p className="text-[11px] text-[var(--faint)] mb-4">אם זו אותה ישות משלמת עם כמה מותגים — זה תקין.</p>
+            <div className="flex gap-2">
+              <button
+                disabled={busyId === pendingShared.clientId}
+                onClick={() =>
+                  save(pendingShared.clientId, pendingShared.morningId, pendingShared.morningName, true)
+                }
+                className="flex-1 bg-[var(--signal)] text-white text-xs font-bold rounded-xl px-4 py-2 disabled:opacity-40"
+              >
+                כן, זו אותה ישות משלמת
+              </button>
+              <button
+                onClick={() => setPendingShared(null)}
+                className="flex-1 text-xs rounded-xl px-4 py-2 border border-[var(--rule)]"
+              >
+                ביטול
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

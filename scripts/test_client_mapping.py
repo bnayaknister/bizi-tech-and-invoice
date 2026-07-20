@@ -132,11 +132,32 @@ try:
           mapped and mapped.get("mapped_name") and mapped.get("mapped_tax_id") == "516317385",
           json.dumps(mapped, ensure_ascii=False)[:160] if mapped else "not found")
 
-    # 4. UNIQUE: c2 can't claim the same Morning id
+    # 4. shared mapping: c2 -> same Morning id. WARN (not block) first, then
+    #    allow with confirmation (owner, 2026-07-20: many of ours -> one payer)
     r = requests.post(f"{APP_URL}/api/morning/clients", cookies=money,
                       headers={"Content-Type": "application/json"},
                       json={"client_id": c2, "morning_client_id": MORNING_ID})
-    check("4. duplicate Morning mapping refused (409)", r.status_code == 409, str(r.status_code))
+    body = r.json()
+    check("4a. shared mapping warns (409 needs_confirmation)",
+          r.status_code == 409 and body.get("needs_confirmation") is True, f"{r.status_code} {r.text[:120]}")
+    check("4b. the warning names who it's shared with",
+          f"{MARK} one" in (body.get("shared_with") or []), json.dumps(body.get("shared_with"), ensure_ascii=False))
+    # it must NOT have been saved by the warned attempt
+    row2 = requests.get(rest(f"clients?id=eq.{c2}&select=morning_client_id"), headers=ADMIN).json()[0]
+    check("4c. warned attempt saved nothing", row2["morning_client_id"] is None, str(row2["morning_client_id"]))
+    # confirm -> allowed
+    r = requests.post(f"{APP_URL}/api/morning/clients", cookies=money,
+                      headers={"Content-Type": "application/json"},
+                      json={"client_id": c2, "morning_client_id": MORNING_ID, "confirm_shared": True})
+    check("4d. confirmed shared mapping is allowed", r.status_code == 200 and r.json().get("ok"), r.text[:150])
+    # both sides now show the shared_with relationship
+    body = requests.get(f"{APP_URL}/api/morning/clients", cookies=money).json()
+    r1 = next((c for c in body["clients"] if c["id"] == c1), {})
+    r2 = next((c for c in body["clients"] if c["id"] == c2), {})
+    check("4e. c1 shows it's shared with c2", f"{MARK} two" in (r1.get("shared_with") or []),
+          json.dumps(r1.get("shared_with"), ensure_ascii=False))
+    check("4f. c2 shows it's shared with c1", f"{MARK} one" in (r2.get("shared_with") or []),
+          json.dumps(r2.get("shared_with"), ensure_ascii=False))
 
     # 5. unmap c1
     r = requests.post(f"{APP_URL}/api/morning/clients", cookies=money,
