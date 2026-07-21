@@ -174,6 +174,10 @@ export default async function ProductionsPage() {
           board={board}
           isTech={profile.role === "tech"}
           canEditStages={profile.can_edit_stages}
+          shows={(shows ?? [])
+            .filter((s) => s.active)
+            .map((s) => ({ id: s.id, name: s.name }))
+            .sort((a, b) => a.name.localeCompare(b.name, "he"))}
         />
       </main>
     </div>

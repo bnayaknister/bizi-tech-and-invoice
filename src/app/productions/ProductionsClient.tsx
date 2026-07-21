@@ -84,10 +84,12 @@ export default function ProductionsClient({
   board,
   isTech,
   canEditStages,
+  shows,
 }: {
   board: BoardProduction[];
   isTech: boolean;
   canEditStages: boolean;
+  shows: { id: string; name: string }[];
 }) {
   const { openEntity } = useDrawer();
   const router = useRouter();
@@ -103,6 +105,7 @@ export default function ProductionsClient({
   const [splitFor, setSplitFor] = useState<BoardProduction | null>(null);
   const [cancelFor, setCancelFor] = useState<BoardProduction | null>(null);
   const [reviewFor, setReviewFor] = useState<BoardProduction | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
@@ -160,6 +163,27 @@ export default function ProductionsClient({
       return;
     }
     router.refresh();
+  }
+
+  async function createProduction(input: {
+    show_id: string;
+    record_date: string;
+    record_time: string;
+    studio: string;
+    guest: string;
+    notes: string;
+  }): Promise<{ error?: string }> {
+    const res = await fetch("/api/productions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      return { error: d.error ?? "יצירת ההפקה נכשלה" };
+    }
+    router.refresh();
+    return {};
   }
 
   async function syncNow() {
@@ -316,6 +340,15 @@ export default function ProductionsClient({
 
         {canEditStages && (
           <button
+            onClick={() => setCreateOpen(true)}
+            className="text-xs text-white font-bold rounded-xl px-3 py-1.5 transition-colors"
+            style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))", boxShadow: "0 4px 14px rgba(139,92,246,0.3)" }}
+          >
+            + הפקה חדשה
+          </button>
+        )}
+        {canEditStages && (
+          <button
             onClick={syncNow}
             disabled={syncing}
             className="text-xs border border-[var(--rule)] rounded-xl px-3 py-1.5 text-[var(--dim)] hover:bg-[var(--panel3)] hover:border-[var(--rule2)] disabled:opacity-50 transition-colors"
@@ -387,6 +420,15 @@ export default function ProductionsClient({
       )}
 
       {reviewFor && <ReviewLinkModal production={reviewFor} onClose={() => setReviewFor(null)} />}
+
+      {createOpen && (
+        <NewProductionModal
+          shows={shows}
+          defaultDate={todayISO()}
+          onClose={() => setCreateOpen(false)}
+          onCreate={createProduction}
+        />
+      )}
 
       {splitFor && (
         <SplitModal
@@ -1127,6 +1169,137 @@ function SplitModal({
         <button onClick={onClose} className="mt-3 text-xs text-[var(--dim)] border border-[var(--rule)] rounded-xl px-3 py-1.5">
           ביטול
         </button>
+      </div>
+    </div>
+  );
+}
+
+// Manual production creation (owner request 2026-07-21). A show pick drives
+// all client/price/studio inheritance server-side (see /api/productions);
+// this form only collects what a human knows on the spot. Everything but
+// the show and date is optional.
+function NewProductionModal({
+  shows,
+  defaultDate,
+  onClose,
+  onCreate,
+}: {
+  shows: { id: string; name: string }[];
+  defaultDate: string;
+  onClose: () => void;
+  onCreate: (input: {
+    show_id: string;
+    record_date: string;
+    record_time: string;
+    studio: string;
+    guest: string;
+    notes: string;
+  }) => Promise<{ error?: string }>;
+}) {
+  const [showId, setShowId] = useState("");
+  const [date, setDate] = useState(defaultDate);
+  const [time, setTime] = useState("");
+  const [studio, setStudio] = useState("");
+  const [guest, setGuest] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const canSubmit = !!showId && !!date && !busy;
+  async function submit() {
+    if (!canSubmit) return;
+    setBusy(true);
+    setErr(null);
+    const res = await onCreate({ show_id: showId, record_date: date, record_time: time, studio, guest, notes });
+    setBusy(false);
+    if (res.error) setErr(res.error);
+    else onClose();
+  }
+
+  const fieldClass =
+    "w-full bg-[var(--panel)] border border-[var(--rule)] rounded-xl px-3 py-2 text-sm";
+
+  return (
+    <div
+      className="fixed inset-0 flex items-center justify-center p-4 z-50"
+      style={{ background: "rgba(3,2,10,0.66)", backdropFilter: "blur(6px)" }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl"
+        style={{ background: "rgba(15,13,28,0.92)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}
+      >
+        <h3 className="font-bold mb-1">הפקה חדשה</h3>
+        <p className="text-[11px] text-[var(--faint)] mb-4">
+          התוכנית קובעת לקוח, מחיר ואולפן ברירת מחדל. נכנסת לשרשרת המלאה כמו כל הפקה.
+        </p>
+
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs text-[var(--dim)] mb-1">תוכנית</label>
+            <select
+              autoFocus
+              value={showId}
+              onChange={(e) => setShowId(e.target.value)}
+              className={fieldClass}
+            >
+              <option value="">— בחר תוכנית —</option>
+              {shows.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <label className="block text-xs text-[var(--dim)] mb-1">תאריך</label>
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={fieldClass} />
+            </div>
+            <div className="w-28">
+              <label className="block text-xs text-[var(--dim)] mb-1">שעה</label>
+              <input type="time" value={time} onChange={(e) => setTime(e.target.value)} className={fieldClass} />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs text-[var(--dim)] mb-1">אולפן</label>
+            <input
+              value={studio}
+              onChange={(e) => setStudio(e.target.value)}
+              placeholder="ריק = אולפן ברירת המחדל של התוכנית"
+              className={fieldClass}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs text-[var(--dim)] mb-1">אורח (אופציונלי)</label>
+            <input value={guest} onChange={(e) => setGuest(e.target.value)} className={fieldClass} />
+          </div>
+
+          <div>
+            <label className="block text-xs text-[var(--dim)] mb-1">הערות (אופציונלי)</label>
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} className={fieldClass} />
+          </div>
+        </div>
+
+        {err && <div className="mt-3 text-xs text-[var(--peak)] border border-[var(--peak)] rounded-xl px-3 py-2">{err}</div>}
+
+        <div className="flex gap-2 mt-4">
+          <button
+            onClick={submit}
+            disabled={!canSubmit}
+            className="text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-40"
+            style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))", boxShadow: "0 4px 14px rgba(139,92,246,0.3)" }}
+          >
+            {busy ? "יוצר…" : "צור הפקה"}
+          </button>
+          <button onClick={onClose} className="border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)]">
+            ביטול
+          </button>
+        </div>
       </div>
     </div>
   );
