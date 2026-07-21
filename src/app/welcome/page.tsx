@@ -24,6 +24,14 @@ export default function WelcomePage() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState(false);
+  // recovery for a burned/expired link — a stuck user resends themselves a
+  // fresh one instead of hitting a dead end (owner, 2026-07-21). One-time
+  // invite links are routinely consumed by mail/AV/WhatsApp link scanners
+  // before the person clicks, so this path is the real escape hatch.
+  const [resendEmail, setResendEmail] = useState("");
+  const [resending, setResending] = useState(false);
+  const [resendSent, setResendSent] = useState(false);
+  const [resendError, setResendError] = useState<string | null>(null);
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -32,6 +40,30 @@ export default function WelcomePage() {
       setReady(true);
     });
   }, [supabase]);
+
+  async function handleResend(e: React.FormEvent) {
+    e.preventDefault();
+    setResendError(null);
+    const email = resendEmail.trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      setResendError("הזן כתובת מייל תקינה.");
+      return;
+    }
+    setResending(true);
+    // a recovery link works for an invited-but-passwordless account too — it
+    // lands back here with a live session, ready to set a password
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/auth/callback?next=/welcome`,
+    });
+    setResending(false);
+    if (error) {
+      setResendError("שליחת הקישור נכשלה. נסה שוב בעוד רגע.");
+      return;
+    }
+    // always report success even if the address isn't registered, so the
+    // form can't be used to probe which emails exist
+    setResendSent(true);
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -84,11 +116,46 @@ export default function WelcomePage() {
           {!ready ? (
             <div className="text-center text-sm text-[var(--faint)] py-4">טוען…</div>
           ) : !hasSession ? (
-            <div className="text-center text-sm text-[var(--faint)] py-4">
-              הקישור אינו תקין או שפג תוקפו.
-              <br />
-              בקש מהמנהל הזמנה חדשה.
-            </div>
+            resendSent ? (
+              <div className="text-center text-sm py-4">
+                <div className="text-[var(--signal)] font-bold mb-1">שלחנו לך קישור חדש ✓</div>
+                <div className="text-[var(--faint)] text-xs">
+                  בדוק את תיבת המייל ({resendEmail}) ולחץ על הקישור.
+                  <br />
+                  פתח אותו באותו דפדפן שבו אתה נמצא כרגע.
+                </div>
+              </div>
+            ) : (
+              <div className="py-2">
+                <div className="text-center text-sm text-[var(--faint)] mb-4">
+                  הקישור אינו תקין או שפג תוקפו.
+                  <br />
+                  לחץ כאן לקבלת קישור חדש:
+                </div>
+                <form onSubmit={handleResend} className="flex flex-col gap-3">
+                  <input
+                    type="email"
+                    placeholder="האימייל שלך"
+                    value={resendEmail}
+                    onChange={(e) => setResendEmail(e.target.value)}
+                    required
+                    autoFocus
+                    className="border border-[var(--rule)] rounded-xl px-3 py-2.5 text-sm outline-none focus:border-[var(--violet-light)] transition-colors"
+                    style={fieldStyle}
+                    dir="ltr"
+                  />
+                  {resendError && <div className="text-[var(--peak)] text-xs">{resendError}</div>}
+                  <button
+                    type="submit"
+                    disabled={resending}
+                    className="text-white font-bold rounded-xl px-3 py-2.5 text-sm disabled:opacity-50"
+                    style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))", boxShadow: "0 4px 14px rgba(139,92,246,0.3)" }}
+                  >
+                    {resending ? "שולח…" : "שלח לי קישור חדש"}
+                  </button>
+                </form>
+              </div>
+            )
           ) : done ? (
             <div className="text-[var(--signal)] text-sm text-center py-3">הסיסמה נקבעה. מעביר אותך פנימה…</div>
           ) : (
