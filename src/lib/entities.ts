@@ -50,6 +50,11 @@ export const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
       // approval) gets a dedicated flow later, not a free-text edit
       { key: "status", label: "סטטוס", type: "readonly", view: "any", edit: "none" },
       { key: "on_hold", label: "הקפאה", type: "boolean", view: "any", edit: "stages" },
+      // display-only — the freeze flow (drawer + board) captures these; the
+      // drawer routes the on_hold toggle through /api/productions/[id] so a
+      // reason/who/when is always recorded, never a bare boolean
+      { key: "on_hold_reason", label: "סיבת הקפאה", type: "readonly", view: "any", edit: "none" },
+      { key: "on_hold_since", label: "מוקפא מאז", type: "readonly", view: "any", edit: "none" },
       { key: "show_id", label: "תוכנית", type: "select", view: "any", edit: "stages", options: "shows" },
       { key: "client_id", label: "לקוח", type: "select", view: "money", edit: "money", options: "clients" },
       { key: "kind", label: "סוג", type: "readonly", view: "money", edit: "none" },

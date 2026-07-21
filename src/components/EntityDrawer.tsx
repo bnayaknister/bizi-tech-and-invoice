@@ -100,6 +100,9 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<DrawerData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // freezing a production from the drawer — capture a reason like the board
+  const [freezeAsk, setFreezeAsk] = useState(false);
+  const [freezeReason, setFreezeReason] = useState("");
   // a client-name edit that Morning must be told about, awaiting confirmation
   const [morningConfirm, setMorningConfirm] = useState<
     { key: string; value: unknown; prev: unknown; changes: Record<string, { from: unknown; to: unknown }> } | null
@@ -161,6 +164,20 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     if (!ref || !data) return;
     const prev = data.entity[key];
     if (prev === value) return;
+
+    // Freezing a production is not a bare boolean — it captures reason/who/when
+    // exactly like the board (backlog 2026-07-21). Route the on_hold toggle
+    // through /api/productions/[id]: turning ON asks for a reason first;
+    // turning OFF releases immediately. Never patch on_hold directly.
+    if (ref.type === "production" && key === "on_hold") {
+      if (value === true) {
+        setFreezeAsk(true);
+      } else {
+        await productionHold(false);
+      }
+      return;
+    }
+
     // optimistic: paint first, revert on failure
     setData((d) => (d ? { ...d, entity: { ...d.entity, [key]: value } } : d));
     const res = await post({ patch: { [key]: value }, ...(undoOf ? { undoOf } : {}) });
@@ -189,6 +206,25 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
       setData((d) => (d ? { ...d, entity: { ...d.entity, [key]: prev } } : d));
       return;
     }
+    broadcast();
+    void load(ref, true);
+  }
+
+  // the rich freeze flow, shared with the board — records reason/who/when
+  async function productionHold(on: boolean, reason?: string) {
+    if (!ref) return;
+    setError(null);
+    const res = await fetch(`/api/productions/${ref.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hold: { on, reason } }),
+    });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      setError(b.error ?? "עדכון ההקפאה נכשל");
+      return;
+    }
+    setFreezeAsk(false);
     broadcast();
     void load(ref, true);
   }
@@ -351,6 +387,52 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   return (
     <DrawerContext.Provider value={{ openEntity }}>
       {children}
+
+      {freezeAsk && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: "rgba(3,2,10,0.7)", backdropFilter: "blur(6px)" }}>
+          <div
+            className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl"
+            style={{ background: "rgba(15,13,28,0.95)", backdropFilter: "blur(24px)" }}
+          >
+            <h3 className="font-bold mb-3">הקפאת הפקה</h3>
+            <input
+              autoFocus
+              value={freezeReason}
+              onChange={(e) => setFreezeReason(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && freezeReason.trim()) {
+                  void productionHold(true, freezeReason.trim());
+                  setFreezeReason("");
+                }
+              }}
+              placeholder="סיבה (למשל: ממתין לחומרים)"
+              className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded-xl px-3 py-2 text-sm mb-4"
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  void productionHold(true, freezeReason.trim());
+                  setFreezeReason("");
+                }}
+                disabled={!freezeReason.trim()}
+                className="text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-40"
+                style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}
+              >
+                הקפא
+              </button>
+              <button
+                onClick={() => {
+                  setFreezeAsk(false);
+                  setFreezeReason("");
+                }}
+                className="border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)]"
+              >
+                ביטול
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {morningConfirm && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: "rgba(3,2,10,0.7)", backdropFilter: "blur(6px)" }}>
