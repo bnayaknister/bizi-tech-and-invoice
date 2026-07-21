@@ -34,6 +34,7 @@ type ProdRow = {
   split_count: number | null;
   calendar_dup_ack: boolean;
   merged_into: string | null;
+  legacy: boolean;
 };
 
 export default async function ProductionsPage() {
@@ -48,7 +49,7 @@ export default async function ProductionsPage() {
   // money columns (client) are only ever selected with the permission —
   // the board never carries money for a stages-only viewer
   const commonCols =
-    "id,status,record_date,record_time,guest,studio,on_hold,on_hold_reason,on_hold_since,needs_attention,show_id,calendar_uid,split_index,split_count,calendar_dup_ack,merged_into";
+    "id,status,record_date,record_time,guest,studio,on_hold,on_hold_reason,on_hold_since,needs_attention,show_id,calendar_uid,split_index,split_count,calendar_dup_ack,merged_into,legacy";
   const prodSelect = canViewMoney ? `${commonCols},client_id` : commonCols;
 
   // fetched without a merged_into filter — a merged-away / un-split-away
@@ -161,6 +162,7 @@ export default async function ProductionsPage() {
       split_count: p.split_count,
       dup_group: dupInfoByProdId.get(p.id) ?? null,
       absorbed: absorbedBySurvivor.get(p.id) ?? [],
+      legacy: p.legacy,
     };
   });
 

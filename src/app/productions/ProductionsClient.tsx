@@ -28,6 +28,7 @@ export type BoardProduction = {
   split_count: number | null;
   dup_group: { count: number; ids: string[] } | null;
   absorbed: { id: string }[];
+  legacy: boolean;
 };
 
 // the 9-state machine, in flow order (screens-spec §1)
@@ -94,6 +95,7 @@ export default function ProductionsClient({
   const [tab, setTab] = useState<"today" | "kanban">("today");
   const [onlyMine, setOnlyMine] = useState(isTech); // default on for technicians
   const [activeOnly, setActiveOnly] = useState(true); // scope the kanban to live shows
+  const [includeLegacy, setIncludeLegacy] = useState(false); // hide imported history by default (owner 2026-07-21)
   const [query, setQuery] = useState("");
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
@@ -253,9 +255,12 @@ export default function ProductionsClient({
   // cancelled productions leave the board (kanban + today) but stay findable:
   // show them only when a search term is active (owner 2026-07-21)
   const filtered = useMemo(() => {
-    const base = rows.filter(matches);
+    // imported history (legacy) is hidden on both boards unless the viewer
+    // opts in — 227 legacy rows sat in "עתיד להתחיל" and flooded the team's
+    // view (owner 2026-07-21)
+    const base = rows.filter(matches).filter((p) => includeLegacy || !p.legacy);
     return query.trim() ? base : base.filter((p) => p.status !== "בוטל");
-  }, [rows, matches, query]);
+  }, [rows, matches, query, includeLegacy]);
 
   return (
     <div className="max-w-[1400px] mx-auto p-6">
@@ -296,6 +301,10 @@ export default function ProductionsClient({
             רק תוכניות פעילות
           </label>
         )}
+        <label className="flex items-center gap-1.5 text-xs text-[var(--dim)] cursor-pointer">
+          <input type="checkbox" checked={includeLegacy} onChange={(e) => setIncludeLegacy(e.target.checked)} />
+          כולל היסטוריה
+        </label>
 
         <input
           value={query}
