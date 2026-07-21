@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { MODULES } from "@/modules/registry";
 import AppHeader from "@/components/AppHeader";
 import ModuleCard from "@/components/ModuleCard";
+import AssistantBar from "@/components/AssistantBar";
 
 export default async function Home() {
   const { user, profile } = await getSessionAndProfile();
@@ -18,6 +19,7 @@ export default async function Home() {
     <div className="min-h-screen">
       <AppHeader profile={profile} animatedLogo />
       <main className="max-w-5xl mx-auto p-6">
+        <AssistantBar />
         <h1 className="text-sm font-bold text-[var(--dim)] mb-4">מודולים</h1>
         {visibleModules.length === 0 ? (
           <div className="text-center py-20 text-[var(--faint)] text-sm">
