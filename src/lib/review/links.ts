@@ -205,6 +205,25 @@ export async function applyResponse(
     patch.needs_attention = true;
   }
 
+  // Resolve the upsells the client just decided on BEFORE flipping the
+  // production to client-approved: the status change fires
+  // on_production_approved, whose job total sums the 'approved' add-ons, so
+  // they must already be approved when the trigger reads them (owner timing
+  // note 2026-07-21). A rejected line is recorded, never billed; only priced,
+  // still-proposed lines are touched — an already-decided line is immutable.
+  if (approvedAll && resp.addons) {
+    for (const [addonId, decision] of Object.entries(resp.addons)) {
+      if (decision !== "approved" && decision !== "rejected") continue;
+      await admin
+        .from("production_addons")
+        .update({ status: decision, approved_via: "link" })
+        .eq("id", addonId)
+        .eq("production_id", production.id)
+        .eq("status", "proposed")
+        .not("unit_price", "is", null);
+    }
+  }
+
   const { error: prodErr } = await admin.from("productions").update(patch).eq("id", production.id);
   if (prodErr) throw new Error(prodErr.message);
 
@@ -233,24 +252,8 @@ export async function applyResponse(
     },
   });
 
-  // full approval → resolve the upsells the client just decided on, THEN
-  // queue the deal invoice (which reads the now-approved add-ons as its extra
-  // lines). A rejected line is recorded, never billed. Only priced, still-
-  // proposed lines are touched — an already-decided line is immutable here.
-  if (approvedAll && resp.addons) {
-    for (const [addonId, decision] of Object.entries(resp.addons)) {
-      if (decision !== "approved" && decision !== "rejected") continue;
-      await admin
-        .from("production_addons")
-        .update({ status: decision, approved_via: "link" })
-        .eq("id", addonId)
-        .eq("production_id", production.id)
-        .eq("status", "proposed")
-        .not("unit_price", "is", null);
-    }
-  }
-
   // full approval → deal invoice into the queue (same as the manual path).
+  // The add-ons were already resolved above, before the status flip.
   if (approvedAll) {
     const { data: prod } = await admin
       .from("productions")
