@@ -48,14 +48,20 @@ export type RadarAlert = {
   href: string;
 };
 
-// a client that looks active (has a real, billing show) but hasn't recorded
-// in a while — owner spec 2026-07-21, "worth a phone call"
+// a client that looks active (has a real, billing show) but has had NO
+// business communication of any kind in 90+ days — owner spec 2026-07-22,
+// widening the original "hasn't recorded" definition. "Business
+// communication" = any of: a production, a document issued, a payment
+// received, or any event logged directly against the client.
+export type DormantActivityKind = "production" | "document" | "payment" | "event";
+export type DormantActivity = { kind: DormantActivityKind; label: string; date: string };
+
 export type DormantClient = {
   id: string;
   name: string;
   shows: string[]; // the active, billing shows that make this client "active"
-  lastRecordDate: string | null; // null = no production on record at all
-  daysSince: number | null; // null when lastRecordDate is null
+  activities: DormantActivity[]; // most recent date per kind that ever occurred, oldest signal first — so the caller sees what this is about before picking up the phone
+  daysSinceLastActivity: number | null; // days since the MOST RECENT of all four signals; null = no activity of any kind, ever
   historicalRevenue: number; // sum of all jobs.amount ever billed to this client
 };
 
@@ -69,12 +75,15 @@ export type RadarData = {
 
 const DAY = 86_400_000;
 
-async function fetchAll<T>(supabase: SupabaseClient, table: string, columns: string): Promise<T[]> {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchAll<T>(supabase: SupabaseClient, table: string, columns: string, filter?: (q: any) => any): Promise<T[]> {
   const out: T[] = [];
   let from = 0;
   const page = 1000;
   for (;;) {
-    const { data, error } = await supabase.from(table).select(columns).range(from, from + page - 1);
+    let q = supabase.from(table).select(columns);
+    if (filter) q = filter(q);
+    const { data, error } = await q.range(from, from + page - 1);
     if (error) throw error;
     const rows = (data ?? []) as T[];
     out.push(...rows);
@@ -90,9 +99,9 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const today = new Date();
   const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
 
-  const [jobs, milestones, invoices, productions, stages, jobProds, shows, clients, pendingDocs] = await Promise.all([
-    fetchAll<{ amount: number | null; paid: string; invoice_tax: string | null; due_date: string | null; client_id: string | null }>(
-      supabase, "jobs", "amount,paid,invoice_tax,due_date,client_id"
+  const [jobs, milestones, invoices, productions, stages, jobProds, shows, clients, pendingDocs, clientEvents, paymentEvents] = await Promise.all([
+    fetchAll<{ id: string; amount: number | null; paid: string; invoice_tax: string | null; due_date: string | null; client_id: string | null }>(
+      supabase, "jobs", "id,amount,paid,invoice_tax,due_date,client_id"
     ),
     fetchAll<{ id: string; amount: number; status: string; expected_date: string | null; is_estimated: boolean }>(
       supabase, "contract_milestones", "id,amount,status,expected_date,is_estimated"
@@ -117,8 +126,23 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
       supabase, "shows", "id,client_id,billing_mode,active,name"
     ),
     fetchAll<{ id: string; normalized_name: string | null; name: string }>(supabase, "clients", "id,normalized_name,name"),
-    fetchAll<{ id: string; status: string; created_at: string; doc_type: string; production_id: string | null }>(
-      supabase, "pending_documents", "id,status,created_at,doc_type,production_id"
+    fetchAll<{ id: string; status: string; created_at: string; doc_type: string; production_id: string | null; client_id: string | null; issued_at: string | null }>(
+      supabase, "pending_documents", "id,status,created_at,doc_type,production_id,client_id,issued_at"
+    ),
+    // "any event related to the client" (owner spec 2026-07-22, widening the
+    // dormant-client definition) — events logged directly against a client
+    // entity (client edits, Morning propagation failures, etc.), not events
+    // on productions/jobs that merely belong to one (those are covered by
+    // the production/document/payment signals). Scoped by entity_type so
+    // this stays a bounded query, not a full-table scan of `events`.
+    fetchAll<{ entity_id: string; created_at: string }>(supabase, "events", "entity_id,created_at", (q) =>
+      q.eq("entity_type", "client")
+    ),
+    // payment-received signal: jobs.paid flips with no timestamp column of
+    // its own (0001) — the only record of WHEN is the job_marked_paid event
+    // (entity_type='job', entity_id=job id), joined to jobs.client_id below.
+    fetchAll<{ entity_id: string; created_at: string }>(supabase, "events", "entity_id,created_at", (q) =>
+      q.eq("event_type", "job_marked_paid")
     ),
   ]);
 
@@ -215,16 +239,31 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   }
   const duplicateClientNames = Array.from(nameGroups.values()).filter((n) => n > 1).length;
 
-  // ---- 🔵 dormant clients — "hasn't recorded in 90+ days" (owner spec
-  // 2026-07-21). "Active" for this purpose means at least one show that is
-  // BOTH active=true AND actually bills (billing_mode != 'none') — an
-  // internal show or one that already ended shouldn't make a client look
-  // active just because its row hasn't been archived. A client with no
-  // qualifying show is silently skipped, exactly like billing eligibility
-  // elsewhere in this file: no document owed = no alert, not a lesser alert.
-  // (There's no separate "archived client" state in this schema today — a
-  // deleted client is gone from `clients` entirely, so that exception is
-  // satisfied by construction; nothing to filter here.)
+  // ---- 🔵 dormant clients — "no business communication in 90+ days"
+  // (owner spec 2026-07-22, widening the original recording-only definition
+  // from 2026-07-21). "Active" for this purpose still means at least one
+  // show that is BOTH active=true AND actually bills (billing_mode !=
+  // 'none') — an internal show or one that already ended shouldn't make a
+  // client look active just because its row hasn't been archived. A client
+  // with no qualifying show is silently skipped, exactly like billing
+  // eligibility elsewhere in this file: no document owed = no alert, not a
+  // lesser alert. (There's no separate "archived client" state in this
+  // schema today — a deleted client is gone from `clients` entirely, so
+  // that exception is satisfied by construction; nothing to filter here.)
+  //
+  // "Business communication" = the most recent of FOUR independent signals.
+  // The client is dormant only if ALL FOUR are 90+ days stale (or never
+  // happened at all) — any one of them being recent keeps the client off
+  // the list:
+  //   1. production  — productions.record_date (the original signal)
+  //   2. document    — pending_documents.issued_at where status='issued'
+  //   3. payment     — the job_marked_paid event on one of the client's jobs
+  //                    (jobs.paid has no timestamp column of its own — 0001 —
+  //                    so the event log is the only record of WHEN it flipped)
+  //   4. event       — any events row logged directly against the client
+  //                    entity (entity_type='client'); NOT events on
+  //                    productions/jobs that merely belong to the client —
+  //                    those are already covered by signals 1–3
   const DORMANT_DAYS = 90;
   const activeBillingShowsByClient = new Map<string, string[]>();
   for (const s of shows) {
@@ -233,15 +272,42 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     arr.push(s.name);
     activeBillingShowsByClient.set(s.client_id, arr);
   }
-  // last recording date across ALL productions ever (including legacy — it's
-  // real history), excluding merged-away rows (soft-hidden system-wide; the
-  // survivor row carries the same date already)
-  const lastRecordByClient = new Map<string, string>();
+
+  const keepLatest = (map: Map<string, string>, key: string, dateIso: string) => {
+    const cur = map.get(key);
+    if (!cur || dateIso > cur) map.set(key, dateIso);
+  };
+
+  // signal 1: production (excluding merged-away rows — soft-hidden
+  // system-wide; the survivor row carries the same date already)
+  const lastProductionByClient = new Map<string, string>();
   for (const p of productions) {
     if (p.merged_into || !p.client_id || !p.record_date) continue;
-    const cur = lastRecordByClient.get(p.client_id);
-    if (!cur || p.record_date > cur) lastRecordByClient.set(p.client_id, p.record_date);
+    keepLatest(lastProductionByClient, p.client_id, p.record_date);
   }
+
+  // signal 2: document issued
+  const lastDocumentByClient = new Map<string, string>();
+  for (const d of pendingDocs) {
+    if (d.status !== "issued" || !d.client_id || !d.issued_at) continue;
+    keepLatest(lastDocumentByClient, d.client_id, d.issued_at);
+  }
+
+  // signal 3: payment received — job_marked_paid events, joined via job id
+  const clientByJobId = new Map(jobs.filter((j) => j.client_id).map((j) => [j.id, j.client_id as string]));
+  const lastPaymentByClient = new Map<string, string>();
+  for (const e of paymentEvents) {
+    const clientId = clientByJobId.get(e.entity_id);
+    if (!clientId) continue;
+    keepLatest(lastPaymentByClient, clientId, e.created_at);
+  }
+
+  // signal 4: any event logged directly against the client
+  const lastEventByClient = new Map<string, string>();
+  for (const e of clientEvents) {
+    keepLatest(lastEventByClient, e.entity_id, e.created_at);
+  }
+
   // total historical business volume, not just what's been collected — size
   // of the relationship is what makes a client worth a phone call, paid or not
   const revenueByClient = new Map<string, number>();
@@ -249,20 +315,44 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     if (!j.client_id) continue;
     revenueByClient.set(j.client_id, (revenueByClient.get(j.client_id) ?? 0) + num(j.amount));
   }
+
+  const ACTIVITY_LABEL: Record<DormantActivityKind, string> = {
+    production: "הקלטה אחרונה",
+    document: "מסמך אחרון",
+    payment: "תשלום אחרון",
+    event: "פעילות אחרונה",
+  };
+
   const dormantClients: DormantClient[] = [];
   for (const c of clients) {
     const activeShows = activeBillingShowsByClient.get(c.id);
     if (!activeShows || activeShows.length === 0) continue;
-    const last = lastRecordByClient.get(c.id) ?? null;
-    const daysSince = last ? Math.floor((todayMid - new Date(last).getTime()) / DAY) : null;
-    // no production on record at all is at least as dormant as a stale date
+
+    const byKind: [DormantActivityKind, string | undefined][] = [
+      ["production", lastProductionByClient.get(c.id)],
+      ["document", lastDocumentByClient.get(c.id)],
+      ["payment", lastPaymentByClient.get(c.id)],
+      ["event", lastEventByClient.get(c.id)],
+    ];
+    const activities: DormantActivity[] = byKind
+      .filter((x): x is [DormantActivityKind, string] => !!x[1])
+      .map(([kind, date]) => ({ kind, label: ACTIVITY_LABEL[kind], date }));
+
+    // the client is dormant only if the MOST RECENT of all four signals is
+    // 90+ days old — one recent signal is enough to keep them off the list
+    const mostRecent = activities.reduce<string | null>(
+      (max, a) => (max === null || a.date > max ? a.date : max),
+      null
+    );
+    const daysSince = mostRecent ? Math.floor((todayMid - new Date(mostRecent).getTime()) / DAY) : null;
     if (daysSince !== null && daysSince < DORMANT_DAYS) continue;
+
     dormantClients.push({
       id: c.id,
       name: c.name,
       shows: activeShows,
-      lastRecordDate: last,
-      daysSince,
+      activities,
+      daysSinceLastActivity: daysSince,
       historicalRevenue: revenueByClient.get(c.id) ?? 0,
     });
   }
