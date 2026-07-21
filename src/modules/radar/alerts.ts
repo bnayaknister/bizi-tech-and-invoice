@@ -48,11 +48,23 @@ export type RadarAlert = {
   href: string;
 };
 
+// a client that looks active (has a real, billing show) but hasn't recorded
+// in a while — owner spec 2026-07-21, "worth a phone call"
+export type DormantClient = {
+  id: string;
+  name: string;
+  shows: string[]; // the active, billing shows that make this client "active"
+  lastRecordDate: string | null; // null = no production on record at all
+  daysSince: number | null; // null when lastRecordDate is null
+  historicalRevenue: number; // sum of all jobs.amount ever billed to this client
+};
+
 export type RadarData = {
   debtToCollect: number; // charged, not paid
   openCommitment: number; // not yet charged
   vu: VUChannel[];
   alerts: RadarAlert[];
+  dormantClients: DormantClient[]; // sorted by historicalRevenue desc
 };
 
 const DAY = 86_400_000;
@@ -79,8 +91,8 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
 
   const [jobs, milestones, invoices, productions, stages, jobProds, shows, clients, pendingDocs] = await Promise.all([
-    fetchAll<{ amount: number | null; paid: string; invoice_tax: string | null; due_date: string | null }>(
-      supabase, "jobs", "amount,paid,invoice_tax,due_date"
+    fetchAll<{ amount: number | null; paid: string; invoice_tax: string | null; due_date: string | null; client_id: string | null }>(
+      supabase, "jobs", "amount,paid,invoice_tax,due_date,client_id"
     ),
     fetchAll<{ id: string; amount: number; status: string; expected_date: string | null; is_estimated: boolean }>(
       supabase, "contract_milestones", "id,amount,status,expected_date,is_estimated"
@@ -90,16 +102,20 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
       id: string;
       kind: string;
       show_id: string | null;
+      client_id: string | null;
+      record_date: string | null;
       on_hold: boolean;
       on_hold_since: string | null;
       merged_into: string | null;
       billing_block_reason: string | null;
       calendar_removed: boolean;
       status: string;
-    }>(supabase, "productions", "id,kind,show_id,on_hold,on_hold_since,merged_into,billing_block_reason,calendar_removed,status"),
+    }>(supabase, "productions", "id,kind,show_id,client_id,record_date,on_hold,on_hold_since,merged_into,billing_block_reason,calendar_removed,status"),
     fetchAll<{ production_id: string; status: string }>(supabase, "stages", "production_id,status"),
     fetchAll<{ production_id: string }>(supabase, "job_productions", "production_id"),
-    fetchAll<{ id: string; billing_mode: string }>(supabase, "shows", "id,billing_mode"),
+    fetchAll<{ id: string; client_id: string | null; billing_mode: string; active: boolean; name: string }>(
+      supabase, "shows", "id,client_id,billing_mode,active,name"
+    ),
     fetchAll<{ id: string; normalized_name: string | null; name: string }>(supabase, "clients", "id,normalized_name,name"),
     fetchAll<{ id: string; status: string; created_at: string; doc_type: string; production_id: string | null }>(
       supabase, "pending_documents", "id,status,created_at,doc_type,production_id"
@@ -199,6 +215,59 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   }
   const duplicateClientNames = Array.from(nameGroups.values()).filter((n) => n > 1).length;
 
+  // ---- 🔵 dormant clients — "hasn't recorded in 90+ days" (owner spec
+  // 2026-07-21). "Active" for this purpose means at least one show that is
+  // BOTH active=true AND actually bills (billing_mode != 'none') — an
+  // internal show or one that already ended shouldn't make a client look
+  // active just because its row hasn't been archived. A client with no
+  // qualifying show is silently skipped, exactly like billing eligibility
+  // elsewhere in this file: no document owed = no alert, not a lesser alert.
+  // (There's no separate "archived client" state in this schema today — a
+  // deleted client is gone from `clients` entirely, so that exception is
+  // satisfied by construction; nothing to filter here.)
+  const DORMANT_DAYS = 90;
+  const activeBillingShowsByClient = new Map<string, string[]>();
+  for (const s of shows) {
+    if (!s.client_id || !s.active || s.billing_mode === "none") continue;
+    const arr = activeBillingShowsByClient.get(s.client_id) ?? [];
+    arr.push(s.name);
+    activeBillingShowsByClient.set(s.client_id, arr);
+  }
+  // last recording date across ALL productions ever (including legacy — it's
+  // real history), excluding merged-away rows (soft-hidden system-wide; the
+  // survivor row carries the same date already)
+  const lastRecordByClient = new Map<string, string>();
+  for (const p of productions) {
+    if (p.merged_into || !p.client_id || !p.record_date) continue;
+    const cur = lastRecordByClient.get(p.client_id);
+    if (!cur || p.record_date > cur) lastRecordByClient.set(p.client_id, p.record_date);
+  }
+  // total historical business volume, not just what's been collected — size
+  // of the relationship is what makes a client worth a phone call, paid or not
+  const revenueByClient = new Map<string, number>();
+  for (const j of jobs) {
+    if (!j.client_id) continue;
+    revenueByClient.set(j.client_id, (revenueByClient.get(j.client_id) ?? 0) + num(j.amount));
+  }
+  const dormantClients: DormantClient[] = [];
+  for (const c of clients) {
+    const activeShows = activeBillingShowsByClient.get(c.id);
+    if (!activeShows || activeShows.length === 0) continue;
+    const last = lastRecordByClient.get(c.id) ?? null;
+    const daysSince = last ? Math.floor((todayMid - new Date(last).getTime()) / DAY) : null;
+    // no production on record at all is at least as dormant as a stale date
+    if (daysSince !== null && daysSince < DORMANT_DAYS) continue;
+    dormantClients.push({
+      id: c.id,
+      name: c.name,
+      shows: activeShows,
+      lastRecordDate: last,
+      daysSince,
+      historicalRevenue: revenueByClient.get(c.id) ?? 0,
+    });
+  }
+  dormantClients.sort((a, b) => b.historicalRevenue - a.historicalRevenue);
+
   // ---- 🟡 a client production that should bill but can't (owner 2026-07-19):
   // billing_block_reason is set ONLY for applicable blocks (missing client /
   // unmapped client / no rate), never for internal or legacy — so this
@@ -250,5 +319,5 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   ];
   const alerts = allAlerts.filter((a) => a.count > 0);
 
-  return { debtToCollect, openCommitment, vu, alerts };
+  return { debtToCollect, openCommitment, vu, alerts, dormantClients };
 }

@@ -5,6 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import IconTile from "@/components/IconTile";
 import { computeRadar, type RadarAlert, type Severity } from "@/modules/radar/alerts";
+import DormantClientsSection from "./DormantClientsSection";
 
 export const dynamic = "force-dynamic";
 
@@ -154,11 +155,13 @@ export default async function RadarPage() {
               </section>
             );
           })}
-          {radar.alerts.length === 0 && (
+          {radar.alerts.length === 0 && radar.dormantClients.length === 0 && (
             <div className="text-center text-sm text-[var(--faint)] py-10 border border-dashed border-[var(--rule)] rounded-2xl">
               אין התראות פעילות. הכל תחת שליטה.
             </div>
           )}
+
+          <DormantClientsSection clients={radar.dormantClients} />
         </div>
       </main>
     </div>
