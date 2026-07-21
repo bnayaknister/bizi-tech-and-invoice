@@ -52,6 +52,14 @@ export async function POST(request: Request) {
     .eq("id", body.id)
     .maybeSingle();
   if (!row) return NextResponse.json({ error: "המסמך לא נמצא" }, { status: 404 });
+  if (row.status === "issued") {
+    // an issued Morning document is immutable — there is no update endpoint
+    // (owner rule 2026-07-21). The real-world fix is manual, in Morning.
+    return NextResponse.json(
+      { error: "מסמך שהונפק אינו ניתן לעריכה במורנינג — יש לבטל/לזכות ולהנפיק מחדש שם ישירות" },
+      { status: 409 }
+    );
+  }
   if (row.status !== "pending" && row.status !== "failed") {
     return NextResponse.json({ error: `לא ניתן לערוך מסמך בסטטוס ${row.status}` }, { status: 409 });
   }

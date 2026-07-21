@@ -100,6 +100,10 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<DrawerData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // a client-name edit that Morning must be told about, awaiting confirmation
+  const [morningConfirm, setMorningConfirm] = useState<
+    { key: string; value: unknown; prev: unknown; changes: Record<string, { from: unknown; to: unknown }> } | null
+  >(null);
   // dirty text/number edits awaiting blur/Cmd+Enter
   const dirty = useRef<Record<string, unknown>>({});
 
@@ -138,20 +142,19 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     router.refresh();
   }
 
-  async function post(body: Record<string, unknown>): Promise<boolean> {
-    if (!ref) return false;
+  async function post(
+    body: Record<string, unknown>
+  ): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+    if (!ref) return { ok: false, status: 0, body: {} };
     setError(null);
     const res = await fetch(`/api/entity/${ref.type}/${ref.id}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) {
-      const resBody = await res.json().catch(() => ({}));
-      setError(resBody.error ?? "שגיאה בשמירה");
-      return false;
-    }
-    return true;
+    const resBody = await res.json().catch(() => ({}));
+    if (!res.ok && res.status !== 409) setError(resBody.error ?? "שגיאה בשמירה");
+    return { ok: res.ok, status: res.status, body: resBody };
   }
 
   async function saveField(key: string, value: unknown, undoOf?: string) {
@@ -160,13 +163,34 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     if (prev === value) return;
     // optimistic: paint first, revert on failure
     setData((d) => (d ? { ...d, entity: { ...d.entity, [key]: value } } : d));
-    const ok = await post({ patch: { [key]: value }, ...(undoOf ? { undoOf } : {}) });
-    if (!ok) {
+    const res = await post({ patch: { [key]: value }, ...(undoOf ? { undoOf } : {}) });
+    // a mapped client's name change needs an explicit "also update Morning?"
+    // — revert the optimistic paint and hold it for the confirmation modal
+    if (res.status === 409 && res.body?.needs_morning_confirmation) {
+      setData((d) => (d ? { ...d, entity: { ...d.entity, [key]: prev } } : d));
+      setMorningConfirm({ key, value, prev, changes: res.body.changes as Record<string, { from: unknown; to: unknown }> });
+      return;
+    }
+    if (!res.ok) {
       setData((d) => (d ? { ...d, entity: { ...d.entity, [key]: prev } } : d));
       return;
     }
     broadcast();
     void load(ref, true); // refresh history + derived fields
+  }
+
+  async function confirmMorning() {
+    if (!ref || !morningConfirm) return;
+    const { key, value, prev } = morningConfirm;
+    setData((d) => (d ? { ...d, entity: { ...d.entity, [key]: value } } : d));
+    const res = await post({ patch: { [key]: value }, confirm_morning: true });
+    setMorningConfirm(null);
+    if (!res.ok) {
+      setData((d) => (d ? { ...d, entity: { ...d.entity, [key]: prev } } : d));
+      return;
+    }
+    broadcast();
+    void load(ref, true);
   }
 
   async function saveStage(stage: Stage, patch: Record<string, unknown>) {
@@ -327,6 +351,46 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   return (
     <DrawerContext.Provider value={{ openEntity }}>
       {children}
+
+      {morningConfirm && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: "rgba(3,2,10,0.7)", backdropFilter: "blur(6px)" }}>
+          <div
+            className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl"
+            style={{ background: "rgba(15,13,28,0.95)", backdropFilter: "blur(24px)" }}
+          >
+            <h3 className="font-bold mb-2">השינוי יעודכן גם במורנינג</h3>
+            <div className="text-sm mb-3 space-y-1">
+              {Object.entries(morningConfirm.changes).map(([k, ch]) => (
+                <div key={k}>
+                  <span className="text-[var(--faint)]">{k}: </span>
+                  <span className="line-through text-[var(--faint)]">{String(ch.from ?? "—")}</span>
+                  <span className="mx-1">→</span>
+                  <span className="font-bold">{String(ch.to ?? "—")}</span>
+                </div>
+              ))}
+            </div>
+            <p className="text-[11px] text-[var(--faint)] mb-4">
+              הצלחה → מעודכן בשני המקומות. כישלון → לא מעודכן באף אחד.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={confirmMorning}
+                className="flex-1 text-white font-bold rounded-xl px-4 py-2 text-sm"
+                style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}
+              >
+                אשר ועדכן
+              </button>
+              <button
+                onClick={() => setMorningConfirm(null)}
+                className="flex-1 border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)]"
+              >
+                בטל
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {ref && (
         <>
           <div className="fixed inset-0 z-40" style={{ background: "rgba(3,2,10,0.5)", backdropFilter: "blur(4px)" }} onClick={close} />

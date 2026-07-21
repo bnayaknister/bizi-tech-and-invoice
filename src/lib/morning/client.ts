@@ -147,6 +147,24 @@ export async function createDocument(
   return { result, dryRun: false };
 }
 
+/**
+ * Update a client in Morning (PUT /clients/{id}). Unlike documents — which
+ * are immutable once issued and have no update endpoint — clients CAN be
+ * edited. Respects DRY_RUN: in dry-run it makes no call and reports it, so
+ * local testing never mutates a real Morning client.
+ */
+export async function updateClient(
+  morningClientId: string,
+  fields: Record<string, unknown>
+): Promise<{ dryRun: boolean }> {
+  if (isDryRun()) return { dryRun: true };
+  await request(`/clients/${encodeURIComponent(morningClientId)}`, {
+    method: "PUT",
+    body: JSON.stringify(fields),
+  });
+  return { dryRun: false };
+}
+
 export type MorningSearchDoc = {
   id: string;
   type: number;

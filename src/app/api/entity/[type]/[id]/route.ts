@@ -163,6 +163,7 @@ export async function POST(
     patch?: Record<string, unknown>;
     stage?: { id: string; patch: Record<string, unknown> };
     undoOf?: string; // event id this change reverts, for the audit trail
+    confirm_morning?: boolean; // client edit: user confirmed the Morning propagation
   };
   const supabase = createClient();
   const admin = createAdminClient();
@@ -215,6 +216,51 @@ export async function POST(
   if (beforeErr || !before)
     return NextResponse.json({ error: "לא נמצא או שאין הרשאה" }, { status: 404 });
 
+  // Addition 2 (owner spec 2026-07-21): editing a MAPPED client's details
+  // propagates to Morning. Morning-first + double confirmation so the two
+  // never diverge: a failed Morning write leaves local untouched ("כשלון →
+  // לא מעודכן באף אחד"); a success updates both. We only propagate the
+  // fields Morning actually holds — today that's the client name.
+  //
+  // (Documents are deliberately absent here: an issued Morning document has
+  // NO update endpoint — it's immutable by design — so it can never be edited
+  // from the app. That boundary is enforced by there being no code path.)
+  if (type === "client" && "name" in patch) {
+    const { data: mc } = await admin
+      .from("clients")
+      .select("morning_client_id,name")
+      .eq("id", params.id)
+      .maybeSingle();
+    const morningId = mc?.morning_client_id as string | null;
+    const nameChanged = patch.name !== mc?.name;
+    if (morningId && nameChanged) {
+      if (!body.confirm_morning) {
+        return NextResponse.json(
+          {
+            needs_morning_confirmation: true,
+            changes: { name: { from: mc?.name ?? null, to: patch.name } },
+          },
+          { status: 409 }
+        );
+      }
+      try {
+        const { updateClient } = await import("@/lib/morning/client");
+        await updateClient(morningId, { name: patch.name });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "עדכון מורנינג נכשל";
+        await admin.from("events").insert({
+          entity_type: "client",
+          entity_id: params.id,
+          event_type: "client_morning_update_failed",
+          actor_id: user.id,
+          payload: { attempted: { name: patch.name }, error: message },
+        });
+        // nothing local changed — the update below never runs
+        return NextResponse.json({ error: `עדכון מורנינג נכשל, לא בוצע שינוי: ${message}` }, { status: 502 });
+      }
+    }
+  }
+
   const { data: updated, error } = await supabase
     .from(config.table)
     .update(patch)
@@ -233,7 +279,12 @@ export async function POST(
     entity_id: params.id,
     event_type: body.undoOf ? "entity_update_reverted" : "entity_updated",
     actor_id: user.id,
-    payload: { changes, source: "entity_drawer", ...(body.undoOf ? { undo_of: body.undoOf } : {}) },
+    payload: {
+      changes,
+      source: "entity_drawer",
+      ...(body.confirm_morning ? { propagated_to_morning: true } : {}),
+      ...(body.undoOf ? { undo_of: body.undoOf } : {}),
+    },
   });
 
   return NextResponse.json({ ok: true, entity: updated[0] });
