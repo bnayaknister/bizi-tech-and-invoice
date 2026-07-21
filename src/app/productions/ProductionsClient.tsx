@@ -53,6 +53,7 @@ const STATUS_LABEL: Record<string, string> = {
   ממתין_לתגובת_לקוח: "ממתין לתגובת לקוח",
   'אושר_ע"י_לקוח': 'אושר ע"י לקוח',
   הופץ: "הופץ",
+  בוטל: "בוטל",
 };
 
 // mid-pipeline = actively being worked (for the Today "in progress" bucket)
@@ -63,7 +64,7 @@ const IN_PROGRESS_STATES = new Set([
   "נערך",
   "נשלח_ללקוח",
 ]);
-const TERMINAL_STATES = new Set(['אושר_ע"י_לקוח', "הופץ"]);
+const TERMINAL_STATES = new Set(['אושר_ע"י_לקוח', "הופץ", "בוטל"]);
 
 const STEP_LABEL: Record<string, string> = { record: "הקלטה", edit: "עריכה", deliver: "מסירה" };
 const TRACK_LABEL: Record<string, string> = { episode: "פרק", reels: "רילז" };
@@ -98,6 +99,7 @@ export default function ProductionsClient({
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [holdFor, setHoldFor] = useState<BoardProduction | null>(null);
   const [splitFor, setSplitFor] = useState<BoardProduction | null>(null);
+  const [cancelFor, setCancelFor] = useState<BoardProduction | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
@@ -215,6 +217,27 @@ export default function ProductionsClient({
     }
   }
 
+  // returns a result the modal acts on: a document warning to confirm, an
+  // error, or success (the row is marked cancelled and leaves the board)
+  async function cancelProduction(
+    id: string,
+    reason: string,
+    confirm: boolean
+  ): Promise<{ ok?: boolean; needsConfirmation?: boolean; issuedDocs?: { type: string; number: string | null }[]; error?: string }> {
+    const res = await fetch(`/api/productions/${id}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason, confirm }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 409 && data.needs_confirmation) {
+      return { needsConfirmation: true, issuedDocs: data.issued_docs ?? [] };
+    }
+    if (!res.ok) return { error: data.error ?? "הביטול נכשל" };
+    setRows((rs) => rs.map((p) => (p.id === id ? { ...p, status: "בוטל" } : p)));
+    return { ok: true };
+  }
+
   const moveStatus = (id: string, status: string) =>
     act(id, { status }, (p) => ({ ...p, status }));
 
@@ -226,7 +249,12 @@ export default function ProductionsClient({
       on_hold_since: on ? new Date().toISOString() : null,
     }));
 
-  const filtered = useMemo(() => rows.filter(matches), [rows, matches]);
+  // cancelled productions leave the board (kanban + today) but stay findable:
+  // show them only when a search term is active (owner 2026-07-21)
+  const filtered = useMemo(() => {
+    const base = rows.filter(matches);
+    return query.trim() ? base : base.filter((p) => p.status !== "בוטל");
+  }, [rows, matches, query]);
 
   return (
     <div className="max-w-[1400px] mx-auto p-6">
@@ -300,6 +328,7 @@ export default function ProductionsClient({
           onOpen={(id) => openEntity({ type: "production", id })}
           onHold={setHold}
           onFreezeAsk={setHoldFor}
+          onCancelAsk={setCancelFor}
           canEditStages={canEditStages}
           onSplitAsk={setSplitFor}
           onUndoSplit={undoSplit}
@@ -318,6 +347,7 @@ export default function ProductionsClient({
           onOpen={(id) => openEntity({ type: "production", id })}
           onFreezeAsk={setHoldFor}
           onUnfreeze={(id) => setHold(id, false)}
+          onCancelAsk={setCancelFor}
           onSplitAsk={setSplitFor}
           onUndoSplit={undoSplit}
           onDupAction={dupAction}
@@ -333,6 +363,14 @@ export default function ProductionsClient({
             setHold(holdFor.id, true, reason);
             setHoldFor(null);
           }}
+        />
+      )}
+
+      {cancelFor && (
+        <CancelModal
+          production={cancelFor}
+          onClose={() => setCancelFor(null)}
+          onCancel={cancelProduction}
         />
       )}
 
@@ -370,6 +408,7 @@ function ProductionCard({
   onOpen,
   onFreezeAsk,
   onUnfreeze,
+  onCancelAsk,
   draggable,
   onDragStart,
   onDragEnd,
@@ -384,6 +423,7 @@ function ProductionCard({
   onOpen: (id: string) => void;
   onFreezeAsk: (p: BoardProduction) => void;
   onUnfreeze?: (id: string) => void;
+  onCancelAsk?: (p: BoardProduction) => void;
   draggable?: boolean;
   onDragStart?: () => void;
   onDragEnd?: () => void;
@@ -543,6 +583,17 @@ function ProductionCard({
             פצל
           </button>
         )}
+        {canEditStages && onCancelAsk && p.status !== "בוטל" && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onCancelAsk(p);
+            }}
+            className="text-[10px] text-[var(--red)] border border-[var(--rule)] rounded px-2 py-0.5 hover:bg-[rgba(251,113,133,0.08)]"
+          >
+            בטל הפקה
+          </button>
+        )}
       </div>
     </div>
   );
@@ -553,6 +604,7 @@ function TodayView({
   onOpen,
   onHold,
   onFreezeAsk,
+  onCancelAsk,
   canEditStages,
   onSplitAsk,
   onUndoSplit,
@@ -563,6 +615,7 @@ function TodayView({
   onOpen: (id: string) => void;
   onHold: (id: string, on: boolean) => void;
   onFreezeAsk: (p: BoardProduction) => void;
+  onCancelAsk: (p: BoardProduction) => void;
   canEditStages: boolean;
   onSplitAsk: (p: BoardProduction) => void;
   onUndoSplit: (id: string) => void;
@@ -594,6 +647,7 @@ function TodayView({
               onOpen={onOpen}
               onFreezeAsk={onFreezeAsk}
               onUnfreeze={(id) => onHold(id, false)}
+              onCancelAsk={onCancelAsk}
               showStatus
               canEditStages={canEditStages}
               onSplitAsk={onSplitAsk}
@@ -631,6 +685,7 @@ function Kanban({
   onOpen,
   onFreezeAsk,
   onUnfreeze,
+  onCancelAsk,
   onSplitAsk,
   onUndoSplit,
   onDupAction,
@@ -646,6 +701,7 @@ function Kanban({
   onOpen: (id: string) => void;
   onFreezeAsk: (p: BoardProduction) => void;
   onUnfreeze: (id: string) => void;
+  onCancelAsk: (p: BoardProduction) => void;
   onSplitAsk: (p: BoardProduction) => void;
   onUndoSplit: (id: string) => void;
   onDupAction: (id: string, action: "confirm" | "merge") => void;
@@ -700,6 +756,7 @@ function Kanban({
                     onOpen={onOpen}
                     onFreezeAsk={onFreezeAsk}
                     onUnfreeze={onUnfreeze}
+                    onCancelAsk={onCancelAsk}
                     draggable={canEditStages}
                     onDragStart={() => setDragId(p.id)}
                     onDragEnd={() => setDragId(null)}
@@ -720,6 +777,98 @@ function Kanban({
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+function CancelModal({
+  production,
+  onClose,
+  onCancel,
+}: {
+  production: BoardProduction;
+  onClose: () => void;
+  onCancel: (
+    id: string,
+    reason: string,
+    confirm: boolean
+  ) => Promise<{ ok?: boolean; needsConfirmation?: boolean; issuedDocs?: { type: string; number: string | null }[]; error?: string }>;
+}) {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // set when the server reports an already-issued document — the second gate
+  const [issuedDocs, setIssuedDocs] = useState<{ type: string; number: string | null }[] | null>(null);
+
+  async function submit(confirm: boolean) {
+    if (!reason.trim()) return;
+    setBusy(true);
+    setError(null);
+    const res = await onCancel(production.id, reason.trim(), confirm);
+    setBusy(false);
+    if (res.needsConfirmation) {
+      setIssuedDocs(res.issuedDocs ?? []);
+      return;
+    }
+    if (res.error) {
+      setError(res.error);
+      return;
+    }
+    onClose();
+  }
+
+  return (
+    <div
+      className="fixed inset-0 flex items-center justify-center p-4 z-50"
+      style={{ background: "rgba(3,2,10,0.66)", backdropFilter: "blur(6px)" }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl"
+        style={{ background: "rgba(15,13,28,0.92)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}
+      >
+        <h3 className="font-bold mb-1">ביטול הקלטה</h3>
+        <p className="text-xs text-[var(--dim)] mb-3">
+          {production.show_name}
+          {production.record_date ? ` · ${production.record_date}` : ""}
+        </p>
+
+        {issuedDocs && issuedDocs.length > 0 && (
+          <div className="mb-3 text-[11px] border border-[var(--amber)] text-[var(--amber)] rounded-xl px-3 py-2">
+            {issuedDocs.map((d, i) => (
+              <div key={i}>
+                {d.type} {d.number ?? ""} כבר הונפקה במורנינג.
+              </div>
+            ))}
+            הביטול יסמן אותה לסגירה ידנית במורנינג (לא נמחק שם דבר).
+          </div>
+        )}
+
+        <textarea
+          autoFocus
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="סיבת הביטול (חובה — למשל: הלקוח ביטל בבוקר)"
+          rows={2}
+          className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded-xl px-3 py-2 text-sm mb-3"
+        />
+        {error && <div className="mb-3 text-[11px] text-[var(--peak)]">{error}</div>}
+
+        <div className="flex gap-2">
+          <button
+            onClick={() => submit(!!issuedDocs)}
+            disabled={!reason.trim() || busy}
+            className="text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-40"
+            style={{ background: "linear-gradient(135deg, var(--red), #b23a4d)", boxShadow: "0 4px 14px rgba(251,113,133,0.3)" }}
+          >
+            {issuedDocs ? "אשר וסמן לסגירה ידנית" : "בטל הקלטה"}
+          </button>
+          <button onClick={onClose} className="border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)]">
+            חזור
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -131,6 +131,21 @@ type ShowRow = {
 async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
   const admin = createAdminClient();
 
+  // A cancelled production keeps its calendar_uid on purpose (0028): if the
+  // event is still on the calendar, this makes the sync SKIP it instead of
+  // recreating the production the owner just cancelled. Drop those events up
+  // front so they never reach create/update/flag logic at all. Not limited to
+  // today — a cancellation must survive every future sync.
+  const { data: cancelledRows } = await admin
+    .from("productions")
+    .select("calendar_uid")
+    .eq("status", "בוטל")
+    .not("calendar_uid", "is", null);
+  const cancelledUids = new Set((cancelledRows ?? []).map((r) => r.calendar_uid as string));
+  if (cancelledUids.size) {
+    events = events.filter((e) => !e.uid || !cancelledUids.has(e.uid));
+  }
+
   const { data: shows } = await admin
     .from("shows")
     .select("id,name,aliases,client_id,billing_mode,default_studio,camera_count,default_editor_id,active");

@@ -95,7 +95,8 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
       merged_into: string | null;
       billing_block_reason: string | null;
       calendar_removed: boolean;
-    }>(supabase, "productions", "id,kind,show_id,on_hold,on_hold_since,merged_into,billing_block_reason,calendar_removed"),
+      status: string;
+    }>(supabase, "productions", "id,kind,show_id,on_hold,on_hold_since,merged_into,billing_block_reason,calendar_removed,status"),
     fetchAll<{ production_id: string; status: string }>(supabase, "stages", "production_id,status"),
     fetchAll<{ production_id: string }>(supabase, "job_productions", "production_id"),
     fetchAll<{ id: string; billing_mode: string }>(supabase, "shows", "id,billing_mode"),
@@ -212,16 +213,18 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const pending72 = pendingNow.filter((d) => agedHours(d) >= 72);
   const pending24 = pendingNow.filter((d) => agedHours(d) >= 24 && agedHours(d) < 72);
 
-  // ---- 🟡 a production was cancelled AFTER its work order was issued in
-  // Morning (owner 2026-07-19). We never delete anything in Morning — the
-  // owner closes it by hand — so this is a standing reminder, not urgent.
-  // Signal: the production is calendar_removed (kept, not deleted) AND an
-  // issued work_order exists for it.
-  const issuedWorkOrderProds = new Set(
-    pendingDocs.filter((d) => d.doc_type === "work_order" && d.status === "issued" && d.production_id).map((d) => d.production_id as string)
+  // ---- 🟡 a production is gone (cancelled, or its calendar event removed)
+  // AFTER a document was already issued in Morning (owner 2026-07-19/21). We
+  // never delete anything in Morning — the owner closes it by hand — so this
+  // is a standing reminder. Signal: the production is calendar_removed or
+  // status='בוטל', and an issued work order OR deal invoice exists for it.
+  const issuedDocProds = new Set(
+    pendingDocs
+      .filter((d) => d.status === "issued" && (d.doc_type === "work_order" || d.doc_type === "deal_invoice") && d.production_id)
+      .map((d) => d.production_id as string)
   );
   const cancelledWithWorkOrder = productions.filter(
-    (p) => p.calendar_removed && !p.merged_into && issuedWorkOrderProds.has(p.id)
+    (p) => (p.calendar_removed || p.status === "בוטל") && !p.merged_into && issuedDocProds.has(p.id)
   );
 
   const sum = (arr: { amount: number | null }[]) => arr.reduce((s, x) => s + num(x.amount), 0);
