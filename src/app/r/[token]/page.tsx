@@ -80,6 +80,7 @@ export default async function ReviewPage({ params }: { params: { token: string }
         reelsApproved={p.review_reels_approved}
         episodeLink={state.link.episode_link}
         reelsLink={state.link.reels_link}
+        addons={state.addons}
       />
     </Shell>
   );

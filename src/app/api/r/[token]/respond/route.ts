@@ -38,6 +38,8 @@ export async function POST(request: Request, { params }: { params: { token: stri
     episode_note?: string;
     reels?: string;
     reels_note?: string;
+    // { addonId: 'approved' | 'rejected' } — only honoured on full approval
+    addons?: Record<string, unknown>;
   };
 
   const episode = validTrack(body.episode);
@@ -49,8 +51,18 @@ export async function POST(request: Request, { params }: { params: { token: stri
   const reelsPending = reelsInScope && !state.production.review_reels_approved;
   const answersEpisode = episodePending && !!episode;
   const answersReels = reelsPending && !!reels;
-  if (!answersEpisode && !answersReels) {
+  // when every track is already approved (a prior round) only the add-ons
+  // remain — the client may finalise with just add-on decisions
+  const onlyAddonsLeft = !episodePending && !reelsPending && state.addons.length > 0;
+  if (!answersEpisode && !answersReels && !onlyAddonsLeft) {
     return NextResponse.json({ error: "יש לבחור אישור או תיקונים לפחות עבור בלוק אחד" }, { status: 400 });
+  }
+
+  // normalise the add-on decisions to the priced, proposed lines on this link
+  const shownAddonIds = new Set(state.addons.map((a) => a.id));
+  const addonDecisions: Record<string, "approved" | "rejected"> = {};
+  for (const [id, v] of Object.entries(body.addons ?? {})) {
+    if (shownAddonIds.has(id) && (v === "approved" || v === "rejected")) addonDecisions[id] = v;
   }
   // a revision must carry a note (that's the whole point of the loop)
   if (episode === "revisions" && !(body.episode_note ?? "").trim()) {
@@ -65,6 +77,7 @@ export async function POST(request: Request, { params }: { params: { token: stri
     episodeNote: body.episode_note,
     reels: answersReels ? reels : undefined,
     reelsNote: body.reels_note,
+    addons: addonDecisions,
   });
 
   return NextResponse.json({ ok: true, approved_all: approvedAll });

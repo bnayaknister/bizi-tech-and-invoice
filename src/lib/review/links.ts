@@ -53,8 +53,13 @@ export async function createReviewLink(
   return { token, url: `${opts.baseUrl}/r/${token}`, expiresAt };
 }
 
+// A priced, still-proposed upsell the client is being quoted on this link
+// (owner spec 2026-07-21). Unpriced lines are never shown — there's nothing
+// to approve without a price.
+export type ReviewAddon = { id: string; title: string; quantity: number; unit_price: number; total: number };
+
 export type LinkState =
-  | { status: "ok"; link: ReviewLinkRow; production: ReviewProductionRow }
+  | { status: "ok"; link: ReviewLinkRow; production: ReviewProductionRow; addons: ReviewAddon[] }
   | { status: "missing" }
   | { status: "expired" }
   | { status: "superseded" }
@@ -104,7 +109,23 @@ export async function resolveLink(admin: SupabaseClient, token: string): Promise
     .maybeSingle();
   if (!production) return { status: "missing" };
 
-  return { status: "ok", link: link as ReviewLinkRow, production: production as ReviewProductionRow };
+  // priced, still-proposed add-ons — the client's quote for this round
+  const { data: addonRows } = await admin
+    .from("production_addons")
+    .select("id,title,quantity,unit_price,total")
+    .eq("production_id", link.production_id)
+    .eq("status", "proposed")
+    .not("unit_price", "is", null)
+    .order("created_at");
+  const addons: ReviewAddon[] = (addonRows ?? []).map((a) => ({
+    id: a.id as string,
+    title: a.title as string,
+    quantity: a.quantity as number,
+    unit_price: a.unit_price as number,
+    total: a.total as number,
+  }));
+
+  return { status: "ok", link: link as ReviewLinkRow, production: production as ReviewProductionRow, addons };
 }
 
 export type TrackResponse = "approved" | "revisions" | undefined;
@@ -120,7 +141,15 @@ export async function applyResponse(
   admin: SupabaseClient,
   link: ReviewLinkRow,
   production: ReviewProductionRow,
-  resp: { episode?: TrackResponse; episodeNote?: string; reels?: TrackResponse; reelsNote?: string }
+  resp: {
+    episode?: TrackResponse;
+    episodeNote?: string;
+    reels?: TrackResponse;
+    reelsNote?: string;
+    // per-add-on client decision, keyed by add-on id (owner spec 2026-07-21).
+    // Only consulted when the whole production is being approved this round.
+    addons?: Record<string, "approved" | "rejected">;
+  }
 ): Promise<{ approvedAll: boolean }> {
   const patch: Record<string, unknown> = {};
 
@@ -190,6 +219,23 @@ export async function applyResponse(
       reels_note: resp.reelsNote?.trim() || null,
     },
   });
+
+  // full approval → resolve the upsells the client just decided on, THEN
+  // queue the deal invoice (which reads the now-approved add-ons as its extra
+  // lines). A rejected line is recorded, never billed. Only priced, still-
+  // proposed lines are touched — an already-decided line is immutable here.
+  if (approvedAll && resp.addons) {
+    for (const [addonId, decision] of Object.entries(resp.addons)) {
+      if (decision !== "approved" && decision !== "rejected") continue;
+      await admin
+        .from("production_addons")
+        .update({ status: decision, approved_via: "link" })
+        .eq("id", addonId)
+        .eq("production_id", production.id)
+        .eq("status", "proposed")
+        .not("unit_price", "is", null);
+    }
+  }
 
   // full approval → deal invoice into the queue (same as the manual path).
   if (approvedAll) {

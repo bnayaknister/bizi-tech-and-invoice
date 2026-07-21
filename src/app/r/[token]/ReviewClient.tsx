@@ -8,6 +8,10 @@ import { useState } from "react";
 
 type Choice = "approved" | "revisions" | null;
 
+export type ReviewAddon = { id: string; title: string; quantity: number; unit_price: number; total: number };
+
+const NIS = new Intl.NumberFormat("he-IL");
+
 const card: React.CSSProperties = {
   width: "100%",
   maxWidth: 420,
@@ -28,6 +32,7 @@ export default function ReviewClient({
   reelsApproved,
   episodeLink,
   reelsLink,
+  addons,
 }: {
   token: string;
   showName: string;
@@ -38,17 +43,33 @@ export default function ReviewClient({
   reelsApproved: boolean;
   episodeLink: string | null;
   reelsLink: string | null;
+  addons: ReviewAddon[];
 }) {
   const [epChoice, setEpChoice] = useState<Choice>(null);
   const [epNote, setEpNote] = useState("");
   const [reChoice, setReChoice] = useState<Choice>(null);
   const [reNote, setReNote] = useState("");
+  // each quoted upsell starts checked — a quote the client accepts by default
+  // and unchecks to decline (owner spec 2026-07-21)
+  const [addonOk, setAddonOk] = useState<Record<string, boolean>>(
+    () => Object.fromEntries(addons.map((a) => [a.id, true]))
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<null | "approved" | "revisions">(null);
 
   const episodePending = !episodeApproved;
   const reelsPending = reelsIncluded && !reelsApproved;
+  const approvedAddonsTotal = addons
+    .filter((a) => addonOk[a.id])
+    .reduce((sum, a) => sum + a.total, 0);
+  // the submit becomes the big "approve everything" action once every
+  // pending track is set to approved and none to revisions
+  const willApproveAll =
+    (!episodePending || epChoice === "approved") &&
+    (!reelsPending || reChoice === "approved") &&
+    epChoice !== "revisions" &&
+    reChoice !== "revisions";
 
   async function submit() {
     setError(null);
@@ -74,6 +95,7 @@ export default function ReviewClient({
           episode_note: epNote,
           reels: reelsPending ? reChoice ?? undefined : undefined,
           reels_note: reNote,
+          addons: Object.fromEntries(addons.map((a) => [a.id, addonOk[a.id] ? "approved" : "rejected"])),
         }),
       });
       const body = await res.json();
@@ -249,6 +271,65 @@ export default function ReviewClient({
         />
       )}
 
+      {addons.length > 0 && (
+        <div style={card}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+            <span style={{ fontSize: 22 }}>➕</span>
+            <span style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>תוספות</span>
+          </div>
+          <p style={{ fontSize: 12, color: "#9a94b8", marginBottom: 12 }}>
+            סמן את התוספות שברצונך לאשר. הסרת סימון = לא מאשר.
+          </p>
+          {addons.map((a) => {
+            const on = addonOk[a.id];
+            return (
+              <button
+                key={a.id}
+                onClick={() => setAddonOk((prev) => ({ ...prev, [a.id]: !prev[a.id] }))}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  width: "100%",
+                  textAlign: "right",
+                  padding: "10px 12px",
+                  marginBottom: 8,
+                  borderRadius: 12,
+                  border: on ? "1px solid #4ade80" : "1px solid rgba(255,255,255,0.14)",
+                  background: on ? "rgba(74,222,128,0.12)" : "transparent",
+                  color: "#ece9f5",
+                  cursor: "pointer",
+                }}
+              >
+                <span style={{ fontSize: 16, color: on ? "#4ade80" : "#6b6685" }}>{on ? "☑" : "☐"}</span>
+                <span style={{ flex: 1 }}>
+                  <span style={{ display: "block", fontSize: 14, fontWeight: 600 }}>{a.title}</span>
+                  <span style={{ display: "block", fontSize: 12, color: "#9a94b8", marginTop: 2 }}>
+                    {a.quantity} × ₪{NIS.format(a.unit_price)}
+                  </span>
+                </span>
+                <span style={{ fontSize: 14, fontWeight: 700 }}>₪{NIS.format(a.total)}</span>
+              </button>
+            );
+          })}
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginTop: 12,
+              paddingTop: 12,
+              borderTop: "1px solid rgba(255,255,255,0.1)",
+              fontSize: 14,
+              fontWeight: 700,
+            }}
+          >
+            <span>סה״כ תוספות</span>
+            <span style={{ color: "#4ade80" }}>₪{NIS.format(approvedAddonsTotal)}</span>
+          </div>
+        </div>
+      )}
+
       {error && (
         <div style={{ color: "#fb7185", fontSize: 13, textAlign: "center", marginBottom: 10 }}>{error}</div>
       )}
@@ -270,7 +351,7 @@ export default function ReviewClient({
           boxShadow: "0 6px 20px rgba(139,92,246,0.35)",
         }}
       >
-        {busy ? "שולח…" : "שלח תשובה"}
+        {busy ? "שולח…" : willApproveAll ? "✓ מאשר את כל התוצרים" : "שלח תשובה"}
       </button>
     </div>
   );

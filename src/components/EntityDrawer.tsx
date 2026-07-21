@@ -537,6 +537,10 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                   </div>
                 )}
 
+                {data.type === "production" && ref && (
+                  <AddonsSection productionId={ref.id} onChanged={broadcast} />
+                )}
+
                 {data.linked && (
                   <div>
                     <div className="text-xs font-bold text-[var(--dim)] mb-1.5">
@@ -612,5 +616,237 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
         </>
       )}
     </DrawerContext.Provider>
+  );
+}
+
+// Session add-ons / upsells (owner spec 2026-07-21). Self-contained: it owns
+// its fetch and mutations against /api/productions/[id]/addons, so the drawer
+// core stays permission-free. The server decides what this viewer may do and
+// see (prices are stripped for a non-money viewer) and hands back the flags
+// we branch on here — the drawer never infers a permission on its own.
+type AddonItem = {
+  id: string;
+  title: string;
+  quantity: number;
+  status: string;
+  approved_via: string | null;
+  unit_price: number | null;
+  total: number | null;
+};
+type AddonsData = {
+  addons: AddonItem[];
+  base_amount: number | null;
+  can_edit_stages: boolean;
+  can_edit_money: boolean;
+  can_view_money: boolean;
+};
+
+const ADDON_STATUS: Record<string, { label: string; className: string }> = {
+  proposed: { label: "מוצע", className: "text-[var(--dim)] border-[var(--rule)]" },
+  approved: { label: "אושר", className: "text-emerald-400 border-emerald-500/50" },
+  rejected: { label: "נדחה", className: "text-[var(--faint)] border-[var(--rule)] line-through" },
+};
+
+function AddonsSection({ productionId, onChanged }: { productionId: string; onChanged: () => void }) {
+  const [data, setData] = useState<AddonsData | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [newTitle, setNewTitle] = useState("");
+  const [newQty, setNewQty] = useState("1");
+  const [newPrice, setNewPrice] = useState("");
+  // per-row draft price for a money editor filling in an unpriced line
+  const [priceDraft, setPriceDraft] = useState<Record<string, string>>({});
+
+  const load = useCallback(async () => {
+    const res = await fetch(`/api/productions/${productionId}/addons`);
+    if (!res.ok) return;
+    setData(await res.json());
+  }, [productionId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function act(body: Record<string, unknown>) {
+    setBusy(true);
+    setError(null);
+    const res = await fetch(`/api/productions/${productionId}/addons`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    setBusy(false);
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      setError(d.error ?? "הפעולה נכשלה");
+      return false;
+    }
+    await load();
+    onChanged();
+    return true;
+  }
+
+  if (!data) return null;
+  const { addons, base_amount, can_edit_stages, can_edit_money, can_view_money } = data;
+
+  const approvedTotal = addons
+    .filter((a) => a.status === "approved" && a.total != null)
+    .reduce((sum, a) => sum + (a.total ?? 0), 0);
+
+  async function addLine() {
+    const qty = Number(newQty);
+    if (!newTitle.trim() || !Number.isInteger(qty) || qty < 1) return;
+    const body: Record<string, unknown> = { action: "add", title: newTitle.trim(), quantity: qty };
+    if (can_edit_money && newPrice.trim()) body.unit_price = Number(newPrice);
+    if (await act(body)) {
+      setNewTitle("");
+      setNewQty("1");
+      setNewPrice("");
+    }
+  }
+
+  return (
+    <div className="border-t border-[var(--rule)] pt-3">
+      <div className="text-xs font-bold text-[var(--dim)] mb-1.5">תוספות</div>
+
+      {addons.length === 0 && <div className="text-xs text-[var(--faint)] mb-2">אין תוספות.</div>}
+
+      <div className="space-y-1.5">
+        {addons.map((a) => {
+          const st = ADDON_STATUS[a.status] ?? ADDON_STATUS.proposed;
+          return (
+            <div key={a.id} className="border border-[var(--rule)] rounded-lg px-2.5 py-2 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="flex-1 font-medium">{a.title}</span>
+                <span className={`text-[10px] border rounded px-1.5 py-0.5 ${st.className}`}>{st.label}</span>
+              </div>
+              <div className="flex items-center gap-2 mt-1 text-[var(--dim)]">
+                <span>כמות {a.quantity}</span>
+                {can_view_money && (
+                  <>
+                    <span>·</span>
+                    {a.unit_price != null ? (
+                      <span>
+                        {NIS.format(a.unit_price)} ₪ ליח׳ · סה״כ {NIS.format(a.total ?? 0)} ₪
+                      </span>
+                    ) : (
+                      <span className="text-amber-400">ללא מחיר — לא נכלל בסיכום</span>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* money editor prices an unpriced line inline */}
+              {can_edit_money && a.unit_price == null && (
+                <div className="flex gap-1.5 mt-1.5">
+                  <input
+                    value={priceDraft[a.id] ?? ""}
+                    onChange={(e) => setPriceDraft((p) => ({ ...p, [a.id]: e.target.value.replace(/[^\d.]/g, "") }))}
+                    placeholder="מחיר ליחידה"
+                    className="flex-1 bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1 text-xs"
+                  />
+                  <button
+                    disabled={busy || !(priceDraft[a.id] ?? "").trim()}
+                    onClick={() => act({ action: "price", addon_id: a.id, unit_price: Number(priceDraft[a.id]) })}
+                    className="border border-[var(--rule)] rounded px-2 py-1 text-[var(--dim)] hover:bg-[var(--panel3)] disabled:opacity-40"
+                  >
+                    שמור מחיר
+                  </button>
+                </div>
+              )}
+
+              {/* actions on a still-proposed line */}
+              {a.status === "proposed" && (
+                <div className="flex gap-1.5 mt-1.5">
+                  {can_edit_money && a.unit_price != null && (
+                    <>
+                      <button
+                        disabled={busy}
+                        onClick={() => act({ action: "approve", addon_id: a.id })}
+                        className="border border-emerald-500/50 text-emerald-400 rounded px-2 py-0.5 hover:bg-emerald-500/10 disabled:opacity-40"
+                      >
+                        אשר
+                      </button>
+                      <button
+                        disabled={busy}
+                        onClick={() => act({ action: "reject", addon_id: a.id })}
+                        className="border border-[var(--rule)] text-[var(--dim)] rounded px-2 py-0.5 hover:bg-[var(--panel3)] disabled:opacity-40"
+                      >
+                        דחה
+                      </button>
+                    </>
+                  )}
+                  {can_edit_stages && (
+                    <button
+                      disabled={busy}
+                      onClick={() => act({ action: "delete", addon_id: a.id })}
+                      className="border border-[var(--rule)] text-[var(--faint)] rounded px-2 py-0.5 hover:bg-[var(--panel3)] disabled:opacity-40 mr-auto"
+                    >
+                      מחק
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* add a line — stages editor */}
+      {can_edit_stages && (
+        <div className="mt-2.5 space-y-1.5">
+          <input
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
+            placeholder="תיאור תוספת (למשל: 3 רילז נוספים)"
+            className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1.5 text-xs"
+          />
+          <div className="flex gap-1.5">
+            <input
+              value={newQty}
+              onChange={(e) => setNewQty(e.target.value.replace(/\D/g, ""))}
+              placeholder="כמות"
+              className="w-16 bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1.5 text-xs"
+            />
+            {can_edit_money && (
+              <input
+                value={newPrice}
+                onChange={(e) => setNewPrice(e.target.value.replace(/[^\d.]/g, ""))}
+                placeholder="מחיר ליח׳ (אופציונלי)"
+                className="flex-1 bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1.5 text-xs"
+              />
+            )}
+            <button
+              disabled={busy || !newTitle.trim()}
+              onClick={addLine}
+              className="text-white font-bold rounded px-3 py-1.5 text-xs disabled:opacity-40 mr-auto"
+              style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}
+            >
+              הוסף
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* production total = base + approved add-ons — money viewers */}
+      {can_view_money && (
+        <div className="mt-3 pt-2 border-t border-[var(--rule)] text-xs space-y-0.5">
+          <div className="flex justify-between text-[var(--dim)]">
+            <span>מחיר בסיס</span>
+            <span>{base_amount != null ? `${NIS.format(base_amount)} ₪` : "—"}</span>
+          </div>
+          <div className="flex justify-between text-[var(--dim)]">
+            <span>תוספות מאושרות</span>
+            <span>{NIS.format(approvedTotal)} ₪</span>
+          </div>
+          <div className="flex justify-between font-bold">
+            <span>סה״כ הפקה</span>
+            <span>{base_amount != null ? `${NIS.format(base_amount + approvedTotal)} ₪` : "—"}</span>
+          </div>
+        </div>
+      )}
+
+      {error && <div className="mt-2 text-xs text-red-400">{error}</div>}
+    </div>
   );
 }

@@ -88,6 +88,8 @@ export function checkEligibility(
  * and stored on the row, so the approver approves the real thing rather
  * than a summary of it.
  */
+export type ExtraLine = { description: string; quantity: number; price: number };
+
 export function buildDocumentPayload(args: {
   docType: PendingDocType;
   morningClientId: string;
@@ -95,6 +97,9 @@ export function buildDocumentPayload(args: {
   description: string;
   amount: number;
   date?: string | null;
+  // approved add-ons become one income row each, after the base line
+  // (owner spec 2026-07-21) — the deal invoice bills base + upsells
+  extraLines?: ExtraLine[];
 }): MorningDocumentRequest {
   return {
     type: DOC_TYPE_TO_MORNING_CODE[args.docType],
@@ -117,6 +122,13 @@ export function buildDocumentPayload(args: {
         currency: "ILS",
         vatType: VAT_TYPE_DEFAULT,
       },
+      ...(args.extraLines ?? []).map((l) => ({
+        description: l.description,
+        quantity: l.quantity,
+        price: l.price,
+        currency: "ILS",
+        vatType: VAT_TYPE_DEFAULT,
+      })),
     ],
   };
 }
@@ -177,12 +189,29 @@ export async function enqueueDocument(
     return { status: "blocked", reason: elig.reason };
   }
 
-  const amount = opts.amountOverride ?? elig.amount;
-  if (amount === null || amount === undefined) {
+  const baseAmount = opts.amountOverride ?? elig.amount;
+  if (baseAmount === null || baseAmount === undefined) {
     const reason = "לתוכנית אין מחיר ברירת מחדל — אי אפשר לבנות מסמך";
     await setBlockReason(admin, production.id, reason);
     return { status: "blocked", reason };
   }
+
+  // A deal invoice bills base package + every approved, priced add-on
+  // (owner spec 2026-07-21) — one income row per line. Add-ons never touch a
+  // work order (that's the base session only), so this is deal_invoice-only.
+  let extraLines: ExtraLine[] = [];
+  if (docType === "deal_invoice") {
+    const { data: addons } = await admin
+      .from("production_addons")
+      .select("title,quantity,unit_price,total")
+      .eq("production_id", production.id)
+      .eq("status", "approved");
+    extraLines = (addons ?? [])
+      .filter((a) => a.unit_price != null && a.total != null)
+      .map((a) => ({ description: a.title as string, quantity: a.quantity as number, price: a.unit_price as number }));
+  }
+  const addonsTotal = extraLines.reduce((sum, l) => sum + l.price * l.quantity, 0);
+  const amount = baseAmount + addonsTotal;
 
   const description = `${DOC_TYPE_LABEL[docType]} — ${production.podcast_name ?? ""} ${production.record_date ?? ""}`.trim();
   const payload = buildDocumentPayload({
@@ -190,8 +219,9 @@ export async function enqueueDocument(
     morningClientId: elig.morningClientId,
     clientName: (client as ClientForBilling | null)?.name ?? null,
     description,
-    amount,
+    amount: baseAmount, // the base line; add-ons are appended as their own rows
     date: production.record_date,
+    extraLines,
   });
 
   const { data: inserted, error } = await admin
@@ -201,7 +231,7 @@ export async function enqueueDocument(
       production_id: production.id,
       job_id: opts.jobId ?? null,
       client_id: elig.clientId,
-      amount,
+      amount, // grand total: base + approved add-ons
       payload,
       status: "pending",
     })
