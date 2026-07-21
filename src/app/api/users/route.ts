@@ -29,7 +29,17 @@ export async function POST(request: Request) {
   let newId: string | undefined;
 
   if (body.mode === "invite") {
-    const { data, error } = await admin.auth.admin.inviteUserByEmail(email, { data: { name } });
+    // Land the invited user straight on the set-password screen. The email
+    // link hits Supabase's verify endpoint, which redirects to redirectTo
+    // with a code; /auth/callback exchanges it for a session, then forwards
+    // to /welcome. Derived from the request origin so it's the deployment
+    // that sent the invite (prod, not localhost) — this URL must also be in
+    // Supabase Auth → Redirect URLs.
+    const origin = new URL(request.url).origin;
+    const { data, error } = await admin.auth.admin.inviteUserByEmail(email, {
+      data: { name },
+      redirectTo: `${origin}/auth/callback?next=/welcome`,
+    });
     if (error) return NextResponse.json({ error: `הזמנה נכשלה: ${error.message}` }, { status: 400 });
     newId = data.user?.id;
   } else {
