@@ -40,7 +40,11 @@ export async function updateSession(request: NextRequest) {
       path === "/pending" ||
       path === "/login" ||
       path.startsWith("/auth") ||
-      path.startsWith("/reset-password");
+      path.startsWith("/reset-password") ||
+      // public client review links + their response endpoint — account-less,
+      // token is the only credential; must never bounce to /pending
+      path.startsWith("/r/") ||
+      path.startsWith("/api/r/");
     if (!open) {
       const { data: prof } = await supabase.from("profiles").select("approved").eq("id", user.id).maybeSingle();
       if (!prof?.approved) {

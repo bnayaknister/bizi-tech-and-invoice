@@ -100,6 +100,7 @@ export default function ProductionsClient({
   const [holdFor, setHoldFor] = useState<BoardProduction | null>(null);
   const [splitFor, setSplitFor] = useState<BoardProduction | null>(null);
   const [cancelFor, setCancelFor] = useState<BoardProduction | null>(null);
+  const [reviewFor, setReviewFor] = useState<BoardProduction | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
@@ -329,6 +330,7 @@ export default function ProductionsClient({
           onHold={setHold}
           onFreezeAsk={setHoldFor}
           onCancelAsk={setCancelFor}
+          onReviewAsk={setReviewFor}
           canEditStages={canEditStages}
           onSplitAsk={setSplitFor}
           onUndoSplit={undoSplit}
@@ -348,6 +350,7 @@ export default function ProductionsClient({
           onFreezeAsk={setHoldFor}
           onUnfreeze={(id) => setHold(id, false)}
           onCancelAsk={setCancelFor}
+          onReviewAsk={setReviewFor}
           onSplitAsk={setSplitFor}
           onUndoSplit={undoSplit}
           onDupAction={dupAction}
@@ -373,6 +376,8 @@ export default function ProductionsClient({
           onCancel={cancelProduction}
         />
       )}
+
+      {reviewFor && <ReviewLinkModal production={reviewFor} onClose={() => setReviewFor(null)} />}
 
       {splitFor && (
         <SplitModal
@@ -409,6 +414,7 @@ function ProductionCard({
   onFreezeAsk,
   onUnfreeze,
   onCancelAsk,
+  onReviewAsk,
   draggable,
   onDragStart,
   onDragEnd,
@@ -424,6 +430,7 @@ function ProductionCard({
   onFreezeAsk: (p: BoardProduction) => void;
   onUnfreeze?: (id: string) => void;
   onCancelAsk?: (p: BoardProduction) => void;
+  onReviewAsk?: (p: BoardProduction) => void;
   draggable?: boolean;
   onDragStart?: () => void;
   onDragEnd?: () => void;
@@ -594,6 +601,17 @@ function ProductionCard({
             בטל הפקה
           </button>
         )}
+        {canEditStages && onReviewAsk && (p.status === "נשלח_ללקוח" || p.status === "ממתין_לתגובת_לקוח") && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onReviewAsk(p);
+            }}
+            className="text-[10px] text-[var(--violet-light)] border border-[var(--rule)] rounded px-2 py-0.5 hover:bg-[rgba(139,92,246,0.1)]"
+          >
+            לינק אישור
+          </button>
+        )}
       </div>
     </div>
   );
@@ -605,6 +623,7 @@ function TodayView({
   onHold,
   onFreezeAsk,
   onCancelAsk,
+  onReviewAsk,
   canEditStages,
   onSplitAsk,
   onUndoSplit,
@@ -616,6 +635,7 @@ function TodayView({
   onHold: (id: string, on: boolean) => void;
   onFreezeAsk: (p: BoardProduction) => void;
   onCancelAsk: (p: BoardProduction) => void;
+  onReviewAsk: (p: BoardProduction) => void;
   canEditStages: boolean;
   onSplitAsk: (p: BoardProduction) => void;
   onUndoSplit: (id: string) => void;
@@ -648,6 +668,7 @@ function TodayView({
               onFreezeAsk={onFreezeAsk}
               onUnfreeze={(id) => onHold(id, false)}
               onCancelAsk={onCancelAsk}
+              onReviewAsk={onReviewAsk}
               showStatus
               canEditStages={canEditStages}
               onSplitAsk={onSplitAsk}
@@ -686,6 +707,7 @@ function Kanban({
   onFreezeAsk,
   onUnfreeze,
   onCancelAsk,
+  onReviewAsk,
   onSplitAsk,
   onUndoSplit,
   onDupAction,
@@ -702,6 +724,7 @@ function Kanban({
   onFreezeAsk: (p: BoardProduction) => void;
   onUnfreeze: (id: string) => void;
   onCancelAsk: (p: BoardProduction) => void;
+  onReviewAsk: (p: BoardProduction) => void;
   onSplitAsk: (p: BoardProduction) => void;
   onUndoSplit: (id: string) => void;
   onDupAction: (id: string, action: "confirm" | "merge") => void;
@@ -757,6 +780,7 @@ function Kanban({
                     onFreezeAsk={onFreezeAsk}
                     onUnfreeze={onUnfreeze}
                     onCancelAsk={onCancelAsk}
+                    onReviewAsk={onReviewAsk}
                     draggable={canEditStages}
                     onDragStart={() => setDragId(p.id)}
                     onDragEnd={() => setDragId(null)}
@@ -777,6 +801,120 @@ function Kanban({
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+function ReviewLinkModal({ production, onClose }: { production: BoardProduction; onClose: () => void }) {
+  const [reelsIncluded, setReelsIncluded] = useState(true);
+  const [episodeLink, setEpisodeLink] = useState("");
+  const [reelsLink, setReelsLink] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{ url: string; share: { whatsapp: string; mailto: string } } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  async function create() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/productions/${production.id}/review-link`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reels_included: reelsIncluded, episode_link: episodeLink, reels_link: reelsLink }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setError(body.error ?? "יצירת הלינק נכשלה");
+        return;
+      }
+      setResult({ url: body.url, share: body.share });
+    } catch {
+      setError("שגיאת רשת");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 flex items-center justify-center p-4 z-50"
+      style={{ background: "rgba(3,2,10,0.66)", backdropFilter: "blur(6px)" }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl"
+        style={{ background: "rgba(15,13,28,0.95)", backdropFilter: "blur(24px)" }}
+      >
+        <h3 className="font-bold mb-1">לינק אישור ללקוח</h3>
+        <p className="text-xs text-[var(--dim)] mb-4">{production.show_name}</p>
+
+        {!result ? (
+          <>
+            <label className="flex items-center gap-2 text-xs mb-3">
+              <input type="checkbox" checked={reelsIncluded} onChange={(e) => setReelsIncluded(e.target.checked)} />
+              כולל רילז
+            </label>
+            <input
+              value={episodeLink}
+              onChange={(e) => setEpisodeLink(e.target.value)}
+              placeholder="קישור לפרק (אופציונלי)"
+              className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded-xl px-3 py-2 text-sm mb-2"
+              dir="ltr"
+            />
+            {reelsIncluded && (
+              <input
+                value={reelsLink}
+                onChange={(e) => setReelsLink(e.target.value)}
+                placeholder="קישור לרילז (אופציונלי)"
+                className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded-xl px-3 py-2 text-sm mb-2"
+                dir="ltr"
+              />
+            )}
+            {error && <div className="text-[11px] text-[var(--peak)] mb-2">{error}</div>}
+            <div className="flex gap-2 mt-2">
+              <button
+                onClick={create}
+                disabled={busy}
+                className="text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-40"
+                style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}
+              >
+                {busy ? "יוצר…" : "צור לינק"}
+              </button>
+              <button onClick={onClose} className="border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)]">
+                סגור
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="text-[11px] font-mono bg-[var(--panel)] border border-[var(--rule)] rounded-xl px-3 py-2 mb-3 break-all" dir="ltr">
+              {result.url}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(result.url);
+                  setCopied(true);
+                }}
+                className="text-xs border border-[var(--rule)] rounded-xl px-3 py-1.5"
+              >
+                {copied ? "הועתק ✓" : "העתק"}
+              </button>
+              <a href={result.share.whatsapp} target="_blank" rel="noopener noreferrer" className="text-xs border border-[var(--rule)] rounded-xl px-3 py-1.5">
+                וואטסאפ
+              </a>
+              <a href={result.share.mailto} className="text-xs border border-[var(--rule)] rounded-xl px-3 py-1.5">
+                מייל
+              </a>
+              <button onClick={onClose} className="text-xs border border-[var(--rule)] rounded-xl px-3 py-1.5 text-[var(--dim)] mr-auto">
+                סגור
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
