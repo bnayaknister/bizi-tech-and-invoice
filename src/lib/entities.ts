@@ -87,7 +87,10 @@ export const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
     label: "תוכנית",
     titleKey: "name",
     fields: [
-      { key: "name", label: "שם", type: "text", view: "any", edit: "either" },
+      // "stages" not "either": a show's name is an operational detail. The
+      // bookkeeper (money, no stages) views productions/shows but edits
+      // nothing there (owner rule 2026-07-21) — matching aliases/studio/etc.
+      { key: "name", label: "שם", type: "text", view: "any", edit: "stages" },
       { key: "aliases", label: "כינויים (מופרדים בפסיק)", type: "text", view: "any", edit: "stages" },
       { key: "client_id", label: "לקוח", type: "select", view: "money", edit: "money", options: "clients" },
       {
