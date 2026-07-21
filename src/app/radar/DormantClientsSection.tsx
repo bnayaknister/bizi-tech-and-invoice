@@ -45,7 +45,7 @@ export default function DormantClientsSection({ clients }: { clients: DormantCli
               <div className="text-[11px] text-[var(--dim)] truncate mt-0.5">
                 {c.activities.length > 0
                   ? c.activities.map((a) => `${a.label} ${shortDate(a.date)}`).join(" · ")
-                  : "אין פעילות רשומה מעולם"}
+                  : "אין נתוני פעילות"}
               </div>
             </div>
             <div className="text-[11px] font-mono text-[var(--dim)] text-center shrink-0">

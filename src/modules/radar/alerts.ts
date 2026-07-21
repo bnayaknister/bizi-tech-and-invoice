@@ -70,7 +70,7 @@ export type RadarData = {
   openCommitment: number; // not yet charged
   vu: VUChannel[];
   alerts: RadarAlert[];
-  dormantClients: DormantClient[]; // sorted by historicalRevenue desc
+  dormantClients: DormantClient[]; // sorted by daysSinceLastActivity desc (longest-silent first; null = no data = top)
 };
 
 const DAY = 86_400_000;
@@ -135,7 +135,9 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     // on productions/jobs that merely belong to one (those are covered by
     // the production/document/payment signals). Scoped by entity_type so
     // this stays a bounded query, not a full-table scan of `events`.
-    fetchAll<{ entity_id: string; created_at: string }>(supabase, "events", "entity_id,created_at", (q) =>
+    // event_type is pulled so the administrative/system events below can be
+    // dropped — they are NOT signs of a live relationship (see ADMIN_EVENTS).
+    fetchAll<{ entity_id: string; created_at: string; event_type: string }>(supabase, "events", "entity_id,created_at,event_type", (q) =>
       q.eq("entity_type", "client")
     ),
     // payment-received signal: jobs.paid flips with no timestamp column of
@@ -279,11 +281,24 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   };
 
   // signal 1: production (excluding merged-away rows — soft-hidden
-  // system-wide; the survivor row carries the same date already)
+  // system-wide; the survivor row carries the same date already).
+  //
+  // The client link is resolved production -> show -> client, NOT off
+  // productions.client_id alone: 216 of the 710 historical (legacy) rows
+  // carry no client_id and are attached only through show_id (the import
+  // set client_id on the show, not on every back-filled production). Reading
+  // client_id directly made those clients look like they had never recorded —
+  // the exact false "dormant / never recorded" signal the owner flagged
+  // (2026-07-22). The history is precisely what this alert is about, so
+  // every production counts, legacy or not, and the show is a valid bridge
+  // to its client when the row itself doesn't name one.
+  const showClientId = new Map(shows.filter((s) => s.client_id).map((s) => [s.id, s.client_id as string]));
   const lastProductionByClient = new Map<string, string>();
   for (const p of productions) {
-    if (p.merged_into || !p.client_id || !p.record_date) continue;
-    keepLatest(lastProductionByClient, p.client_id, p.record_date);
+    if (p.merged_into || !p.record_date) continue;
+    const clientId = p.client_id ?? (p.show_id ? showClientId.get(p.show_id) : undefined);
+    if (!clientId) continue;
+    keepLatest(lastProductionByClient, clientId, p.record_date);
   }
 
   // signal 2: document issued
@@ -302,9 +317,28 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     keepLatest(lastPaymentByClient, clientId, e.created_at);
   }
 
-  // signal 4: any event logged directly against the client
+  // signal 4: any event logged directly against the client — but ONLY events
+  // that actually represent a live relationship. Administrative/system
+  // bookkeeping is excluded: 'morning_client_mapped' is the owner wiring a
+  // client to its Green-Invoice id, 'client_created' is the row first being
+  // entered — neither is business communication. Without this filter a single
+  // bulk mapping pass (39 clients mapped in one sitting, 2026-07-20) makes
+  // every mapped client look freshly active and the alert silently reports
+  // ZERO dormant clients — the opposite false signal to the legacy-link bug,
+  // and exactly the "cry wolf" the owner warned against. Keep this list to
+  // system-generated types only; real contact events must still count.
+  //
+  // ⚠️ MAINTENANCE (owner 2026-07-22): every NEW client event_type added
+  // anywhere in the app must be triaged against THIS set before it can move
+  // the dormancy clock. Ask: is it real business communication, or system
+  // noise? The safe default is NOISE — if you are not certain it represents
+  // genuine contact with the client, add it here so it does NOT count as
+  // activity. A false "active" silences the alert (the morning_client_mapped
+  // bug); a false "dormant" at worst prompts a phone call. Err toward calling.
+  const ADMIN_EVENTS = new Set(["morning_client_mapped", "client_created"]);
   const lastEventByClient = new Map<string, string>();
   for (const e of clientEvents) {
+    if (ADMIN_EVENTS.has(e.event_type)) continue;
     keepLatest(lastEventByClient, e.entity_id, e.created_at);
   }
 
@@ -356,7 +390,17 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
       historicalRevenue: revenueByClient.get(c.id) ?? 0,
     });
   }
-  dormantClients.sort((a, b) => b.historicalRevenue - a.historicalRevenue);
+  // sorted by how long they've been dormant, longest first (owner 2026-07-22):
+  // this list answers "who do I call" and the answer is whoever has gone
+  // silent the longest, NOT whoever billed the most. historicalRevenue stays
+  // in the payload as context on the row, never as the sort key. null
+  // (no activity data of any kind) is the most extreme silence — it sorts to
+  // the very top, ahead of any finite day count.
+  dormantClients.sort((a, b) => {
+    const av = a.daysSinceLastActivity ?? Infinity;
+    const bv = b.daysSinceLastActivity ?? Infinity;
+    return bv - av;
+  });
 
   // ---- 🟡 a client production that should bill but can't (owner 2026-07-19):
   // billing_block_reason is set ONLY for applicable blocks (missing client /
