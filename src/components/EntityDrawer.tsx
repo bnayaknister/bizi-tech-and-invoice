@@ -635,7 +635,9 @@ type AddonItem = {
 };
 type AddonsData = {
   addons: AddonItem[];
-  base_amount: number | null;
+  base_amount: number | null; // effective: price_override ?? default_rate
+  default_rate: number | null;
+  price_override: number | null;
   can_edit_stages: boolean;
   can_edit_money: boolean;
   can_view_money: boolean;
@@ -656,6 +658,9 @@ function AddonsSection({ productionId, onChanged }: { productionId: string; onCh
   const [newPrice, setNewPrice] = useState("");
   // per-row draft price for a money editor filling in an unpriced line
   const [priceDraft, setPriceDraft] = useState<Record<string, string>>({});
+  // base-price override editing (money editors)
+  const [editingBase, setEditingBase] = useState(false);
+  const [baseDraft, setBaseDraft] = useState("");
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/productions/${productionId}/addons`);
@@ -687,7 +692,7 @@ function AddonsSection({ productionId, onChanged }: { productionId: string; onCh
   }
 
   if (!data) return null;
-  const { addons, base_amount, can_edit_stages, can_edit_money, can_view_money } = data;
+  const { addons, base_amount, default_rate, price_override, can_edit_stages, can_edit_money, can_view_money } = data;
 
   const approvedTotal = addons
     .filter((a) => a.status === "approved" && a.total != null)
@@ -830,11 +835,58 @@ function AddonsSection({ productionId, onChanged }: { productionId: string; onCh
 
       {/* production total = base + approved add-ons — money viewers */}
       {can_view_money && (
-        <div className="mt-3 pt-2 border-t border-[var(--rule)] text-xs space-y-0.5">
-          <div className="flex justify-between text-[var(--dim)]">
-            <span>מחיר בסיס</span>
-            <span>{base_amount != null ? `${NIS.format(base_amount)} ₪` : "—"}</span>
-          </div>
+        <div className="mt-3 pt-2 border-t border-[var(--rule)] text-xs space-y-1">
+          {/* base price: money editors can override it per production */}
+          {editingBase && can_edit_money ? (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[var(--dim)] flex-1">מחיר בסיס</span>
+              <input
+                autoFocus
+                value={baseDraft}
+                onChange={(e) => setBaseDraft(e.target.value.replace(/[^\d.]/g, ""))}
+                placeholder={default_rate != null ? String(default_rate) : "מחיר"}
+                className="w-24 bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1"
+              />
+              <button
+                disabled={busy}
+                onClick={async () => {
+                  const val = baseDraft.trim() === "" ? null : Number(baseDraft);
+                  if (await act({ action: "set_base_price", price_override: val })) setEditingBase(false);
+                }}
+                className="border border-[var(--rule)] rounded px-2 py-1 text-[var(--dim)] hover:bg-[var(--panel3)] disabled:opacity-40"
+              >
+                שמור
+              </button>
+              <button
+                onClick={() => setEditingBase(false)}
+                className="text-[var(--faint)] px-1"
+              >
+                ✕
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 text-[var(--dim)]">
+              <span className="flex-1">
+                מחיר בסיס
+                {price_override == null && default_rate != null && (
+                  <span className="text-[var(--faint)]"> (ברירת מחדל מהתוכנית)</span>
+                )}
+                {price_override != null && <span className="text-[var(--violet-light)]"> (מותאם)</span>}
+              </span>
+              <span>{base_amount != null ? `${NIS.format(base_amount)} ₪` : "—"}</span>
+              {can_edit_money && (
+                <button
+                  onClick={() => {
+                    setBaseDraft(price_override != null ? String(price_override) : "");
+                    setEditingBase(true);
+                  }}
+                  className="text-[var(--violet-light)] hover:underline"
+                >
+                  ערוך
+                </button>
+              )}
+            </div>
+          )}
           <div className="flex justify-between text-[var(--dim)]">
             <span>תוספות מאושרות</span>
             <span>{NIS.format(approvedTotal)} ₪</span>

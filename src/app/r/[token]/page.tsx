@@ -81,6 +81,7 @@ export default async function ReviewPage({ params }: { params: { token: string }
         episodeLink={state.link.episode_link}
         reelsLink={state.link.reels_link}
         addons={state.addons}
+        baseAmount={state.baseAmount}
       />
     </Shell>
   );

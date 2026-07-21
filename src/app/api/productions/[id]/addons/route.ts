@@ -56,28 +56,35 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
 
   const addons = (data as AddonRow[]).map((a) => shape(a, profile.can_view_money));
 
-  // the base package price (show default_rate) so the section can show the
-  // production total = base + approved add-ons — money viewers only
-  let baseAmount: number | null = null;
+  // Base price for the production total (base + approved add-ons) — money
+  // viewers only. The effective price is price_override ?? show.default_rate;
+  // we return both so the drawer can show "X ₪ (ברירת מחדל מהתוכנית)" vs an
+  // overridden value.
+  let defaultRate: number | null = null;
+  let priceOverride: number | null = null;
   if (profile.can_view_money) {
     const { data: prod } = await admin
       .from("productions")
-      .select("show_id")
+      .select("show_id,price_override")
       .eq("id", params.id)
       .maybeSingle();
+    priceOverride = (prod?.price_override as number | null) ?? null;
     if (prod?.show_id) {
       const { data: show } = await admin
         .from("shows")
         .select("default_rate")
         .eq("id", prod.show_id)
         .maybeSingle();
-      baseAmount = (show?.default_rate as number | null) ?? null;
+      defaultRate = (show?.default_rate as number | null) ?? null;
     }
   }
+  const baseAmount = priceOverride ?? defaultRate;
 
   return NextResponse.json({
     addons,
     base_amount: baseAmount,
+    default_rate: defaultRate,
+    price_override: priceOverride,
     can_edit_stages: profile.can_edit_stages,
     can_edit_money: profile.can_edit_money,
     can_view_money: profile.can_view_money,
@@ -94,6 +101,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     quantity?: number;
     addon_id?: string;
     unit_price?: number | null;
+    price_override?: number | null;
   };
   const admin = createAdminClient();
 
@@ -195,6 +203,34 @@ export async function POST(request: Request, { params }: { params: { id: string 
       if (error) return NextResponse.json({ error: error.message }, { status: 400 });
       if (!data) return NextResponse.json({ error: "התוספת לא נמצאה" }, { status: 404 });
       await logEvent(status === "approved" ? "addon_approved" : "addon_rejected", { addon_id: body.addon_id, via: "manual" });
+      return NextResponse.json({ ok: true });
+    }
+
+    // per-production price override (owner spec 2026-07-21). Sending null
+    // clears it — the production falls back to the show's default_rate.
+    case "set_base_price": {
+      if (!profile.can_edit_money) return NextResponse.json({ error: "אין הרשאת עריכת כספים" }, { status: 403 });
+      const override = body.price_override == null ? null : Number(body.price_override);
+      if (override != null && (!Number.isFinite(override) || override < 0)) {
+        return NextResponse.json({ error: "מחיר לא תקין" }, { status: 400 });
+      }
+      const { data: before } = await admin
+        .from("productions")
+        .select("price_override")
+        .eq("id", params.id)
+        .maybeSingle();
+      const { data, error } = await admin
+        .from("productions")
+        .update({ price_override: override })
+        .eq("id", params.id)
+        .select("id")
+        .maybeSingle();
+      if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+      if (!data) return NextResponse.json({ error: "ההפקה לא נמצאה" }, { status: 404 });
+      await logEvent("production_price_override_set", {
+        from: (before?.price_override as number | null) ?? null,
+        to: override,
+      });
       return NextResponse.json({ ok: true });
     }
 

@@ -34,7 +34,7 @@ export async function POST(request: Request) {
   const admin = createAdminClient();
   const { data: prod } = await admin
     .from("productions")
-    .select("id,kind,legacy,client_id,show_id,podcast_name,record_date")
+    .select("id,kind,legacy,client_id,show_id,podcast_name,record_date,price_override")
     .eq("id", body.production_id)
     .maybeSingle();
   if (!prod) return NextResponse.json({ error: "ההפקה לא נמצאה" }, { status: 404 });

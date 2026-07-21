@@ -59,7 +59,7 @@ export async function createReviewLink(
 export type ReviewAddon = { id: string; title: string; quantity: number; unit_price: number; total: number };
 
 export type LinkState =
-  | { status: "ok"; link: ReviewLinkRow; production: ReviewProductionRow; addons: ReviewAddon[] }
+  | { status: "ok"; link: ReviewLinkRow; production: ReviewProductionRow; addons: ReviewAddon[]; baseAmount: number | null }
   | { status: "missing" }
   | { status: "expired" }
   | { status: "superseded" }
@@ -104,10 +104,23 @@ export async function resolveLink(admin: SupabaseClient, token: string): Promise
 
   const { data: production } = await admin
     .from("productions")
-    .select("id,podcast_name,record_date,split_index,split_count,review_episode_approved,review_reels_approved,review_reels_required")
+    .select("id,podcast_name,record_date,split_index,split_count,review_episode_approved,review_reels_approved,review_reels_required,price_override,show_id")
     .eq("id", link.production_id)
     .maybeSingle();
   if (!production) return { status: "missing" };
+
+  // effective base price the client is quoted (owner decision 2026-07-21:
+  // full transparency — the review link shows exactly what the invoice will).
+  // price_override wins over the show's default_rate.
+  let baseAmount: number | null = (production as { price_override: number | null }).price_override ?? null;
+  if (baseAmount == null && (production as { show_id: string | null }).show_id) {
+    const { data: show } = await admin
+      .from("shows")
+      .select("default_rate")
+      .eq("id", (production as { show_id: string }).show_id)
+      .maybeSingle();
+    baseAmount = (show?.default_rate as number | null) ?? null;
+  }
 
   // priced, still-proposed add-ons — the client's quote for this round
   const { data: addonRows } = await admin
@@ -125,7 +138,7 @@ export async function resolveLink(admin: SupabaseClient, token: string): Promise
     total: a.total as number,
   }));
 
-  return { status: "ok", link: link as ReviewLinkRow, production: production as ReviewProductionRow, addons };
+  return { status: "ok", link: link as ReviewLinkRow, production: production as ReviewProductionRow, addons, baseAmount };
 }
 
 export type TrackResponse = "approved" | "revisions" | undefined;
@@ -241,7 +254,7 @@ export async function applyResponse(
   if (approvedAll) {
     const { data: prod } = await admin
       .from("productions")
-      .select("id,kind,legacy,client_id,show_id,podcast_name,record_date")
+      .select("id,kind,legacy,client_id,show_id,podcast_name,record_date,price_override")
       .eq("id", production.id)
       .maybeSingle();
     const { data: link2 } = await admin

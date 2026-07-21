@@ -33,6 +33,11 @@ export type ProductionForBilling = {
   show_id: string | null;
   podcast_name: string | null;
   record_date: string | null;
+  // a per-production price that wins over the show's default_rate when set
+  // (owner spec 2026-07-21). Optional: callers minted before this column
+  // existed (e.g. calendar sync at creation, when no override can exist yet)
+  // simply omit it and fall through to the show rate.
+  price_override?: number | null;
 };
 
 export type ShowForBilling = {
@@ -79,7 +84,8 @@ export function checkEligibility(
     ok: true,
     clientId: client.id,
     morningClientId: client.morning_client_id,
-    amount: show.default_rate ?? null,
+    // effective price: the production's override wins over the show default
+    amount: production.price_override ?? show.default_rate ?? null,
   };
 }
 
