@@ -160,9 +160,9 @@ finally:
         requests.delete(rest(f"events?entity_id=eq.{production_id}"), headers=ADMIN)
         jp = requests.get(rest(f"job_productions?production_id=eq.{production_id}&select=job_id"), headers=ADMIN).json()
         for j in jp if isinstance(jp, list) else []:
-            requests.delete(rest(f"job_productions?job_id=eq.{j['id']}"), headers=ADMIN)
-            requests.delete(rest(f"events?entity_id=eq.{j['id']}"), headers=ADMIN)
-            requests.delete(rest(f"jobs?id=eq.{j['id']}"), headers=ADMIN)
+            requests.delete(rest(f"job_productions?job_id=eq.{j['job_id']}"), headers=ADMIN)
+            requests.delete(rest(f"events?entity_id=eq.{j['job_id']}"), headers=ADMIN)
+            requests.delete(rest(f"jobs?id=eq.{j['job_id']}"), headers=ADMIN)
         requests.delete(rest(f"stages?production_id=eq.{production_id}"), headers=ADMIN)
         requests.delete(rest(f"productions?id=eq.{production_id}"), headers=ADMIN)
     if show_id:

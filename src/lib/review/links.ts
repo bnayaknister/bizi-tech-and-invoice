@@ -157,7 +157,6 @@ export async function applyResponse(
     // fires guard_client_approval_transition (null-escape) + on_production_approved
     patch.status = 'אושר_ע"י_לקוח';
     patch.needs_attention = false;
-    patch.needs_revision = false;
   } else {
     // a correction was requested — back to the board, loudly
     patch.status = "בעריכה";
