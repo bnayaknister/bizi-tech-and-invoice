@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useDrawer } from "@/components/EntityDrawer";
 import IconTile from "@/components/IconTile";
+import { STATUS_ORDER, STATUS_LABEL, IN_PROGRESS_STATES, TERMINAL_STATES } from "@/lib/productions/status";
 
 export type BoardProduction = {
   id: string;
@@ -30,42 +31,6 @@ export type BoardProduction = {
   absorbed: { id: string }[];
   legacy: boolean;
 };
-
-// the 9-state machine, in flow order (screens-spec §1)
-const STATUS_ORDER = [
-  "עתיד_להתחיל",
-  "בהקלטה",
-  "הוקלט",
-  "בעריכה",
-  "נערך",
-  "נשלח_ללקוח",
-  "ממתין_לתגובת_לקוח",
-  'אושר_ע"י_לקוח',
-  "הופץ",
-] as const;
-
-const STATUS_LABEL: Record<string, string> = {
-  עתיד_להתחיל: "עתיד להתחיל",
-  בהקלטה: "בהקלטה",
-  הוקלט: "הוקלט",
-  בעריכה: "בעריכה",
-  נערך: "נערך",
-  נשלח_ללקוח: "נשלח ללקוח",
-  ממתין_לתגובת_לקוח: "ממתין לתגובת לקוח",
-  'אושר_ע"י_לקוח': 'אושר ע"י לקוח',
-  הופץ: "הופץ",
-  בוטל: "בוטל",
-};
-
-// mid-pipeline = actively being worked (for the Today "in progress" bucket)
-const IN_PROGRESS_STATES = new Set([
-  "בהקלטה",
-  "הוקלט",
-  "בעריכה",
-  "נערך",
-  "נשלח_ללקוח",
-]);
-const TERMINAL_STATES = new Set(['אושר_ע"י_לקוח', "הופץ", "בוטל"]);
 
 const STEP_LABEL: Record<string, string> = { record: "הקלטה", edit: "עריכה", deliver: "מסירה" };
 const TRACK_LABEL: Record<string, string> = { episode: "פרק", reels: "רילז" };
@@ -789,7 +754,9 @@ function Kanban({
   }, [rows]);
 
   return (
-    <div className="overflow-x-auto pb-4">
+    <>
+      {/* desktop / tablet: the horizontal kanban with drag between columns */}
+      <div className="hidden sm:block overflow-x-auto pb-4">
       <div className="flex gap-3 min-w-max">
         {STATUS_ORDER.map((status) => {
           const items = byStatus.get(status) ?? [];
@@ -853,7 +820,51 @@ function Kanban({
           );
         })}
       </div>
-    </div>
+      </div>
+
+      {/* mobile: a single-column list grouped by status. Native drag doesn't
+          fire on touch, so cards don't drag here — tapping a card opens the
+          drawer, which carries the one-tap "advance stage" control instead
+          (owner 2026-07-22). Desktop keeps the drag board above. */}
+      <div className="sm:hidden space-y-4 pb-4">
+        {STATUS_ORDER.map((status) => {
+          const items = byStatus.get(status) ?? [];
+          if (items.length === 0) return null;
+          return (
+            <section key={status}>
+              <div className="flex items-center gap-2 mb-1.5 px-0.5">
+                <span className="text-[11px] font-bold uppercase tracking-wide text-[var(--dim)]">{STATUS_LABEL[status]}</span>
+                <span className="text-[11px] text-[var(--faint)] font-mono">{items.length}</span>
+              </div>
+              <div className="flex flex-col gap-2">
+                {items.slice(0, COLUMN_CAP).map((p) => (
+                  <ProductionCard
+                    key={p.id}
+                    p={p}
+                    onOpen={onOpen}
+                    onFreezeAsk={onFreezeAsk}
+                    onUnfreeze={onUnfreeze}
+                    onCancelAsk={onCancelAsk}
+                    onReviewAsk={onReviewAsk}
+                    draggable={false}
+                    canEditStages={canEditStages}
+                    onSplitAsk={onSplitAsk}
+                    onUndoSplit={onUndoSplit}
+                    onDupAction={onDupAction}
+                    onUnmerge={onUnmerge}
+                  />
+                ))}
+                {items.length > COLUMN_CAP && (
+                  <div className="text-[11px] text-[var(--faint)] text-center py-2">
+                    ועוד {items.length - COLUMN_CAP} — צמצם עם חיפוש/מסנן
+                  </div>
+                )}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </>
   );
 }
 

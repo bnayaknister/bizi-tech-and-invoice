@@ -21,6 +21,11 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import {
+  STATUS_ORDER as PROD_STATUS_ORDER,
+  STATUS_LABEL as PROD_STATUS_LABEL,
+  nextStatus as prodNextStatus,
+} from "@/lib/productions/status";
 import ClientCombobox from "@/components/ClientCombobox";
 import IconTile, { type IconAccent } from "@/components/IconTile";
 
@@ -79,6 +84,7 @@ type DrawerData = {
   linked: Record<string, unknown>[] | null;
   milestones: Record<string, unknown>[] | null;
   history: HistoryEntry[] | null;
+  canEditStages: boolean; // gates the production status controls (touch path)
 };
 
 const DrawerContext = createContext<{ openEntity: (ref: EntityRef) => void }>({
@@ -104,6 +110,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   // freezing a production from the drawer — capture a reason like the board
   const [freezeAsk, setFreezeAsk] = useState(false);
   const [freezeReason, setFreezeReason] = useState("");
+  const [savingStatus, setSavingStatus] = useState(false);
   // a client-name edit that Morning must be told about, awaiting confirmation
   const [morningConfirm, setMorningConfirm] = useState<
     { key: string; value: unknown; prev: unknown; changes: Record<string, { from: unknown; to: unknown }> } | null
@@ -237,6 +244,28 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
       broadcast();
       void load(ref, true);
     }
+  }
+
+  // advance / jump the production's pipeline status — the touch-friendly path
+  // the board's drag can't offer on a phone (owner 2026-07-22). Same endpoint
+  // and state machine the board uses; the DB trigger enforces can_edit_stages.
+  async function changeProductionStatus(status: string) {
+    if (!ref || savingStatus) return;
+    setSavingStatus(true);
+    setError(null);
+    const res = await fetch(`/api/productions/${ref.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    setSavingStatus(false);
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      setError(b.error ?? "שינוי הסטטוס נכשל");
+      return;
+    }
+    broadcast();
+    void load(ref, true);
   }
 
   function flushDirty() {
@@ -500,8 +529,53 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
 
             {data && (
               <div className="p-4 space-y-4">
+                {/* production pipeline — the phone-friendly status control that
+                    replaces drag (owner 2026-07-22). Big one-tap "advance to
+                    next stage" on top; the full pipeline below for jump/back.
+                    Read-only (all disabled) for a viewer without edit rights. */}
+                {data.type === "production" && (() => {
+                  const cur = String(data.entity.status ?? "");
+                  const next = prodNextStatus(cur);
+                  return (
+                    <div className="space-y-2">
+                      {data.canEditStages && next && (
+                        <button
+                          onClick={() => void changeProductionStatus(next)}
+                          disabled={savingStatus}
+                          className="w-full rounded-xl py-3 text-sm font-bold border border-[var(--violet-light)] text-[var(--violet-light)] hover:bg-[rgba(139,92,246,0.18)] disabled:opacity-50 transition-colors"
+                          style={{ background: "rgba(139,92,246,0.12)" }}
+                        >
+                          ▸ העבר ל{PROD_STATUS_LABEL[next] ?? next}
+                        </button>
+                      )}
+                      <div className="flex flex-wrap gap-1">
+                        {PROD_STATUS_ORDER.map((s) => {
+                          const isCur = s === cur;
+                          return (
+                            <button
+                              key={s}
+                              onClick={() => { if (!isCur && data.canEditStages) void changeProductionStatus(s); }}
+                              disabled={savingStatus || isCur || !data.canEditStages}
+                              className={`text-[11px] rounded-full px-2.5 py-1 border transition-colors disabled:cursor-default ${
+                                isCur
+                                  ? "border-[var(--violet-light)] text-[var(--fg)] font-bold"
+                                  : "border-[var(--rule)] text-[var(--dim)] enabled:hover:border-[var(--violet-light)]"
+                              }`}
+                              style={isCur ? { background: "rgba(139,92,246,0.18)" } : undefined}
+                            >
+                              {PROD_STATUS_LABEL[s]}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 <div className="space-y-2.5">
-                  {data.fields.map((f) => (
+                  {data.fields
+                    .filter((f) => !(data.type === "production" && f.key === "status"))
+                    .map((f) => (
                     <div key={f.key} className="grid grid-cols-[110px_1fr] items-center gap-2">
                       <label className="text-xs text-[var(--dim)]">{f.label}</label>
                       {renderValue(f)}

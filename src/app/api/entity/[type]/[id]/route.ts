@@ -147,6 +147,9 @@ export async function GET(
     linked,
     milestones,
     history,
+    // gates the drawer's production status controls (the phone-friendly path
+    // that replaces drag) — the DB trigger is the real enforcement
+    canEditStages: !!profile.can_edit_stages,
   });
 }
 
