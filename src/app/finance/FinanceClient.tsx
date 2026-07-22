@@ -253,9 +253,10 @@ export default function FinanceClient({
       <div className="text-[11px] text-[var(--faint)] mb-2">{TAB_META[tab].short} · {TAB_META[tab].hint}</div>
       {error && <div className="mb-3 text-xs text-[var(--peak)] border border-[var(--peak)] rounded-xl px-3 py-2">{error}</div>}
 
-      {/* the table */}
+      {/* the table — desktop / tablet only; an 8-column table can't be read on
+          a phone, so mobile gets stacked cards below (owner 2026-07-22) */}
       <div
-        className="overflow-x-auto border border-[var(--rule)] rounded-2xl"
+        className="hidden sm:block overflow-x-auto border border-[var(--rule)] rounded-2xl"
         style={{ background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
       >
         <table className="w-full text-sm">
@@ -330,6 +331,67 @@ export default function FinanceClient({
             )}
           </tbody>
         </table>
+      </div>
+
+      {/* mobile: one stacked card per job — client + amount lead, meta and
+          actions below. Tapping the card (outside the action buttons) opens
+          the same drawer the table row does. */}
+      <div className="sm:hidden space-y-2">
+        {visible.map((r) => {
+          const due = dueLabel(r.due_days);
+          return (
+            <div
+              key={r.id}
+              onClick={() => openEntity({ type: "job", id: r.id })}
+              className="rounded-2xl border border-[var(--rule)] p-3 cursor-pointer active:bg-[rgba(255,255,255,0.04)] transition-colors"
+              style={{ background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium text-sm truncate">{r.client_name ?? "—"}</span>
+                <span className="font-mono font-bold text-sm shrink-0">{money(r.amount)}</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--dim)] mt-1">
+                {r.show_name && <span className="truncate max-w-[45%]">{r.show_name}</span>}
+                {r.date && <span className="font-mono">{r.date}</span>}
+                {r.campaign && <span className="text-[var(--faint)] truncate max-w-[45%]">{r.campaign}</span>}
+                <span className="flex items-center gap-1" style={{ color: due.color }}>
+                  {r.due_estimated && <span title="משוער">⚠</span>}
+                  {due.text}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center gap-1.5">
+                  <DocChip label="עסקה" slot={r.biz} />
+                  <DocChip label="מס" slot={r.tax} />
+                </div>
+                {canEditMoney && (
+                  <div className="flex items-center gap-1.5">
+                    {r.state === "purple" && (
+                      <button onClick={() => setIssueFor({ job: r, type: "עסקה" })} className="fin-btn">
+                        הנפק חשבונית
+                      </button>
+                    )}
+                    {r.state === "red" && (
+                      <button onClick={() => setIssueFor({ job: r, type: "מס" })} className="fin-btn fin-btn-red">
+                        הנפק חשבונית מס
+                      </button>
+                    )}
+                    {r.paid !== "כן" && r.paid !== "ללא חיוב" && (
+                      <button onClick={() => markPaid(r)} className="fin-btn">
+                        סמן שולם
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {visible.length === 0 && (
+          <div className="rounded-2xl border border-[var(--rule)] px-3 py-10 text-center text-[var(--faint)] text-sm">
+            {tab === "red" ? "אין חשבוניות מס חסרות — מצוין." : "אין פריטים בלשונית זו."}
+          </div>
+        )}
       </div>
 
       <style jsx>{`
