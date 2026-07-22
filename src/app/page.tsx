@@ -13,7 +13,7 @@ export default async function Home() {
 
   const supabase = createClient();
   const visibleModules = MODULES.filter((m) => m.hasAccess(profile));
-  const metrics = await Promise.all(visibleModules.map((m) => m.getMetric(supabase)));
+  const metrics = await Promise.all(visibleModules.map((m) => m.getMetric(supabase, profile)));
 
   return (
     <div className="min-h-screen">

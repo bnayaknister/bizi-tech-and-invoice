@@ -13,5 +13,8 @@ export type ModuleDef = {
   icon: string;
   href: string;
   hasAccess: (profile: Profile) => boolean;
-  getMetric: (supabase: SupabaseClient) => Promise<ModuleMetric>;
+  // profile is passed so a metric never re-fetches the session it already has
+  // (the hub resolves it once in getSessionAndProfile) — modules that don't
+  // need it simply ignore the argument
+  getMetric: (supabase: SupabaseClient, profile: Profile) => Promise<ModuleMetric>;
 };

@@ -37,6 +37,30 @@ type ProdRow = {
   legacy: boolean;
 };
 
+// stages has ~4.3k rows and PostgREST caps any single response at 1000, so a
+// plain .select() silently returned only the first 1000 stage rows — 546 of
+// 713 productions (including every active kanban card) then rendered 0/0
+// progress from an empty rollup (owner-reported 2026-07-22). Page through the
+// whole table so every card's done/total is complete. NOTE: a per-production
+// aggregate view collapses this to a single round-trip (~713 rows, not 4.3k
+// across 5 pages) — that's the queued perf follow-up; correctness ships first,
+// with no schema change required.
+async function fetchAllStages(supabase: ReturnType<typeof createClient>) {
+  const page = 1000;
+  type StageRow = { production_id: string; status: string; track: string; step: string; assignee_id: string | null };
+  const out: StageRow[] = [];
+  for (let from = 0; ; from += page) {
+    const { data, error } = await supabase
+      .from("stages")
+      .select("production_id,status,track,step,assignee_id")
+      .range(from, from + page - 1);
+    if (error) throw error;
+    const rows = (data ?? []) as StageRow[];
+    out.push(...rows);
+    if (rows.length < page) return out;
+  }
+}
+
 export default async function ProductionsPage() {
   const { user, profile } = await getSessionAndProfile();
   if (!user) redirect("/login");
@@ -55,10 +79,10 @@ export default async function ProductionsPage() {
   // fetched without a merged_into filter — a merged-away / un-split-away
   // row must still surface as "absorbed" on its survivor's card, it just
   // never becomes a board entry of its own (see split below)
-  const [prodsRes, { data: shows }, { data: stages }] = await Promise.all([
+  const [prodsRes, { data: shows }, stages] = await Promise.all([
     supabase.from("productions").select(prodSelect),
     supabase.from("shows").select("id,name,color,active"),
-    supabase.from("stages").select("production_id,status,track,step,assignee_id"),
+    fetchAllStages(supabase),
   ]);
   const allProds = (prodsRes.data ?? []) as unknown as ProdRow[];
   const prods = allProds.filter((p) => !p.merged_into);
@@ -98,7 +122,7 @@ export default async function ProductionsPage() {
 
   const rollup = new Map<string, StageRollup>();
   const assigneeIds = new Set<string>();
-  for (const st of stages ?? []) {
+  for (const st of stages) {
     let r = rollup.get(st.production_id);
     if (!r) {
       r = { done: 0, total: 0, inProgress: [], assigneeIds: new Set() };

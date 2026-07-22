@@ -20,6 +20,7 @@ import {
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import ClientCombobox from "@/components/ClientCombobox";
 import IconTile, { type IconAccent } from "@/components/IconTile";
 
@@ -549,7 +550,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                     {data.linked.length === 0 && (
                       <div className="text-xs text-[var(--faint)]">
                         אין קישורים.{" "}
-                        <a href="/finance/link" className="underline">מסך הקישור ←</a>
+                        <Link href="/finance/link" className="underline">מסך הקישור ←</Link>
                       </div>
                     )}
                     <div className="space-y-1">

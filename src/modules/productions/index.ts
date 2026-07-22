@@ -6,14 +6,13 @@ export const productionsModule: ModuleDef = {
   icon: "productions",
   href: "/productions",
   hasAccess: (profile) => profile.approved && profile.can_view_stages,
-  getMetric: async (supabase) => {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+  getMetric: async (supabase, profile) => {
+    // profile.id comes from the hub's single session lookup — no extra
+    // auth.getUser() round-trip per hub load (owner perf note 2026-07-22)
     const { count } = await supabase
       .from("stages")
       .select("id", { count: "exact", head: true })
-      .eq("assignee_id", user?.id ?? "")
+      .eq("assignee_id", profile.id)
       .eq("status", "pending");
     const n = count ?? 0;
     return {
