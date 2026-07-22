@@ -25,6 +25,7 @@ type AddonRow = {
   approved_via: string | null;
   created_by: string | null;
   created_at: string;
+  is_reels_addon: boolean;
 };
 
 // strip the price columns for a viewer without can_view_money
@@ -36,6 +37,7 @@ function shape(a: AddonRow, canViewMoney: boolean) {
     status: a.status,
     approved_via: a.approved_via,
     created_at: a.created_at,
+    is_reels_addon: a.is_reels_addon,
     unit_price: canViewMoney ? a.unit_price : null,
     total: canViewMoney ? a.total : null,
   };
@@ -49,7 +51,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
   const admin = createAdminClient();
   const { data, error } = await admin
     .from("production_addons")
-    .select("id,production_id,title,quantity,unit_price,total,status,approved_via,created_by,created_at")
+    .select("id,production_id,title,quantity,unit_price,total,status,approved_via,created_by,created_at,is_reels_addon")
     .eq("production_id", params.id)
     .order("created_at");
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
@@ -102,6 +104,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     addon_id?: string;
     unit_price?: number | null;
     price_override?: number | null;
+    is_reels_addon?: boolean;
   };
   const admin = createAdminClient();
 
@@ -130,11 +133,11 @@ export async function POST(request: Request, { params }: { params: { id: string 
       }
       const { data, error } = await admin
         .from("production_addons")
-        .insert({ production_id: params.id, title, quantity, unit_price: unitPrice, created_by: user.id })
+        .insert({ production_id: params.id, title, quantity, unit_price: unitPrice, is_reels_addon: !!body.is_reels_addon, created_by: user.id })
         .select("id")
         .single();
       if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-      await logEvent("addon_added", { addon_id: data.id, title, quantity, priced: unitPrice != null });
+      await logEvent("addon_added", { addon_id: data.id, title, quantity, priced: unitPrice != null, is_reels_addon: !!body.is_reels_addon });
       return NextResponse.json({ ok: true, id: data.id });
     }
 

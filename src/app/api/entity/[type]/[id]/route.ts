@@ -65,6 +65,11 @@ export async function GET(
   let stages: unknown[] | null = null;
   let linked: unknown[] | null = null;
   let milestones: unknown[] | null = null;
+  let review: {
+    episode_approved: boolean; reels_approved: boolean; reels_required: boolean;
+    episode_note: string | null; reels_note: string | null;
+  } | null = null;
+  let reelsSummary: { base: number; extra: number; total: number } | null = null;
   if (type === "production" && profile.can_view_stages) {
     const { data } = await supabase
       .from("stages")
@@ -73,6 +78,38 @@ export async function GET(
       .order("track")
       .order("step");
     stages = data;
+
+    // per-track client-review state (the corrections notes render inside the
+    // matching workflow block in the drawer, not in a generic field)
+    const { data: r } = await supabase
+      .from("productions")
+      .select("review_episode_approved,review_reels_approved,review_reels_required,review_episode_note,review_reels_note")
+      .eq("id", params.id)
+      .maybeSingle();
+    if (r) {
+      review = {
+        episode_approved: !!r.review_episode_approved,
+        reels_approved: !!r.review_reels_approved,
+        reels_required: !!r.review_reels_required,
+        episode_note: (r.review_episode_note as string) ?? null,
+        reels_note: (r.review_reels_note as string) ?? null,
+      };
+    }
+
+    // reels tally = 2 standard + extra reels bought via add-ons. Add-ons stay
+    // the single source of truth (owner decision 2026-07-22: no reels_count
+    // column to drift) — this is a display roll-up over the still-live
+    // (proposed/approved) add-on lines explicitly flagged is_reels_addon
+    // (migration 0036), not a fragile title match.
+    const REELS_BASE = 2;
+    const { data: addons } = await supabase
+      .from("production_addons")
+      .select("quantity,status,is_reels_addon")
+      .eq("production_id", params.id)
+      .eq("is_reels_addon", true)
+      .in("status", ["proposed", "approved"]);
+    const extra = (addons ?? []).reduce((s, a) => s + (Number(a.quantity) || 0), 0);
+    reelsSummary = { base: REELS_BASE, extra, total: REELS_BASE + extra };
   }
   if (type === "production" && profile.can_view_money) {
     const { data: links } = await supabase
@@ -150,6 +187,8 @@ export async function GET(
     // gates the drawer's production status controls (the phone-friendly path
     // that replaces drag) — the DB trigger is the real enforcement
     canEditStages: !!profile.can_edit_stages,
+    review,
+    reelsSummary,
   });
 }
 

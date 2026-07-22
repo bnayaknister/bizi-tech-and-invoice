@@ -85,6 +85,11 @@ type DrawerData = {
   milestones: Record<string, unknown>[] | null;
   history: HistoryEntry[] | null;
   canEditStages: boolean; // gates the production status controls (touch path)
+  review: {
+    episode_approved: boolean; reels_approved: boolean; reels_required: boolean;
+    episode_note: string | null; reels_note: string | null;
+  } | null;
+  reelsSummary: { base: number; extra: number; total: number } | null;
 };
 
 const DrawerContext = createContext<{ openEntity: (ref: EntityRef) => void }>({
@@ -97,9 +102,83 @@ export function useDrawer() {
 
 const NIS = new Intl.NumberFormat("he-IL");
 const STEP_LABEL: Record<string, string> = { record: "הקלטה", edit: "עריכה", deliver: "מסירה" };
-const TRACK_LABEL: Record<string, string> = { episode: "פרק", reels: "רילז" };
-const STATUS_LABEL: Record<string, string> = { pending: "ממתין", in_progress: "בעבודה", done: "בוצע" };
 const STATUS_NEXT: Record<string, string> = { pending: "in_progress", in_progress: "done", done: "pending" };
+
+const STEP_ORDER: Record<string, number> = { record: 0, edit: 1, deliver: 2 };
+
+// One workflow line (episode or reels) — its own stage steps, its own client
+// review state. The client's correction text renders INSIDE the block (owner
+// 2026-07-22) so a tech opening the reels line sees "the client asked: …"
+// without hunting. Stage steps advance on tap (record→edit→deliver→back).
+function ProductionTrackBlock({
+  icon, title, stages, note, approved, canEdit, onAdvance, tally, onSend, saving,
+}: {
+  icon: string;
+  title: string;
+  stages: Stage[];
+  note: string | null;
+  approved: boolean;
+  canEdit: boolean;
+  onAdvance: (s: Stage) => void;
+  tally?: string | null;
+  onSend?: () => void;
+  saving?: boolean;
+}) {
+  const ordered = [...stages].sort((a, b) => (STEP_ORDER[a.step] ?? 9) - (STEP_ORDER[b.step] ?? 9));
+  const badge = approved
+    ? { text: "אושר ✓", cls: "border-emerald-500/50 text-emerald-400" }
+    : note
+      ? { text: "תיקונים", cls: "border-rose-500/50 text-rose-400" }
+      : { text: "ממתין", cls: "border-[var(--rule)] text-[var(--faint)]" };
+  return (
+    <div className="rounded-xl border border-[var(--rule)] p-3" style={{ background: "rgba(255,255,255,0.02)" }}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-sm font-bold flex items-center gap-1.5">
+          <span>{icon}</span>
+          {title}
+        </span>
+        <span className={`text-[10px] px-2 py-0.5 rounded-full border ${badge.cls}`}>{badge.text}</span>
+      </div>
+      {tally && <div className="text-[11px] text-[var(--dim)] mb-2">{tally}</div>}
+      <div className="flex items-center gap-1.5 mb-2">
+        {ordered.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => { if (canEdit && !saving) onAdvance(s); }}
+            disabled={!canEdit || saving}
+            title="לחיצה מקדמת שלב"
+            className={`flex-1 text-[11px] rounded-lg px-2 py-1.5 border text-center transition-colors disabled:cursor-default ${
+              s.status === "done"
+                ? "border-emerald-500/50 text-emerald-400"
+                : s.status === "in_progress"
+                  ? "border-amber-500/50 text-amber-400"
+                  : "border-[var(--rule)] text-[var(--dim)] enabled:hover:border-[var(--violet-light)]"
+            }`}
+          >
+            {STEP_LABEL[s.step]}
+          </button>
+        ))}
+      </div>
+      {note && (
+        <div className="rounded-lg border border-rose-500/40 px-2.5 py-2 mb-2" style={{ background: "rgba(251,113,133,0.10)" }}>
+          <div className="text-[10px] font-bold text-rose-400 mb-0.5">💬 הלקוח ביקש</div>
+          <div className="text-xs">{note}</div>
+        </div>
+      )}
+      {onSend && canEdit && !approved && (
+        // wired with the per-track link scope (next step) — disabled until then
+        // so it never looks live while doing nothing
+        <button
+          disabled
+          title="בקרוב"
+          className="w-full text-[11px] rounded-lg py-1.5 border border-[var(--rule)] text-[var(--faint)] opacity-60 cursor-not-allowed"
+        >
+          שלח לאישור לקוח →
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function DrawerProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
@@ -111,6 +190,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   const [freezeAsk, setFreezeAsk] = useState(false);
   const [freezeReason, setFreezeReason] = useState("");
   const [savingStatus, setSavingStatus] = useState(false);
+  const [excOpen, setExcOpen] = useState(false); // "exceptional actions" disclosure on the status cursor
   // a client-name edit that Morning must be told about, awaiting confirmation
   const [morningConfirm, setMorningConfirm] = useState<
     { key: string; value: unknown; prev: unknown; changes: Record<string, { from: unknown; to: unknown }> } | null
@@ -533,41 +613,64 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                     replaces drag (owner 2026-07-22). Big one-tap "advance to
                     next stage" on top; the full pipeline below for jump/back.
                     Read-only (all disabled) for a viewer without edit rights. */}
+                {/* status cursor — where the production is, in one glance. It
+                    auto-derives from the two workflow blocks below, so it's NOT
+                    the daily control; manual moves (cancel / freeze /
+                    exceptional jump) live behind "⋯ פעולות חריגות" so a tech
+                    doesn't fight it (owner 2026-07-22). */}
                 {data.type === "production" && (() => {
                   const cur = String(data.entity.status ?? "");
                   const next = prodNextStatus(cur);
                   return (
-                    <div className="space-y-2">
-                      {data.canEditStages && next && (
-                        <button
-                          onClick={() => void changeProductionStatus(next)}
-                          disabled={savingStatus}
-                          className="w-full rounded-xl py-3 text-sm font-bold border border-[var(--violet-light)] text-[var(--violet-light)] hover:bg-[rgba(139,92,246,0.18)] disabled:opacity-50 transition-colors"
-                          style={{ background: "rgba(139,92,246,0.12)" }}
-                        >
-                          ▸ העבר ל{PROD_STATUS_LABEL[next] ?? next}
-                        </button>
-                      )}
-                      <div className="flex flex-wrap gap-1">
-                        {PROD_STATUS_ORDER.map((s) => {
-                          const isCur = s === cur;
-                          return (
-                            <button
-                              key={s}
-                              onClick={() => { if (!isCur && data.canEditStages) void changeProductionStatus(s); }}
-                              disabled={savingStatus || isCur || !data.canEditStages}
-                              className={`text-[11px] rounded-full px-2.5 py-1 border transition-colors disabled:cursor-default ${
-                                isCur
-                                  ? "border-[var(--violet-light)] text-[var(--fg)] font-bold"
-                                  : "border-[var(--rule)] text-[var(--dim)] enabled:hover:border-[var(--violet-light)]"
-                              }`}
-                              style={isCur ? { background: "rgba(139,92,246,0.18)" } : undefined}
-                            >
-                              {PROD_STATUS_LABEL[s]}
-                            </button>
-                          );
-                        })}
+                    <div className="rounded-xl border border-[var(--rule)] p-3" style={{ background: "rgba(255,255,255,0.03)" }}>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-[10px] text-[var(--faint)]">סטטוס</div>
+                          <div className="text-sm font-bold truncate">{PROD_STATUS_LABEL[cur] ?? cur}</div>
+                        </div>
+                        {data.canEditStages && (
+                          <button
+                            onClick={() => setExcOpen((v) => !v)}
+                            className="shrink-0 text-[11px] text-[var(--dim)] border border-[var(--rule)] rounded-lg px-2 py-1 hover:border-[var(--violet-light)] hover:text-[var(--violet-light)] transition-colors"
+                          >
+                            ⋯ פעולות חריגות
+                          </button>
+                        )}
                       </div>
+                      <div className="text-[10px] text-[var(--faint)] mt-1">מתעדכן אוטומטית מהשלבים למטה</div>
+                      {excOpen && data.canEditStages && (
+                        <div className="mt-2 pt-2 border-t border-[var(--rule)] space-y-2">
+                          {next && (
+                            <button
+                              onClick={() => void changeProductionStatus(next)}
+                              disabled={savingStatus}
+                              className="w-full text-[11px] rounded-lg py-1.5 border border-[var(--violet-light)] text-[var(--violet-light)] hover:bg-[rgba(139,92,246,0.14)] disabled:opacity-50 transition-colors"
+                            >
+                              קפיצה חריגה ל{PROD_STATUS_LABEL[next] ?? next}
+                            </button>
+                          )}
+                          <div className="flex flex-wrap gap-1">
+                            {PROD_STATUS_ORDER.map((s) => {
+                              const isCur = s === cur;
+                              return (
+                                <button
+                                  key={s}
+                                  onClick={() => { if (!isCur && data.canEditStages) void changeProductionStatus(s); }}
+                                  disabled={savingStatus || isCur}
+                                  className={`text-[11px] rounded-full px-2.5 py-1 border transition-colors disabled:cursor-default ${
+                                    isCur
+                                      ? "border-[var(--violet-light)] text-[var(--fg)] font-bold"
+                                      : "border-[var(--rule)] text-[var(--dim)] enabled:hover:border-[var(--violet-light)]"
+                                  }`}
+                                  style={isCur ? { background: "rgba(139,92,246,0.18)" } : undefined}
+                                >
+                                  {PROD_STATUS_LABEL[s]}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
@@ -583,34 +686,52 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                   ))}
                 </div>
 
-                {data.stages && (
-                  <div>
-                    <div className="text-xs font-bold text-[var(--dim)] mb-1.5">שלבים</div>
-                    <div className="space-y-1">
-                      {data.stages.map((s) => (
-                        <div key={s.id} className="flex items-center gap-2 text-xs">
-                          <span className="w-24">{TRACK_LABEL[s.track]} · {STEP_LABEL[s.step]}</span>
-                          <button
-                            onClick={() => void saveStage(s, { status: STATUS_NEXT[s.status] })}
-                            className={`border rounded px-2 py-0.5 ${
-                              s.status === "done"
-                                ? "border-emerald-500/50 text-emerald-400"
-                                : s.status === "in_progress"
-                                  ? "border-amber-500/50 text-amber-400"
-                                  : "border-[var(--rule)] text-[var(--dim)]"
-                            }`}
-                            title="לחיצה מקדמת סטטוס"
-                          >
-                            {STATUS_LABEL[s.status]}
-                          </button>
-                          {s.done_at && (
-                            <span className="text-[10px] text-[var(--faint)]">{s.done_at.slice(0, 10)}</span>
-                          )}
-                        </div>
-                      ))}
+                {/* the two workflow lines — where daily work happens. Each is
+                    independent: its own stage steps, its own client-review
+                    state and correction notes. Advancing a step here is what
+                    moves the status cursor above. */}
+                {data.type === "production" && data.stages && (() => {
+                  const advance = (s: Stage) => void saveStage(s, { status: STATUS_NEXT[s.status] });
+                  const epStages = data.stages!.filter((s) => s.track === "episode");
+                  const reelStages = data.stages!.filter((s) => s.track === "reels");
+                  const rs = data.reelsSummary;
+                  const reelsTally = rs
+                    ? rs.extra > 0
+                      ? `${rs.base} סטנדרט + ${rs.extra} תוספת = ${rs.total} רילז`
+                      : `${rs.base} רילז (סטנדרט)`
+                    : null;
+                  return (
+                    <div className="space-y-2">
+                      {epStages.length > 0 && (
+                        <ProductionTrackBlock
+                          icon="🎬"
+                          title="פרק"
+                          stages={epStages}
+                          note={data.review?.episode_note ?? null}
+                          approved={!!data.review?.episode_approved}
+                          canEdit={data.canEditStages}
+                          onAdvance={advance}
+                          saving={savingStatus}
+                          onSend={() => {}}
+                        />
+                      )}
+                      {reelStages.length > 0 && data.review?.reels_required !== false && (
+                        <ProductionTrackBlock
+                          icon="📱"
+                          title="רילז"
+                          stages={reelStages}
+                          note={data.review?.reels_note ?? null}
+                          approved={!!data.review?.reels_approved}
+                          canEdit={data.canEditStages}
+                          onAdvance={advance}
+                          tally={reelsTally}
+                          saving={savingStatus}
+                          onSend={() => {}}
+                        />
+                      )}
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
 
                 {data.type === "production" && ref && (
                   <AddonsSection productionId={ref.id} onChanged={broadcast} />
@@ -707,6 +828,7 @@ type AddonItem = {
   approved_via: string | null;
   unit_price: number | null;
   total: number | null;
+  is_reels_addon: boolean;
 };
 type AddonsData = {
   addons: AddonItem[];
@@ -731,6 +853,7 @@ function AddonsSection({ productionId, onChanged }: { productionId: string; onCh
   const [newTitle, setNewTitle] = useState("");
   const [newQty, setNewQty] = useState("1");
   const [newPrice, setNewPrice] = useState("");
+  const [newIsReels, setNewIsReels] = useState(false);
   // per-row draft price for a money editor filling in an unpriced line
   const [priceDraft, setPriceDraft] = useState<Record<string, string>>({});
   // base-price override editing (money editors)
@@ -776,12 +899,13 @@ function AddonsSection({ productionId, onChanged }: { productionId: string; onCh
   async function addLine() {
     const qty = Number(newQty);
     if (!newTitle.trim() || !Number.isInteger(qty) || qty < 1) return;
-    const body: Record<string, unknown> = { action: "add", title: newTitle.trim(), quantity: qty };
+    const body: Record<string, unknown> = { action: "add", title: newTitle.trim(), quantity: qty, is_reels_addon: newIsReels };
     if (can_edit_money && newPrice.trim()) body.unit_price = Number(newPrice);
     if (await act(body)) {
       setNewTitle("");
       setNewQty("1");
       setNewPrice("");
+      setNewIsReels(false);
     }
   }
 
@@ -798,6 +922,9 @@ function AddonsSection({ productionId, onChanged }: { productionId: string; onCh
             <div key={a.id} className="border border-[var(--rule)] rounded-lg px-2.5 py-2 text-xs">
               <div className="flex items-center gap-2">
                 <span className="flex-1 font-medium">{a.title}</span>
+                {a.is_reels_addon && (
+                  <span className="text-[10px] border border-[var(--rule)] rounded px-1.5 py-0.5 text-[var(--dim)]">רילז</span>
+                )}
                 <span className={`text-[10px] border rounded px-1.5 py-0.5 ${st.className}`}>{st.label}</span>
               </div>
               <div className="flex items-center gap-2 mt-1 text-[var(--dim)]">
@@ -905,6 +1032,12 @@ function AddonsSection({ productionId, onChanged }: { productionId: string; onCh
               הוסף
             </button>
           </div>
+          {/* explicit reels flag — feeds the drawer's reels tally instead of a
+              fragile title match (owner 2026-07-22) */}
+          <label className="flex items-center gap-1.5 text-[11px] text-[var(--dim)] cursor-pointer">
+            <input type="checkbox" checked={newIsReels} onChange={(e) => setNewIsReels(e.target.checked)} />
+            זו תוספת רילז (תיספר במניין הרילז)
+          </label>
         </div>
       )}
 
