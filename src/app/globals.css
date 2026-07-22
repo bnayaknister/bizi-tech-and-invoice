@@ -245,3 +245,15 @@ h1, h2, h3 {
     transition: none;
   }
 }
+
+/* Mobile: inputs/selects/textareas render at >=16px so iOS Safari doesn't
+   auto-zoom the page on focus. text-sm/text-xs fields (most of the app) would
+   otherwise trigger the zoom-in-then-stuck behaviour on a phone. Owner
+   2026-07-22, mobile pass. Pinch-zoom stays available for accessibility. */
+@media (max-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
