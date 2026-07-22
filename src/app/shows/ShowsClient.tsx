@@ -49,6 +49,7 @@ export default function ShowsClient({
   canEditStages,
   canManageUsers,
   pendingShowIds,
+  staff,
 }: {
   shows: ShowRow[];
   episodes: EpisodeRow[];
@@ -58,6 +59,7 @@ export default function ShowsClient({
   canEditStages: boolean;
   canManageUsers: boolean;
   pendingShowIds: string[];
+  staff: { id: string; name: string }[];
 }) {
   const router = useRouter();
   const [shows, setShows] = useState(initialShows);
@@ -66,6 +68,7 @@ export default function ShowsClient({
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
   const [mergeOpen, setMergeOpen] = useState(false);
+  const [newShowOpen, setNewShowOpen] = useState(false);
   const [deleteFor, setDeleteFor] = useState<ShowRow | null>(null);
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set(pendingShowIds));
   const [error, setError] = useState<string | null>(null);
@@ -156,6 +159,15 @@ export default function ShowsClient({
           <span className="font-mono">{activeCount}</span> פעילות · <span className="font-mono">{oneoffCount}</span> חד־פעמיות
         </span>
         <div className="flex-1" />
+        {canEdit && (
+          <button
+            onClick={() => setNewShowOpen(true)}
+            className="text-xs font-bold rounded-xl px-3 py-1.5 text-white transition-colors"
+            style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}
+          >
+            + תוכנית חדשה
+          </button>
+        )}
         {canEditMoney && (
           <Link
             href="/shows/assign"
@@ -329,6 +341,22 @@ export default function ShowsClient({
           onMerged={() => {
             setMergeOpen(false);
             router.refresh();
+          }}
+        />
+      )}
+
+      {newShowOpen && (
+        <NewShowModal
+          clients={clients}
+          staff={staff}
+          canViewMoney={canViewMoney}
+          canEditMoney={canEditMoney}
+          onClose={() => setNewShowOpen(false)}
+          onClientCreated={(c) => setClients((cs) => [...cs, c].sort((a, b) => a.name.localeCompare(b.name, "he")))}
+          onCreated={(row) => {
+            setShows((prev) => [row, ...prev]);
+            setNewShowOpen(false);
+            setNotice(`התוכנית "${row.name}" נוצרה.`);
           }}
         />
       )}
@@ -796,6 +824,240 @@ function DeleteRequestModal({
             ביטול
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// "+ תוכנית חדשה" — create a show for a podcast that never came through the
+// import. Operational fields are always editable; money fields (client / rate /
+// billing) show only for a can_view_money viewer, so a stages-only tech creates
+// the shell and the owner completes it (owner spec 2026-07-22).
+function NewShowModal({
+  clients,
+  staff,
+  canViewMoney,
+  canEditMoney,
+  onClose,
+  onClientCreated,
+  onCreated,
+}: {
+  clients: Client[];
+  staff: { id: string; name: string }[];
+  canViewMoney: boolean;
+  canEditMoney: boolean;
+  onClose: () => void;
+  onClientCreated: (c: Client) => void;
+  onCreated: (row: ShowRow) => void;
+}) {
+  const [name, setName] = useState("");
+  const [aliases, setAliases] = useState<string[]>([]);
+  const [aliasDraft, setAliasDraft] = useState("");
+  const [clientId, setClientId] = useState<string | null>(null);
+  const [billingMode, setBillingMode] = useState<"per_episode" | "none">("per_episode");
+  const [rate, setRate] = useState("");
+  const [studio, setStudio] = useState("");
+  const [cameras, setCameras] = useState("");
+  const [editorId, setEditorId] = useState<string | null>(null);
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // when the server asks "internal?" we surface a confirm step instead of an error
+  const [confirmInternal, setConfirmInternal] = useState(false);
+
+  function addAlias() {
+    const v = aliasDraft.trim().replace(/\s+/g, " ");
+    if (v && v !== name && !aliases.includes(v)) setAliases((a) => [...a, v]);
+    setAliasDraft("");
+  }
+
+  async function submit(internalConfirmed = false) {
+    setError(null);
+    if (!name.trim()) {
+      setError("שם התוכנית חובה");
+      return;
+    }
+    setBusy(true);
+    const res = await fetch("/api/shows", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: name.trim(),
+        aliases,
+        client_id: canEditMoney ? clientId : null,
+        billing_mode: canEditMoney ? billingMode : "none",
+        default_rate: canEditMoney && billingMode === "per_episode" && rate.trim() ? Number(rate) : null,
+        default_studio: studio.trim() || null,
+        camera_count: cameras.trim() ? Number(cameras) : null,
+        default_editor_id: editorId,
+        notes: notes.trim() || null,
+        internal_confirmed: internalConfirmed,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    setBusy(false);
+    if (!res.ok) {
+      if (data.code === "needs_internal_confirmation") {
+        setConfirmInternal(true);
+        return;
+      }
+      setError(data.error ?? "יצירת התוכנית נכשלה");
+      return;
+    }
+    const s = data.show;
+    onCreated({
+      id: s.id,
+      name: s.name,
+      client_id: s.client_id ?? null,
+      aliases: s.aliases ?? [],
+      default_rate: canViewMoney ? data.default_rate ?? null : null,
+      default_studio: s.default_studio ?? null,
+      camera_count: s.camera_count ?? null,
+      notes: s.notes ?? null,
+      active: s.active,
+      is_oneoff: s.is_oneoff,
+      color: s.color ?? null,
+      episodes: 0,
+      revenue: canViewMoney ? 0 : null,
+    });
+  }
+
+  const field = "w-full bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-3 py-2 text-sm outline-none focus:border-[var(--violet-light)]";
+  const labelCls = "text-xs text-[var(--dim)] mb-1 block";
+
+  return (
+    <div
+      className="fixed inset-0 flex items-center justify-center p-4 z-50"
+      style={{ background: "rgba(3,2,10,0.66)", backdropFilter: "blur(6px)" }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md max-h-[90vh] overflow-y-auto border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl"
+        style={{ background: "rgba(15,13,28,0.94)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}
+      >
+        <h2 className="font-bold text-base mb-4">תוכנית חדשה</h2>
+
+        <div className="space-y-3">
+          <div>
+            <label className={labelCls}>שם התוכנית *</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} autoFocus className={field} placeholder="שם הפודקאסט" />
+          </div>
+
+          <div>
+            <label className={labelCls}>כינויים (איך זה כתוב ביומן)</label>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {aliases.map((a) => (
+                <span key={a} className="inline-flex items-center gap-1 bg-[var(--panel3)] border border-[var(--rule)] rounded-full px-2.5 py-1 text-xs">
+                  {a}
+                  <button onClick={() => setAliases((xs) => xs.filter((x) => x !== a))} className="text-[var(--faint)] hover:text-[var(--peak)]" aria-label={`הסר ${a}`}>✕</button>
+                </span>
+              ))}
+              <input
+                value={aliasDraft}
+                onChange={(e) => setAliasDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addAlias(); } }}
+                onBlur={() => aliasDraft.trim() && addAlias()}
+                placeholder="+ הוסף כינוי ולחץ Enter"
+                className="bg-[var(--panel2)] border border-dashed border-[var(--rule2)] rounded-full px-3 py-1 text-xs w-44 focus:border-[var(--signal)] outline-none"
+              />
+            </div>
+          </div>
+
+          {canViewMoney && (
+            <>
+              <div>
+                <label className={labelCls}>לקוח</label>
+                <ClientCombobox
+                  clients={clients}
+                  value={clientId}
+                  onChange={setClientId}
+                  onCreated={(c) => { onClientCreated(c); setClientId(c.id); }}
+                  disabled={!canEditMoney}
+                  placeholder="חפש או צור לקוח…"
+                />
+                <div className="text-[10px] text-[var(--faint)] mt-1">בלי לקוח → הפקה פנימית (ללא חיוב)</div>
+              </div>
+
+              <div>
+                <label className={labelCls}>אופן חיוב</label>
+                <div className="flex gap-2">
+                  {([["per_episode", "לפי פרק"], ["none", "ללא חיוב"]] as const).map(([v, l]) => (
+                    <button
+                      key={v}
+                      onClick={() => canEditMoney && setBillingMode(v)}
+                      disabled={!canEditMoney}
+                      className={`flex-1 text-xs rounded-lg py-2 border transition-colors disabled:opacity-50 ${
+                        billingMode === v ? "border-[var(--violet-light)] text-[var(--violet-light)] font-bold" : "border-[var(--rule)] text-[var(--dim)]"
+                      }`}
+                    >
+                      {l}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {billingMode === "per_episode" && canEditMoney && (
+                <div>
+                  <label className={labelCls}>מחיר לפרק (₪)</label>
+                  <input value={rate} onChange={(e) => setRate(e.target.value.replace(/[^\d.]/g, ""))} className={field} placeholder="למשל 1500" inputMode="decimal" />
+                </div>
+              )}
+            </>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls}>אולפן ברירת מחדל</label>
+              <input value={studio} onChange={(e) => setStudio(e.target.value)} className={field} />
+            </div>
+            <div>
+              <label className={labelCls}>מספר מצלמות</label>
+              <input value={cameras} onChange={(e) => setCameras(e.target.value.replace(/\D/g, ""))} className={field} inputMode="numeric" />
+            </div>
+          </div>
+
+          <div>
+            <label className={labelCls}>עורך קבוע</label>
+            <select value={editorId ?? ""} onChange={(e) => setEditorId(e.target.value || null)} className={field}>
+              <option value="">— ללא —</option>
+              {staff.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className={labelCls}>הערות</label>
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} className={field} />
+          </div>
+        </div>
+
+        {error && <div className="mt-3 text-xs text-[var(--peak)] border border-[var(--peak)]/40 rounded-lg px-3 py-2">{error}</div>}
+
+        {confirmInternal ? (
+          <div className="mt-4 rounded-lg border border-amber-500/40 px-3 py-3" style={{ background: "rgba(251,191,36,0.08)" }}>
+            <div className="text-xs font-bold text-amber-400 mb-1">אין לקוח מקושר — זו הפקה פנימית?</div>
+            <div className="text-[11px] text-[var(--dim)] mb-2">תיווצר ללא חיוב. אפשר לשייך לקוח מאוחר יותר.</div>
+            <div className="flex gap-2">
+              <button onClick={() => void submit(true)} disabled={busy} className="flex-1 text-xs font-bold rounded-lg py-2 text-white" style={{ background: "var(--violet)" }}>
+                כן, פנימית — צור
+              </button>
+              <button onClick={() => setConfirmInternal(false)} className="flex-1 text-xs rounded-lg py-2 border border-[var(--rule)] text-[var(--dim)]">
+                חזרה
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex gap-2 mt-5">
+            <button onClick={() => void submit(false)} disabled={busy || !name.trim()} className="flex-1 text-sm font-bold rounded-xl py-2 text-white disabled:opacity-40" style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}>
+              {busy ? "יוצר…" : "צור תוכנית"}
+            </button>
+            <button onClick={onClose} className="flex-1 text-sm rounded-xl py-2 border border-[var(--rule)] text-[var(--dim)] hover:bg-[var(--panel3)]">
+              ביטול
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

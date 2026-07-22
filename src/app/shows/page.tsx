@@ -115,6 +115,12 @@ export default async function ShowsPage() {
     .eq("entity_type", "show");
   const pendingShowIds = (myPending ?? []).map((r) => r.entity_id).filter(Boolean) as string[];
 
+  // staff for the "עורך קבוע" picker in the new-show modal — names are
+  // team-visible by design (same as the productions board), fetched via the
+  // service role since profiles RLS is manager-only
+  const { data: staffRows } = await createAdminClient().from("profiles").select("id,name,email").order("name");
+  const staff = (staffRows ?? []).map((p) => ({ id: p.id as string, name: (p.name as string) || (p.email as string) || "—" }));
+
   return (
     <div className="min-h-screen">
       <AppHeader profile={profile} />
@@ -128,6 +134,7 @@ export default async function ShowsPage() {
           canEditStages={profile.can_edit_stages}
           canManageUsers={profile.can_manage_users}
           pendingShowIds={pendingShowIds}
+          staff={staff}
         />
       </main>
     </div>
