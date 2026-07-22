@@ -40,7 +40,14 @@ export async function POST(request: Request) {
       data: { name },
       redirectTo: `${origin}/auth/callback?next=/welcome`,
     });
-    if (error) return NextResponse.json({ error: `הזמנה נכשלה: ${error.message}` }, { status: 400 });
+    if (error) {
+      // free Supabase email quota exhausted is the common failure — name it
+      const rateLimited = (error.status === 429) || /rate limit|too many|quota/i.test(error.message);
+      const msg = rateLimited
+        ? "נשלחו יותר מדי מיילים (מכסת המייל היומית). נסה שוב בעוד שעה, או צור קישור ידני."
+        : `הזמנה נכשלה: ${error.message}`;
+      return NextResponse.json({ error: msg }, { status: rateLimited ? 429 : 400 });
+    }
     newId = data.user?.id;
   } else {
     const randomPassword = `Bz-${crypto.randomUUID()}`;

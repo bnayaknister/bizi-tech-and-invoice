@@ -57,7 +57,14 @@ export default function WelcomePage() {
     });
     setResending(false);
     if (error) {
-      setResendError("שליחת הקישור נכשלה. נסה שוב בעוד רגע.");
+      // the free Supabase email quota is the usual culprit here (429 /
+      // "email rate limit exceeded") — say so plainly instead of a dead-end
+      const rateLimited = error.status === 429 || /rate limit|too many|quota/i.test(error.message);
+      setResendError(
+        rateLimited
+          ? "נשלחו יותר מדי מיילים. נסה שוב בעוד שעה, או פנה למנהל."
+          : "שליחת הקישור נכשלה. נסה שוב בעוד רגע."
+      );
       return;
     }
     // always report success even if the address isn't registered, so the
