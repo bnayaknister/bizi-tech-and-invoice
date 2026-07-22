@@ -99,7 +99,7 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const today = new Date();
   const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
 
-  const [jobs, milestones, invoices, productions, stages, jobProds, shows, clients, pendingDocs, clientEvents, paymentEvents] = await Promise.all([
+  const [jobs, milestones, invoices, productions, stageRollup, jobProds, shows, clients, pendingDocs, clientEvents, paymentEvents] = await Promise.all([
     fetchAll<{ id: string; amount: number | null; paid: string; invoice_tax: string | null; due_date: string | null; client_id: string | null }>(
       supabase, "jobs", "id,amount,paid,invoice_tax,due_date,client_id"
     ),
@@ -120,7 +120,13 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
       calendar_removed: boolean;
       status: string;
     }>(supabase, "productions", "id,kind,show_id,client_id,record_date,on_hold,on_hold_since,merged_into,billing_block_reason,calendar_removed,status"),
-    fetchAll<{ production_id: string; status: string }>(supabase, "stages", "production_id,status"),
+    // per-production stage counts from the rollup view (migration 0035) — one
+    // round-trip of ~1 row per production instead of paging every ~4.3k raw
+    // stage rows. total/done drive the "produced but never billed" check;
+    // in_progress feeds the stuck-stage count below.
+    fetchAll<{ production_id: string; total: number; done: number; in_progress: number }>(
+      supabase, "production_stage_rollup", "production_id,total,done,in_progress"
+    ),
     fetchAll<{ production_id: string }>(supabase, "job_productions", "production_id"),
     fetchAll<{ id: string; client_id: string | null; billing_mode: string; active: boolean; name: string }>(
       supabase, "shows", "id,client_id,billing_mode,active,name"
@@ -190,20 +196,18 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   // irrelevant — a closed show still owes (the Cinematheque precedent).
   const billingModeByShow = new Map(shows.map((s) => [s.id, s.billing_mode]));
   const linkedProductions = new Set(jobProds.map((jp) => jp.production_id));
-  const stagesByProd = new Map<string, string[]>();
-  for (const st of stages) {
-    const arr = stagesByProd.get(st.production_id) ?? [];
-    arr.push(st.status);
-    stagesByProd.set(st.production_id, arr);
-  }
+  const rollupByProd = new Map(stageRollup.map((r) => [r.production_id, r]));
   const producedNotBilled = productions.filter((p) => {
     // merged-away (calendar duplicate merged, or split undone) is soft-
     // hidden from the whole app, including the board this alert links to —
     // it must never surface a billing alert for a row nobody can see
     if (p.merged_into) return false;
     if (p.kind !== "client") return false;
-    const ss = stagesByProd.get(p.id) ?? [];
-    if (ss.length < 6 || !ss.every((s) => s === "done")) return false;
+    // "all 6 stages done" — total>=6 AND every stage done (done===total). The
+    // rollup gives these counts directly; a production with no stage rows at
+    // all has no rollup entry and is correctly not "produced".
+    const rl = rollupByProd.get(p.id);
+    if (!rl || rl.total < 6 || rl.done !== rl.total) return false;
     if (linkedProductions.has(p.id)) return false;
     if (p.show_id && billingModeByShow.get(p.show_id) === "none") return false;
     return true;
@@ -230,7 +234,7 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     const days = Math.floor((new Date(m.expected_date).getTime() - todayMid) / DAY);
     return days >= 0 && days <= 14;
   });
-  const stuckStage = stages.filter((s) => s.status === "in_progress"); // no timestamp yet → all in_progress
+  const stuckStageCount = stageRollup.reduce((s, r) => s + r.in_progress, 0); // no per-stage timestamp yet → every in_progress stage counts
   const onHoldLong = productions.filter(
     (p) => p.on_hold && p.on_hold_since && todayMid - new Date(p.on_hold_since).getTime() > 14 * DAY
   );
@@ -448,7 +452,7 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     { key: "milestone_approaching", severity: "yellow", title: "אבן דרך בעוד 14 יום", count: milestoneApproaching.length, amount: milestoneApproaching.reduce((s, m) => s + num(m.amount), 0), href: "/contracts" },
     { key: "approaching_due", severity: "yellow", title: "מתקרב לפירעון (7 ימים) ואין חשבונית", count: approachingDue.length, amount: approachingDue.reduce((s, j) => s + num(j.amount), 0), href: "/finance?vu=green" },
     { key: "duplicate_clients", severity: "yellow", title: "אותו לקוח בשמות שונים", count: duplicateClientNames, amount: null, href: "/finance" },
-    { key: "stuck_stage", severity: "yellow", title: "שלב תקוע מעל 14 יום", count: stuckStage.length, amount: null, href: "/productions" },
+    { key: "stuck_stage", severity: "yellow", title: "שלב תקוע מעל 14 יום", count: stuckStageCount, amount: null, href: "/productions" },
     { key: "on_hold_long", severity: "yellow", title: "מוקפא מעל 14 יום", count: onHoldLong.length, amount: null, href: "/productions" },
   ];
   const alerts = allAlerts.filter((a) => a.count > 0);

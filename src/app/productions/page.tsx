@@ -37,25 +37,29 @@ type ProdRow = {
   legacy: boolean;
 };
 
-// stages has ~4.3k rows and PostgREST caps any single response at 1000, so a
-// plain .select() silently returned only the first 1000 stage rows — 546 of
-// 713 productions (including every active kanban card) then rendered 0/0
-// progress from an empty rollup (owner-reported 2026-07-22). Page through the
-// whole table so every card's done/total is complete. NOTE: a per-production
-// aggregate view collapses this to a single round-trip (~713 rows, not 4.3k
-// across 5 pages) — that's the queued perf follow-up; correctness ships first,
-// with no schema change required.
-async function fetchAllStages(supabase: ReturnType<typeof createClient>) {
+// Per-production stage rollup, read from the production_stage_rollup view
+// (migration 0035) — ONE round-trip of one row per production instead of the
+// ~4.3k raw stage rows across 5 paged requests. This replaced a plain
+// stages.select() that PostgREST silently capped at 1000, which had left 546
+// of 713 cards showing a false 0/0 (owner-reported 2026-07-22). Still paged so
+// it can never silently cap again if productions ever exceed 1000.
+type RollupRow = {
+  production_id: string;
+  total: number;
+  done: number;
+  in_progress_stages: { track: string; step: string; assignee_id: string | null }[];
+  assignee_ids: string[];
+};
+async function fetchStageRollup(supabase: ReturnType<typeof createClient>) {
   const page = 1000;
-  type StageRow = { production_id: string; status: string; track: string; step: string; assignee_id: string | null };
-  const out: StageRow[] = [];
+  const out: RollupRow[] = [];
   for (let from = 0; ; from += page) {
     const { data, error } = await supabase
-      .from("stages")
-      .select("production_id,status,track,step,assignee_id")
+      .from("production_stage_rollup")
+      .select("production_id,total,done,in_progress_stages,assignee_ids")
       .range(from, from + page - 1);
     if (error) throw error;
-    const rows = (data ?? []) as StageRow[];
+    const rows = (data ?? []) as RollupRow[];
     out.push(...rows);
     if (rows.length < page) return out;
   }
@@ -79,10 +83,10 @@ export default async function ProductionsPage() {
   // fetched without a merged_into filter — a merged-away / un-split-away
   // row must still surface as "absorbed" on its survivor's card, it just
   // never becomes a board entry of its own (see split below)
-  const [prodsRes, { data: shows }, stages] = await Promise.all([
+  const [prodsRes, { data: shows }, stageRollup] = await Promise.all([
     supabase.from("productions").select(prodSelect),
     supabase.from("shows").select("id,name,color,active"),
-    fetchAllStages(supabase),
+    fetchStageRollup(supabase),
   ]);
   const allProds = (prodsRes.data ?? []) as unknown as ProdRow[];
   const prods = allProds.filter((p) => !p.merged_into);
@@ -122,21 +126,15 @@ export default async function ProductionsPage() {
 
   const rollup = new Map<string, StageRollup>();
   const assigneeIds = new Set<string>();
-  for (const st of stages) {
-    let r = rollup.get(st.production_id);
-    if (!r) {
-      r = { done: 0, total: 0, inProgress: [], assigneeIds: new Set() };
-      rollup.set(st.production_id, r);
-    }
-    r.total += 1;
-    if (st.status === "done") r.done += 1;
-    if (st.status === "in_progress") {
-      r.inProgress.push({ track: st.track, step: st.step, assignee_id: st.assignee_id });
-    }
-    if (st.assignee_id) {
-      r.assigneeIds.add(st.assignee_id);
-      assigneeIds.add(st.assignee_id);
-    }
+  for (const row of stageRollup) {
+    const ids = row.assignee_ids ?? [];
+    for (const a of ids) assigneeIds.add(a);
+    rollup.set(row.production_id, {
+      done: row.done,
+      total: row.total,
+      inProgress: (row.in_progress_stages ?? []).map((ip) => ({ track: ip.track, step: ip.step, assignee_id: ip.assignee_id })),
+      assigneeIds: new Set(ids),
+    });
   }
 
   // client names (money only) and assignee names — assignees fetched via the
