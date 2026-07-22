@@ -45,9 +45,10 @@ export async function POST(request: Request, { params }: { params: { token: stri
   const episode = validTrack(body.episode);
   const reels = validTrack(body.reels);
 
-  // must respond to at least one pending, in-scope track
-  const reelsInScope = state.production.review_reels_required && state.link.reels_included;
-  const episodePending = !state.production.review_episode_approved;
+  // must respond to at least one pending, in-scope track (scope, 0037)
+  const episodeInScope = state.link.scope === "episode" || state.link.scope === "all";
+  const reelsInScope = (state.link.scope === "reels" || state.link.scope === "all") && state.production.review_reels_required;
+  const episodePending = episodeInScope && !state.production.review_episode_approved;
   const reelsPending = reelsInScope && !state.production.review_reels_approved;
   const answersEpisode = episodePending && !!episode;
   const answersReels = reelsPending && !!reels;
@@ -65,7 +66,7 @@ export async function POST(request: Request, { params }: { params: { token: stri
     if (shownAddonIds.has(id) && (v === "approved" || v === "rejected")) addonDecisions[id] = v;
   }
   // a revision must carry a note (that's the whole point of the loop)
-  if (episode === "revisions" && !(body.episode_note ?? "").trim()) {
+  if (answersEpisode && episode === "revisions" && !(body.episode_note ?? "").trim()) {
     return NextResponse.json({ error: "נא לפרט מה לתקן בפרק" }, { status: 400 });
   }
   if (answersReels && reels === "revisions" && !(body.reels_note ?? "").trim()) {

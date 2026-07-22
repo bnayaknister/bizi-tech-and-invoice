@@ -16,10 +16,14 @@ export async function POST(request: Request, { params }: { params: { id: string 
   if (!profile?.can_edit_stages) return NextResponse.json({ error: "אין הרשאת עריכת שלבים" }, { status: 403 });
 
   const body = (await request.json().catch(() => ({}))) as {
-    reels_included?: boolean;
+    scope?: "episode" | "reels" | "all";
+    reels_included?: boolean; // legacy caller (board modal); mapped to scope below
     episode_link?: string;
     reels_link?: string;
   };
+  // scope wins; fall back to the old boolean so the board modal keeps working
+  const scope: "episode" | "reels" | "all" =
+    body.scope ?? (body.reels_included === false ? "episode" : "all");
 
   const admin = createAdminClient();
   const { data: prod } = await admin
@@ -35,7 +39,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const result = await createReviewLink(admin, params.id, {
     createdBy: user.id,
     baseUrl: origin,
-    reelsIncluded: body.reels_included ?? true,
+    scope,
     episodeLink: body.episode_link?.trim() || null,
     reelsLink: body.reels_link?.trim() || null,
   });
@@ -45,7 +49,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     entity_id: params.id,
     event_type: "client_review_link_created",
     actor_id: user.id,
-    payload: { token_expires_at: result.expiresAt, reels_included: body.reels_included ?? true },
+    payload: { token_expires_at: result.expiresAt, scope },
   });
 
   const showName = prod.podcast_name ?? "הפקה";

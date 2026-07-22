@@ -99,10 +99,24 @@ try:
     check("1a. public link loads without a session", r.status_code == 200, str(r.status_code))
     check("1b. shows the show name", f"{MARK} show" in html)
 
-    # 5. exposes nothing financial
-    check("5. no money leaks onto the public page",
-          ("₪" not in html) and ("חשבונית" not in html) and ("morning" not in html.lower()),
-          "found money token")
+    # 5. Prices ARE shown to the client on purpose — a transparency decision
+    #    (2026-07-21): the review link shows exactly what the invoice will
+    #    (base price, add-on prices, total + VAT). So ₪ is ALLOWED. What must
+    #    NEVER leak is anything INTERNAL: DB ids, morning refs, invoice
+    #    numbers, internal field names, or any other entity's data.
+    prices_shown = "₪" in html
+    forbidden = {
+        "production_id": production_id, "client_id": client_id, "show_id": show_id,
+        "morning ref": "morning",            # morning_client_id / morning_doc_id / any Morning field
+        "invoice word": "חשבונית",            # this is a quote, never an issued invoice
+        "field:billing_mode": "billing_mode",
+        "field:price_override": "price_override",
+        "field:review_reels_required": "review_reels_required",
+        "field:default_rate": "default_rate",
+    }
+    leaked = [k for k, v in forbidden.items() if v and v.lower() in html.lower()]
+    check("5. shows the price quote (transparency) but leaks nothing internal",
+          prices_shown and not leaked, f"prices_shown={prices_shown} leaked={leaked}")
 
     # 2. revisions on reels only
     r = requests.post(f"{APP}/api/r/{token1}/respond", headers={"Content-Type": "application/json"},

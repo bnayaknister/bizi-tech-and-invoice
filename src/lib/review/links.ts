@@ -24,7 +24,7 @@ export type CreateLinkResult = { token: string; url: string; expiresAt: string }
 export async function createReviewLink(
   admin: SupabaseClient,
   productionId: string,
-  opts: { createdBy: string; baseUrl: string; reelsIncluded: boolean; episodeLink?: string | null; reelsLink?: string | null }
+  opts: { createdBy: string; baseUrl: string; scope: "episode" | "reels" | "all"; episodeLink?: string | null; reelsLink?: string | null }
 ): Promise<CreateLinkResult> {
   await admin
     .from("client_review_links")
@@ -33,9 +33,12 @@ export async function createReviewLink(
     .eq("superseded", false)
     .is("responded_at", null);
 
-  // scope of this review round is remembered on the production so the final
-  // "all tracks approved?" test is stable
-  await admin.from("productions").update({ review_reels_required: opts.reelsIncluded }).eq("id", productionId);
+  // whether reels is part of this round is now carried by scope (0037);
+  // reels_included is still written for back-compat until it's dropped. A
+  // reels-bearing scope ('reels'/'all') keeps review_reels_required true, an
+  // 'episode' scope clears it — the same thing the boolean did before.
+  const reelsIncluded = opts.scope !== "episode";
+  await admin.from("productions").update({ review_reels_required: reelsIncluded }).eq("id", productionId);
 
   const token = generateToken();
   const expiresAt = new Date(Date.now() + LINK_TTL_DAYS * 24 * 3600_000).toISOString();
@@ -44,7 +47,8 @@ export async function createReviewLink(
     token,
     expires_at: expiresAt,
     created_by: opts.createdBy,
-    reels_included: opts.reelsIncluded,
+    scope: opts.scope,
+    reels_included: reelsIncluded,
     episode_link: opts.episodeLink ?? null,
     reels_link: opts.reelsLink ?? null,
   });
@@ -73,6 +77,7 @@ export type ReviewLinkRow = {
   responded_at: string | null;
   superseded: boolean;
   reels_included: boolean;
+  scope: "episode" | "reels" | "all";
   episode_link: string | null;
   reels_link: string | null;
 };
@@ -94,7 +99,7 @@ export type ReviewProductionRow = {
 export async function resolveLink(admin: SupabaseClient, token: string): Promise<LinkState> {
   const { data: link } = await admin
     .from("client_review_links")
-    .select("id,production_id,token,expires_at,responded_at,superseded,reels_included,episode_link,reels_link")
+    .select("id,production_id,token,expires_at,responded_at,superseded,reels_included,scope,episode_link,reels_link")
     .eq("token", token)
     .maybeSingle();
   if (!link) return { status: "missing" };
@@ -166,9 +171,17 @@ export async function applyResponse(
 ): Promise<{ approvedAll: boolean }> {
   const patch: Record<string, unknown> = {};
 
-  // episode
+  // which tracks this link may act on (0037). For every link that existed
+  // before scope, scope backfilled to 'all'/'episode', so episodeInScope is
+  // true and reelsInScope equals the old (review_reels_required &&
+  // reels_included) — behaviour is byte-identical; only a new 'reels'-scoped
+  // link changes anything (it leaves the episode untouched).
+  const episodeInScope = link.scope === "episode" || link.scope === "all";
+  const reelsInScope = (link.scope === "reels" || link.scope === "all") && production.review_reels_required;
+
+  // episode (only if this review includes it)
   let episodeApproved = production.review_episode_approved;
-  if (!production.review_episode_approved && resp.episode) {
+  if (episodeInScope && !production.review_episode_approved && resp.episode) {
     if (resp.episode === "approved") {
       episodeApproved = true;
       patch.review_episode_approved = true;
@@ -181,7 +194,6 @@ export async function applyResponse(
 
   // reels (only if this review includes them)
   let reelsApproved = production.review_reels_approved;
-  const reelsInScope = production.review_reels_required && link.reels_included;
   if (reelsInScope && !production.review_reels_approved && resp.reels) {
     if (resp.reels === "approved") {
       reelsApproved = true;

@@ -36,6 +36,7 @@ export default function ReviewClient({
   showName,
   episodeLabel,
   recordDate,
+  episodeIncluded,
   reelsIncluded,
   episodeApproved,
   reelsApproved,
@@ -48,6 +49,7 @@ export default function ReviewClient({
   showName: string;
   episodeLabel: string;
   recordDate: string | null;
+  episodeIncluded: boolean;
   reelsIncluded: boolean;
   episodeApproved: boolean;
   reelsApproved: boolean;
@@ -69,7 +71,7 @@ export default function ReviewClient({
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<null | "approved" | "revisions">(null);
 
-  const episodePending = !episodeApproved;
+  const episodePending = episodeIncluded && !episodeApproved;
   const reelsPending = reelsIncluded && !reelsApproved;
   const approvedAddonsTotal = addons
     .filter((a) => addonOk[a.id])
@@ -88,7 +90,7 @@ export default function ReviewClient({
       setError("בחר אישור או תיקונים");
       return;
     }
-    if (epChoice === "revisions" && !epNote.trim()) {
+    if (episodePending && epChoice === "revisions" && !epNote.trim()) {
       setError("נא לפרט מה לתקן בפרק");
       return;
     }
@@ -254,18 +256,20 @@ export default function ReviewClient({
         </p>
       </div>
 
-      <Block
-        emoji="🎬"
-        title="הפרק המלא"
-        approved={episodeApproved}
-        pending={episodePending}
-        link={episodeLink}
-        choice={epChoice}
-        setChoice={setEpChoice}
-        note={epNote}
-        setNote={setEpNote}
-        notePlaceholder="מה לתקן בפרק?"
-      />
+      {episodeIncluded && (
+        <Block
+          emoji="🎬"
+          title="הפרק המלא"
+          approved={episodeApproved}
+          pending={episodePending}
+          link={episodeLink}
+          choice={epChoice}
+          setChoice={setEpChoice}
+          note={epNote}
+          setNote={setEpNote}
+          notePlaceholder="מה לתקן בפרק?"
+        />
+      )}
 
       {reelsIncluded && (
         <Block

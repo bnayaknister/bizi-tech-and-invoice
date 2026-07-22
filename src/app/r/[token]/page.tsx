@@ -75,7 +75,8 @@ export default async function ReviewPage({ params }: { params: { token: string }
         showName={p.podcast_name ?? "הפקה"}
         episodeLabel={episodeLabel}
         recordDate={p.record_date}
-        reelsIncluded={p.review_reels_required && state.link.reels_included}
+        episodeIncluded={state.link.scope === "episode" || state.link.scope === "all"}
+        reelsIncluded={(state.link.scope === "reels" || state.link.scope === "all") && p.review_reels_required}
         episodeApproved={p.review_episode_approved}
         reelsApproved={p.review_reels_approved}
         episodeLink={state.link.episode_link}

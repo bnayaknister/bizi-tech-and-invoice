@@ -111,7 +111,7 @@ const STEP_ORDER: Record<string, number> = { record: 0, edit: 1, deliver: 2 };
 // 2026-07-22) so a tech opening the reels line sees "the client asked: …"
 // without hunting. Stage steps advance on tap (record→edit→deliver→back).
 function ProductionTrackBlock({
-  icon, title, stages, note, approved, canEdit, onAdvance, tally, onSend, saving,
+  icon, title, stages, note, approved, canEdit, onAdvance, tally, onSend, saving, sending, sent,
 }: {
   icon: string;
   title: string;
@@ -121,9 +121,12 @@ function ProductionTrackBlock({
   canEdit: boolean;
   onAdvance: (s: Stage) => void;
   tally?: string | null;
-  onSend?: () => void;
+  onSend?: (mediaUrl: string | null) => void;
   saving?: boolean;
+  sending?: boolean;
+  sent?: { url: string; whatsapp: string } | null;
 }) {
+  const [mediaUrl, setMediaUrl] = useState("");
   const ordered = [...stages].sort((a, b) => (STEP_ORDER[a.step] ?? 9) - (STEP_ORDER[b.step] ?? 9));
   const badge = approved
     ? { text: "אושר ✓", cls: "border-emerald-500/50 text-emerald-400" }
@@ -166,15 +169,35 @@ function ProductionTrackBlock({
         </div>
       )}
       {onSend && canEdit && !approved && (
-        // wired with the per-track link scope (next step) — disabled until then
-        // so it never looks live while doing nothing
-        <button
-          disabled
-          title="בקרוב"
-          className="w-full text-[11px] rounded-lg py-1.5 border border-[var(--rule)] text-[var(--faint)] opacity-60 cursor-not-allowed"
-        >
-          שלח לאישור לקוח →
-        </button>
+        <div className="space-y-1.5">
+          {!sent && (
+            <input
+              value={mediaUrl}
+              onChange={(e) => setMediaUrl(e.target.value)}
+              placeholder="קישור לצפייה (פרק/רילז) — אופציונלי"
+              dir="ltr"
+              className="w-full text-[11px] bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-2.5 py-1.5 text-right outline-none focus:border-[var(--violet-light)]"
+            />
+          )}
+          <button
+            onClick={() => onSend(mediaUrl.trim() || null)}
+            disabled={!!sending}
+            className="w-full text-[11px] rounded-lg py-1.5 border border-[var(--rule)] text-[var(--dim)] enabled:hover:border-[var(--violet-light)] enabled:hover:text-[var(--violet-light)] disabled:opacity-50 transition-colors"
+          >
+            {sending ? "יוצר קישור…" : "שלח לאישור לקוח →"}
+          </button>
+          {sent && (
+            <div className="rounded-lg px-2.5 py-2 text-[11px]" style={{ background: "rgba(139,92,246,0.08)", border: "1px solid rgba(139,92,246,0.35)" }}>
+              <div className="text-[var(--dim)] mb-1 break-all">{sent.url}</div>
+              <div className="flex items-center gap-3">
+                <button onClick={() => navigator.clipboard?.writeText(sent.url)} className="text-[var(--violet-light)] hover:underline">העתק קישור</button>
+                {sent.whatsapp && (
+                  <a href={sent.whatsapp} target="_blank" rel="noreferrer" className="text-[var(--violet-light)] hover:underline">שלח בוואטסאפ ↗</a>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -191,6 +214,8 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   const [freezeReason, setFreezeReason] = useState("");
   const [savingStatus, setSavingStatus] = useState(false);
   const [excOpen, setExcOpen] = useState(false); // "exceptional actions" disclosure on the status cursor
+  const [reviewSending, setReviewSending] = useState<string | null>(null); // scope currently being sent
+  const [reviewSent, setReviewSent] = useState<{ scope: string; url: string; whatsapp: string } | null>(null);
   // a client-name edit that Morning must be told about, awaiting confirmation
   const [morningConfirm, setMorningConfirm] = useState<
     { key: string; value: unknown; prev: unknown; changes: Record<string, { from: unknown; to: unknown }> } | null
@@ -201,6 +226,8 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   const openEntity = useCallback((next: EntityRef) => {
     dirty.current = {};
     setError(null);
+    setReviewSent(null);
+    setExcOpen(false);
     setRef(next);
   }, []);
 
@@ -344,6 +371,32 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
       setError(b.error ?? "שינוי הסטטוס נכשל");
       return;
     }
+    broadcast();
+    void load(ref, true);
+  }
+
+  // per-track "send for client approval" — mints a scoped review link (episode
+  // / reels) via the same endpoint the board modal uses and shows the URL to
+  // copy or WhatsApp. Media links aren't collected here (quick send); the
+  // fuller flow with per-track media URLs stays on the board.
+  async function sendReviewLink(scope: "episode" | "reels", mediaUrl: string | null) {
+    if (!ref || reviewSending) return;
+    setReviewSending(scope);
+    setError(null);
+    // the media link the client watches goes on the matching track field
+    const media = scope === "episode" ? { episode_link: mediaUrl } : { reels_link: mediaUrl };
+    const res = await fetch(`/api/productions/${ref.id}/review-link`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope, ...media }),
+    });
+    setReviewSending(null);
+    const b = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setError(b.error ?? "יצירת הלינק נכשלה");
+      return;
+    }
+    setReviewSent({ scope, url: b.url, whatsapp: b.share?.whatsapp ?? "" });
     broadcast();
     void load(ref, true);
   }
@@ -712,7 +765,9 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           canEdit={data.canEditStages}
                           onAdvance={advance}
                           saving={savingStatus}
-                          onSend={() => {}}
+                          onSend={(url) => void sendReviewLink("episode", url)}
+                          sending={reviewSending === "episode"}
+                          sent={reviewSent?.scope === "episode" ? reviewSent : null}
                         />
                       )}
                       {reelStages.length > 0 && data.review?.reels_required !== false && (
@@ -726,7 +781,9 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           onAdvance={advance}
                           tally={reelsTally}
                           saving={savingStatus}
-                          onSend={() => {}}
+                          onSend={(url) => void sendReviewLink("reels", url)}
+                          sending={reviewSending === "reels"}
+                          sent={reviewSent?.scope === "reels" ? reviewSent : null}
                         />
                       )}
                     </div>
