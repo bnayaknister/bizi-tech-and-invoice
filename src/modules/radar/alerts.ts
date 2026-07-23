@@ -191,7 +191,7 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   ];
 
   // ---- 🔵 produced but never billed — the silencing rule is load-bearing ----
-  // kind='client' (never internal/contract) AND all 6 stages done AND no
+  // kind='client' (never internal/contract) AND every stage done AND no
   // job_productions link AND the show doesn't bill_mode='none'. active is
   // irrelevant — a closed show still owes (the Cinematheque precedent).
   const billingModeByShow = new Map(shows.map((s) => [s.id, s.billing_mode]));
@@ -203,11 +203,14 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     // it must never surface a billing alert for a row nobody can see
     if (p.merged_into) return false;
     if (p.kind !== "client") return false;
-    // "all 6 stages done" — total>=6 AND every stage done (done===total). The
-    // rollup gives these counts directly; a production with no stage rows at
-    // all has no rollup entry and is correctly not "produced".
+    // "fully produced" — has stages AND every one is done (done===total). No
+    // magic step-count (was `total < 6`, which silently broke the moment the
+    // reels track dropped to 2 steps in 0038 — owner 2026-07-24): the count is
+    // whatever create_default_stages seeds, and the check stays true no matter
+    // how the stage structure changes. A production with no stage rows at all
+    // has no rollup entry and is correctly not "produced".
     const rl = rollupByProd.get(p.id);
-    if (!rl || rl.total < 6 || rl.done !== rl.total) return false;
+    if (!rl || rl.total === 0 || rl.done !== rl.total) return false;
     if (linkedProductions.has(p.id)) return false;
     if (p.show_id && billingModeByShow.get(p.show_id) === "none") return false;
     return true;

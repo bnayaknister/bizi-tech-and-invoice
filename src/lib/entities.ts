@@ -46,6 +46,10 @@ export const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
       { key: "record_date", label: "תאריך הקלטה", type: "date", view: "any", edit: "stages" },
       { key: "record_time", label: "שעת הקלטה", type: "text", view: "any", edit: "stages" },
       { key: "studio", label: "אולפן", type: "text", view: "any", edit: "stages" },
+      // rendered as a fixed tag at the top of the drawer (+ its own modal), not
+      // as a generic field row — filtered out of the field list like `status`.
+      // Registered here so the entity PATCH accepts it under can_edit_stages.
+      { key: "storage_disk", label: "דיסק", type: "text", view: "any", edit: "stages" },
       // derived from the 6 stages; the only manual transition (client
       // approval) gets a dedicated flow later, not a free-text edit
       { key: "status", label: "סטטוס", type: "readonly", view: "any", edit: "none" },

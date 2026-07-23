@@ -30,6 +30,7 @@ export type BoardProduction = {
   dup_group: { count: number; ids: string[] } | null;
   absorbed: { id: string }[];
   legacy: boolean;
+  log_count: number; // human journal entries (notes + client notes)
 };
 
 const STEP_LABEL: Record<string, string> = { record: "הקלטה", edit: "עריכה", deliver: "מסירה" };
@@ -481,6 +482,17 @@ function ProductionCard({
         {p.needs_attention && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: "var(--red)" }} title="דורש טיפול" />}
         <span className="font-bold text-sm truncate flex-1">{p.show_name}</span>
         {p.on_hold && <span className="text-[10px] text-[var(--amber)] shrink-0">⏸ מוקפא</span>}
+        {/* journal indicator — visible from the board so you know there's
+            something written without opening the drawer. Click opens it. */}
+        {p.log_count > 0 && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onOpen(p.id); }}
+            title="יומן ההפקה"
+            className="text-[10px] text-[var(--dim)] hover:text-[var(--violet-light)] shrink-0 rounded px-1 py-0.5 border border-[var(--rule)] hover:border-[var(--violet-light)] transition-colors"
+          >
+            📝 {p.log_count}
+          </button>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[var(--dim)]">
         {showStatus && <StatusPill status={p.status} />}
@@ -660,7 +672,13 @@ function TodayView({
 }) {
   const today = todayISO();
   const attention = rows.filter((p) => p.needs_attention);
-  const todays = rows.filter((p) => p.record_date === today && !TERMINAL_STATES.has(p.status));
+  // "עתיד להתחיל" — only work that hasn't started yet. The moment any stage
+  // goes in_progress/done the production moves to "בעבודה עכשיו", so it must
+  // leave this bucket or it double-shows (owner 2026-07-24).
+  const notStarted = (p: BoardProduction) => p.stages_done === 0 && p.in_progress.length === 0;
+  const upcoming = rows.filter(
+    (p) => p.record_date === today && !TERMINAL_STATES.has(p.status) && notStarted(p)
+  );
   const working = rows.filter((p) => IN_PROGRESS_STATES.has(p.status) && !p.on_hold);
   const stuck = rows.filter((p) => p.on_hold || p.status === "ממתין_לתגובת_לקוח");
 
@@ -702,7 +720,7 @@ function TodayView({
     <div>
       <div className="text-xs text-[var(--faint)] mb-4 font-mono">{today}</div>
       {attention.length > 0 && <Section title="דורש טיפול" items={attention} tone="var(--red)" />}
-      <Section title="היום" items={todays} tone="var(--violet-light)" />
+      <Section title="עתיד להתחיל" items={upcoming} tone="var(--violet-light)" />
       <Section title="בעבודה עכשיו" items={working} />
       <Section title="תקוע" items={stuck} tone="var(--amber)" />
     </div>

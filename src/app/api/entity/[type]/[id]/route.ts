@@ -111,6 +111,44 @@ export async function GET(
     const extra = (addons ?? []).reduce((s, a) => s + (Number(a.quantity) || 0), 0);
     reelsSummary = { base: REELS_BASE, extra, total: REELS_BASE + extra };
   }
+
+  // production journal (§3, owner 2026-07-24) + disk autocomplete (§2). Both
+  // for anyone who can see the production. The log is RLS-gated (stage OR money
+  // viewer); author names are resolved via the admin client because a non-owner
+  // session can't read other profiles' rows (profiles RLS is self-or-owner) —
+  // names aren't sensitive, and the log rows themselves were already permitted.
+  let log: unknown[] | null = null;
+  let diskOptions: string[] | null = null;
+  if (type === "production" && (profile.can_view_stages || profile.can_view_money)) {
+    const [{ data: logRows }, { data: diskRows }] = await Promise.all([
+      supabase
+        .from("production_log")
+        .select("id,kind,track,step,stage_status,note,author_id,created_at,edited_at")
+        .eq("production_id", params.id)
+        .order("created_at", { ascending: false })
+        .limit(200),
+      supabase
+        .from("productions")
+        .select("storage_disk")
+        .not("storage_disk", "is", null)
+        .limit(1000),
+    ]);
+    const admin = createAdminClient();
+    const authorIds = Array.from(new Set((logRows ?? []).map((r) => r.author_id).filter(Boolean)));
+    const { data: authors } = authorIds.length
+      ? await admin.from("profiles").select("id,name").in("id", authorIds as string[])
+      : { data: [] };
+    const authorName: Record<string, string> = {};
+    for (const a of authors ?? []) authorName[a.id] = a.name;
+    log = (logRows ?? []).map((r) => ({
+      ...r,
+      author: r.author_id ? authorName[r.author_id] ?? "—" : null, // null = client/system
+      mine: r.author_id === user.id,
+    }));
+    diskOptions = Array.from(
+      new Set((diskRows ?? []).map((d) => (d.storage_disk as string)).filter(Boolean))
+    ).sort();
+  }
   if (type === "production" && profile.can_view_money) {
     const { data: links } = await supabase
       .from("job_productions")
@@ -189,6 +227,8 @@ export async function GET(
     canEditStages: !!profile.can_edit_stages,
     review,
     reelsSummary,
+    log,
+    diskOptions,
   });
 }
 

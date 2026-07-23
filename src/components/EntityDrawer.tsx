@@ -72,6 +72,22 @@ type HistoryEntry = {
   created_at: string;
 };
 
+// one production-journal entry (§3). kind is open-ended text on purpose — an
+// unknown future kind falls back to a default icon, never crashes.
+type LogEntry = {
+  id: string;
+  kind: string; // 'stage' | 'disk' | 'note' | 'client' | future…
+  track: "episode" | "reels" | null;
+  step: "record" | "edit" | "deliver" | null;
+  stage_status: "pending" | "in_progress" | "done" | null;
+  note: string | null;
+  author: string | null; // null = client / system
+  author_id: string | null;
+  mine: boolean;
+  created_at: string;
+  edited_at: string | null;
+};
+
 type DrawerData = {
   type: string;
   icon: string;
@@ -90,6 +106,8 @@ type DrawerData = {
     episode_note: string | null; reels_note: string | null;
   } | null;
   reelsSummary: { base: number; extra: number; total: number } | null;
+  log: LogEntry[] | null;
+  diskOptions: string[] | null;
 };
 
 const DrawerContext = createContext<{ openEntity: (ref: EntityRef) => void }>({
@@ -112,6 +130,7 @@ const STEP_ORDER: Record<string, number> = { record: 0, edit: 1, deliver: 2 };
 // without hunting. Stage steps advance on tap (record→edit→deliver→back).
 function ProductionTrackBlock({
   icon, title, stages, note, approved, canEdit, onAdvance, tally, onSend, saving, sending, sent,
+  mediaUrl, onMediaChange,
 }: {
   icon: string;
   title: string;
@@ -125,8 +144,11 @@ function ProductionTrackBlock({
   saving?: boolean;
   sending?: boolean;
   sent?: { url: string; whatsapp: string } | null;
+  // the media URL is lifted to the parent so a unified send can read both
+  // blocks' links at once without the tech re-entering them (owner 2026-07-24)
+  mediaUrl: string;
+  onMediaChange: (v: string) => void;
 }) {
-  const [mediaUrl, setMediaUrl] = useState("");
   const ordered = [...stages].sort((a, b) => (STEP_ORDER[a.step] ?? 9) - (STEP_ORDER[b.step] ?? 9));
   const badge = approved
     ? { text: "אושר ✓", cls: "border-emerald-500/50 text-emerald-400" }
@@ -173,7 +195,7 @@ function ProductionTrackBlock({
           {!sent && (
             <input
               value={mediaUrl}
-              onChange={(e) => setMediaUrl(e.target.value)}
+              onChange={(e) => onMediaChange(e.target.value)}
               placeholder="קישור לצפייה (פרק/רילז) — אופציונלי"
               dir="ltr"
               className="w-full text-[11px] bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-2.5 py-1.5 text-right outline-none focus:border-[var(--violet-light)]"
@@ -203,6 +225,160 @@ function ProductionTrackBlock({
   );
 }
 
+const TRACK_LABEL: Record<string, string> = { episode: "פרק", reels: "רילז" };
+
+// icon per log kind. Unknown kind → a neutral default, never a crash (owner
+// 2026-07-24: kinds will grow — price decision, approved add-on, issued doc).
+function logIcon(e: LogEntry): string {
+  if (e.kind === "disk") return "💾";
+  if (e.kind === "note") return "📝";
+  if (e.kind === "client") return "💬";
+  if (e.kind === "stage") {
+    if (e.stage_status === "done") return "✓";
+    if (e.stage_status === "in_progress") return "▶";
+    return "↩"; // reverted to pending
+  }
+  return "•"; // unknown/future kind
+}
+
+// the human line for an entry (what happened), independent of its note body
+function logHead(e: LogEntry): string {
+  const where = e.track ? `${TRACK_LABEL[e.track] ?? e.track}${e.step ? "·" + STEP_LABEL[e.step] : ""}` : "";
+  if (e.kind === "disk") return `דיסק: ${e.note ?? "—"}`;
+  if (e.kind === "client") return `${where ? where + " · " : ""}הערת לקוח`;
+  if (e.kind === "stage") {
+    const verb = e.stage_status === "done" ? "הושלם" : e.stage_status === "in_progress" ? "התחיל" : "הוחזר";
+    return `${where} ${verb}`;
+  }
+  return where; // note: header is the track/step it was attached to (may be empty)
+}
+
+function logDateTime(iso: string): string {
+  const d = new Date(iso);
+  const day = `${d.getDate()}.${d.getMonth() + 1}`;
+  const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return `${day} · ${time}`;
+}
+
+const FIVE_MIN = 5 * 60 * 1000;
+
+// "יומן ההפקה" — the full chronological story (§3): stage changes, disk
+// changes, tech notes, client notes. Newest first. Author may edit their OWN
+// note within 5 minutes (marked "נערך"); nothing is ever deleted.
+function JournalSection({
+  log, canEdit, onAddNote, onEditNote,
+}: {
+  log: LogEntry[];
+  canEdit: boolean;
+  onAddNote: (note: string) => Promise<void>;
+  onEditNote: (id: string, note: string) => Promise<void>;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+
+  async function submitNew() {
+    const n = draft.trim();
+    if (!n || busy) return;
+    setBusy(true);
+    await onAddNote(n);
+    setBusy(false);
+    setDraft("");
+    setAdding(false);
+  }
+  async function submitEdit() {
+    const n = editDraft.trim();
+    if (!n || busy || !editId) return;
+    setBusy(true);
+    await onEditNote(editId, n);
+    setBusy(false);
+    setEditId(null);
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <div className="text-xs font-bold text-[var(--dim)]">יומן ההפקה</div>
+        {canEdit && !adding && (
+          <button
+            onClick={() => setAdding(true)}
+            className="text-[11px] text-[var(--dim)] border border-[var(--rule)] rounded-lg px-2 py-0.5 hover:border-[var(--violet-light)] hover:text-[var(--violet-light)] transition-colors"
+          >
+            + הערה
+          </button>
+        )}
+      </div>
+
+      {adding && (
+        <div className="mb-2 space-y-1.5">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            autoFocus
+            rows={2}
+            placeholder="הערה חופשית…"
+            className="w-full text-xs bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-2.5 py-1.5 text-right outline-none focus:border-[var(--violet-light)] resize-none"
+          />
+          <div className="flex gap-2">
+            <button onClick={() => void submitNew()} disabled={busy || !draft.trim()} className="text-[11px] rounded-lg px-3 py-1 border border-[var(--violet-light)] text-[var(--violet-light)] disabled:opacity-40">שמור</button>
+            <button onClick={() => { setAdding(false); setDraft(""); }} className="text-[11px] rounded-lg px-3 py-1 border border-[var(--rule)] text-[var(--dim)]">בטל</button>
+          </div>
+        </div>
+      )}
+
+      {log.length === 0 ? (
+        <div className="text-[11px] text-[var(--faint)]">אין עדיין רישומים.</div>
+      ) : (
+        <div className="space-y-1.5">
+          {log.map((e) => {
+            const editable = canEdit && e.mine && e.kind === "note"
+              && Date.now() - new Date(e.created_at).getTime() < FIVE_MIN;
+            return (
+              <div key={e.id} className="flex gap-2 text-xs">
+                <span className="shrink-0 w-4 text-center text-[var(--dim)]">{logIcon(e)}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[10px] text-[var(--faint)]">
+                    {logDateTime(e.created_at)}
+                    {e.author ? ` · ${e.author}` : e.kind === "client" ? " · לקוח" : ""}
+                    {logHead(e) ? ` · ${logHead(e)}` : ""}
+                    {e.edited_at && <span className="italic"> · נערך</span>}
+                  </div>
+                  {editId === e.id ? (
+                    <div className="mt-1 space-y-1.5">
+                      <textarea
+                        value={editDraft}
+                        onChange={(ev) => setEditDraft(ev.target.value)}
+                        autoFocus
+                        rows={2}
+                        className="w-full text-xs bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-2.5 py-1.5 text-right outline-none focus:border-[var(--violet-light)] resize-none"
+                      />
+                      <div className="flex gap-2">
+                        <button onClick={() => void submitEdit()} disabled={busy} className="text-[11px] rounded-lg px-3 py-1 border border-[var(--violet-light)] text-[var(--violet-light)] disabled:opacity-40">שמור</button>
+                        <button onClick={() => setEditId(null)} className="text-[11px] rounded-lg px-3 py-1 border border-[var(--rule)] text-[var(--dim)]">בטל</button>
+                      </div>
+                    </div>
+                  ) : (
+                    e.note && e.kind !== "disk" && (
+                      <div className={`mt-0.5 ${e.kind === "client" ? "rounded-lg border border-rose-500/30 px-2 py-1" : ""}`} style={e.kind === "client" ? { background: "rgba(251,113,133,0.08)" } : undefined}>
+                        {e.note}
+                        {editable && (
+                          <button onClick={() => { setEditId(e.id); setEditDraft(e.note ?? ""); }} className="ms-2 text-[10px] text-[var(--faint)] hover:text-[var(--violet-light)]">ערוך</button>
+                        )}
+                      </div>
+                    )
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function DrawerProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [ref, setRef] = useState<EntityRef | null>(null);
@@ -216,10 +392,22 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   const [excOpen, setExcOpen] = useState(false); // "exceptional actions" disclosure on the status cursor
   const [reviewSending, setReviewSending] = useState<string | null>(null); // scope currently being sent
   const [reviewSent, setReviewSent] = useState<{ scope: string; url: string; whatsapp: string } | null>(null);
+  // media URLs lifted out of the two track blocks so the unified send can take
+  // both at once (owner 2026-07-24)
+  const [episodeMedia, setEpisodeMedia] = useState("");
+  const [reelsMedia, setReelsMedia] = useState("");
   // a client-name edit that Morning must be told about, awaiting confirmation
   const [morningConfirm, setMorningConfirm] = useState<
     { key: string; value: unknown; prev: unknown; changes: Record<string, { from: unknown; to: unknown }> } | null
   >(null);
+  // §2 disk modal (opens on record-start, or by tapping the disk tag)
+  const [diskModal, setDiskModal] = useState(false);
+  const [diskValue, setDiskValue] = useState("");
+  const [diskSaving, setDiskSaving] = useState(false);
+  // §3 note-on-stage-complete modal
+  const [noteModal, setNoteModal] = useState<{ stage: Stage } | null>(null);
+  const [noteValue, setNoteValue] = useState("");
+  const [noteSaving, setNoteSaving] = useState(false);
   // dirty text/number edits awaiting blur/Cmd+Enter
   const dirty = useRef<Record<string, unknown>>({});
 
@@ -228,6 +416,10 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     setError(null);
     setReviewSent(null);
     setExcOpen(false);
+    setDiskModal(false);
+    setNoteModal(null);
+    setEpisodeMedia("");
+    setReelsMedia("");
     setRef(next);
   }, []);
 
@@ -235,6 +427,8 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     setRef(null);
     setData(null);
     setError(null);
+    setDiskModal(false);
+    setNoteModal(null);
     dirty.current = {};
   }, []);
 
@@ -344,13 +538,79 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     void load(ref, true);
   }
 
-  async function saveStage(stage: Stage, patch: Record<string, unknown>) {
-    if (!ref) return;
-    const ok = await post({ stage: { id: stage.id, patch } });
-    if (ok) {
+  async function saveStage(stage: Stage, patch: Record<string, unknown>): Promise<boolean> {
+    if (!ref) return false;
+    const res = await post({ stage: { id: stage.id, patch } });
+    if (res.ok) {
       broadcast();
       void load(ref, true);
     }
+    return res.ok;
+  }
+
+  // advancing a stage step (§2 + §3 hooks). One tap moves the stage forward;
+  // then: turning פרק·הקלטה yellow pops the disk modal, and completing ANY
+  // step pops the "add a note?" modal. Both only after the DB change succeeds.
+  async function advanceStage(stage: Stage) {
+    const next = STATUS_NEXT[stage.status];
+    const ok = await saveStage(stage, { status: next });
+    if (!ok) return;
+    if (next === "in_progress" && stage.track === "episode" && stage.step === "record") {
+      setDiskValue(String((data?.entity.storage_disk as string) ?? ""));
+      setDiskModal(true);
+    } else if (next === "done") {
+      setNoteValue("");
+      setNoteModal({ stage });
+    }
+  }
+
+  // §2: save the recording disk (logged automatically by the DB trigger).
+  // Posts directly (not via saveField) so the modal stays open on failure.
+  async function saveDisk() {
+    if (!ref || diskSaving) return;
+    setDiskSaving(true);
+    const res = await post({ patch: { storage_disk: diskValue.trim() || null } });
+    setDiskSaving(false);
+    if (!res.ok) return; // error already surfaced by post
+    setDiskModal(false);
+    broadcast();
+    void load(ref, true);
+  }
+
+  // §3: add a note (free, or attached to the just-completed stage)
+  async function addLogNote(note: string, stage?: Stage | null) {
+    if (!ref) return;
+    const res = await fetch(`/api/productions/${ref.id}/log`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        note,
+        stage_id: stage?.id ?? null,
+        track: stage?.track ?? null,
+        step: stage?.step ?? null,
+      }),
+    });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      setError(b.error ?? "שמירת ההערה נכשלה");
+      return;
+    }
+    void load(ref, true);
+  }
+
+  async function editLogNote(logId: string, note: string) {
+    if (!ref) return;
+    const res = await fetch(`/api/productions/${ref.id}/log`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ log_id: logId, note }),
+    });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      setError(b.error ?? "עריכת ההערה נכשלה");
+      return;
+    }
+    void load(ref, true);
   }
 
   // advance / jump the production's pipeline status — the touch-friendly path
@@ -397,6 +657,34 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
       return;
     }
     setReviewSent({ scope, url: b.url, whatsapp: b.share?.whatsapp ?? "" });
+    broadcast();
+    void load(ref, true);
+  }
+
+  // one link for BOTH tracks (owner 2026-07-24). Takes whatever media URLs are
+  // already typed in the two blocks — no re-entry. scope='all' if both are
+  // filled; if only one is, it scopes to that track so the client sees only it.
+  async function sendUnifiedReviewLink() {
+    if (!ref || reviewSending) return;
+    const ep = episodeMedia.trim() || null;
+    const re = reelsMedia.trim() || null;
+    // pick scope from what's actually filled — a single filled block sends just
+    // that one, exactly like its own button would
+    const scope: "episode" | "reels" | "all" = ep && re ? "all" : ep ? "episode" : "reels";
+    setReviewSending("all");
+    setError(null);
+    const res = await fetch(`/api/productions/${ref.id}/review-link`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope, episode_link: ep, reels_link: re }),
+    });
+    setReviewSending(null);
+    const b = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setError(b.error ?? "יצירת הלינק נכשלה");
+      return;
+    }
+    setReviewSent({ scope: "all", url: b.url, whatsapp: b.share?.whatsapp ?? "" });
     broadcast();
     void load(ref, true);
   }
@@ -636,6 +924,81 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
         </div>
       )}
 
+      {/* §2 disk modal — "לאיזה דיסק הוקלט הפרק?" with autocomplete from disks
+          already entered (prevents "DISK1" vs "disk 1"). */}
+      {diskModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(3,2,10,0.7)", backdropFilter: "blur(6px)" }}>
+          <div className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl" style={{ background: "rgba(15,13,28,0.95)", backdropFilter: "blur(24px)" }}>
+            <h3 className="font-bold mb-3">💾 לאיזה דיסק הוקלט הפרק?</h3>
+            <input
+              value={diskValue}
+              onChange={(e) => setDiskValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") void saveDisk(); }}
+              list="disk-options"
+              autoFocus
+              dir="ltr"
+              placeholder="למשל SSD-04"
+              className="w-full text-sm font-mono bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-3 py-2 text-left outline-none focus:border-[var(--violet-light)]"
+            />
+            <datalist id="disk-options">
+              {(data?.diskOptions ?? []).map((d) => <option key={d} value={d} />)}
+            </datalist>
+            <div className="flex gap-2 mt-4">
+              <button
+                onClick={() => void saveDisk()}
+                disabled={diskSaving}
+                className="flex-1 text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-50"
+                style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}
+              >
+                {diskSaving ? "שומר…" : "שמור"}
+              </button>
+              <button onClick={() => setDiskModal(false)} className="flex-1 border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)]">בטל</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* §3 note-on-complete modal — "סיימת [X]. רוצה להוסיף הערה?" [שמור][דלג].
+          The completion itself is already logged by the DB trigger, so "דלג"
+          simply closes — the log still records who/when/which step. */}
+      {noteModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(3,2,10,0.7)", backdropFilter: "blur(6px)" }}>
+          <div className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl" style={{ background: "rgba(15,13,28,0.95)", backdropFilter: "blur(24px)" }}>
+            <h3 className="font-bold mb-1">
+              סיימת {TRACK_LABEL[noteModal.stage.track] ?? noteModal.stage.track}·{STEP_LABEL[noteModal.stage.step]}
+            </h3>
+            <p className="text-[11px] text-[var(--faint)] mb-3">רוצה להוסיף הערה?</p>
+            <textarea
+              value={noteValue}
+              onChange={(e) => setNoteValue(e.target.value)}
+              autoFocus
+              rows={3}
+              placeholder="הערה (אופציונלי)…"
+              className="w-full text-sm bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-3 py-2 text-right outline-none focus:border-[var(--violet-light)] resize-none"
+            />
+            <div className="flex gap-2 mt-4">
+              <button
+                onClick={async () => {
+                  if (noteSaving) return;
+                  const n = noteValue.trim();
+                  if (!n) { setNoteModal(null); return; }
+                  setNoteSaving(true);
+                  await addLogNote(n, noteModal.stage);
+                  setNoteSaving(false);
+                  setNoteModal(null);
+                }}
+                disabled={noteSaving}
+                className="flex-1 text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-50"
+                style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}
+              >
+                {noteSaving ? "שומר…" : "שמור"}
+              </button>
+              <button onClick={() => setNoteModal(null)} className="flex-1 border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)]">דלג</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {ref && (
         <>
           <div className="fixed inset-0 z-40" style={{ background: "rgba(3,2,10,0.5)", backdropFilter: "blur(4px)" }} onClick={close} />
@@ -662,6 +1025,29 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
 
             {data && (
               <div className="p-4 space-y-4">
+                {/* §2 disk tag — always visible at the very top, next to the
+                    production. Never buried. Empty → dim "לא צוין", tapping it
+                    (with edit rights) opens the disk modal. */}
+                {data.type === "production" && (() => {
+                  const disk = String((data.entity.storage_disk as string) ?? "").trim();
+                  const canEdit = data.canEditStages;
+                  return (
+                    <button
+                      onClick={() => { if (canEdit) { setDiskValue(disk); setDiskModal(true); } }}
+                      disabled={!canEdit}
+                      className={`inline-flex items-center gap-1.5 text-xs rounded-full px-3 py-1 border transition-colors disabled:cursor-default ${
+                        disk
+                          ? "border-[var(--violet-light)]/50 text-[var(--fg)]"
+                          : "border-[var(--rule)] text-[var(--faint)]"
+                      } ${canEdit ? "enabled:hover:border-[var(--violet-light)]" : ""}`}
+                      style={disk ? { background: "rgba(139,92,246,0.10)" } : undefined}
+                      title={canEdit ? "לחיצה לעריכת הדיסק" : undefined}
+                    >
+                      <span>💾</span>
+                      <span className="font-mono">{disk || "לא צוין"}</span>
+                    </button>
+                  );
+                })()}
                 {/* production pipeline — the phone-friendly status control that
                     replaces drag (owner 2026-07-22). Big one-tap "advance to
                     next stage" on top; the full pipeline below for jump/back.
@@ -730,7 +1116,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
 
                 <div className="space-y-2.5">
                   {data.fields
-                    .filter((f) => !(data.type === "production" && f.key === "status"))
+                    .filter((f) => !(data.type === "production" && (f.key === "status" || f.key === "storage_disk")))
                     .map((f) => (
                     <div key={f.key} className="grid grid-cols-[110px_1fr] items-center gap-2">
                       <label className="text-xs text-[var(--dim)]">{f.label}</label>
@@ -744,7 +1130,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                     state and correction notes. Advancing a step here is what
                     moves the status cursor above. */}
                 {data.type === "production" && data.stages && (() => {
-                  const advance = (s: Stage) => void saveStage(s, { status: STATUS_NEXT[s.status] });
+                  const advance = (s: Stage) => void advanceStage(s);
                   const epStages = data.stages!.filter((s) => s.track === "episode");
                   const reelStages = data.stages!.filter((s) => s.track === "reels");
                   const rs = data.reelsSummary;
@@ -753,6 +1139,14 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                       ? `${rs.base} סטנדרט + ${rs.extra} תוספת = ${rs.total} רילז`
                       : `${rs.base} רילז (סטנדרט)`
                     : null;
+                  const reelsShown = reelStages.length > 0 && data.review?.reels_required !== false;
+                  // unified send available when both blocks are present, at
+                  // least one media link is filled, and both aren't already
+                  // approved (nothing left to send)
+                  const bothPresent = epStages.length > 0 && reelsShown;
+                  const anyMedia = !!(episodeMedia.trim() || reelsMedia.trim());
+                  const bothApproved = !!data.review?.episode_approved && !!data.review?.reels_approved;
+                  const showUnified = data.canEditStages && bothPresent && anyMedia && !bothApproved;
                   return (
                     <div className="space-y-2">
                       {epStages.length > 0 && (
@@ -768,9 +1162,11 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           onSend={(url) => void sendReviewLink("episode", url)}
                           sending={reviewSending === "episode"}
                           sent={reviewSent?.scope === "episode" ? reviewSent : null}
+                          mediaUrl={episodeMedia}
+                          onMediaChange={setEpisodeMedia}
                         />
                       )}
-                      {reelStages.length > 0 && data.review?.reels_required !== false && (
+                      {reelsShown && (
                         <ProductionTrackBlock
                           icon="📱"
                           title="רילז"
@@ -784,7 +1180,36 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           onSend={(url) => void sendReviewLink("reels", url)}
                           sending={reviewSending === "reels"}
                           sent={reviewSent?.scope === "reels" ? reviewSent : null}
+                          mediaUrl={reelsMedia}
+                          onMediaChange={setReelsMedia}
                         />
+                      )}
+                      {/* unified send — takes both blocks' links at once */}
+                      {showUnified && (
+                        <div className="space-y-1.5">
+                          <button
+                            onClick={() => void sendUnifiedReviewLink()}
+                            disabled={reviewSending === "all"}
+                            className="w-full text-[11px] rounded-lg py-2 border border-[var(--violet-light)] text-[var(--violet-light)] hover:bg-[rgba(139,92,246,0.14)] disabled:opacity-50 transition-colors font-bold"
+                          >
+                            {reviewSending === "all"
+                              ? "יוצר קישור…"
+                              : episodeMedia.trim() && reelsMedia.trim()
+                                ? "שלח לינק אישור מאוחד (פרק + רילז) →"
+                                : "שלח לינק אישור →"}
+                          </button>
+                          {reviewSent?.scope === "all" && (
+                            <div className="rounded-lg px-2.5 py-2 text-[11px]" style={{ background: "rgba(139,92,246,0.08)", border: "1px solid rgba(139,92,246,0.35)" }}>
+                              <div className="text-[var(--dim)] mb-1 break-all">{reviewSent.url}</div>
+                              <div className="flex items-center gap-3">
+                                <button onClick={() => navigator.clipboard?.writeText(reviewSent.url)} className="text-[var(--violet-light)] hover:underline">העתק קישור</button>
+                                {reviewSent.whatsapp && (
+                                  <a href={reviewSent.whatsapp} target="_blank" rel="noreferrer" className="text-[var(--violet-light)] hover:underline">שלח בוואטסאפ ↗</a>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
                   );
@@ -792,6 +1217,16 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
 
                 {data.type === "production" && ref && (
                   <AddonsSection productionId={ref.id} onChanged={broadcast} />
+                )}
+
+                {/* §3 יומן ההפקה — the full chronological story */}
+                {data.type === "production" && data.log && (
+                  <JournalSection
+                    log={data.log}
+                    canEdit={data.canEditStages}
+                    onAddNote={(note) => addLogNote(note, null)}
+                    onEditNote={editLogNote}
+                  />
                 )}
 
                 {data.linked && (

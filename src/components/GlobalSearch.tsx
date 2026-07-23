@@ -7,7 +7,7 @@ import LineIcon from "@/components/LineIcon";
 type Results = {
   clients: { id: string; name: string }[];
   jobs: { id: string; campaign: string; amount: number | null }[];
-  productions: { id: string; podcast_name: string; guest: string | null }[];
+  productions: { id: string; podcast_name: string; guest: string | null; storage_disk: string | null }[];
 };
 
 const EMPTY: Results = { clients: [], jobs: [], productions: [] };
@@ -109,6 +109,9 @@ export default function GlobalSearch() {
                   className="block w-full text-right px-2 py-1.5 text-sm hover:bg-[var(--panel3)] rounded"
                 >
                   {p.podcast_name} {p.guest ? `· ${p.guest}` : ""}
+                  {p.storage_disk && (
+                    <span className="text-[10px] text-[var(--faint)]"> · 💾 {p.storage_disk}</span>
+                  )}
                 </button>
               ))}
             </div>

@@ -264,6 +264,18 @@ export async function applyResponse(
     },
   });
 
+  // the client's correction notes join the production journal (§3, owner
+  // 2026-07-24) — one full story. kind='client', author null (the client),
+  // tagged to the track they were about. Only real notes on a revisions round.
+  const clientLog: {
+    production_id: string; kind: string; track: "episode" | "reels"; note: string;
+  }[] = [];
+  if (episodeInScope && resp.episode === "revisions" && resp.episodeNote?.trim())
+    clientLog.push({ production_id: production.id, kind: "client", track: "episode", note: resp.episodeNote.trim() });
+  if (reelsInScope && resp.reels === "revisions" && resp.reelsNote?.trim())
+    clientLog.push({ production_id: production.id, kind: "client", track: "reels", note: resp.reelsNote.trim() });
+  if (clientLog.length) await admin.from("production_log").insert(clientLog);
+
   // full approval → deal invoice into the queue (same as the manual path).
   // The add-ons were already resolved above, before the status flip.
   if (approvedAll) {

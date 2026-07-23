@@ -13,7 +13,14 @@ export async function GET(request: Request) {
   const [clients, jobs, productions] = await Promise.all([
     supabase.from("clients").select("id,name").ilike("name", like).limit(8),
     supabase.from("jobs").select("id,campaign,amount,client_id").ilike("campaign", like).limit(8),
-    supabase.from("productions").select("id,podcast_name,guest").or(`podcast_name.ilike.${like},guest.ilike.${like}`).limit(8),
+    // storage_disk is searchable so "SSD-04" finds every production on that
+    // disk — critical for locating old raw (owner 2026-07-24). storage_disk is
+    // returned so the result row can show which disk matched.
+    supabase
+      .from("productions")
+      .select("id,podcast_name,guest,storage_disk")
+      .or(`podcast_name.ilike.${like},guest.ilike.${like},storage_disk.ilike.${like}`)
+      .limit(8),
   ]);
 
   return NextResponse.json({

@@ -65,6 +65,26 @@ async function fetchStageRollup(supabase: ReturnType<typeof createClient>) {
   }
 }
 
+// per-production count of HUMAN journal entries (tech notes + client notes) —
+// the card's "📝 N" signal (owner 2026-07-24). Auto stage/disk log rows are
+// excluded on purpose: the indicator means "someone wrote something worth
+// reading", not raw activity. Paged so it never silently caps at 1000.
+async function fetchLogCounts(supabase: ReturnType<typeof createClient>) {
+  const page = 1000;
+  const counts = new Map<string, number>();
+  for (let from = 0; ; from += page) {
+    const { data, error } = await supabase
+      .from("production_log")
+      .select("production_id")
+      .in("kind", ["note", "client"])
+      .range(from, from + page - 1);
+    if (error) throw error;
+    const rows = (data ?? []) as { production_id: string }[];
+    for (const r of rows) counts.set(r.production_id, (counts.get(r.production_id) ?? 0) + 1);
+    if (rows.length < page) return counts;
+  }
+}
+
 export default async function ProductionsPage() {
   const { user, profile } = await getSessionAndProfile();
   if (!user) redirect("/login");
@@ -83,10 +103,11 @@ export default async function ProductionsPage() {
   // fetched without a merged_into filter — a merged-away / un-split-away
   // row must still surface as "absorbed" on its survivor's card, it just
   // never becomes a board entry of its own (see split below)
-  const [prodsRes, { data: shows }, stageRollup] = await Promise.all([
+  const [prodsRes, { data: shows }, stageRollup, logCounts] = await Promise.all([
     supabase.from("productions").select(prodSelect),
     supabase.from("shows").select("id,name,color,active"),
     fetchStageRollup(supabase),
+    fetchLogCounts(supabase),
   ]);
   const allProds = (prodsRes.data ?? []) as unknown as ProdRow[];
   const prods = allProds.filter((p) => !p.merged_into);
@@ -185,6 +206,7 @@ export default async function ProductionsPage() {
       dup_group: dupInfoByProdId.get(p.id) ?? null,
       absorbed: absorbedBySurvivor.get(p.id) ?? [],
       legacy: p.legacy,
+      log_count: logCounts.get(p.id) ?? 0,
     };
   });
 
