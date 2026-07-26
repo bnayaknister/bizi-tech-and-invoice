@@ -3,7 +3,10 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useDrawer } from "@/components/EntityDrawer";
+import AssignDocModal from "@/components/AssignDocModal";
 import { REGISTRY_TAB_LABEL, type RegistryTab } from "@/lib/morning/types";
+
+const BILLING_TYPES = [300, 305, 320]; // deal / tax / tax-receipt — linkable to a job
 
 export type DocRow = {
   id: string;
@@ -57,6 +60,7 @@ export default function RegistryClient({
   const [sort, setSort] = useState<"date" | "amount">("date");
   const [pulling, setPulling] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [assignDoc, setAssignDoc] = useState<DocRow | null>(null);
 
   const counts = useMemo(() => {
     const c: Record<string, { n: number; total: number }> = {};
@@ -200,6 +204,7 @@ export default function RegistryClient({
                 <th className="py-2 px-2">תאריך</th>
                 <th className="py-2 px-2">מקור</th>
                 <th className="py-2 px-2">PDF</th>
+                <th className="py-2 px-2">שיוך</th>
               </tr>
             </thead>
             <tbody>
@@ -233,11 +238,35 @@ export default function RegistryClient({
                       "—"
                     )}
                   </td>
+                  <td className="py-2 px-2" onClick={(e) => e.stopPropagation()}>
+                    {canPull && !r.job_id && BILLING_TYPES.includes(r.type) ? (
+                      <button
+                        onClick={() => setAssignDoc(r)}
+                        className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)]"
+                      >
+                        שייך ל-job
+                      </button>
+                    ) : r.job_id ? (
+                      <span className="text-[10px] text-[var(--green)]">משויך</span>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+
+      {assignDoc && (
+        <AssignDocModal
+          mode="doc"
+          id={assignDoc.id}
+          heading={`שייך מסמך #${assignDoc.number ?? ""} ל-job`}
+          onClose={() => setAssignDoc(null)}
+          onAssigned={() => router.refresh()}
+        />
       )}
     </main>
   );

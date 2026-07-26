@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useDrawer } from "@/components/EntityDrawer";
 import IconTile from "@/components/IconTile";
+import AssignDocModal from "@/components/AssignDocModal";
 import { deriveState, TAB_META, ALL_TABS, type FinanceState } from "@/lib/finance/state";
 
 type DocSlot = { number: string | null; pdf: string | null; manual: boolean | null };
@@ -57,6 +58,7 @@ export default function FinanceClient({
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [issueFor, setIssueFor] = useState<{ job: FinanceJob; type: "עסקה" | "מס" } | null>(null);
+  const [assignFor, setAssignFor] = useState<FinanceJob | null>(null);
   const [paidLoopFor, setPaidLoopFor] = useState<FinanceJob | null>(null);
 
   const counts = useMemo(() => {
@@ -307,9 +309,14 @@ export default function FinanceClient({
                           </button>
                         )}
                         {r.state === "red" && (
-                          <button onClick={() => setIssueFor({ job: r, type: "מס" })} className="fin-btn fin-btn-red">
-                            הנפק חשבונית מס
-                          </button>
+                          <>
+                            <button onClick={() => setIssueFor({ job: r, type: "מס" })} className="fin-btn fin-btn-red">
+                              הנפק חשבונית מס
+                            </button>
+                            <button onClick={() => setAssignFor(r)} className="fin-btn">
+                              שייך מסמך קיים
+                            </button>
+                          </>
                         )}
                         {r.paid !== "כן" && r.paid !== "ללא חיוב" && (
                           <button onClick={() => markPaid(r)} className="fin-btn">
@@ -372,9 +379,14 @@ export default function FinanceClient({
                       </button>
                     )}
                     {r.state === "red" && (
-                      <button onClick={() => setIssueFor({ job: r, type: "מס" })} className="fin-btn fin-btn-red">
-                        הנפק חשבונית מס
-                      </button>
+                      <>
+                        <button onClick={() => setIssueFor({ job: r, type: "מס" })} className="fin-btn fin-btn-red">
+                          הנפק חשבונית מס
+                        </button>
+                        <button onClick={() => setAssignFor(r)} className="fin-btn">
+                          שייך מסמך קיים
+                        </button>
+                      </>
                     )}
                     {r.paid !== "כן" && r.paid !== "ללא חיוב" && (
                       <button onClick={() => markPaid(r)} className="fin-btn">
@@ -422,6 +434,16 @@ export default function FinanceClient({
             const ok = await issue(issueFor.job, issueFor.type, mode, fields);
             if (ok) setIssueFor(null);
           }}
+        />
+      )}
+
+      {assignFor && (
+        <AssignDocModal
+          mode="job"
+          id={assignFor.id}
+          heading={`שייך מסמך קיים · ${assignFor.client_name ?? ""} ${assignFor.campaign ?? ""}`.trim()}
+          onClose={() => setAssignFor(null)}
+          onAssigned={() => router.refresh()}
         />
       )}
 
