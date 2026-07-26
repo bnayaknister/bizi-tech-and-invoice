@@ -98,7 +98,9 @@ export default function RegistryClient({
         setMsg(body.error ?? "המשיכה נכשלה");
         return;
       }
-      setMsg(`נמשכו ${body.pulled} · חדשים ${body.inserted} · לא משויכים ${body.unmatched}`);
+      setMsg(
+        `נמשכו ${body.pulled} · חדשים ${body.inserted} · שויכו אוטומטית ${body.linked ?? 0} · לא משויכים ${body.unmatched}`
+      );
       router.refresh();
     } catch {
       setMsg("שגיאת רשת");

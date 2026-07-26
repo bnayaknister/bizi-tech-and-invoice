@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { searchDocuments } from "@/lib/morning/client";
+import { autoReconcile } from "@/lib/documents/reconcile";
 
 // The documents registry: one row per Morning document, written from two
 // directions (app issuance write-through, and the daily pull of documents
@@ -52,7 +53,7 @@ export async function upsertDocument(admin: SupabaseClient, doc: UpsertDoc) {
   return { inserted: true };
 }
 
-export type PullSummary = { pulled: number; inserted: number; updated: number; unmatched: number };
+export type PullSummary = { pulled: number; inserted: number; updated: number; unmatched: number; linked: number };
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -84,7 +85,10 @@ export async function runDocumentPull(admin: SupabaseClient): Promise<PullSummar
   const docs = await searchDocuments(fromDate);
   if (!docs.length) {
     await admin.from("app_settings").update({ documents_pulled_at: new Date().toISOString() }).eq("id", true);
-    return { pulled: 0, inserted: 0, updated: 0, unmatched: 0 };
+    // even with nothing new pulled, a red job may now have a certain match from
+    // a document pulled earlier (e.g. a job that was just marked paid) — reconcile.
+    const { linked } = await autoReconcile(admin);
+    return { pulled: 0, inserted: 0, updated: 0, unmatched: 0, linked };
   }
 
   // one query: Morning client id -> our client id (first by name wins when
@@ -141,5 +145,9 @@ export async function runDocumentPull(admin: SupabaseClient): Promise<PullSummar
 
   await admin.from("app_settings").update({ documents_pulled_at: now }).eq("id", true);
 
-  return { pulled: docs.length, inserted, updated: docs.length - inserted, unmatched };
+  // step A: auto-match on pull — link every certain 1:1 tax document to its
+  // red job and close it. Ambiguous matches are left for the gaps screen.
+  const { linked } = await autoReconcile(admin);
+
+  return { pulled: docs.length, inserted, updated: docs.length - inserted, unmatched, linked };
 }
