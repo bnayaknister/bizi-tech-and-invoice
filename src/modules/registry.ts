@@ -9,6 +9,7 @@ import { archiveModule } from "@/modules/archive";
 import { settingsModule } from "@/modules/settings";
 import { approvalsModule } from "@/modules/approvals";
 import { documentsModule } from "@/modules/documents";
+import { docRegistryModule } from "@/modules/doc-registry";
 
 // Order = importance, not module count (owner note 2026-07-18). The hub
 // grid fills this array into a 3-col RTL grid, so the first row (and, in
@@ -22,6 +23,7 @@ export const MODULES: ModuleDef[] = [
   usersModule,
   productionsModule,
   financeModule,
+  docRegistryModule,
   documentsModule,
   contractsModule,
   showsModule,
