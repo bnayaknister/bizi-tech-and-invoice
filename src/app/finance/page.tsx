@@ -3,7 +3,7 @@ import { getSessionAndProfile } from "@/lib/profile";
 import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import { deriveState, type FinanceState } from "@/lib/finance/state";
-import FinanceClient, { type FinanceJob, type FinanceSummary } from "./FinanceClient";
+import FinanceClient, { type FinanceJob, type FinanceSummary, type HiddenJob } from "./FinanceClient";
 
 export const dynamic = "force-dynamic";
 
@@ -17,15 +17,19 @@ export default async function FinancePage() {
 
   // money-only aggregate screen — read through the service role, same as radar
   const admin = createAdminClient();
-  const [{ data: jobs }, { data: clients }, { data: links }, { data: prods }, { data: shows }, { data: invoices }] =
+  const [{ data: jobs }, { data: clients }, { data: links }, { data: prods }, { data: shows }, { data: invoices }, { data: staff }] =
     await Promise.all([
-      admin.from("jobs").select("id,client_id,date,campaign,amount,invoice_biz,invoice_tax,paid,due_date,notes"),
+      admin
+        .from("jobs")
+        .select("id,client_id,date,campaign,amount,invoice_biz,invoice_tax,paid,due_date,notes,dismissed,dismiss_reason,dismissed_by,dismissed_at"),
       admin.from("clients").select("id,name,payment_terms"),
       admin.from("job_productions").select("job_id,production_id"),
       admin.from("productions").select("id,show_id,podcast_name"),
       admin.from("shows").select("id,name"),
       admin.from("invoices").select("id,job_id,type,doc_number,source,pdf_url,issued_at"),
+      admin.from("profiles").select("id,name"),
     ]);
+  const staffName = new Map((staff ?? []).map((s) => [s.id as string, s.name as string]));
 
   const clientName = new Map((clients ?? []).map((c) => [c.id, c.name]));
   const showById = new Map((shows ?? []).map((s) => [s.id, s.name]));
@@ -41,7 +45,11 @@ export default async function FinancePage() {
   }
 
   const now = Date.now();
-  const rows: FinanceJob[] = (jobs ?? []).map((j) => {
+  // dismissed records vanish from every table and counter (owner spec) — they
+  // live only in the "מוסתרים" tab, recoverable. Split them off up front so
+  // the pipeline tabs, the summary, debt and overdue never see them.
+  const activeJobs = (jobs ?? []).filter((j) => !j.dismissed);
+  const rows: FinanceJob[] = activeJobs.map((j) => {
     const state = deriveState(j);
     const prodId = prodByJob.get(j.id);
     const showName = prodId
@@ -92,11 +100,31 @@ export default async function FinancePage() {
     closedSum: sum(byState("closed")),
   };
 
+  const hidden: HiddenJob[] = (jobs ?? [])
+    .filter((j) => j.dismissed)
+    .map((j) => ({
+      id: j.id,
+      client_name: j.client_id ? clientName.get(j.client_id) ?? null : null,
+      campaign: j.campaign,
+      amount: j.amount,
+      reason: (j.dismiss_reason as string | null) ?? null,
+      by_name: j.dismissed_by ? staffName.get(j.dismissed_by as string) ?? null : null,
+      at: (j.dismissed_at as string | null) ?? null,
+      biz_number: j.invoice_biz ?? null,
+      tax_number: j.invoice_tax ?? null,
+    }));
+
   return (
     <div className="min-h-screen">
       <AppHeader profile={profile} />
       <main>
-        <FinanceClient rows={rows} summary={summary} canEditMoney={profile.can_edit_money} />
+        <FinanceClient
+          rows={rows}
+          summary={summary}
+          hidden={hidden}
+          canEditMoney={profile.can_edit_money}
+          canManageUsers={!!profile.can_manage_users}
+        />
       </main>
     </div>
   );

@@ -31,6 +31,17 @@ export type FinanceSummary = {
   closedCount: number;
   closedSum: number;
 };
+export type HiddenJob = {
+  id: string;
+  client_name: string | null;
+  campaign: string | null;
+  amount: number | null;
+  reason: string | null;
+  by_name: string | null;
+  at: string | null;
+  biz_number: string | null;
+  tax_number: string | null;
+};
 
 const NIS = new Intl.NumberFormat("he-IL");
 const money = (n: number | null | undefined) => (n == null ? "—" : `${NIS.format(Math.round(n))} ₪`);
@@ -45,20 +56,25 @@ function dueLabel(days: number | null): { text: string; color: string } {
 export default function FinanceClient({
   rows: initial,
   summary,
+  hidden,
   canEditMoney,
+  canManageUsers,
 }: {
   rows: FinanceJob[];
   summary: FinanceSummary;
+  hidden: HiddenJob[];
   canEditMoney: boolean;
+  canManageUsers: boolean;
 }) {
   const router = useRouter();
   const { openEntity } = useDrawer();
   const [rows, setRows] = useState(initial);
-  const [tab, setTab] = useState<FinanceState>("purple");
+  const [tab, setTab] = useState<FinanceState | "hidden">("purple");
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [issueFor, setIssueFor] = useState<{ job: FinanceJob; type: "עסקה" | "מס" } | null>(null);
   const [assignFor, setAssignFor] = useState<FinanceJob | null>(null);
+  const [dismissFor, setDismissFor] = useState<FinanceJob | null>(null);
   const [paidLoopFor, setPaidLoopFor] = useState<FinanceJob | null>(null);
 
   const counts = useMemo(() => {
@@ -102,6 +118,48 @@ export default function FinanceClient({
         return merged;
       })
     );
+  }
+
+  const [busyDismiss, setBusyDismiss] = useState<string | null>(null);
+
+  async function dismiss(job: FinanceJob, reason: string) {
+    setBusyDismiss(job.id);
+    setError(null);
+    try {
+      const res = await fetch("/api/finance/dismiss", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: job.id, reason }),
+      });
+      if (!res.ok) {
+        setError((await res.json().catch(() => ({}))).error ?? "ההסרה נכשלה");
+        return;
+      }
+      setRows((rs) => rs.filter((r) => r.id !== job.id)); // vanish from the table immediately
+      setDismissFor(null);
+      router.refresh();
+    } finally {
+      setBusyDismiss(null);
+    }
+  }
+
+  async function restore(id: string) {
+    setBusyDismiss(id);
+    setError(null);
+    try {
+      const res = await fetch("/api/finance/dismiss", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: id, restore: true }),
+      });
+      if (!res.ok) {
+        setError((await res.json().catch(() => ({}))).error ?? "השחזור נכשל");
+        return;
+      }
+      router.refresh();
+    } finally {
+      setBusyDismiss(null);
+    }
   }
 
   async function markPaid(job: FinanceJob) {
@@ -237,6 +295,19 @@ export default function FinanceClient({
             </button>
           );
         })}
+        {canManageUsers && hidden.length > 0 && (
+          <button
+            onClick={() => setTab("hidden")}
+            className="text-xs rounded-xl px-3 py-2 border flex items-center gap-2"
+            style={{
+              borderColor: tab === "hidden" ? "var(--faint)" : "var(--rule)",
+              background: tab === "hidden" ? "color-mix(in srgb, var(--faint) 12%, transparent)" : "transparent",
+            }}
+          >
+            <span className="font-bold" style={{ color: tab === "hidden" ? "var(--dim)" : "var(--faint)" }}>מוסתרים</span>
+            <span className="font-mono text-[var(--faint)]">{hidden.length}</span>
+          </button>
+        )}
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -252,11 +323,18 @@ export default function FinanceClient({
         </button>
       </div>
 
-      <div className="text-[11px] text-[var(--faint)] mb-2">{TAB_META[tab].short} · {TAB_META[tab].hint}</div>
+      <div className="text-[11px] text-[var(--faint)] mb-2">
+        {tab === "hidden" ? "רישומים שהוסתרו — מחוץ לחוב ולמונים, ניתנים לשחזור" : `${TAB_META[tab].short} · ${TAB_META[tab].hint}`}
+      </div>
       {error && <div className="mb-3 text-xs text-[var(--peak)] border border-[var(--peak)] rounded-xl px-3 py-2">{error}</div>}
+
+      {tab === "hidden" && (
+        <HiddenTable hidden={hidden} onRestore={restore} busy={busyDismiss} />
+      )}
 
       {/* the table — desktop / tablet only; an 8-column table can't be read on
           a phone, so mobile gets stacked cards below (owner 2026-07-22) */}
+      {tab !== "hidden" && (
       <div
         className="hidden sm:block overflow-x-auto border border-[var(--rule)] rounded-2xl"
         style={{ background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
@@ -325,6 +403,11 @@ export default function FinanceClient({
                         )}
                       </div>
                     )}
+                    {canManageUsers && (
+                      <button onClick={() => setDismissFor(r)} title="הסר רישום זה" className="fin-x">
+                        ×
+                      </button>
+                    )}
                   </td>
                 </tr>
               );
@@ -339,10 +422,12 @@ export default function FinanceClient({
           </tbody>
         </table>
       </div>
+      )}
 
       {/* mobile: one stacked card per job — client + amount lead, meta and
           actions below. Tapping the card (outside the action buttons) opens
           the same drawer the table row does. */}
+      {tab !== "hidden" && (
       <div className="sm:hidden space-y-2">
         {visible.map((r) => {
           const due = dueLabel(r.due_days);
@@ -395,6 +480,11 @@ export default function FinanceClient({
                     )}
                   </div>
                 )}
+                {canManageUsers && (
+                  <button onClick={() => setDismissFor(r)} title="הסר רישום זה" className="fin-x">
+                    ×
+                  </button>
+                )}
               </div>
             </div>
           );
@@ -405,6 +495,7 @@ export default function FinanceClient({
           </div>
         )}
       </div>
+      )}
 
       <style jsx>{`
         :global(.fin-btn) {
@@ -423,6 +514,18 @@ export default function FinanceClient({
           border-color: var(--red);
           color: var(--red);
         }
+        :global(.fin-x) {
+          font-size: 15px;
+          line-height: 1;
+          color: var(--faint);
+          padding: 2px 7px;
+          border-radius: 8px;
+          transition: background 0.15s, color 0.15s;
+        }
+        :global(.fin-x:hover) {
+          background: color-mix(in srgb, var(--red) 15%, transparent);
+          color: var(--red);
+        }
       `}</style>
 
       {issueFor && (
@@ -434,6 +537,15 @@ export default function FinanceClient({
             const ok = await issue(issueFor.job, issueFor.type, mode, fields);
             if (ok) setIssueFor(null);
           }}
+        />
+      )}
+
+      {dismissFor && (
+        <DismissModal
+          job={dismissFor}
+          busy={busyDismiss === dismissFor.id}
+          onClose={() => setDismissFor(null)}
+          onConfirm={(reason) => dismiss(dismissFor, reason)}
         />
       )}
 
@@ -461,6 +573,93 @@ export default function FinanceClient({
           }}
         />
       )}
+    </div>
+  );
+}
+
+function DismissModal({
+  job,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  job: FinanceJob;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: (reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  const docNumber = job.biz.number || job.tax.number || null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div className="glass-card w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
+        <h2 className="text-sm font-bold mb-1">הסרת רישום</h2>
+        <p className="text-xs text-[var(--dim)] mb-3">
+          להסיר את החיוב <span className="font-bold">{job.client_name ?? "—"} · {money(job.amount)}</span>? הוא יעלים
+          מהחוב לגבייה ומכל המונים. זו הסתרה — ניתן לשחזר מלשונית {"״מוסתרים״"}.
+        </p>
+        {docNumber && (
+          <div className="mb-3 text-[11px] text-[var(--warn)] border border-[var(--warn)] rounded-xl px-3 py-2">
+            ⚠ לרישום זה יש חשבונית <span className="font-mono font-bold">#{docNumber}</span> במורנינג. הסרה כאן{" "}
+            <span className="font-bold">לא מבטלת אותה שם</span> — הסרה של רישום עם חשבונית פעילה יוצרת פער מול הספרים.
+          </div>
+        )}
+        <label className="block text-[11px] text-[var(--faint)] mb-1">סיבה (חובה)</label>
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          rows={2}
+          placeholder="למשל: רישום בדיקה / כפילות / הפקה שבוטלה"
+          className="w-full bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-xs mb-4 outline-none focus:border-[var(--violet-light)]"
+        />
+        <div className="flex items-center justify-end gap-2">
+          <button onClick={onClose} className="text-xs rounded-xl px-4 py-1.5 border border-[var(--rule)]">
+            ביטול
+          </button>
+          <button
+            disabled={!reason.trim() || busy}
+            onClick={() => onConfirm(reason.trim())}
+            className="text-xs font-bold rounded-xl px-4 py-1.5 bg-[var(--red)] text-white disabled:opacity-40"
+          >
+            {busy ? "מסיר…" : "הסר"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HiddenTable({ hidden, onRestore, busy }: { hidden: HiddenJob[]; onRestore: (id: string) => void; busy: string | null }) {
+  if (hidden.length === 0) {
+    return (
+      <div className="rounded-2xl border border-dashed border-[var(--rule)] px-3 py-10 text-center text-[var(--faint)] text-sm">
+        אין רישומים מוסתרים.
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      {hidden.map((h) => (
+        <div key={h.id} className="border border-[var(--rule)] rounded-2xl px-4 py-3 text-xs flex items-start justify-between gap-3">
+          <div className="flex flex-col gap-0.5">
+            <span className="font-bold">
+              {h.client_name ?? "—"} <span className="text-[var(--faint)] font-normal">· {money(h.amount)} · {h.campaign ?? ""}</span>
+            </span>
+            <span className="text-[11px] text-[var(--dim)]">סיבה: {h.reason ?? "—"}</span>
+            <span className="text-[10px] text-[var(--faint)]">
+              הוסתר ע״י {h.by_name ?? "—"}{h.at ? ` · ${new Date(h.at).toLocaleDateString("he-IL")}` : ""}
+              {(h.biz_number || h.tax_number) && ` · חשבונית #${h.biz_number || h.tax_number} במורנינג`}
+            </span>
+          </div>
+          <button
+            disabled={busy === h.id}
+            onClick={() => onRestore(h.id)}
+            className="shrink-0 text-xs font-bold rounded-lg px-3 py-1 border border-[var(--rule2)] disabled:opacity-40"
+          >
+            {busy === h.id ? "…" : "שחזר"}
+          </button>
+        </div>
+      ))}
     </div>
   );
 }

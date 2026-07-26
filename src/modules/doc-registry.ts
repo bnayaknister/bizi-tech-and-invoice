@@ -18,7 +18,7 @@ export const docRegistryModule: ModuleDef = {
   getMetric: async (supabase) => {
     const [{ count: unassigned }, { data: paidJobs }] = await Promise.all([
       supabase.from("documents").select("id", { count: "exact", head: true }).is("client_id", null),
-      supabase.from("jobs").select("invoice_tax").eq("paid", "כן"),
+      supabase.from("jobs").select("invoice_tax").eq("paid", "כן").eq("dismissed", false),
     ]);
     const missingTax = (paidJobs ?? []).filter(
       (j) => !(j.invoice_tax && String(j.invoice_tax).trim())

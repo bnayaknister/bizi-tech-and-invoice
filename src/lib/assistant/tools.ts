@@ -186,7 +186,7 @@ export async function runTool(name: string, input: Record<string, unknown>, ctx:
   switch (name) {
     case "get_debt_summary": {
       if (!profile.can_view_money) return { ok: false, reason: DENY_MONEY };
-      const { data, error } = await supabase.from("jobs").select("amount").eq("paid", "לא").not("amount", "is", null);
+      const { data, error } = await supabase.from("jobs").select("amount").eq("paid", "לא").eq("dismissed", false).not("amount", "is", null);
       if (error) return { ok: false, reason: "שגיאה בשליפת נתונים" };
       const rows = data ?? [];
       const total = rows.reduce((s, r) => s + Number(r.amount ?? 0), 0);
@@ -200,6 +200,7 @@ export async function runTool(name: string, input: Record<string, unknown>, ctx:
         .from("jobs")
         .select("amount,due_date,client_id,clients(name)")
         .eq("paid", "לא")
+        .eq("dismissed", false)
         .not("amount", "is", null)
         .not("due_date", "is", null)
         .lt("due_date", today);

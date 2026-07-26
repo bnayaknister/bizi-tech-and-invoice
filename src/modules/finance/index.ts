@@ -9,7 +9,7 @@ export const financeModule: ModuleDef = {
   href: "/finance",
   hasAccess: (profile) => profile.approved && profile.can_view_money,
   getMetric: async (supabase) => {
-    const { data } = await supabase.from("jobs").select("amount").eq("paid", "לא");
+    const { data } = await supabase.from("jobs").select("amount").eq("paid", "לא").eq("dismissed", false);
     const total = (data ?? []).reduce((sum, r) => sum + (r.amount ?? 0), 0);
     return {
       label: "חוב לגבייה",

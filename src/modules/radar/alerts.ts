@@ -100,8 +100,10 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
 
   const [jobs, milestones, invoices, productions, stageRollup, jobProds, shows, clients, pendingDocs, clientEvents, paymentEvents] = await Promise.all([
+    // dismissed (soft-removed) jobs are out of every money surface (0041) — a
+    // hidden record must not inflate debt or the VU meter
     fetchAll<{ id: string; amount: number | null; paid: string; invoice_tax: string | null; due_date: string | null; client_id: string | null }>(
-      supabase, "jobs", "id,amount,paid,invoice_tax,due_date,client_id"
+      supabase, "jobs", "id,amount,paid,invoice_tax,due_date,client_id", (q) => q.eq("dismissed", false)
     ),
     fetchAll<{ id: string; amount: number; status: string; expected_date: string | null; is_estimated: boolean }>(
       supabase, "contract_milestones", "id,amount,status,expected_date,is_estimated"

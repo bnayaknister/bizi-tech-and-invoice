@@ -279,7 +279,9 @@ export function reconcile(clients: ReconClient[], jobs: ReconJob[], docs: ReconD
 async function loadData(admin: SupabaseClient) {
   const [{ data: clients }, { data: jobs }, { data: docs }] = await Promise.all([
     admin.from("clients").select("id,name,morning_client_id"),
-    admin.from("jobs").select("id,client_id,amount,invoice_biz,invoice_tax,paid,date,due_date,legacy,campaign"),
+    // dismissed jobs (0041) are out of reconciliation — a hidden record must
+    // not get auto-matched or suggested
+    admin.from("jobs").select("id,client_id,amount,invoice_biz,invoice_tax,paid,date,due_date,legacy,campaign").eq("dismissed", false),
     admin
       .from("documents")
       .select(
