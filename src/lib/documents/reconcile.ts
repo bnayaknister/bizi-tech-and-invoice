@@ -24,7 +24,11 @@ import { deriveState } from "@/lib/finance/state";
 
 export const TAX_TYPES = [305, 320]; // חשבונית מס / חשבונית מס קבלה
 const DEAL_TYPE = 300; // חשבון עסקה
-const BILLING_TYPES = [...TAX_TYPES, DEAL_TYPE];
+const RECEIPT_TYPE = 400; // קבלה
+// proof of PAYMENT (money received): a קבלה, and a מס/קבלה which is a combined
+// tax-invoice + receipt. Linking one to an unpaid job flips paid → כן.
+export const PAYMENT_TYPES = [320, RECEIPT_TYPE];
+const BILLING_TYPES = [...TAX_TYPES, DEAL_TYPE, RECEIPT_TYPE];
 
 const AMOUNT_TOL = 2; // shekels
 const AMOUNT_TOL_PCT = 0.01; // or 1%
@@ -146,11 +150,16 @@ function makeKeyResolvers(clients: ReconClient[]) {
   return { clientById, jobKeys, docKeys };
 }
 
-// The needy state a document type settles: a tax document answers a RED job
-// (paid, no tax invoice); a deal invoice answers a not-billed (purple) job.
-function jobNeedsDocType(state: string, docType: number): boolean {
-  if (TAX_TYPES.includes(docType)) return state === "red";
-  if (docType === DEAL_TYPE) return state === "purple";
+// Which needy state a document type settles for a given job:
+//  - a tax invoice (305/320) answers a RED job (paid, missing tax invoice)
+//  - a payment doc (320/400) answers any UNPAID job (proves money came in → paid)
+//  - a deal invoice (300) answers a not-billed (purple) job
+// 320 (מס/קבלה) is BOTH a tax invoice and a receipt, so it can answer either.
+function jobNeedsDocType(job: ReconJob, docType: number): boolean {
+  const st = stateOf(job);
+  if (TAX_TYPES.includes(docType) && st === "red") return true;
+  if (PAYMENT_TYPES.includes(docType) && job.paid === "לא") return true;
+  if (docType === DEAL_TYPE && st === "purple") return true;
   return false;
 }
 
@@ -176,13 +185,11 @@ function buildEdges(clients: ReconClient[], jobs: ReconJob[], docs: ReconDoc[]) 
   const degDoc = new Map<string, number>();
 
   for (const j of jobs) {
-    const st = stateOf(j);
-    if (st !== "red" && st !== "purple") continue; // only needy jobs
     const jd = parseDate(j.date) ?? parseDate(j.due_date);
     const seen = new Set<string>();
     for (const k of jobKeys(j)) {
       for (const d of docsByKey.get(k) ?? []) {
-        if (seen.has(d.id) || !jobNeedsDocType(st, d.type)) continue;
+        if (seen.has(d.id) || !jobNeedsDocType(j, d.type)) continue;
         const basis = amountBasis(j.amount, d.amount);
         if (!basis) continue;
         seen.add(d.id);
@@ -218,7 +225,12 @@ export function reconcile(clients: ReconClient[], jobs: ReconJob[], docs: ReconD
   const purpleJobs = jobs.filter((j) => stateOf(j) === "purple");
 
   // ---- Gap 1: red job → candidate tax docs (job-centric) ----
-  const taxEdges = edges.filter((e) => TAX_TYPES.includes(docById.get(e.docId)!.type));
+  // strictly red-job/tax-doc edges: a 320 (מס/קבלה) can also match an UNPAID
+  // job as a payment (that path is the reconcile-payments endpoint, not gap1),
+  // so require the job be red here — and keep the auto-link set red-tax only.
+  const taxEdges = edges.filter(
+    (e) => TAX_TYPES.includes(docById.get(e.docId)!.type) && stateOf(jobById.get(e.jobId)!) === "red"
+  );
   const byJob = new Map<string, DocCandidate[]>();
   for (const e of taxEdges) {
     const doc = docById.get(e.docId)!;
@@ -333,8 +345,7 @@ export async function suggestJobsForDoc(admin: SupabaseClient, docId: string): P
   const dd = parseDate(doc.document_date);
   const out: JobCandidate[] = [];
   for (const j of jobs) {
-    const st = stateOf(j);
-    if (!jobNeedsDocType(st, doc.type)) continue;
+    if (!jobNeedsDocType(j, doc.type)) continue;
     const basis = amountBasis(j.amount, doc.amount);
     if (!basis) continue;
     out.push({ job: j, confidence: "low", amountBasis: basis, dateGapDays: dateGapDays(parseDate(j.date) ?? parseDate(j.due_date), dd) });
@@ -353,7 +364,7 @@ export async function suggestJobsForDoc(admin: SupabaseClient, docId: string): P
 export async function linkDocumentToJob(
   admin: SupabaseClient,
   opts: { docId: string; jobId: string; actorId: string | null; auto: boolean }
-): Promise<{ ok: true; state: "red-closed" | "linked" } | { ok: false; error: string }> {
+): Promise<{ ok: true; state: "red-closed" | "linked" | "paid" } | { ok: false; error: string }> {
   const { docId, jobId, actorId, auto } = opts;
 
   const { data: doc } = await admin
@@ -367,12 +378,15 @@ export async function linkDocumentToJob(
 
   const { data: job } = await admin
     .from("jobs")
-    .select("id,client_id,invoice_biz,invoice_tax")
+    .select("id,client_id,invoice_biz,invoice_tax,paid")
     .eq("id", jobId)
     .maybeSingle();
   if (!job) return { ok: false, error: "ה-job לא נמצא" };
 
-  const isTax = TAX_TYPES.includes(doc.type as number);
+  const type = doc.type as number;
+  const isTax = TAX_TYPES.includes(type); // 305/320 — carries a tax invoice number
+  const isDeal = type === DEAL_TYPE; // 300 — carries a deal invoice number
+  const isPayment = PAYMENT_TYPES.includes(type); // 320/400 — proves payment
   const docNumber = (doc.morning_doc_number as string | null) ?? null;
 
   // 1. the document gets the job + the job's client
@@ -381,14 +395,18 @@ export async function linkDocumentToJob(
     .update({ job_id: jobId, client_id: (doc.client_id as string | null) ?? job.client_id ?? null, updated_at: new Date().toISOString() })
     .eq("id", docId);
 
-  // 2. the job's invoice flag moves its finance state
+  // 2. move the job's finance state by the document's kind (each independent;
+  //    a מס/קבלה is both a tax invoice AND a receipt, so it can do two at once)
   const jobPatch: Record<string, unknown> = {};
   if (isTax && !present(job.invoice_tax as string | null)) jobPatch.invoice_tax = docNumber;
-  if (!isTax && !present(job.invoice_biz as string | null)) jobPatch.invoice_biz = docNumber;
+  if (isDeal && !present(job.invoice_biz as string | null)) jobPatch.invoice_biz = docNumber;
+  const flippedPaid = isPayment && job.paid === "לא";
+  if (flippedPaid) jobPatch.paid = "כן";
   if (Object.keys(jobPatch).length) await admin.from("jobs").update(jobPatch).eq("id", jobId);
 
-  // 3. mirror to the finance registry (invoices) if not already there
-  if (job.client_id) {
+  // 3. mirror to the finance registry (invoices) if not already there — only
+  //    for actual invoices (deal/tax); a bare קבלה (400) is not an invoice row
+  if (job.client_id && (isTax || isDeal)) {
     const { data: existingInv } = await admin
       .from("invoices")
       .select("id")
@@ -410,24 +428,33 @@ export async function linkDocumentToJob(
     }
   }
 
-  // 4. event on the job (this is a change to its money state)
+  const movedState = flippedPaid
+    ? (jobPatch.invoice_tax ? "unpaid→closed" : "unpaid→paid")
+    : isTax && jobPatch.invoice_tax
+      ? "red→closed"
+      : "linked";
+
+  // 4. event(s) on the job — a money-state change
   await admin.from("events").insert({
     entity_type: "job",
     entity_id: jobId,
     event_type: "document_reconciled",
     actor_id: actorId,
-    payload: {
-      auto,
-      doc_id: docId,
-      morning_doc_id: doc.morning_doc_id,
-      morning_doc_number: docNumber,
-      doc_type: doc.type,
-      amount: doc.amount,
-      moved_state: isTax && jobPatch.invoice_tax ? "red→closed" : "linked",
-    },
+    payload: { auto, doc_id: docId, morning_doc_id: doc.morning_doc_id, morning_doc_number: docNumber, doc_type: type, amount: doc.amount, moved_state: movedState },
   });
+  // the radar reads job_marked_paid for payment timing — keep it consistent
+  if (flippedPaid) {
+    await admin.from("events").insert({
+      entity_type: "job",
+      entity_id: jobId,
+      event_type: "job_marked_paid",
+      actor_id: actorId,
+      payload: { via: "reconcile", auto, morning_doc_number: docNumber, doc_type: type },
+    });
+  }
 
-  return { ok: true, state: isTax && jobPatch.invoice_tax ? "red-closed" : "linked" };
+  const state = flippedPaid ? "paid" : isTax && jobPatch.invoice_tax ? "red-closed" : "linked";
+  return { ok: true, state };
 }
 
 // Auto-match run at the end of every pull (step A): link only the certain 1:1
@@ -441,4 +468,36 @@ export async function autoReconcile(admin: SupabaseClient): Promise<{ linked: nu
     if (res.ok) linked++;
   }
   return { linked };
+}
+
+// The unique 1:1 payment matches: an unpaid job and an unlinked payment
+// document (מס/קבלה / קבלה) that share a client and amount, where NEITHER side
+// has any other candidate. Proof of payment is strong, and this business bills
+// months after recording, so date is NOT gated here — only strict uniqueness
+// (a client+amount that fits >1 job/doc, like גל אורן's twin ₪1,200 jobs, is
+// excluded and left for the bookkeeper to pick). Marking paid is money, so this
+// is never run unattended on a cron — only via the manual reconcile-payments
+// endpoint (can_edit_money).
+export type PaymentMatch = { job: ReconJob; doc: ReconDoc; amountBasis: AmountBasis; dateGapDays: number | null };
+export function certainPaymentMatches(clients: ReconClient[], jobs: ReconJob[], docs: ReconDoc[]): PaymentMatch[] {
+  const jobById = new Map(jobs.map((j) => [j.id, j]));
+  const docById = new Map(docs.map((d) => [d.id, d]));
+  const { edges, confidenceOf } = buildEdges(clients, jobs, docs);
+  return edges
+    .filter((e) => PAYMENT_TYPES.includes(docById.get(e.docId)!.type) && confidenceOf(e) === "high")
+    .map((e) => ({ job: jobById.get(e.jobId)!, doc: docById.get(e.docId)!, amountBasis: e.basis, dateGapDays: e.gap }));
+}
+
+export async function reconcileCertainPayments(
+  admin: SupabaseClient,
+  actorId: string
+): Promise<{ paid: number; items: { jobId: string; docNumber: string | null; amount: number | null }[] }> {
+  const { clients, jobs, docs } = await loadData(admin);
+  const matches = certainPaymentMatches(clients, jobs, docs);
+  const items: { jobId: string; docNumber: string | null; amount: number | null }[] = [];
+  for (const m of matches) {
+    const res = await linkDocumentToJob(admin, { docId: m.doc.id, jobId: m.job.id, actorId, auto: false });
+    if (res.ok) items.push({ jobId: m.job.id, docNumber: m.doc.morning_doc_number, amount: m.doc.amount });
+  }
+  return { paid: items.length, items };
 }
