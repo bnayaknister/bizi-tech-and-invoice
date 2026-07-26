@@ -216,7 +216,7 @@ export default function GapsClient({
         <p className="mt-6 text-[11px] text-[var(--faint)]">
           בנוסף: {unmatchedDocCount} מסמכים ברג׳יסטרי ללא לקוח ממופה (דורשים מיפוי לקוח, לא שיוך ל-job) —{" "}
           <button onClick={() => router.push("/documents/registry")} className="underline">
-            לשונית "לא משויך"
+            לשונית {"״לא משויך״"}
           </button>
         </p>
       )}
