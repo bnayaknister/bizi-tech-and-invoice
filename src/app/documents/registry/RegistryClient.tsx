@@ -119,13 +119,19 @@ export default function RegistryClient({
     <main className="max-w-5xl mx-auto p-6">
       <div className="flex items-center justify-between mb-1">
         <h1 className="text-lg font-bold">מסמכים</h1>
-        {canPull && (
-          <div className="flex items-center gap-3">
-            {lastPull && (
-              <span className="text-[11px] text-[var(--faint)]">
-                נמשך לאחרונה: {new Date(lastPull).toLocaleString("he-IL")}
-              </span>
-            )}
+        <div className="flex items-center gap-3">
+          {lastPull && canPull && (
+            <span className="text-[11px] text-[var(--faint)]">
+              נמשך לאחרונה: {new Date(lastPull).toLocaleString("he-IL")}
+            </span>
+          )}
+          <button
+            onClick={() => router.push("/documents/gaps")}
+            className="text-xs font-bold rounded-xl px-4 py-1.5 border border-[var(--rule2)]"
+          >
+            פערים לטיפול →
+          </button>
+          {canPull && (
             <button
               disabled={pulling}
               onClick={pullNow}
@@ -133,8 +139,8 @@ export default function RegistryClient({
             >
               {pulling ? "מושך…" : "משוך ממורנינג"}
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
       {msg && <div className="mb-3 text-xs text-[var(--dim)] border border-[var(--rule)] rounded-xl px-3 py-2">{msg}</div>}
 
