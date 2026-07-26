@@ -34,12 +34,15 @@ export default async function GapsPage() {
     jobLabel: jobLabel(job),
     jobAmount: job.amount,
     jobDate: job.date,
-    candidates: candidates.map((d) => ({
-      docId: d.id,
-      number: d.morning_doc_number,
-      typeLabel: docType(d.type),
-      amount: d.amount,
-      date: d.document_date,
+    candidates: candidates.map((c) => ({
+      docId: c.doc.id,
+      number: c.doc.morning_doc_number,
+      typeLabel: docType(c.doc.type),
+      amount: c.doc.amount,
+      date: c.doc.document_date,
+      confidence: c.confidence,
+      amountBasis: c.amountBasis,
+      dateGapDays: c.dateGapDays,
     })),
   }));
 
@@ -50,11 +53,14 @@ export default async function GapsPage() {
     amount: doc.amount,
     date: doc.document_date,
     clientName: doc.client_id ? clientName.get(doc.client_id) ?? doc.morning_client_name ?? "—" : doc.morning_client_name ?? "—",
-    candidates: candidates.map((j) => ({
-      jobId: j.id,
-      jobLabel: jobLabel(j),
-      jobAmount: j.amount,
-      jobDate: j.date,
+    candidates: candidates.map((c) => ({
+      jobId: c.job.id,
+      jobLabel: jobLabel(c.job),
+      jobAmount: c.job.amount,
+      jobDate: c.job.date,
+      confidence: c.confidence,
+      amountBasis: c.amountBasis,
+      dateGapDays: c.dateGapDays,
     })),
   }));
 

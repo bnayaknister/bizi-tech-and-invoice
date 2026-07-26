@@ -5,15 +5,22 @@ import { deriveState } from "@/lib/finance/state";
 // (documents that exist in Morning) and "what the system knows" (jobs and
 // their finance state). Owner spec 2026-07-26.
 //
-// One matching engine powers three things so they can never drift apart:
+// One matching engine powers everything so they can never drift apart:
 //   - the auto-match on pull (link certain matches, close the job) — step A
-//   - the "gaps to handle" screen for the bookkeeper — step B
-//   - the offline scan/report — step C (scripts/scan_reconciliation_gaps.py
-//     mirrors this logic; keep them in step)
+//   - the "gaps to handle" screen + the in-context "שייך מסמך קיים" pickers
+//   - the offline scan/report (scripts/scan_reconciliation_gaps.py mirrors it)
 //
-// Matching key (owner spec): same client (via morning_client_id, or a
-// resolved client_id) + amount match (VAT-aware: a tax-document total is the
-// job's base amount * 1.18) + document date within +/- 30 days of the job.
+// THE MATCHING PHILOSOPHY (owner decision 2026-07-26, learned from בלאנקו):
+// this studio records in one month and bills two+ months later, so the
+// document DATE is a weak signal here — it must not be a hard filter.
+//   - SUGGESTIONS to the bookkeeper: same mapped client + amount (VAT-aware
+//     or pre-VAT). NO date cutoff. The date becomes a confidence/sort signal,
+//     shown so she knows how far apart they are (בלאנקו: 80 days, yet a
+//     perfect client+amount match — a HIGH-confidence suggestion).
+//   - AUTO-LINK on pull: stays strict — client + amount + a UNIQUE 1:1
+//     pairing + date within ±45. Anything not certain is only ever a
+//     suggestion. A non-unique match (a client+amount that fits more than one
+//     job, e.g. נטע צמח's three ₪708 receipts) is NEVER auto-linked.
 
 export const TAX_TYPES = [305, 320]; // חשבונית מס / חשבונית מס קבלה
 const DEAL_TYPE = 300; // חשבון עסקה
@@ -21,7 +28,7 @@ const BILLING_TYPES = [...TAX_TYPES, DEAL_TYPE];
 
 const AMOUNT_TOL = 2; // shekels
 const AMOUNT_TOL_PCT = 0.01; // or 1%
-const DATE_WINDOW_DAYS = 30;
+const AUTO_DATE_WINDOW = 45; // days — the ONLY place a date cutoff applies (auto-link)
 const VAT = 1.18;
 const STALE_DAYS = 30; // "not billed" older than this
 
@@ -52,6 +59,15 @@ export type ReconDoc = {
   source: string;
 };
 
+// high  = same mapped client + amount match + a UNIQUE 1:1 pairing (safe basis
+//         for auto-link; only the date decides auto-vs-suggest)
+// medium= same mapped client + amount match but the pairing is ambiguous
+//         (this client+amount fits more than one job or more than one doc)
+// low   = amount matches but the document carries no client mapping, so the
+//         client is unconfirmed (only offered in the doc→job direction)
+export type Confidence = "high" | "medium" | "low";
+export type AmountBasis = "vat" | "pre";
+
 const present = (v: string | null): boolean => v != null && String(v).trim() !== "";
 
 function parseDate(s: string | null): number | null {
@@ -60,68 +76,58 @@ function parseDate(s: string | null): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
-function amountMatch(jobAmount: number | null, docAmount: number | null): boolean {
-  if (jobAmount == null || docAmount == null) return false;
+// which amount basis matches, if any: the document total may be the job's base
+// amount (pre-VAT) or that amount grossed up by VAT (a tax-document total)
+function amountBasis(jobAmount: number | null, docAmount: number | null): AmountBasis | null {
+  if (jobAmount == null || docAmount == null) return null;
   const ja = Number(jobAmount);
   const da = Number(docAmount);
-  for (const target of [ja, ja * VAT]) {
+  const bases: [AmountBasis, number][] = [
+    ["pre", ja],
+    ["vat", ja * VAT],
+  ];
+  for (const [basis, target] of bases) {
     const tol = Math.max(AMOUNT_TOL, target * AMOUNT_TOL_PCT);
-    if (Math.abs(da - target) <= tol) return true;
+    if (Math.abs(da - target) <= tol) return basis;
   }
-  return false;
+  return null;
 }
 
-function dateWithin(jobDateMs: number | null, docDateMs: number | null): boolean {
-  if (jobDateMs == null || docDateMs == null) return true; // unknown → don't exclude
-  return Math.abs(docDateMs - jobDateMs) <= DATE_WINDOW_DAYS * 86_400_000;
-}
-function bothDatesKnownAndClose(jobDateMs: number | null, docDateMs: number | null): boolean {
-  return jobDateMs != null && docDateMs != null && dateWithin(jobDateMs, docDateMs);
+function dateGapDays(jobDateMs: number | null, docDateMs: number | null): number | null {
+  if (jobDateMs == null || docDateMs == null) return null;
+  return Math.round(Math.abs(docDateMs - jobDateMs) / 86_400_000);
 }
 
-// A candidate pairing of a job and an unlinked billing document.
-export type MatchPair = { job: ReconJob; doc: ReconDoc };
+// A candidate document for a job (job→doc direction).
+export type DocCandidate = {
+  doc: ReconDoc;
+  confidence: Confidence;
+  amountBasis: AmountBasis;
+  dateGapDays: number | null;
+};
+// A candidate job for a document (doc→job direction).
+export type JobCandidate = {
+  job: ReconJob;
+  confidence: Confidence;
+  amountBasis: AmountBasis;
+  dateGapDays: number | null;
+};
+
+export type MatchPair = { job: ReconJob; doc: ReconDoc; dateGapDays: number | null };
 
 export type Reconciliation = {
-  // 🔴 red jobs (paid, no tax invoice) that have >=1 candidate tax document
-  gap1: { job: ReconJob; candidates: ReconDoc[] }[];
-  // 🟡 billing documents linked to a client but not to a job, with candidate jobs
-  gap2: { doc: ReconDoc; candidates: ReconJob[] }[];
-  // 🟡 non-legacy jobs stuck "not billed" (purple) over 30 days
-  gap3: ReconJob[];
-  // documents that carry no client mapping at all (informational — need a client map, not a job)
+  gap1: { job: ReconJob; candidates: DocCandidate[] }[]; // 🔴 red job → matching tax docs
+  gap2: { doc: ReconDoc; candidates: JobCandidate[] }[]; // 🟡 deal invoice → not-billed jobs
+  gap3: ReconJob[]; // 🟡 old not-billed jobs with no candidate at all
   unmatchedDocCount: number;
-  // the subset of gap1 that is an unambiguous 1:1 tax match — safe to auto-link
-  certain: MatchPair[];
+  certain: MatchPair[]; // the unique 1:1 tax matches within ±45 — safe to auto-link
   counts: { redJobs: number; purpleJobs: number; unlinkedTaxDocs: number };
 };
 
-async function loadData(admin: SupabaseClient) {
-  const [{ data: clients }, { data: jobs }, { data: docs }] = await Promise.all([
-    admin.from("clients").select("id,name,morning_client_id"),
-    admin
-      .from("jobs")
-      .select("id,client_id,amount,invoice_biz,invoice_tax,paid,date,due_date,legacy,campaign"),
-    admin
-      .from("documents")
-      .select(
-        "id,morning_doc_number,type,client_id,morning_client_id,morning_client_name,amount,document_date,job_id,production_id,source"
-      ),
-  ]);
-  return {
-    clients: (clients ?? []) as ReconClient[],
-    jobs: (jobs ?? []) as ReconJob[],
-    docs: (docs ?? []) as ReconDoc[],
-  };
-}
-
-// The pure core: given the three tables, produce the reconciliation.
-export function reconcile(clients: ReconClient[], jobs: ReconJob[], docs: ReconDoc[]): Reconciliation {
+// resolve a job/doc to the client keys it can be matched on (our client_id and
+// the Morning client id behind it), so a match joins on either
+function makeKeyResolvers(clients: ReconClient[]) {
   const clientById = new Map(clients.map((c) => [c.id, c]));
-
-  // resolve every job/doc to a set of client keys so a match can join on either
-  // our client_id or the raw Morning client id (covers docs not yet mapped to
-  // one of ours but sharing the same Morning entity as the job's client)
   const jobKeys = (j: ReconJob): string[] => {
     const keys: string[] = [];
     if (j.client_id) {
@@ -131,92 +137,125 @@ export function reconcile(clients: ReconClient[], jobs: ReconJob[], docs: ReconD
     }
     return keys;
   };
-  const docKey = (d: ReconDoc): string | null => {
-    if (d.client_id) return "cid:" + d.client_id;
-    if (d.morning_client_id) return "mid:" + d.morning_client_id;
-    return null;
+  const docKeys = (d: ReconDoc): string[] => {
+    const keys: string[] = [];
+    if (d.client_id) keys.push("cid:" + d.client_id);
+    if (d.morning_client_id) keys.push("mid:" + d.morning_client_id);
+    return keys;
   };
+  return { clientById, jobKeys, docKeys };
+}
 
-  const unlinkedBillingDocs = docs.filter((d) => BILLING_TYPES.includes(d.type) && !d.job_id);
+// The needy state a document type settles: a tax document answers a RED job
+// (paid, no tax invoice); a deal invoice answers a not-billed (purple) job.
+function jobNeedsDocType(state: string, docType: number): boolean {
+  if (TAX_TYPES.includes(docType)) return state === "red";
+  if (docType === DEAL_TYPE) return state === "purple";
+  return false;
+}
+
+const stateOf = (j: ReconJob) =>
+  deriveState({ paid: j.paid, invoice_biz: j.invoice_biz, invoice_tax: j.invoice_tax });
+
+// The bipartite matching core: every edge between a needy job and an unlinked
+// billing document that shares a client key AND an amount basis. NO date
+// filter — the date rides along as a gap. Degrees give us 1:1 uniqueness.
+type Edge = { jobId: string; docId: string; basis: AmountBasis; gap: number | null };
+
+function buildEdges(clients: ReconClient[], jobs: ReconJob[], docs: ReconDoc[]) {
+  const { jobKeys, docKeys } = makeKeyResolvers(clients);
+
+  const unlinkedDocs = docs.filter((d) => BILLING_TYPES.includes(d.type) && !d.job_id);
   const docsByKey = new Map<string, ReconDoc[]>();
-  for (const d of unlinkedBillingDocs) {
-    const k = docKey(d);
-    if (k) docsByKey.set(k, [...(docsByKey.get(k) ?? []), d]);
+  for (const d of unlinkedDocs) {
+    for (const k of docKeys(d)) docsByKey.set(k, [...(docsByKey.get(k) ?? []), d]);
   }
 
-  // candidate docs for a job (of a given type set)
-  const candidatesFor = (j: ReconJob, types: number[]): ReconDoc[] => {
+  const edges: Edge[] = [];
+  const degJob = new Map<string, number>();
+  const degDoc = new Map<string, number>();
+
+  for (const j of jobs) {
+    const st = stateOf(j);
+    if (st !== "red" && st !== "purple") continue; // only needy jobs
     const jd = parseDate(j.date) ?? parseDate(j.due_date);
     const seen = new Set<string>();
-    const out: ReconDoc[] = [];
     for (const k of jobKeys(j)) {
       for (const d of docsByKey.get(k) ?? []) {
-        if (!types.includes(d.type) || seen.has(d.id)) continue;
-        if (!amountMatch(j.amount, d.amount)) continue;
-        if (!dateWithin(jd, parseDate(d.document_date))) continue;
+        if (seen.has(d.id) || !jobNeedsDocType(st, d.type)) continue;
+        const basis = amountBasis(j.amount, d.amount);
+        if (!basis) continue;
         seen.add(d.id);
-        out.push(d);
+        edges.push({ jobId: j.id, docId: d.id, basis, gap: dateGapDays(jd, parseDate(d.document_date)) });
+        degJob.set(j.id, (degJob.get(j.id) ?? 0) + 1);
+        degDoc.set(d.id, (degDoc.get(d.id) ?? 0) + 1);
       }
     }
-    return out;
-  };
+  }
 
-  const stateOf = (j: ReconJob) =>
-    deriveState({ paid: j.paid, invoice_biz: j.invoice_biz, invoice_tax: j.invoice_tax });
+  const confidenceOf = (e: Edge): Confidence =>
+    (degJob.get(e.jobId) ?? 0) === 1 && (degDoc.get(e.docId) ?? 0) === 1 ? "high" : "medium";
+
+  return { edges, confidenceOf, unlinkedDocs };
+}
+
+// candidates sorted by confidence then closest date (the best on top)
+const CONF_RANK: Record<Confidence, number> = { high: 0, medium: 1, low: 2 };
+function byConfidenceThenGap(a: { confidence: Confidence; dateGapDays: number | null }, b: { confidence: Confidence; dateGapDays: number | null }) {
+  if (CONF_RANK[a.confidence] !== CONF_RANK[b.confidence]) return CONF_RANK[a.confidence] - CONF_RANK[b.confidence];
+  const ga = a.dateGapDays ?? Number.POSITIVE_INFINITY;
+  const gb = b.dateGapDays ?? Number.POSITIVE_INFINITY;
+  return ga - gb;
+}
+
+// The pure core used by the pull, the gaps screen, and the scan.
+export function reconcile(clients: ReconClient[], jobs: ReconJob[], docs: ReconDoc[]): Reconciliation {
+  const jobById = new Map(jobs.map((j) => [j.id, j]));
+  const docById = new Map(docs.map((d) => [d.id, d]));
+  const { edges, confidenceOf, unlinkedDocs } = buildEdges(clients, jobs, docs);
 
   const redJobs = jobs.filter((j) => stateOf(j) === "red");
   const purpleJobs = jobs.filter((j) => stateOf(j) === "purple");
 
-  // ---- Gap 1: red job -> candidate tax docs ----
-  const gap1: { job: ReconJob; candidates: ReconDoc[] }[] = [];
-  const jobCandidates = new Map<string, ReconDoc[]>();
-  const docClaimedBy = new Map<string, string[]>(); // doc id -> job ids (tax only)
-  for (const j of redJobs) {
-    const cands = candidatesFor(j, TAX_TYPES);
-    jobCandidates.set(j.id, cands);
-    for (const d of cands) docClaimedBy.set(d.id, [...(docClaimedBy.get(d.id) ?? []), j.id]);
-    if (cands.length) gap1.push({ job: j, candidates: cands });
+  // ---- Gap 1: red job → candidate tax docs (job-centric) ----
+  const taxEdges = edges.filter((e) => TAX_TYPES.includes(docById.get(e.docId)!.type));
+  const byJob = new Map<string, DocCandidate[]>();
+  for (const e of taxEdges) {
+    const doc = docById.get(e.docId)!;
+    byJob.set(e.jobId, [
+      ...(byJob.get(e.jobId) ?? []),
+      { doc, confidence: confidenceOf(e), amountBasis: e.basis, dateGapDays: e.gap },
+    ]);
   }
+  const gap1 = Array.from(byJob.entries())
+    .map(([jobId, candidates]) => ({ job: jobById.get(jobId)!, candidates: candidates.sort(byConfidenceThenGap) }))
+    .sort((a, b) => CONF_RANK[a.candidates[0].confidence] - CONF_RANK[b.candidates[0].confidence]);
 
-  // certain = exactly one candidate doc for the job, that doc claimed by only
-  // this job, and both dates known and within the window (strict, because a
-  // certain match auto-closes the job unattended)
-  const certain: MatchPair[] = [];
-  for (const j of redJobs) {
-    const cands = jobCandidates.get(j.id) ?? [];
-    if (cands.length !== 1) continue;
-    const d = cands[0];
-    if ((docClaimedBy.get(d.id) ?? []).length !== 1) continue;
-    if (!bothDatesKnownAndClose(parseDate(j.date) ?? parseDate(j.due_date), parseDate(d.document_date))) continue;
-    certain.push({ job: j, doc: d });
+  // ---- auto-link set: unique 1:1 tax match, date known and within ±45 ----
+  const certain: MatchPair[] = taxEdges
+    .filter((e) => confidenceOf(e) === "high" && e.gap != null && e.gap <= AUTO_DATE_WINDOW)
+    .map((e) => ({ job: jobById.get(e.jobId)!, doc: docById.get(e.docId)!, dateGapDays: e.gap }));
+
+  // ---- Gap 2: deal invoice → candidate not-billed jobs (doc-centric) ----
+  const dealEdges = edges.filter((e) => docById.get(e.docId)!.type === DEAL_TYPE);
+  const byDoc = new Map<string, JobCandidate[]>();
+  for (const e of dealEdges) {
+    const job = jobById.get(e.jobId)!;
+    byDoc.set(e.docId, [
+      ...(byDoc.get(e.docId) ?? []),
+      { job, confidence: confidenceOf(e), amountBasis: e.basis, dateGapDays: e.gap },
+    ]);
   }
-  const certainDocIds = new Set(certain.map((m) => m.doc.id));
+  const gap2 = Array.from(byDoc.entries()).map(([docId, candidates]) => ({
+    doc: docById.get(docId)!,
+    candidates: candidates.sort(byConfidenceThenGap),
+  }));
 
-  // ---- Gap 2: unlinked billing docs (with a client) -> candidate jobs ----
-  // Skip docs that are a certain match already (those get auto-linked on pull).
-  // Reverse-index: for each such doc, which jobs would it settle?
-  const gap2: { doc: ReconDoc; candidates: ReconJob[] }[] = [];
-  for (const d of unlinkedBillingDocs) {
-    if (!d.client_id) continue; // truly unmapped-client docs need a client map, not a job
-    if (certainDocIds.has(d.id)) continue;
-    const dd = parseDate(d.document_date);
-    const cands = jobs.filter((j) => {
-      if (present(TAX_TYPES.includes(d.type) ? j.invoice_tax : j.invoice_biz)) return false; // already has that doc kind
-      if (!jobKeys(j).includes("cid:" + d.client_id)) {
-        const c = j.client_id ? clientById.get(j.client_id) : null;
-        if (!c || "cid:" + c.id !== "cid:" + d.client_id) return false;
-      }
-      if (!amountMatch(j.amount, d.amount)) return false;
-      if (!dateWithin(parseDate(j.date) ?? parseDate(j.due_date), dd)) return false;
-      return true;
-    });
-    if (cands.length) gap2.push({ doc: d, candidates: cands });
-  }
-
-  // ---- Gap 3: old, non-legacy, not-billed jobs ----
+  // ---- Gap 3: old, non-legacy, not-billed jobs with NO candidate deal doc ----
+  const jobsWithDealCandidate = new Set(dealEdges.map((e) => e.jobId));
   const now = Date.now();
   const gap3 = purpleJobs.filter((j) => {
-    if (j.legacy) return false;
+    if (j.legacy || jobsWithDealCandidate.has(j.id)) return false;
     const jd = parseDate(j.date);
     return jd != null && now - jd > STALE_DAYS * 86_400_000;
   });
@@ -232,14 +271,73 @@ export function reconcile(clients: ReconClient[], jobs: ReconJob[], docs: ReconD
     counts: {
       redJobs: redJobs.length,
       purpleJobs: purpleJobs.length,
-      unlinkedTaxDocs: unlinkedBillingDocs.filter((d) => TAX_TYPES.includes(d.type)).length,
+      unlinkedTaxDocs: unlinkedDocs.filter((d) => TAX_TYPES.includes(d.type)).length,
     },
+  };
+}
+
+async function loadData(admin: SupabaseClient) {
+  const [{ data: clients }, { data: jobs }, { data: docs }] = await Promise.all([
+    admin.from("clients").select("id,name,morning_client_id"),
+    admin.from("jobs").select("id,client_id,amount,invoice_biz,invoice_tax,paid,date,due_date,legacy,campaign"),
+    admin
+      .from("documents")
+      .select(
+        "id,morning_doc_number,type,client_id,morning_client_id,morning_client_name,amount,document_date,job_id,production_id,source"
+      ),
+  ]);
+  return {
+    clients: (clients ?? []) as ReconClient[],
+    jobs: (jobs ?? []) as ReconJob[],
+    docs: (docs ?? []) as ReconDoc[],
   };
 }
 
 export async function computeReconciliation(admin: SupabaseClient): Promise<Reconciliation> {
   const { clients, jobs, docs } = await loadData(admin);
   return reconcile(clients, jobs, docs);
+}
+
+// ---- in-context suggestion pickers (step 3) ----------------------------
+// Candidate documents for one job (finance red tab "שייך מסמך קיים").
+export async function suggestDocsForJob(admin: SupabaseClient, jobId: string): Promise<DocCandidate[]> {
+  const { clients, jobs, docs } = await loadData(admin);
+  const job = jobs.find((j) => j.id === jobId);
+  if (!job) return [];
+  const { edges, confidenceOf } = buildEdges(clients, jobs, docs);
+  const docById = new Map(docs.map((d) => [d.id, d]));
+  return edges
+    .filter((e) => e.jobId === jobId)
+    .map((e) => ({ doc: docById.get(e.docId)!, confidence: confidenceOf(e), amountBasis: e.basis, dateGapDays: e.gap }))
+    .sort(byConfidenceThenGap);
+}
+
+// Candidate jobs for one document (registry "שייך ל-job"). Falls back to an
+// amount-only match (confidence "low") when the document has no client mapping
+// — assigning it to a job then fills in the client via linkDocumentToJob.
+export async function suggestJobsForDoc(admin: SupabaseClient, docId: string): Promise<JobCandidate[]> {
+  const { clients, jobs, docs } = await loadData(admin);
+  const doc = docs.find((d) => d.id === docId);
+  if (!doc || doc.job_id) return [];
+
+  const { edges, confidenceOf } = buildEdges(clients, jobs, docs);
+  const jobById = new Map(jobs.map((j) => [j.id, j]));
+  const client = edges
+    .filter((e) => e.docId === docId)
+    .map((e) => ({ job: jobById.get(e.jobId)!, confidence: confidenceOf(e), amountBasis: e.basis, dateGapDays: e.gap }));
+  if (client.length || doc.client_id) return client.sort(byConfidenceThenGap);
+
+  // client-unmapped document: amount-only fallback across needy jobs
+  const dd = parseDate(doc.document_date);
+  const out: JobCandidate[] = [];
+  for (const j of jobs) {
+    const st = stateOf(j);
+    if (!jobNeedsDocType(st, doc.type)) continue;
+    const basis = amountBasis(j.amount, doc.amount);
+    if (!basis) continue;
+    out.push({ job: j, confidence: "low", amountBasis: basis, dateGapDays: dateGapDays(parseDate(j.date) ?? parseDate(j.due_date), dd) });
+  }
+  return out.sort(byConfidenceThenGap);
 }
 
 // ---- the single assignment primitive -----------------------------------

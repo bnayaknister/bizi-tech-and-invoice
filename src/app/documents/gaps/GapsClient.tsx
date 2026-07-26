@@ -3,9 +3,12 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useDrawer } from "@/components/EntityDrawer";
+import { confidenceLabel } from "@/lib/documents/confidence";
+import type { Confidence, AmountBasis } from "@/lib/documents/reconcile";
 
-export type DocCandidate = { docId: string; number: string | null; typeLabel: string; amount: number | null; date: string | null };
-export type JobCandidate = { jobId: string; jobLabel: string; jobAmount: number | null; jobDate: string | null };
+type Conf = { confidence: Confidence; amountBasis: AmountBasis; dateGapDays: number | null };
+export type DocCandidate = { docId: string; number: string | null; typeLabel: string; amount: number | null; date: string | null } & Conf;
+export type JobCandidate = { jobId: string; jobLabel: string; jobAmount: number | null; jobDate: string | null } & Conf;
 
 export type Gap1Row = { jobId: string; jobLabel: string; jobAmount: number | null; jobDate: string | null; candidates: DocCandidate[] };
 export type Gap2Row = {
@@ -21,6 +24,15 @@ export type Gap3Row = { jobId: string; jobLabel: string; jobAmount: number | nul
 
 const money = (n: number | null) =>
   n === null ? "—" : new Intl.NumberFormat("he-IL", { style: "currency", currency: "ILS", maximumFractionDigits: 0 }).format(n);
+
+function ConfidenceBadge({ c }: { c: Conf }) {
+  const { title, detail, color } = confidenceLabel(c.confidence, c.dateGapDays, c.amountBasis);
+  return (
+    <span className="text-[10px]" style={{ color }} title={detail}>
+      ● {title} <span className="text-[var(--faint)]">· {detail}</span>
+    </span>
+  );
+}
 
 export default function GapsClient({
   gap1,
@@ -109,9 +121,12 @@ export default function GapsClient({
                 <div className="mt-2 flex flex-col gap-1.5">
                   {r.candidates.map((d) => (
                     <div key={d.docId} className="flex items-center justify-between gap-3 bg-[var(--hover)] rounded-xl px-3 py-2">
-                      <span>
-                        נראה שמסמך <span className="font-mono font-bold">#{d.number ?? "—"}</span> ({d.typeLabel},{" "}
-                        {money(d.amount)}, {d.date ?? "—"}) שייך לכאן
+                      <span className="flex flex-col gap-0.5">
+                        <span>
+                          נראה שמסמך <span className="font-mono font-bold">#{d.number ?? "—"}</span> ({d.typeLabel},{" "}
+                          {money(d.amount)}, {d.date ?? "—"}) שייך לכאן
+                        </span>
+                        <ConfidenceBadge c={d} />
                       </span>
                       {canEdit && (
                         <button
@@ -155,9 +170,12 @@ export default function GapsClient({
                 <div className="mt-2 flex flex-col gap-1.5">
                   {r.candidates.map((j) => (
                     <div key={j.jobId} className="flex items-center justify-between gap-3 bg-[var(--hover)] rounded-xl px-3 py-2">
-                      <button onClick={() => openEntity({ type: "job", id: j.jobId })} className="text-right hover:underline">
-                        {j.jobLabel} <span className="text-[var(--faint)]">· {money(j.jobAmount)} · {j.jobDate ?? "—"}</span>
-                      </button>
+                      <span className="flex flex-col gap-0.5 text-right">
+                        <button onClick={() => openEntity({ type: "job", id: j.jobId })} className="text-right hover:underline">
+                          {j.jobLabel} <span className="text-[var(--faint)]">· {money(j.jobAmount)} · {j.jobDate ?? "—"}</span>
+                        </button>
+                        <ConfidenceBadge c={j} />
+                      </span>
                       {canEdit && (
                         <button
                           disabled={busy !== null}

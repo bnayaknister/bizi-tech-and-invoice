@@ -40,7 +40,8 @@ SERVICE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 TAX_TYPES = {305, 320}  # tax_invoice / tax_receipt
 AMOUNT_TOL = 2.0        # shekels
 AMOUNT_TOL_PCT = 0.01   # or 1%
-DATE_WINDOW = 30        # days
+AUTO_DATE_WINDOW = 45   # days — date gates AUTO-LINK only, never suggestions
+STALE_WINDOW = 30       # "not billed" older than this
 VAT = 1.18
 
 
@@ -168,6 +169,9 @@ def main():
     gap1_ambiguous = []  # >1 candidate doc
     doc_claimed_by = {}  # doc id -> list of job ids (to detect a doc wanted by >1 job)
 
+    # candidate = same mapped client + amount match (VAT-aware). NO date
+    # filter — the date is only a gap we carry (owner rule: date is a weak
+    # signal here, must not hide בלאנקו's 80-day-but-perfect match).
     job_candidates = {}
     for j in red_jobs:
         jdate = parse_date(j.get("date")) or parse_date(j.get("due_date"))
@@ -175,26 +179,25 @@ def main():
         seen = set()
         for k in job_client_keys(j):
             for d in tax_by_key.get(k, []):
-                if d["id"] in seen:
-                    continue
-                if not amount_match(j.get("amount"), d.get("amount")):
+                if d["id"] in seen or not amount_match(j.get("amount"), d.get("amount")):
                     continue
                 ddate = parse_date(d.get("document_date"))
-                if jdate and ddate and abs((ddate - jdate).days) > DATE_WINDOW:
-                    continue
+                gap = abs((ddate - jdate).days) if (jdate and ddate) else None
                 seen.add(d["id"])
-                cands.append(d)
+                cands.append((d, gap))
         job_candidates[j["id"]] = cands
-        for d in cands:
+        for d, _ in cands:
             doc_claimed_by.setdefault(d["id"], []).append(j["id"])
 
     for j in red_jobs:
         cands = job_candidates[j["id"]]
         if not cands:
             continue
-        # certain = exactly one candidate doc AND that doc is claimed by only this job
-        if len(cands) == 1 and len(doc_claimed_by[cands[0]["id"]]) == 1:
-            gap1_certain.append((j, cands[0]))
+        d, gap = cands[0]
+        # certain (auto-linkable) = unique 1:1 AND date known within +/-45
+        unique = len(cands) == 1 and len(doc_claimed_by[d["id"]]) == 1
+        if unique and gap is not None and gap <= AUTO_DATE_WINDOW:
+            gap1_certain.append((j, d, gap))
         else:
             gap1_ambiguous.append((j, cands))
 
@@ -209,7 +212,7 @@ def main():
         if j.get("legacy"):
             continue
         jdate = parse_date(j.get("date"))
-        if jdate and (today - jdate).days > DATE_WINDOW:
+        if jdate and (today - jdate).days > STALE_WINDOW:
             gap3.append(j)
 
     def total(rows, key="amount"):
@@ -226,19 +229,24 @@ def main():
     print(f"  unlinked tax docs (no job_id): {len(tax_docs)}")
     print("-" * 64)
     print("GAP 1  red job WITH a matching unlinked tax doc in registry")
-    print(f"  certain (1:1 match, auto-linkable):  {len(gap1_certain)}")
-    print(f"  ambiguous (needs Shiri to pick):     {len(gap1_ambiguous)}")
-    for j, d in gap1_certain[:20]:
+    print(f"  certain (1:1 unique + date <= {AUTO_DATE_WINDOW}d, auto-linkable): {len(gap1_certain)}")
+    print(f"  suggestion (needs Shiri to confirm):  {len(gap1_ambiguous)}")
+    for j, d, gap in gap1_certain[:20]:
         c = client_by_id.get(j.get("client_id"), {})
-        print(f"    - job {j['id'][:8]} {c.get('name','?')} {j.get('campaign') or ''} "
+        print(f"    AUTO {c.get('name','?')} {j.get('campaign') or ''} "
               f"{j.get('amount')} <- doc #{d.get('morning_doc_number')} "
-              f"({d.get('amount')}, {d.get('document_date')})")
+              f"({d.get('amount')}, {d.get('document_date')}, gap={gap}d)")
+    for j, cands in gap1_ambiguous[:20]:
+        c = client_by_id.get(j.get("client_id"), {})
+        tag = "AMBIGUOUS" if len(cands) > 1 else "SUGGEST"
+        docs_s = ", ".join(f"#{d.get('morning_doc_number')}(gap={g}d)" for d, g in cands)
+        print(f"    {tag:9} {c.get('name','?')} {j.get('campaign') or ''} {j.get('amount')} <- {docs_s}")
     print("-" * 64)
     print("GAP 2  unmatched registry documents (no client mapping)")
     print(f"  total unmatched docs: {len(unmatched_docs)}")
     print(f"    of which tax docs:  {len(unmatched_tax)}")
     print("-" * 64)
-    print("GAP 3  jobs not billed > 30 days (non-legacy)")
+    print(f"GAP 3  jobs not billed > {STALE_WINDOW} days (non-legacy)")
     print(f"  total: {len(gap3)}  = {total(gap3):,.0f} ILS")
     for j in gap3[:20]:
         c = client_by_id.get(j.get("client_id"), {})
