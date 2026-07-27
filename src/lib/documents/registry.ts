@@ -23,6 +23,7 @@ export type UpsertDoc = {
   source: "app" | "pull" | "manual";
   production_id?: string | null;
   job_id?: string | null;
+  bundle_job_ids?: string[] | null;
   raw?: unknown;
 };
 

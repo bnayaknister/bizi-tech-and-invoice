@@ -43,5 +43,32 @@ export async function POST(request: Request) {
     payload: { state, needs_tax_invoice: state === "red" },
   });
 
-  return NextResponse.json({ ok: true, state, needs_tax: state === "red" });
+  // Bundle: several jobs can share ONE deal invoice (same invoice_biz — owner
+  // spec, Feature 3). A single payment / one מס-קבלה covers them all, so mark
+  // every unpaid bundle-mate paid too. A non-bundled job has a unique
+  // invoice_biz, so this matches nothing extra.
+  let cascaded = 0;
+  const biz = updated.invoice_biz as string | null;
+  if (biz != null && String(biz).trim() !== "") {
+    const { data: mates } = await admin
+      .from("jobs")
+      .select("id,paid")
+      .eq("invoice_biz", biz)
+      .neq("id", body.job_id)
+      .eq("dismissed", false);
+    for (const m of mates ?? []) {
+      if (m.paid === "כן") continue;
+      await admin.from("jobs").update({ paid: "כן" }).eq("id", m.id as string);
+      await admin.from("events").insert({
+        entity_type: "job",
+        entity_id: m.id,
+        event_type: "job_marked_paid",
+        actor_id: user.id,
+        payload: { via: "bundle_cascade", from_job: body.job_id, invoice_biz: biz },
+      });
+      cascaded++;
+    }
+  }
+
+  return NextResponse.json({ ok: true, state, needs_tax: state === "red", cascaded });
 }

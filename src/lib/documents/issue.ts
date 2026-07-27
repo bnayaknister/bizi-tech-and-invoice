@@ -143,6 +143,25 @@ export async function issuePendingDocument(
     return { ok: false, error: `המסמך הונפק (${morningDocId}) אך רישומו נכשל: ${updErr.message}` };
   }
 
+  // A bundle document covers several jobs (owner spec — one deal invoice for N
+  // episodes). Read its membership tolerantly: bundle_job_ids ships in 0044, so
+  // an unapplied migration just falls back to the single job_id (existing
+  // behavior). The shared invoice_biz set below is the authoritative link.
+  let bundleJobIds: string[] = [];
+  {
+    const { data: pd, error: pdErr } = await admin
+      .from("pending_documents")
+      .select("bundle_job_ids")
+      .eq("id", row.id)
+      .maybeSingle();
+    if (!pdErr && Array.isArray(pd?.bundle_job_ids)) bundleJobIds = pd!.bundle_job_ids as string[];
+  }
+  const isBundle = bundleJobIds.length > 0;
+  const bundleJobs = isBundle ? bundleJobIds : row.job_id ? [row.job_id] : [];
+  // the single doc row can only point at one job — a bundle points at none
+  // (its jobs are reached via the shared invoice_biz / bundle_job_ids)
+  const primaryJobId = bundleJobs.length === 1 ? bundleJobs[0] : null;
+
   // Write-through to the documents registry (all types, incl. work orders
   // and receipts) so an app-issued document shows on the 5-tab screen at
   // once, not only after the next daily pull. Same morning_doc_id the pull
@@ -157,17 +176,22 @@ export async function issuePendingDocument(
     pdf_url: pdfUrl,
     source: "app",
     production_id: row.production_id,
-    job_id: row.job_id,
+    job_id: primaryJobId,
+    // only send the column when there is a bundle, so the non-bundle path
+    // stays writable before 0044 is applied
+    ...(isBundle ? { bundle_job_ids: bundleJobIds } : {}),
     raw: result,
   });
 
   // Invoices (not work orders) also land in the finance registry, so the
-  // existing finance screen keeps showing every document that exists.
+  // existing finance screen keeps showing every document that exists. One
+  // invoices row per Morning document (morning_doc_id is unique) — a bundle
+  // is one document, so one row with no single job_id.
   const regType = registryType(row.doc_type);
   if (regType && row.client_id) {
     await admin.from("invoices").insert({
       client_id: row.client_id,
-      job_id: row.job_id,
+      job_id: primaryJobId,
       type: regType,
       doc_number: docNumber,
       morning_doc_id: morningDocId,
@@ -179,18 +203,22 @@ export async function issuePendingDocument(
     });
   }
 
-  // Move the linked job's finance state to match the document just issued: a
+  // Move EVERY linked job's finance state to match the document just issued: a
   // deal invoice bills it (invoice_biz → "ממתין לתשלום"), a tax invoice closes
-  // the tax gap (invoice_tax). Mirrors linkDocumentToJob and is set only when
-  // not already present, so a re-issue or a later reconcile never clobbers a
-  // real number. (A work order is not an invoice — it touches nothing here.)
-  if (row.job_id && regType) {
-    const { data: job } = await admin.from("jobs").select("invoice_biz,invoice_tax").eq("id", row.job_id).maybeSingle();
-    const jobPatch: Record<string, unknown> = {};
-    if (row.doc_type === "deal_invoice" && job && !present(job.invoice_biz)) jobPatch.invoice_biz = docNumber;
-    if ((row.doc_type === "tax_invoice" || row.doc_type === "tax_receipt") && job && !present(job.invoice_tax))
-      jobPatch.invoice_tax = docNumber;
-    if (Object.keys(jobPatch).length) await admin.from("jobs").update(jobPatch).eq("id", row.job_id);
+  // the tax gap (invoice_tax). Every job in a bundle gets the SAME number —
+  // that shared invoice_biz is what lets one later payment close them all.
+  // Mirrors linkDocumentToJob; set only when not already present, so a re-issue
+  // or a later reconcile never clobbers a real number. (A work order touches
+  // nothing here.)
+  if (regType && bundleJobs.length) {
+    const { data: jobsData } = await admin.from("jobs").select("id,invoice_biz,invoice_tax").in("id", bundleJobs);
+    for (const job of jobsData ?? []) {
+      const jobPatch: Record<string, unknown> = {};
+      if (row.doc_type === "deal_invoice" && !present(job.invoice_biz)) jobPatch.invoice_biz = docNumber;
+      if ((row.doc_type === "tax_invoice" || row.doc_type === "tax_receipt") && !present(job.invoice_tax))
+        jobPatch.invoice_tax = docNumber;
+      if (Object.keys(jobPatch).length) await admin.from("jobs").update(jobPatch).eq("id", job.id as string);
+    }
   }
 
   await admin.from("events").insert({

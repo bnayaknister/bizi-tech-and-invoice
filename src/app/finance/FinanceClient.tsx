@@ -11,6 +11,7 @@ type DocSlot = { number: string | null; pdf: string | null; manual: boolean | nu
 export type FinanceJob = {
   id: string;
   date: string | null;
+  client_id: string | null;
   client_name: string | null;
   show_name: string | null;
   campaign: string | null;
@@ -72,10 +73,32 @@ export default function FinanceClient({
   const [tab, setTab] = useState<FinanceState | "hidden">("purple");
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [issueFor, setIssueFor] = useState<{ job: FinanceJob; type: "עסקה" | "מס" } | null>(null);
   const [assignFor, setAssignFor] = useState<FinanceJob | null>(null);
   const [dismissFor, setDismissFor] = useState<FinanceJob | null>(null);
   const [paidLoopFor, setPaidLoopFor] = useState<FinanceJob | null>(null);
+  // bundling several "לא חויב" jobs of one client into a single deal invoice
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bundleOpen, setBundleOpen] = useState(false);
+
+  // bundling is offered only on the "not billed" tab, to a money user
+  const bundling = tab === "purple" && canEditMoney;
+  function selectTab(s: FinanceState | "hidden") {
+    setSelected(new Set());
+    setTab(s);
+  }
+  function toggleSel(id: string) {
+    setSelected((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }
+  const selectedJobs = useMemo(() => rows.filter((r) => selected.has(r.id)), [rows, selected]);
+  const sameClient = new Set(selectedJobs.map((j) => j.client_id)).size <= 1;
+  const bundleTotal = selectedJobs.reduce((t, j) => t + (j.amount ?? 0), 0);
 
   const counts = useMemo(() => {
     const c: Record<FinanceState, { n: number; sum: number }> = {
@@ -276,7 +299,7 @@ export default function FinanceClient({
           return (
             <button
               key={s}
-              onClick={() => setTab(s)}
+              onClick={() => selectTab(s)}
               className={`text-xs rounded-xl px-3 py-2 border transition-colors flex items-center gap-2 ${
                 closedTab && !active ? "opacity-60" : ""
               }`}
@@ -297,7 +320,7 @@ export default function FinanceClient({
         })}
         {canManageUsers && hidden.length > 0 && (
           <button
-            onClick={() => setTab("hidden")}
+            onClick={() => selectTab("hidden")}
             className="text-xs rounded-xl px-3 py-2 border flex items-center gap-2"
             style={{
               borderColor: tab === "hidden" ? "var(--faint)" : "var(--rule)",
@@ -327,6 +350,28 @@ export default function FinanceClient({
         {tab === "hidden" ? "רישומים שהוסתרו — מחוץ לחוב ולמונים, ניתנים לשחזור" : `${TAB_META[tab].short} · ${TAB_META[tab].hint}`}
       </div>
       {error && <div className="mb-3 text-xs text-[var(--peak)] border border-[var(--peak)] rounded-xl px-3 py-2">{error}</div>}
+      {notice && (
+        <div className="mb-3 text-xs text-[var(--green)] border border-[var(--green)] rounded-xl px-3 py-2 flex items-center justify-between">
+          <span>{notice}</span>
+          <button onClick={() => setNotice(null)} className="text-[var(--faint)]">×</button>
+        </div>
+      )}
+
+      {bundling && selected.size > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-3 rounded-2xl border border-[var(--violet)] px-4 py-2.5 text-xs"
+          style={{ background: "color-mix(in srgb, var(--violet) 10%, transparent)" }}>
+          <span className="font-bold">{selected.size} עבודות נבחרו · {money(bundleTotal)}</span>
+          {!sameClient && <span className="text-[var(--warn)]">יש לבחור עבודות של אותו לקוח</span>}
+          <button onClick={() => setSelected(new Set())} className="text-[var(--faint)] underline">נקה</button>
+          <button
+            onClick={() => setBundleOpen(true)}
+            disabled={selected.size < 2 || !sameClient}
+            className="mr-auto font-bold rounded-xl px-4 py-1.5 bg-[var(--violet)] text-white disabled:opacity-40"
+          >
+            אגד לחשבונית אחת
+          </button>
+        </div>
+      )}
 
       {tab === "hidden" && (
         <HiddenTable hidden={hidden} onRestore={restore} busy={busyDismiss} />
@@ -342,6 +387,7 @@ export default function FinanceClient({
         <table className="w-full text-sm">
           <thead>
             <tr className="text-right text-[10px] uppercase tracking-wider text-[var(--faint)] border-b border-[var(--rule)] bg-[var(--panel3)]">
+              {bundling && <th className="px-3 py-2.5 font-semibold w-8"></th>}
               <th className="px-3 py-2.5 font-semibold">תאריך</th>
               <th className="px-3 py-2.5 font-semibold">לקוח</th>
               <th className="px-3 py-2.5 font-semibold">תוכנית</th>
@@ -361,6 +407,16 @@ export default function FinanceClient({
                   onClick={() => openEntity({ type: "job", id: r.id })}
                   className="border-b border-[var(--rule)] last:border-b-0 hover:bg-[rgba(255,255,255,0.03)] cursor-pointer transition-colors"
                 >
+                  {bundling && (
+                    <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={selected.has(r.id)}
+                        onChange={() => toggleSel(r.id)}
+                        className="w-4 h-4 accent-[var(--violet)] cursor-pointer"
+                      />
+                    </td>
+                  )}
                   <td className="px-3 py-2.5 font-mono text-[var(--dim)]">{r.date ?? "—"}</td>
                   <td className="px-3 py-2.5">{r.client_name ?? "—"}</td>
                   <td className="px-3 py-2.5 text-[var(--dim)]">{r.show_name ?? "—"}</td>
@@ -414,7 +470,7 @@ export default function FinanceClient({
             })}
             {visible.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-3 py-10 text-center text-[var(--faint)] text-sm">
+                <td colSpan={bundling ? 9 : 8} className="px-3 py-10 text-center text-[var(--faint)] text-sm">
                   {tab === "red" ? "אין חשבוניות מס חסרות — מצוין." : "אין פריטים בלשונית זו."}
                 </td>
               </tr>
@@ -573,6 +629,94 @@ export default function FinanceClient({
           }}
         />
       )}
+
+      {bundleOpen && (
+        <BundleModal
+          jobs={selectedJobs}
+          total={bundleTotal}
+          onClose={() => setBundleOpen(false)}
+          onDone={(m) => {
+            setBundleOpen(false);
+            setSelected(new Set());
+            setNotice(m);
+            router.refresh();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function BundleModal({
+  jobs,
+  total,
+  onClose,
+  onDone,
+}: {
+  jobs: FinanceJob[];
+  total: number;
+  onClose: () => void;
+  onDone: (msg: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const client = jobs[0]?.client_name ?? "—";
+
+  async function submit() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch("/api/documents/bundle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobIds: jobs.map((j) => j.id) }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setErr(body.error ?? "האיגוד נכשל");
+        return;
+      }
+      onDone(`חשבון עסקה מאוגד (${jobs.length} עבודות · ${money(total)}) נכנס לתור האישורים.`);
+    } catch {
+      setErr("שגיאת רשת");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div className="glass-card w-full max-w-lg p-5 rounded-2xl" onClick={(e) => e.stopPropagation()}>
+        <h2 className="text-sm font-bold mb-1">איגוד לחשבון עסקה אחד</h2>
+        <p className="text-[11px] text-[var(--faint)] mb-3">
+          {client} · חשבונית אחת עם שורה לכל עבודה. נכנסת לתור האישורים ומונפקת במורנינג משם.
+        </p>
+        <div className="border border-[var(--rule)] rounded-xl divide-y divide-[var(--rule)] mb-3 max-h-64 overflow-y-auto">
+          {jobs.map((j) => (
+            <div key={j.id} className="flex items-center justify-between px-3 py-2 text-xs">
+              <span className="min-w-0 truncate">{j.campaign ?? j.show_name ?? j.date ?? "פרק"}</span>
+              <span className="font-mono shrink-0">{money(j.amount)}</span>
+            </div>
+          ))}
+          <div className="flex items-center justify-between px-3 py-2 text-xs font-bold">
+            <span>סה״כ (לפני מע״מ)</span>
+            <span className="font-mono">{money(total)}</span>
+          </div>
+        </div>
+        {err && <div className="text-[11px] text-[var(--red)] mb-2">{err}</div>}
+        <div className="flex items-center justify-end gap-2">
+          <button onClick={onClose} className="text-xs rounded-xl px-4 py-1.5 border border-[var(--rule)]">
+            ביטול
+          </button>
+          <button
+            onClick={submit}
+            disabled={busy}
+            className="text-xs font-bold rounded-xl px-4 py-1.5 bg-[var(--violet)] text-white disabled:opacity-40"
+          >
+            {busy ? "מוסיף לתור…" : "אשר איגוד"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

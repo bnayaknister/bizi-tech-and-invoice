@@ -63,6 +63,7 @@ export default async function FinancePage() {
     return {
       id: j.id,
       date: j.date,
+      client_id: j.client_id ?? null,
       client_name: j.client_id ? clientName.get(j.client_id) ?? null : null,
       show_name: showName,
       campaign: j.campaign,
