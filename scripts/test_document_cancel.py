@@ -59,7 +59,8 @@ def mkuser(name, money):
 
 money_uid, money_ck = mkuser("ZTESTCANCEL_money", True)
 tech_uid, tech_ck = mkuser("ZTESTCANCEL_tech", False)
-client = ins("clients", {"name": "ZTESTCANCEL לקוח", "morning_client_id": f"mzc-{uuid.uuid4().hex[:8]}"})
+client = ins("clients", {"name": "ZTESTCANCEL לקוח", "normalized_name": f"ztestcancel{uuid.uuid4().hex[:8]}",
+                         "morning_client_id": f"mzc-{uuid.uuid4().hex[:8]}"})
 docnum = str(40000000 + int(time.time()) % 1000000)
 job = ins("jobs", {"client_id": client["id"], "amount": 1000, "campaign": "ZTESTCANCEL job",
                    "paid": "לא", "invoice_biz": docnum})
@@ -107,6 +108,9 @@ finally:
     dele("jobs", f"id=eq.{job['id']}")
     dele("clients", f"id=eq.{client['id']}")
     for uid in (money_uid, tech_uid):
+        # events.actor_id references profiles(id) — null it so the auth-user
+        # delete can cascade the profile away (else it leaks)
+        patch("events", f"actor_id=eq.{uid}", {"actor_id": None})
         requests.delete(f"{U}/auth/v1/admin/users/{uid}", headers=A)
     left = requests.get(rest("profiles?name=like.ZTESTCANCEL*&select=id"), headers=A).json()
     print(f"\n{passed} passed, {fail} failed · cleanup:", "ok" if left == [] else f"LEFT {left}")
