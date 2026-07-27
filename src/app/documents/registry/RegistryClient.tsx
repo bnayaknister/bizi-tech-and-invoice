@@ -26,11 +26,13 @@ export type DocRow = {
   production_id: string | null;
   job_id: string | null;
   show_name: string | null;
+  cancelled_at: string | null;
+  cancel_reason: string | null;
 };
 
 // tab order = the owner's five, then "other", then the unmatched bucket which
 // is a client-match state, not a Morning type (owner: "לשונית לא משויך")
-const TAB_ORDER: (RegistryTab | "unmatched")[] = [
+const TAB_ORDER: (RegistryTab | "unmatched" | "cancelled")[] = [
   "work_order",
   "deal_invoice",
   "tax_invoice",
@@ -38,6 +40,7 @@ const TAB_ORDER: (RegistryTab | "unmatched")[] = [
   "receipt",
   "other",
   "unmatched",
+  "cancelled",
 ];
 
 const SOURCE_LABEL: Record<DocRow["source"], string> = { app: "מהאפליקציה", pull: "ממורנינג", manual: "ידני" };
@@ -56,12 +59,13 @@ export default function RegistryClient({
 }) {
   const router = useRouter();
   const { openEntity } = useDrawer();
-  const [tab, setTab] = useState<RegistryTab | "unmatched">("work_order");
+  const [tab, setTab] = useState<RegistryTab | "unmatched" | "cancelled">("work_order");
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<"date" | "amount">("date");
   const [pulling, setPulling] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [assignDoc, setAssignDoc] = useState<DocRow | null>(null);
+  const [cancelDoc, setCancelDoc] = useState<DocRow | null>(null);
   // in "לא משויך", quotes/orders/credits are noise for the bookkeeper — show
   // only real billing docs by default (owner spec 2026-07-27), the rest behind a toggle
   const [showNonBilling, setShowNonBilling] = useState(false);
@@ -70,7 +74,8 @@ export default function RegistryClient({
     const c: Record<string, { n: number; total: number }> = {};
     for (const t of TAB_ORDER) c[t] = { n: 0, total: 0 };
     for (const r of rows) {
-      const key = r.client_id ? r.tab : "unmatched";
+      // a cancelled document lives only in the "מבוטלים" tab, out of every other
+      const key = r.cancelled_at ? "cancelled" : r.client_id ? r.tab : "unmatched";
       c[key].n++;
       c[key].total += r.amount ?? 0;
     }
@@ -80,7 +85,14 @@ export default function RegistryClient({
   const shown = useMemo(() => {
     const term = q.trim();
     const list = rows.filter((r) => {
-      const inTab = tab === "unmatched" ? !r.client_id : r.tab === tab && r.client_id;
+      // cancelled docs are shown ONLY in the cancelled tab; excluded everywhere else
+      if (tab === "cancelled") {
+        if (!r.cancelled_at) return false;
+      } else if (r.cancelled_at) {
+        return false;
+      }
+      const inTab =
+        tab === "cancelled" ? true : tab === "unmatched" ? !r.client_id : r.tab === tab && r.client_id;
       if (!inTab) return false;
       // in the unassigned tab, hide non-billing docs (quotes/orders/credits) unless asked
       if (tab === "unmatched" && !showNonBilling && !isBilling(r.type)) return false;
@@ -163,7 +175,7 @@ export default function RegistryClient({
       {/* tabs */}
       <div className="flex flex-wrap gap-1.5 mb-4 border-b border-[var(--rule)] pb-2">
         {TAB_ORDER.map((t) => {
-          const label = t === "unmatched" ? "לא משויך" : REGISTRY_TAB_LABEL[t];
+          const label = t === "unmatched" ? "לא משויך" : t === "cancelled" ? "מבוטלים" : REGISTRY_TAB_LABEL[t];
           const c = counts[t];
           if (c.n === 0 && t !== tab) return null; // hide empty tabs, keep the active one
           const active = tab === t;
@@ -259,17 +271,30 @@ export default function RegistryClient({
                     )}
                   </td>
                   <td className="py-2 px-2" onClick={(e) => e.stopPropagation()}>
-                    {canPull && !r.job_id && BILLING_TYPES.includes(r.type) ? (
-                      <button
-                        onClick={() => setAssignDoc(r)}
-                        className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)]"
-                      >
-                        שייך ל-job
-                      </button>
-                    ) : r.job_id ? (
-                      <span className="text-[10px] text-[var(--green)]">משויך</span>
+                    {tab === "cancelled" ? (
+                      <span className="text-[10px] text-[var(--faint)]" title={r.cancel_reason ?? ""}>
+                        בוטל{r.cancel_reason ? ` · ${r.cancel_reason}` : ""}
+                      </span>
                     ) : (
-                      "—"
+                      <div className="flex items-center gap-1.5">
+                        {canPull && !r.job_id && BILLING_TYPES.includes(r.type) && (
+                          <button
+                            onClick={() => setAssignDoc(r)}
+                            className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)]"
+                          >
+                            שייך ל-job
+                          </button>
+                        )}
+                        {r.job_id && <span className="text-[10px] text-[var(--green)]">משויך</span>}
+                        {canPull && r.type === 300 && (
+                          <button
+                            onClick={() => setCancelDoc(r)}
+                            className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--red)]"
+                          >
+                            סמן כמבוטל
+                          </button>
+                        )}
+                      </div>
                     )}
                   </td>
                 </tr>
@@ -289,6 +314,86 @@ export default function RegistryClient({
           onAssigned={() => router.refresh()}
         />
       )}
+
+      {cancelDoc && (
+        <CancelModal
+          doc={cancelDoc}
+          onClose={() => setCancelDoc(null)}
+          onCancelled={() => {
+            setCancelDoc(null);
+            router.refresh();
+          }}
+        />
+      )}
     </main>
+  );
+}
+
+function CancelModal({ doc, onClose, onCancelled }: { doc: DocRow; onClose: () => void; onCancelled: () => void }) {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit() {
+    if (!reason.trim()) {
+      setErr("חובה לציין סיבה");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch(`/api/documents/${doc.id}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: reason.trim() }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setErr(body.error ?? "הביטול נכשל");
+        return;
+      }
+      onCancelled();
+    } catch {
+      setErr("שגיאת רשת");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div
+        className="glass-card w-full max-w-md p-5 rounded-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-sm font-bold mb-1">לבטל את חשבון עסקה #{doc.number ?? ""}?</h2>
+        <p className="text-[11px] text-[var(--faint)] mb-3 leading-relaxed">
+          הביטול משקף פעולה שכבר נעשתה במורנינג — המערכת אינה מבטלת שם.
+          {doc.job_id ? " ה-job המקושר יחזור למצב “לא חויב”." : ""}
+        </p>
+        <label className="block text-[11px] text-[var(--dim)] mb-1">סיבת הביטול (חובה)</label>
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          autoFocus
+          rows={2}
+          placeholder="לדוגמה: טעות במחיר"
+          className="w-full bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-xs mb-2"
+        />
+        {err && <div className="text-[11px] text-[var(--red)] mb-2">{err}</div>}
+        <div className="flex items-center justify-end gap-2 mt-2">
+          <button onClick={onClose} className="text-xs rounded-xl px-4 py-1.5 border border-[var(--rule)]">
+            ביטול
+          </button>
+          <button
+            onClick={submit}
+            disabled={busy}
+            className="text-xs font-bold rounded-xl px-4 py-1.5 bg-[var(--red)] text-white disabled:opacity-40"
+          >
+            {busy ? "מבטל…" : "סמן כמבוטל"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

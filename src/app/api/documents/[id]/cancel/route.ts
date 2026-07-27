@@ -1,0 +1,95 @@
+import { NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+
+// Mark a deal invoice (חשבון עסקה, type 300) as CANCELLED — owner spec.
+//
+// ⚠️ This does NOT call Morning. The bookkeeper cancels the document in Morning
+// by hand; the app only REFLECTS it. So there is no DRY_RUN / approval-queue
+// path here — nothing is issued or revoked at Morning, this is a local
+// bookkeeping mirror. can_edit_money (Shiri) gates it.
+//
+// Effect: the document is flagged cancelled (hidden from the normal registry
+// tabs, shown in "מבוטלים"); if it was linked to a job, the job reverts to its
+// pre-invoice state — invoice_biz cleared and the mirrored invoices row removed
+// — so it shows up as "not billed / open" again and a corrected invoice can be
+// issued. Everything is evented with the reason.
+export async function POST(request: Request, { params }: { params: { id: string } }) {
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "לא מחובר" }, { status: 401 });
+  const { data: profile } = await supabase.from("profiles").select("can_edit_money").eq("id", user.id).single();
+  if (!profile?.can_edit_money) return NextResponse.json({ error: "אין הרשאת עריכת כספים" }, { status: 403 });
+
+  const body = await request.json().catch(() => ({}));
+  const reason = typeof body?.reason === "string" ? body.reason.trim() : "";
+  if (!reason) return NextResponse.json({ error: "חובה לציין סיבה לביטול" }, { status: 400 });
+
+  const admin = createAdminClient();
+  const { data: doc } = await admin
+    .from("documents")
+    .select("id,morning_doc_id,morning_doc_number,type,amount,job_id,cancelled_at")
+    .eq("id", params.id)
+    .maybeSingle();
+  if (!doc) return NextResponse.json({ error: "המסמך לא נמצא" }, { status: 404 });
+  if (doc.type !== 300) return NextResponse.json({ error: "ניתן לבטל רק חשבון עסקה" }, { status: 400 });
+  if (doc.cancelled_at) return NextResponse.json({ error: "המסמך כבר מבוטל" }, { status: 409 });
+
+  const docNumber = (doc.morning_doc_number as string | null) ?? null;
+  const jobId = (doc.job_id as string | null) ?? null;
+
+  // revert a linked job to its pre-invoice state
+  let invoiceBizCleared = false;
+  let invoiceRowDeleted = false;
+  if (jobId) {
+    const { data: job } = await admin.from("jobs").select("id,invoice_biz").eq("id", jobId).maybeSingle();
+    // only clear the flag if it points at THIS document (don't stomp a later one)
+    if (job && docNumber && job.invoice_biz === docNumber) {
+      await admin.from("jobs").update({ invoice_biz: null }).eq("id", jobId);
+      invoiceBizCleared = true;
+    }
+    // remove the mirrored finance-registry row for this document
+    const { data: del } = await admin
+      .from("invoices")
+      .delete()
+      .eq("morning_doc_id", doc.morning_doc_id as string)
+      .select("id");
+    invoiceRowDeleted = (del?.length ?? 0) > 0;
+  }
+
+  const now = new Date().toISOString();
+  await admin
+    .from("documents")
+    .update({ cancelled_at: now, cancelled_by: user.id, cancel_reason: reason, updated_at: now })
+    .eq("id", params.id);
+
+  // event on the document
+  await admin.from("events").insert({
+    entity_type: "document",
+    entity_id: params.id,
+    event_type: "document_cancelled",
+    actor_id: user.id,
+    payload: {
+      morning_doc_number: docNumber,
+      doc_type: doc.type,
+      amount: doc.amount,
+      reason,
+      job_id: jobId,
+      reverted: { invoice_biz_cleared: invoiceBizCleared, invoice_row_deleted: invoiceRowDeleted },
+    },
+  });
+  // and on the job, since its money-state moved back
+  if (jobId && (invoiceBizCleared || invoiceRowDeleted)) {
+    await admin.from("events").insert({
+      entity_type: "job",
+      entity_id: jobId,
+      event_type: "document_cancelled",
+      actor_id: user.id,
+      payload: { morning_doc_number: docNumber, doc_type: doc.type, reason, reverted_to: "not_billed" },
+    });
+  }
+
+  return NextResponse.json({ ok: true, reverted: { invoiceBizCleared, invoiceRowDeleted } });
+}

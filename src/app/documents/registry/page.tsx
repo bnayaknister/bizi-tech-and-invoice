@@ -14,17 +14,19 @@ export default async function RegistryPage() {
   if (!profile.can_view_money) redirect("/");
 
   const admin = createAdminClient();
-  const [{ data }, { data: settings }] = await Promise.all([
-    admin
-      .from("documents")
-      .select(
-        "id,morning_doc_number,type,status,client_id,morning_client_name,amount,currency," +
-          "document_date,pdf_url,source,production_id,job_id,clients(name),productions(podcast_name)"
-      )
-      .order("document_date", { ascending: false, nullsFirst: false })
-      .limit(5000),
+  const BASE_COLS =
+    "id,morning_doc_number,type,status,client_id,morning_client_name,amount,currency," +
+    "document_date,pdf_url,source,production_id,job_id,clients(name),productions(podcast_name)";
+  // cancelled_at/cancel_reason need migration 0043 — read them, but fall back
+  // gracefully to the base columns if the migration isn't applied yet so the
+  // screen keeps rendering.
+  const docsQuery = (cols: string) =>
+    admin.from("documents").select(cols).order("document_date", { ascending: false, nullsFirst: false }).limit(5000);
+  const [docsRes, { data: settings }] = await Promise.all([
+    docsQuery(`${BASE_COLS},cancelled_at,cancel_reason`),
     admin.from("app_settings").select("documents_pulled_at").eq("id", true).maybeSingle(),
   ]);
+  const data = docsRes.error ? (await docsQuery(BASE_COLS)).data : docsRes.data;
 
   const rows: DocRow[] = ((data ?? []) as unknown as Array<Record<string, unknown>>).map((d) => ({
     id: d.id as string,
@@ -46,6 +48,8 @@ export default async function RegistryPage() {
     production_id: (d.production_id as string | null) ?? null,
     job_id: (d.job_id as string | null) ?? null,
     show_name: ((d.productions as { podcast_name?: string } | null)?.podcast_name as string) ?? null,
+    cancelled_at: (d.cancelled_at as string | null) ?? null,
+    cancel_reason: (d.cancel_reason as string | null) ?? null,
   }));
 
   return (

@@ -289,16 +289,23 @@ export function reconcile(clients: ReconClient[], jobs: ReconJob[], docs: ReconD
 }
 
 async function loadData(admin: SupabaseClient) {
-  const [{ data: clients }, { data: jobs }, { data: docs }] = await Promise.all([
+  const DOC_SELECT =
+    "id,morning_doc_number,type,client_id,morning_client_id,morning_client_name,amount,document_date,job_id,production_id,source";
+  const [{ data: clients }, { data: jobs }, docs] = await Promise.all([
     admin.from("clients").select("id,name,morning_client_id"),
     // dismissed jobs (0041) are out of reconciliation — a hidden record must
     // not get auto-matched or suggested
     admin.from("jobs").select("id,client_id,amount,invoice_biz,invoice_tax,paid,date,due_date,legacy,campaign").eq("dismissed", false),
-    admin
-      .from("documents")
-      .select(
-        "id,morning_doc_number,type,client_id,morning_client_id,morning_client_name,amount,document_date,job_id,production_id,source"
-      ),
+    // a cancelled document is void — never auto-match or suggest it. The
+    // cancelled_at filter needs migration 0043; if that isn't applied yet the
+    // query errors, so fall back to the unfiltered read (no cancelled docs can
+    // exist before the column does anyway).
+    (async () => {
+      const filtered = await admin.from("documents").select(DOC_SELECT).is("cancelled_at", null);
+      if (!filtered.error) return filtered.data ?? [];
+      const plain = await admin.from("documents").select(DOC_SELECT);
+      return plain.data ?? [];
+    })(),
   ]);
   return {
     clients: (clients ?? []) as ReconClient[],
