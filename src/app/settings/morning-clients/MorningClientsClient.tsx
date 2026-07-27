@@ -34,6 +34,7 @@ export default function MorningClientsClient() {
   // per-row chosen morning id before confirm (defaults to the suggestion)
   const [choice, setChoice] = useState<Record<string, string>>({});
   const [pendingShared, setPendingShared] = useState<PendingShared | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -113,6 +114,7 @@ export default function MorningClientsClient() {
         return;
       }
       setPendingShared(null);
+      if (body.backfilled > 0) setNotice(`מופו ${body.backfilled} מסמכים ישנים שהיו ללא לקוח`);
       await load();
     } catch {
       setError("שגיאת רשת");
@@ -132,6 +134,9 @@ export default function MorningClientsClient() {
         לקוח בלי מיפוי לא ניתן לחיוב — אף מסמך לא ייצא עבורו. ההתאמה האוטומטית היא הצעה בלבד; כל שיוך מאושר ידנית.
       </p>
 
+      {notice && (
+        <div className="mb-4 text-xs text-[var(--green)] border border-[var(--green)] rounded-xl px-3 py-2">{notice}</div>
+      )}
       {error && (
         <div className="mb-4 text-xs text-[var(--peak)] border border-[var(--peak)] rounded-xl px-3 py-2">
           {error}

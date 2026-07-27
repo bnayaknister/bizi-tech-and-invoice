@@ -1,0 +1,60 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+// Back-fill client_id on registry documents whose Morning client IS mapped to
+// one of ours, but that were pulled BEFORE that mapping existed (owner spec
+// 2026-07-27). The pull is incremental — it only fetches recent documents — so
+// an old document never gets re-touched, and a client mapped later never
+// reaches it. That is the real bug behind most "לא משויך" documents: the client
+// is known, the link just never got applied retroactively.
+//
+// Run in three places so it can't drift out of date:
+//   - the moment a client is mapped on the mapping screen (scoped to that
+//     Morning client) → old documents get the mapping immediately
+//   - at the end of every daily pull (all nulls) → a safety sweep
+//   - the manual "resolve mappings" endpoint (all nulls) → run on demand
+export async function backfillDocumentClients(
+  admin: SupabaseClient,
+  opts?: { morningClientId?: string }
+): Promise<{ resolved: number }> {
+  // Morning client id -> our client id (first by name wins, same tie-break as
+  // the pull, so a Morning client shared by several of ours resolves the same)
+  const { data: clients } = await admin
+    .from("clients")
+    .select("id,morning_client_id")
+    .not("morning_client_id", "is", null)
+    .order("name");
+  const byMorning = new Map<string, string>();
+  for (const c of clients ?? []) {
+    const m = c.morning_client_id as string;
+    if (!byMorning.has(m)) byMorning.set(m, c.id as string);
+  }
+
+  let q = admin
+    .from("documents")
+    .select("id,morning_client_id")
+    .is("client_id", null)
+    .not("morning_client_id", "is", null);
+  if (opts?.morningClientId) q = q.eq("morning_client_id", opts.morningClientId);
+  const { data: docs } = await q;
+
+  const byClient = new Map<string, string[]>();
+  for (const d of docs ?? []) {
+    const cid = byMorning.get(d.morning_client_id as string);
+    if (cid) byClient.set(cid, [...(byClient.get(cid) ?? []), d.id as string]);
+  }
+
+  let resolved = 0;
+  const now = new Date().toISOString();
+  for (const [clientId, ids] of Array.from(byClient.entries())) {
+    const { error } = await admin.from("documents").update({ client_id: clientId, updated_at: now }).in("id", ids);
+    if (error) continue;
+    resolved += ids.length;
+    await admin.from("events").insert({
+      entity_type: "client",
+      entity_id: clientId,
+      event_type: "documents_client_backfilled",
+      payload: { count: ids.length, doc_ids: ids, morning_client_id: opts?.morningClientId ?? null },
+    });
+  }
+  return { resolved };
+}

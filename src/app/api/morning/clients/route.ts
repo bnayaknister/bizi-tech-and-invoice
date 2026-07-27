@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { listClients, MorningError } from "@/lib/morning/client";
 import { normalizeClientName, levenshtein } from "@/lib/clients/match";
+import { backfillDocumentClients } from "@/lib/documents/backfill";
 
 // Client mapping: "my client X = Morning client Y".
 //
@@ -159,5 +160,13 @@ export async function POST(request: Request) {
     },
   });
 
-  return NextResponse.json({ ok: true });
+  // The mapping's whole point: old documents pulled before this mapping existed
+  // are "לא משויך" only because the pull never re-touched them. Resolve them NOW,
+  // scoped to just this Morning client (owner spec 2026-07-27).
+  let backfilled = 0;
+  if (body.morning_client_id) {
+    backfilled = (await backfillDocumentClients(admin, { morningClientId: body.morning_client_id })).resolved;
+  }
+
+  return NextResponse.json({ ok: true, backfilled });
 }

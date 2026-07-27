@@ -6,7 +6,8 @@ import { useDrawer } from "@/components/EntityDrawer";
 import AssignDocModal from "@/components/AssignDocModal";
 import { REGISTRY_TAB_LABEL, type RegistryTab } from "@/lib/morning/types";
 
-const BILLING_TYPES = [300, 305, 320]; // deal / tax / tax-receipt — linkable to a job
+const BILLING_TYPES = [300, 305, 320, 400]; // deal / tax / tax-receipt / receipt — real חיוב, linkable to a job
+const isBilling = (t: number) => BILLING_TYPES.includes(t);
 
 export type DocRow = {
   id: string;
@@ -61,6 +62,9 @@ export default function RegistryClient({
   const [pulling, setPulling] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [assignDoc, setAssignDoc] = useState<DocRow | null>(null);
+  // in "לא משויך", quotes/orders/credits are noise for the bookkeeper — show
+  // only real billing docs by default (owner spec 2026-07-27), the rest behind a toggle
+  const [showNonBilling, setShowNonBilling] = useState(false);
 
   const counts = useMemo(() => {
     const c: Record<string, { n: number; total: number }> = {};
@@ -78,6 +82,8 @@ export default function RegistryClient({
     const list = rows.filter((r) => {
       const inTab = tab === "unmatched" ? !r.client_id : r.tab === tab && r.client_id;
       if (!inTab) return false;
+      // in the unassigned tab, hide non-billing docs (quotes/orders/credits) unless asked
+      if (tab === "unmatched" && !showNonBilling && !isBilling(r.type)) return false;
       if (!term) return true;
       return (
         (r.number ?? "").includes(term) ||
@@ -90,7 +96,13 @@ export default function RegistryClient({
       return (b.document_date ?? "").localeCompare(a.document_date ?? "");
     });
     return list;
-  }, [rows, tab, q, sort]);
+  }, [rows, tab, q, sort, showNonBilling]);
+
+  // how many non-billing (quotes/orders/credits) are hidden in the unassigned tab
+  const hiddenNonBilling = useMemo(
+    () => (tab === "unmatched" ? rows.filter((r) => !r.client_id && !isBilling(r.type)).length : 0),
+    [rows, tab]
+  );
 
   async function pullNow() {
     setPulling(true);
@@ -103,7 +115,7 @@ export default function RegistryClient({
         return;
       }
       setMsg(
-        `נמשכו ${body.pulled} · חדשים ${body.inserted} · שויכו אוטומטית ${body.linked ?? 0} · לא משויכים ${body.unmatched}`
+        `נמשכו ${body.pulled} · חדשים ${body.inserted} · שויכו ללקוח ${body.backfilled ?? 0} · שויכו ל-job ${body.linked ?? 0} · לא משויכים ${body.unmatched}`
       );
       router.refresh();
     } catch {
@@ -183,6 +195,14 @@ export default function RegistryClient({
         >
           מיון: {sort === "date" ? "תאריך" : "סכום"}
         </button>
+        {tab === "unmatched" && hiddenNonBilling > 0 && (
+          <button
+            onClick={() => setShowNonBilling((v) => !v)}
+            className="rounded-xl px-3 py-1.5 border border-[var(--rule)] shrink-0 text-[var(--faint)]"
+          >
+            {showNonBilling ? "הסתר הצעות/הזמנות" : `הצג גם הצעות/הזמנות (${hiddenNonBilling})`}
+          </button>
+        )}
         <span className="text-[var(--faint)] shrink-0">
           {shown.length} מסמכים · {money(counts[tab].total, "ILS")}
         </span>
