@@ -27,13 +27,14 @@ export async function GET(request: Request) {
       .from("jobs")
       .select("id,client_id,campaign,amount,date,paid,invoice_biz,invoice_tax")
       .eq("dismissed", false),
-    admin.from("clients").select("id,name"),
+    admin.from("clients").select("id,name,morning_client_id"),
     admin.from("job_productions").select("job_id,production_id"),
     admin.from("productions").select("id,show_id,podcast_name,guest,record_date"),
     admin.from("shows").select("id,name"),
   ]);
 
   const clientName = new Map((clients ?? []).map((c) => [c.id as string, c.name as string]));
+  const clientMapped = new Map((clients ?? []).map((c) => [c.id as string, !!c.morning_client_id]));
   const showName = new Map((shows ?? []).map((s) => [s.id as string, s.name as string]));
   const prodById = new Map((prods ?? []).map((p) => [p.id as string, p]));
   const prodByJob = new Map<string, string>();
@@ -53,7 +54,9 @@ export async function GET(request: Request) {
         match: haystack.includes(q),
         job: {
           id: j.id as string,
+          client_id: (j.client_id as string | null) ?? null,
           client_name: cname,
+          client_mapped: j.client_id ? clientMapped.get(j.client_id as string) ?? false : false,
           show_name: show,
           guest: (prod?.guest as string) ?? null,
           campaign: (j.campaign as string) ?? null,

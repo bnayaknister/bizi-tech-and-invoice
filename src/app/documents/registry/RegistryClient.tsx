@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useDrawer } from "@/components/EntityDrawer";
 import AssignDocModal from "@/components/AssignDocModal";
+import NewDocModal from "./NewDocModal";
 import { REGISTRY_TAB_LABEL, type RegistryTab } from "@/lib/morning/types";
 
 const BILLING_TYPES = [300, 305, 320, 400]; // deal / tax / tax-receipt / receipt — real חיוב, linkable to a job
@@ -66,6 +67,7 @@ export default function RegistryClient({
   const [msg, setMsg] = useState<string | null>(null);
   const [assignDoc, setAssignDoc] = useState<DocRow | null>(null);
   const [cancelDoc, setCancelDoc] = useState<DocRow | null>(null);
+  const [newDoc, setNewDoc] = useState<"work_order" | "deal_invoice" | null>(null);
   // in "לא משויך", quotes/orders/credits are noise for the bookkeeper — show
   // only real billing docs by default (owner spec 2026-07-27), the rest behind a toggle
   const [showNonBilling, setShowNonBilling] = useState(false);
@@ -207,6 +209,14 @@ export default function RegistryClient({
         >
           מיון: {sort === "date" ? "תאריך" : "סכום"}
         </button>
+        {canPull && (tab === "work_order" || tab === "deal_invoice") && (
+          <button
+            onClick={() => setNewDoc(tab === "work_order" ? "work_order" : "deal_invoice")}
+            className="rounded-xl px-3 py-1.5 border border-[var(--rule2)] shrink-0 font-bold text-[var(--signal)]"
+          >
+            {tab === "work_order" ? "+ הזמנת עבודה חדשה" : "+ חשבון עסקה חדש"}
+          </button>
+        )}
         {tab === "unmatched" && hiddenNonBilling > 0 && (
           <button
             onClick={() => setShowNonBilling((v) => !v)}
@@ -321,6 +331,18 @@ export default function RegistryClient({
           onClose={() => setCancelDoc(null)}
           onCancelled={() => {
             setCancelDoc(null);
+            router.refresh();
+          }}
+        />
+      )}
+
+      {newDoc && (
+        <NewDocModal
+          docType={newDoc}
+          onClose={() => setNewDoc(null)}
+          onQueued={(m) => {
+            setNewDoc(null);
+            setMsg(m);
             router.refresh();
           }}
         />

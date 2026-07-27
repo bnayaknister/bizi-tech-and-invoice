@@ -41,6 +41,8 @@ function registryType(docType: PendingDocType): "עסקה" | "מס" | null {
   return null;
 }
 
+const present = (v: unknown): boolean => v != null && String(v).trim() !== "";
+
 export async function issuePendingDocument(
   admin: SupabaseClient,
   row: PendingRow,
@@ -175,6 +177,20 @@ export async function issuePendingDocument(
       issued_by: actorId,
       pdf_url: pdfUrl,
     });
+  }
+
+  // Move the linked job's finance state to match the document just issued: a
+  // deal invoice bills it (invoice_biz → "ממתין לתשלום"), a tax invoice closes
+  // the tax gap (invoice_tax). Mirrors linkDocumentToJob and is set only when
+  // not already present, so a re-issue or a later reconcile never clobbers a
+  // real number. (A work order is not an invoice — it touches nothing here.)
+  if (row.job_id && regType) {
+    const { data: job } = await admin.from("jobs").select("invoice_biz,invoice_tax").eq("id", row.job_id).maybeSingle();
+    const jobPatch: Record<string, unknown> = {};
+    if (row.doc_type === "deal_invoice" && job && !present(job.invoice_biz)) jobPatch.invoice_biz = docNumber;
+    if ((row.doc_type === "tax_invoice" || row.doc_type === "tax_receipt") && job && !present(job.invoice_tax))
+      jobPatch.invoice_tax = docNumber;
+    if (Object.keys(jobPatch).length) await admin.from("jobs").update(jobPatch).eq("id", row.job_id);
   }
 
   await admin.from("events").insert({
