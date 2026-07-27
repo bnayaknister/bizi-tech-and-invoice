@@ -56,7 +56,7 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST() {
+export async function POST(request: Request) {
   const supabase = createClient();
   const {
     data: { user },
@@ -65,9 +65,14 @@ export async function POST() {
   const { data: profile } = await supabase.from("profiles").select("can_edit_money").eq("id", user.id).single();
   if (!profile?.can_edit_money) return NextResponse.json({ error: "אין הרשאת עריכת כספים" }, { status: 403 });
 
+  // A manual pull can request a full (unbounded) scan — "משוך הכל" — to close
+  // any historical gap on demand, not just the light incremental window.
+  const body = await request.json().catch(() => ({}));
+  const full = body?.full === true;
+
   const admin = createAdminClient();
   try {
-    const summary = await runDocumentPull(admin);
+    const summary = await runDocumentPull(admin, { full });
     await logPull(admin, "documents_pull_completed", { trigger: "manual", env: morningEnv(), actor: user.id, ...summary });
     return NextResponse.json({ ok: true, ...summary });
   } catch (e) {

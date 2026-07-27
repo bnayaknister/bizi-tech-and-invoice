@@ -54,7 +54,7 @@ export async function upsertDocument(admin: SupabaseClient, doc: UpsertDoc) {
   return { inserted: true };
 }
 
-export type PullSummary = { pulled: number; inserted: number; updated: number; unmatched: number; linked: number; backfilled: number };
+export type PullSummary = { pulled: number; inserted: number; updated: number; unmatched: number; linked: number; backfilled: number; full: boolean; fromDate: string };
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -62,35 +62,99 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
-// The daily pull. Asks Morning for documents since the last successful pull
-// (minus a day of overlap — cheap given the morning_doc_id upsert is
-// idempotent, and it closes any boundary gap), matches each to one of our
-// clients, and upserts. Read-only against Morning, so safe in DRY_RUN.
-//
-// Batched deliberately: a first run sweeps ~90 days, which can be hundreds of
-// documents. Per-document DB round-trips timed out (found in verification),
-// so this does a fixed handful of queries regardless of volume — one client
-// map, one existing-rows lookup, chunked upserts.
-export async function runDocumentPull(admin: SupabaseClient): Promise<PullSummary> {
-  const { data: settings } = await admin
-    .from("app_settings")
-    .select("documents_pulled_at")
-    .eq("id", true)
-    .maybeSingle();
+// The account's own history reaches back to 2018; a "since forever" scan starts
+// here. Cheap: ~1000 documents = ~11 paged requests, idempotent on upsert.
+const ACCOUNT_START = "2015-01-01";
 
-  const since = settings?.documents_pulled_at
-    ? new Date(new Date(settings.documents_pulled_at).getTime() - 24 * 3600_000)
-    : new Date(Date.now() - 90 * 24 * 3600_000); // first run: last 90 days
+// Incremental overlap. This studio backdates invoices to the recording month
+// and bills 2+ months late, so a document ISSUED today can carry a documentDate
+// weeks in the past. A wide overlap catches that; anything older than this that
+// still slips through is caught by the weekly full scan. NOT 1 day (the old
+// value) — that assumed documentDate ≈ issue date, which is false here.
+const INCREMENTAL_LOOKBACK_DAYS = 45;
+
+// How often the safety net runs: a full unbounded scan that re-reads every
+// Morning document and upserts anything missing, so no document can ever fall
+// permanently outside the incremental window.
+const FULL_SCAN_INTERVAL_MS = 7 * 24 * 3600_000;
+
+// The document pull. Matches each Morning document to one of our clients and
+// upserts into the registry. Read-only against Morning, so safe in DRY_RUN.
+//
+// Two modes, one code path:
+//   • incremental (daily) — a rolling documentDate window since the last pull,
+//     with a wide overlap. Light: only recent documents.
+//   • full (weekly + first run + on demand) — from the account's start, so
+//     every document is guaranteed to land regardless of its documentDate.
+//     This is the "no document falls between the chairs" guarantee, since the
+//     incremental window keys off documentDate and this business backdates.
+//
+// The cron auto-escalates to a full scan once a week (or if one never ran);
+// callers can force one with { full: true }.
+//
+// Batched deliberately: a full scan is hundreds of documents. Per-document DB
+// round-trips timed out (found in verification), so this does a fixed handful
+// of queries regardless of volume — one client map, one existing-rows lookup,
+// chunked upserts.
+export async function runDocumentPull(admin: SupabaseClient, opts?: { full?: boolean }): Promise<PullSummary> {
+  // Read both cursors; fall back if documents_last_full_scan_at (migration
+  // 0042) isn't applied yet, so the pull keeps working pre-migration.
+  let settings: { documents_pulled_at?: string | null; documents_last_full_scan_at?: string | null } | null = null;
+  {
+    const withFull = await admin
+      .from("app_settings")
+      .select("documents_pulled_at, documents_last_full_scan_at")
+      .eq("id", true)
+      .maybeSingle();
+    if (withFull.error) {
+      const { data } = await admin.from("app_settings").select("documents_pulled_at").eq("id", true).maybeSingle();
+      settings = data;
+    } else {
+      settings = withFull.data;
+    }
+  }
+
+  const lastFull = settings?.documents_last_full_scan_at
+    ? new Date(settings.documents_last_full_scan_at).getTime()
+    : 0;
+  // Full scan when: explicitly asked, never pulled before, a full scan never
+  // ran, or the weekly interval has elapsed.
+  const isFull =
+    opts?.full === true ||
+    !settings?.documents_pulled_at ||
+    !lastFull ||
+    Date.now() - lastFull > FULL_SCAN_INTERVAL_MS;
+
+  const since = isFull
+    ? new Date(`${ACCOUNT_START}T00:00:00Z`)
+    : new Date(new Date(settings!.documents_pulled_at as string).getTime() - INCREMENTAL_LOOKBACK_DAYS * 24 * 3600_000);
   const fromDate = since.toISOString().slice(0, 10);
+
+  const now = new Date().toISOString();
+  // Record the cursor. Always advance documents_pulled_at; on a full scan also
+  // stamp documents_last_full_scan_at. That column ships in migration 0042 —
+  // if it isn't applied yet the write is retried without it, so the pull still
+  // works (the weekly-cadence tracking just stays dark until the migration
+  // lands, exactly like every other not-yet-applied migration in this app).
+  const stamp = async () => {
+    if (isFull) {
+      const { error } = await admin
+        .from("app_settings")
+        .update({ documents_pulled_at: now, documents_last_full_scan_at: now })
+        .eq("id", true);
+      if (!error) return;
+    }
+    await admin.from("app_settings").update({ documents_pulled_at: now }).eq("id", true);
+  };
 
   const docs = await searchDocuments(fromDate);
   if (!docs.length) {
-    await admin.from("app_settings").update({ documents_pulled_at: new Date().toISOString() }).eq("id", true);
+    await stamp();
     // even with nothing new pulled: sweep null-client docs against current
     // mappings (a client mapped since the last pull), then reconcile.
     const { resolved } = await backfillDocumentClients(admin);
     const { linked } = await autoReconcile(admin);
-    return { pulled: 0, inserted: 0, updated: 0, unmatched: 0, linked, backfilled: resolved };
+    return { pulled: 0, inserted: 0, updated: 0, unmatched: 0, linked, backfilled: resolved, full: isFull, fromDate };
   }
 
   // one query: Morning client id -> our client id (first by name wins when
@@ -113,7 +177,6 @@ export async function runDocumentPull(admin: SupabaseClient): Promise<PullSummar
     for (const r of data ?? []) existing.set(r.morning_doc_id as string, { source: r.source as string, client_id: (r.client_id as string | null) ?? null });
   }
 
-  const now = new Date().toISOString();
   let inserted = 0;
   let unmatched = 0;
   const rows = docs.map((d) => {
@@ -145,7 +208,7 @@ export async function runDocumentPull(admin: SupabaseClient): Promise<PullSummar
     if (error) throw new Error(error.message);
   }
 
-  await admin.from("app_settings").update({ documents_pulled_at: now }).eq("id", true);
+  await stamp();
 
   // safety sweep: resolve any null-client doc whose Morning client is now
   // mapped (an old doc that predates the mapping) — not just what we just
@@ -154,5 +217,5 @@ export async function runDocumentPull(admin: SupabaseClient): Promise<PullSummar
   const { resolved } = await backfillDocumentClients(admin);
   const { linked } = await autoReconcile(admin);
 
-  return { pulled: docs.length, inserted, updated: docs.length - inserted, unmatched, linked, backfilled: resolved };
+  return { pulled: docs.length, inserted, updated: docs.length - inserted, unmatched, linked, backfilled: resolved, full: isFull, fromDate };
 }
