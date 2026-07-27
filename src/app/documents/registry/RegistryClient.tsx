@@ -283,6 +283,7 @@ export default function RegistryClient({
         <AssignDocModal
           mode="doc"
           id={assignDoc.id}
+          docAmount={assignDoc.amount}
           heading={`שייך מסמך #${assignDoc.number ?? ""} ל-job`}
           onClose={() => setAssignDoc(null)}
           onAssigned={() => router.refresh()}
