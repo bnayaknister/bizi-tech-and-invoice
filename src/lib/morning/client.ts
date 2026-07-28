@@ -208,6 +208,7 @@ export async function createMorningClient(fields: {
   taxId?: string | null;
   phone?: string | null;
   emails?: string[];
+  address?: string | null;
 }): Promise<{ id: string; dryRun: boolean }> {
   if (isDryRun()) {
     return { id: `dry-client-${crypto.randomUUID()}`, dryRun: true };
@@ -216,6 +217,7 @@ export async function createMorningClient(fields: {
   if (fields.taxId) body.taxId = fields.taxId;
   if (fields.phone) body.phone = fields.phone;
   if (fields.emails?.length) body.emails = fields.emails;
+  if (fields.address) body.address = fields.address;
   const res = await request<{ id: string }>("/clients", { method: "POST", body: JSON.stringify(body) });
   return { id: res.id, dryRun: false };
 }

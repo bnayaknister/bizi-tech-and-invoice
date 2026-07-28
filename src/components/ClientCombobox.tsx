@@ -10,6 +10,7 @@
 // was built to stop happening again).
 import { forwardRef, useMemo, useState } from "react";
 import { normalizeClientName } from "@/lib/clients/match";
+import CreateMorningClientModal from "./CreateMorningClientModal";
 
 export type ComboboxClient = { id: string; name: string };
 
@@ -26,9 +27,13 @@ const ClientCombobox = forwardRef<
     placeholder?: string;
     onEnterNext?: () => void;
     className?: string;
+    // opt-in: the shared "צור לקוח חדש במורנינג" flow (creates our client +
+    // Morning client + maps + selects). Only offered to a can_edit_money user.
+    morningCreate?: boolean;
+    canEditMoney?: boolean;
   }
 >(function ClientCombobox(
-  { clients, value, onChange, onCreated, disabled, placeholder, onEnterNext, className },
+  { clients, value, onChange, onCreated, disabled, placeholder, onEnterNext, className, morningCreate, canEditMoney },
   ref
 ) {
   const [editing, setEditing] = useState(false);
@@ -37,6 +42,8 @@ const ClientCombobox = forwardRef<
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
+  const [morningModal, setMorningModal] = useState(false);
+  const offerMorning = !!morningCreate && !!canEditMoney && !disabled;
 
   const selected = value ? clients.find((c) => c.id === value) ?? null : null;
   const displayValue = editing ? query : selected?.name ?? "";
@@ -51,7 +58,9 @@ const ClientCombobox = forwardRef<
     () => filtered.some((c) => normalizeClientName(c.name) === normalizeClientName(query)),
     [filtered, query]
   );
-  const showCreateOption = editing && query.trim().length > 0 && !exactMatch;
+  // when the Morning-create flow is on, it replaces the plain "create our
+  // client" option so there is exactly one create action (the prominent one)
+  const showCreateOption = editing && query.trim().length > 0 && !exactMatch && !offerMorning;
   const options: ({ kind: "client"; client: ComboboxClient } | { kind: "create" })[] = [
     ...filtered.map((client) => ({ kind: "client" as const, client })),
     ...(showCreateOption ? [{ kind: "create" as const }] : []),
@@ -145,8 +154,20 @@ const ClientCombobox = forwardRef<
         className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1.5 text-sm focus:border-[var(--signal)] outline-none disabled:opacity-60"
       />
 
-      {editing && !suggestion && (options.length > 0 || busy) && (
+      {editing && !suggestion && (options.length > 0 || busy || offerMorning) && (
         <div className="absolute z-20 mt-1 w-full max-h-64 overflow-y-auto border border-[var(--rule2)] rounded bg-[var(--panel2)] shadow-lg text-sm">
+          {offerMorning && (
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setMorningModal(true);
+              }}
+              className="block w-full text-right px-3 py-2 font-bold text-[var(--signal)] border-b border-[var(--rule)] hover:bg-[var(--panel3)]"
+            >
+              ➕ צור לקוח חדש במורנינג
+            </button>
+          )}
           {busy && <div className="px-3 py-2 text-xs text-[var(--faint)]">יוצר…</div>}
           {!busy &&
             options.map((opt, i) => (
@@ -200,6 +221,24 @@ const ClientCombobox = forwardRef<
       )}
 
       {error && <div className="mt-1 text-[10px] text-[var(--peak)]">{error}</div>}
+
+      {morningModal && (
+        <CreateMorningClientModal
+          defaultName={query.trim()}
+          onClose={() => setMorningModal(false)}
+          onResolved={({ clientId, name }) => {
+            setMorningModal(false);
+            onCreated?.({ id: clientId, name });
+            commitClient({ id: clientId, name });
+            onEnterNext?.();
+          }}
+          onPickExistingClient={(id, name) => {
+            setMorningModal(false);
+            commitClient({ id, name });
+            onEnterNext?.();
+          }}
+        />
+      )}
     </div>
   );
 });

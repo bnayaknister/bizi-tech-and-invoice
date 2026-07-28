@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import CreateMorningClientModal from "@/components/CreateMorningClientModal";
 
 type JobHit = {
   id: string;
@@ -43,6 +44,7 @@ export default function NewDocModal({
   const [description, setDescription] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [morningOpen, setMorningOpen] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -164,7 +166,14 @@ export default function NewDocModal({
                 {picked.guest ? ` · ${picked.guest}` : ""} · {picked.status}
               </div>
               {!picked.client_mapped && (
-                <div className="text-[11px] text-[var(--warn)] mt-1">⚠️ הלקוח לא ממופה למורנינג — לא ניתן להנפיק</div>
+                <div className="text-[11px] text-[var(--warn)] mt-1 flex items-center gap-2">
+                  <span>⚠️ הלקוח לא ממופה למורנינג — לא ניתן להנפיק</span>
+                  {picked.client_id && (
+                    <button onClick={() => setMorningOpen(true)} className="text-[var(--signal)] font-bold hover:underline">
+                      מפה / צור במורנינג
+                    </button>
+                  )}
+                </div>
               )}
             </div>
             <label className="block text-[11px] text-[var(--dim)] mb-1">סכום (₪, לפני מע״מ)</label>
@@ -199,6 +208,18 @@ export default function NewDocModal({
           </button>
         </div>
       </div>
+
+      {morningOpen && picked?.client_id && (
+        <CreateMorningClientModal
+          clientId={picked.client_id}
+          defaultName={picked.client_name ?? ""}
+          onClose={() => setMorningOpen(false)}
+          onResolved={() => {
+            setMorningOpen(false);
+            setPicked((p) => (p ? { ...p, client_mapped: true } : p));
+          }}
+        />
+      )}
     </div>
   );
 }

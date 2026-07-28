@@ -536,6 +536,8 @@ function ShowCard({
                 value={show.client_id}
                 disabled={!canEditMoney}
                 placeholder="— פנימי / ללא לקוח —"
+                morningCreate
+                canEditMoney={canEditMoney}
                 onChange={(clientId) => void onSave(show.id, { client_id: clientId })}
                 onCreated={onClientCreated}
               />
@@ -981,6 +983,8 @@ function NewShowModal({
                   onChange={setClientId}
                   onCreated={(c) => { onClientCreated(c); setClientId(c.id); }}
                   disabled={!canEditMoney}
+                  morningCreate
+                  canEditMoney={canEditMoney}
                   placeholder="חפש או צור לקוח…"
                 />
                 <div className="text-[10px] text-[var(--faint)] mt-1">בלי לקוח → הפקה פנימית (ללא חיוב)</div>

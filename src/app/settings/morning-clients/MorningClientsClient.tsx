@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import CreateMorningClientModal from "@/components/CreateMorningClientModal";
 
 // One client at a time is the point (owner, 2026-07-20): unmapped clients
 // can't bill at all, so this screen is the tap the owner opens deliberately.
@@ -35,6 +36,7 @@ export default function MorningClientsClient() {
   const [choice, setChoice] = useState<Record<string, string>>({});
   const [pendingShared, setPendingShared] = useState<PendingShared | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -129,10 +131,33 @@ export default function MorningClientsClient() {
 
   return (
     <main className="max-w-3xl mx-auto p-6">
-      <h1 className="text-lg font-bold mb-1">מיפוי לקוחות למורנינג</h1>
+      <div className="flex items-center justify-between mb-1">
+        <h1 className="text-lg font-bold">מיפוי לקוחות למורנינג</h1>
+        <button
+          onClick={() => setCreateOpen(true)}
+          className="text-xs font-bold rounded-xl px-4 py-1.5 border border-[var(--signal)] text-[var(--signal)]"
+        >
+          ➕ צור לקוח חדש במורנינג
+        </button>
+      </div>
       <p className="text-xs text-[var(--faint)] mb-4">
         לקוח בלי מיפוי לא ניתן לחיוב — אף מסמך לא ייצא עבורו. ההתאמה האוטומטית היא הצעה בלבד; כל שיוך מאושר ידנית.
       </p>
+
+      {createOpen && (
+        <CreateMorningClientModal
+          onClose={() => setCreateOpen(false)}
+          onResolved={({ name }) => {
+            setCreateOpen(false);
+            setNotice(`הלקוח '${name}' נוצר במורנינג ומופה`);
+            void load();
+          }}
+          onPickExistingClient={() => {
+            setCreateOpen(false);
+            void load();
+          }}
+        />
+      )}
 
       {notice && (
         <div className="mb-4 text-xs text-[var(--green)] border border-[var(--green)] rounded-xl px-3 py-2">{notice}</div>
