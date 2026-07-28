@@ -29,13 +29,19 @@ export async function backfillDocumentClients(
     if (!byMorning.has(m)) byMorning.set(m, c.id as string);
   }
 
-  let q = admin
-    .from("documents")
-    .select("id,morning_client_id")
-    .is("client_id", null)
-    .not("morning_client_id", "is", null);
-  if (opts?.morningClientId) q = q.eq("morning_client_id", opts.morningClientId);
-  const { data: docs } = await q;
+  // don't resurrect archived history: an archived doc stays archived even if its
+  // client later gets mapped (restore is manual). archived_at ships in 0045 — if
+  // it isn't applied yet, fall back to the unfiltered query.
+  const baseSelect = () => {
+    let q = admin.from("documents").select("id,morning_client_id").is("client_id", null).not("morning_client_id", "is", null);
+    if (opts?.morningClientId) q = q.eq("morning_client_id", opts.morningClientId);
+    return q;
+  };
+  let docs: { id: string; morning_client_id: string }[] | null;
+  {
+    const withArchive = await baseSelect().is("archived_at", null);
+    docs = (withArchive.error ? (await baseSelect()).data : withArchive.data) as typeof docs;
+  }
 
   const byClient = new Map<string, string[]>();
   for (const d of docs ?? []) {

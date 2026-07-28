@@ -301,7 +301,11 @@ async function loadData(admin: SupabaseClient) {
     // query errors, so fall back to the unfiltered read (no cancelled docs can
     // exist before the column does anyway).
     (async () => {
-      const filtered = await admin.from("documents").select(DOC_SELECT).is("cancelled_at", null);
+      // a cancelled OR archived document is out of reconciliation. Both columns
+      // ship in later migrations (0043/0045); fall back to unfiltered if they
+      // aren't applied yet (nothing is cancelled/archived before the column
+      // exists anyway).
+      const filtered = await admin.from("documents").select(DOC_SELECT).is("cancelled_at", null).is("archived_at", null);
       if (!filtered.error) return filtered.data ?? [];
       const plain = await admin.from("documents").select(DOC_SELECT);
       return plain.data ?? [];

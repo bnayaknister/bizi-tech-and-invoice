@@ -29,11 +29,13 @@ export type DocRow = {
   show_name: string | null;
   cancelled_at: string | null;
   cancel_reason: string | null;
+  archived_at: string | null;
+  archive_reason: string | null;
 };
 
 // tab order = the owner's five, then "other", then the unmatched bucket which
 // is a client-match state, not a Morning type (owner: "לשונית לא משויך")
-const TAB_ORDER: (RegistryTab | "unmatched" | "cancelled")[] = [
+const TAB_ORDER: (RegistryTab | "unmatched" | "cancelled" | "archived")[] = [
   "work_order",
   "deal_invoice",
   "tax_invoice",
@@ -42,6 +44,7 @@ const TAB_ORDER: (RegistryTab | "unmatched" | "cancelled")[] = [
   "other",
   "unmatched",
   "cancelled",
+  "archived",
 ];
 
 const SOURCE_LABEL: Record<DocRow["source"], string> = { app: "מהאפליקציה", pull: "ממורנינג", manual: "ידני" };
@@ -60,7 +63,7 @@ export default function RegistryClient({
 }) {
   const router = useRouter();
   const { openEntity } = useDrawer();
-  const [tab, setTab] = useState<RegistryTab | "unmatched" | "cancelled">("work_order");
+  const [tab, setTab] = useState<RegistryTab | "unmatched" | "cancelled" | "archived">("work_order");
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<"date" | "amount">("date");
   const [pulling, setPulling] = useState(false);
@@ -76,8 +79,8 @@ export default function RegistryClient({
     const c: Record<string, { n: number; total: number }> = {};
     for (const t of TAB_ORDER) c[t] = { n: 0, total: 0 };
     for (const r of rows) {
-      // a cancelled document lives only in the "מבוטלים" tab, out of every other
-      const key = r.cancelled_at ? "cancelled" : r.client_id ? r.tab : "unmatched";
+      // cancelled / archived docs live only in their own quiet tab
+      const key = r.archived_at ? "archived" : r.cancelled_at ? "cancelled" : r.client_id ? r.tab : "unmatched";
       c[key].n++;
       c[key].total += r.amount ?? 0;
     }
@@ -87,14 +90,20 @@ export default function RegistryClient({
   const shown = useMemo(() => {
     const term = q.trim();
     const list = rows.filter((r) => {
-      // cancelled docs are shown ONLY in the cancelled tab; excluded everywhere else
-      if (tab === "cancelled") {
-        if (!r.cancelled_at) return false;
-      } else if (r.cancelled_at) {
+      // archived / cancelled docs show ONLY in their own tab; excluded elsewhere
+      if (tab === "archived") {
+        if (!r.archived_at) return false;
+      } else if (tab === "cancelled") {
+        if (!r.cancelled_at || r.archived_at) return false;
+      } else if (r.cancelled_at || r.archived_at) {
         return false;
       }
       const inTab =
-        tab === "cancelled" ? true : tab === "unmatched" ? !r.client_id : r.tab === tab && r.client_id;
+        tab === "archived" || tab === "cancelled"
+          ? true
+          : tab === "unmatched"
+            ? !r.client_id
+            : r.tab === tab && r.client_id;
       if (!inTab) return false;
       // in the unassigned tab, hide non-billing docs (quotes/orders/credits) unless asked
       if (tab === "unmatched" && !showNonBilling && !isBilling(r.type)) return false;
@@ -139,6 +148,47 @@ export default function RegistryClient({
     }
   }
 
+  async function archiveRow(r: DocRow, restore: boolean) {
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/documents/${r.id}/archive`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: restore ? "restore" : "archive" }),
+      });
+      if (!res.ok) {
+        const b = await res.json();
+        setMsg(b.error ?? "הפעולה נכשלה");
+        return;
+      }
+      router.refresh();
+    } catch {
+      setMsg("שגיאת רשת");
+    }
+  }
+
+  async function bulkArchive() {
+    try {
+      const info = await (await fetch("/api/documents/archive")).json();
+      const n = info.qualifying ?? 0;
+      if (n === 0) {
+        setMsg("אין מסמכים ישנים לא-משויכים לארכוב");
+        return;
+      }
+      if (!confirm(`לארכב ${n} מסמכים לא-משויכים ישנים (לקוח לא קיים · מעל 90 יום · אין job)? ניתן לשחזר תמיד.`)) return;
+      const res = await fetch("/api/documents/archive", { method: "POST" });
+      const b = await res.json();
+      if (!res.ok) {
+        setMsg(b.error ?? "הארכוב נכשל");
+        return;
+      }
+      setMsg(`אורכבו ${b.archived} מסמכים`);
+      router.refresh();
+    } catch {
+      setMsg("שגיאת רשת");
+    }
+  }
+
   function openRow(r: DocRow) {
     if (r.production_id) openEntity({ type: "production", id: r.production_id });
     else if (r.job_id) openEntity({ type: "job", id: r.job_id });
@@ -177,7 +227,8 @@ export default function RegistryClient({
       {/* tabs */}
       <div className="flex flex-wrap gap-1.5 mb-4 border-b border-[var(--rule)] pb-2">
         {TAB_ORDER.map((t) => {
-          const label = t === "unmatched" ? "לא משויך" : t === "cancelled" ? "מבוטלים" : REGISTRY_TAB_LABEL[t];
+          const label =
+            t === "unmatched" ? "לא משויך" : t === "cancelled" ? "מבוטלים" : t === "archived" ? "ארכיון" : REGISTRY_TAB_LABEL[t];
           const c = counts[t];
           if (c.n === 0 && t !== tab) return null; // hide empty tabs, keep the active one
           const active = tab === t;
@@ -223,6 +274,15 @@ export default function RegistryClient({
             className="rounded-xl px-3 py-1.5 border border-[var(--rule)] shrink-0 text-[var(--faint)]"
           >
             {showNonBilling ? "הסתר הצעות/הזמנות" : `הצג גם הצעות/הזמנות (${hiddenNonBilling})`}
+          </button>
+        )}
+        {tab === "unmatched" && canPull && (
+          <button
+            onClick={bulkArchive}
+            className="rounded-xl px-3 py-1.5 border border-[var(--rule2)] shrink-0 font-bold"
+            title="ארכוב אוטומטי: לקוח לא קיים באפליקציה · מעל 90 יום · אין job"
+          >
+            ארכב ישנים
           </button>
         )}
         <span className="text-[var(--faint)] shrink-0">
@@ -281,7 +341,16 @@ export default function RegistryClient({
                     )}
                   </td>
                   <td className="py-2 px-2" onClick={(e) => e.stopPropagation()}>
-                    {tab === "cancelled" ? (
+                    {tab === "archived" ? (
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-[var(--faint)]" title={r.archive_reason ?? ""}>מאורכב</span>
+                        {canPull && (
+                          <button onClick={() => archiveRow(r, true)} className="text-[10px] font-bold text-[var(--signal)]">
+                            שחזר
+                          </button>
+                        )}
+                      </div>
+                    ) : tab === "cancelled" ? (
                       <span className="text-[10px] text-[var(--faint)]" title={r.cancel_reason ?? ""}>
                         בוטל{r.cancel_reason ? ` · ${r.cancel_reason}` : ""}
                       </span>
@@ -302,6 +371,15 @@ export default function RegistryClient({
                             className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--red)]"
                           >
                             סמן כמבוטל
+                          </button>
+                        )}
+                        {canPull && (
+                          <button
+                            onClick={() => archiveRow(r, false)}
+                            className="text-[10px] rounded-lg px-2 py-1 border border-[var(--rule)] text-[var(--faint)]"
+                            title="ארכב מסמך זה (הפיך)"
+                          >
+                            ארכב
                           </button>
                         )}
                       </div>

@@ -16,14 +16,28 @@ export const docRegistryModule: ModuleDef = {
   href: "/documents/registry",
   hasAccess: (profile) => profile.approved && profile.can_view_money,
   getMetric: async (supabase) => {
-    const [{ count: unassigned }, { data: paidJobs }] = await Promise.all([
-      supabase.from("documents").select("id", { count: "exact", head: true }).is("client_id", null),
+    // count only LIVE unassigned docs — exclude archived + cancelled. Those
+    // columns ship in 0043/0045; if not applied yet, fall back to the plain
+    // client_id-null count so the card never breaks.
+    const unassignedCount = async () => {
+      const filtered = await supabase
+        .from("documents")
+        .select("id", { count: "exact", head: true })
+        .is("client_id", null)
+        .is("archived_at", null)
+        .is("cancelled_at", null);
+      if (!filtered.error) return filtered.count ?? 0;
+      const plain = await supabase.from("documents").select("id", { count: "exact", head: true }).is("client_id", null);
+      return plain.count ?? 0;
+    };
+    const [unassigned, { data: paidJobs }] = await Promise.all([
+      unassignedCount(),
       supabase.from("jobs").select("invoice_tax").eq("paid", "כן").eq("dismissed", false),
     ]);
     const missingTax = (paidJobs ?? []).filter(
       (j) => !(j.invoice_tax && String(j.invoice_tax).trim())
     ).length;
-    const un = unassigned ?? 0;
+    const un = unassigned;
     const total = missingTax + un;
 
     return {

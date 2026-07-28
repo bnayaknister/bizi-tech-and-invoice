@@ -17,13 +17,13 @@ export default async function RegistryPage() {
   const BASE_COLS =
     "id,morning_doc_number,type,status,client_id,morning_client_name,amount,currency," +
     "document_date,pdf_url,source,production_id,job_id,clients(name),productions(podcast_name)";
-  // cancelled_at/cancel_reason need migration 0043 — read them, but fall back
-  // gracefully to the base columns if the migration isn't applied yet so the
-  // screen keeps rendering.
+  // cancelled_at (0043) + archived_at (0045) columns — read them, but fall back
+  // to the base columns if a migration isn't applied yet so the screen keeps
+  // rendering.
   const docsQuery = (cols: string) =>
     admin.from("documents").select(cols).order("document_date", { ascending: false, nullsFirst: false }).limit(5000);
   const [docsRes, { data: settings }] = await Promise.all([
-    docsQuery(`${BASE_COLS},cancelled_at,cancel_reason`),
+    docsQuery(`${BASE_COLS},cancelled_at,cancel_reason,archived_at,archive_reason`),
     admin.from("app_settings").select("documents_pulled_at").eq("id", true).maybeSingle(),
   ]);
   const data = docsRes.error ? (await docsQuery(BASE_COLS)).data : docsRes.data;
@@ -50,6 +50,8 @@ export default async function RegistryPage() {
     show_name: ((d.productions as { podcast_name?: string } | null)?.podcast_name as string) ?? null,
     cancelled_at: (d.cancelled_at as string | null) ?? null,
     cancel_reason: (d.cancel_reason as string | null) ?? null,
+    archived_at: (d.archived_at as string | null) ?? null,
+    archive_reason: (d.archive_reason as string | null) ?? null,
   }));
 
   return (
