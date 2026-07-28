@@ -70,7 +70,7 @@ try:
 
     check("archive 200", arch(money_ck, "archive").status_code == 200)
     d = requests.get(rest(f"documents?id=eq.{doc['id']}&select=archived_at,archived_by,archive_reason"), headers=A).json()[0]
-    check("archived_at/by set", bool(d["archived_at"]) and d["archived_by"] == money_uid and d["archive_reason"])
+    check("archived_at/by/reason set", bool(d["archived_at"]) and d["archived_by"] == money_uid and bool(d["archive_reason"]))
     ev = requests.get(rest(f"events?entity_id=eq.{doc['id']}&event_type=eq.document_archived&select=id"), headers=A).json()
     check("archive event", len(ev) >= 1)
 
