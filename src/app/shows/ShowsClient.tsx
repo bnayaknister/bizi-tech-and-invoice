@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import IconTile from "@/components/IconTile";
 import ClientCombobox from "@/components/ClientCombobox";
+import MorningClientField from "@/components/MorningClientField";
 
 export type ShowRow = {
   id: string;
@@ -541,6 +542,12 @@ function ShowCard({
             </label>
           )}
           {canViewMoney && (
+            <div className="text-xs">
+              <span className="block text-[var(--faint)] mb-1">לקוח מורנינג</span>
+              <MorningClientField clientId={show.client_id} canEdit={canEditMoney} />
+            </div>
+          )}
+          {canViewMoney && (
             <label className="text-xs">
               <span className="block text-[var(--faint)] mb-1">מחיר לפרק</span>
               <input
@@ -977,6 +984,12 @@ function NewShowModal({
                   placeholder="חפש או צור לקוח…"
                 />
                 <div className="text-[10px] text-[var(--faint)] mt-1">בלי לקוח → הפקה פנימית (ללא חיוב)</div>
+                {clientId && (
+                  <div className="mt-2">
+                    <span className="block text-[var(--faint)] text-[11px] mb-1">לקוח מורנינג</span>
+                    <MorningClientField clientId={clientId} canEdit={canEditMoney} />
+                  </div>
+                )}
               </div>
 
               <div>

@@ -197,6 +197,29 @@ export async function searchDocuments(fromDate: string, pageSize = 100): Promise
   return out;
 }
 
+/**
+ * Create a client in Morning (POST /clients) and return its new id. Respects
+ * DRY_RUN — in dry-run it makes NO call and returns a synthetic id, so local
+ * testing never creates a real Morning client. A real creation is a write to
+ * the owner's books, so callers gate it behind a double confirmation.
+ */
+export async function createMorningClient(fields: {
+  name: string;
+  taxId?: string | null;
+  phone?: string | null;
+  emails?: string[];
+}): Promise<{ id: string; dryRun: boolean }> {
+  if (isDryRun()) {
+    return { id: `dry-client-${crypto.randomUUID()}`, dryRun: true };
+  }
+  const body: Record<string, unknown> = { name: fields.name };
+  if (fields.taxId) body.taxId = fields.taxId;
+  if (fields.phone) body.phone = fields.phone;
+  if (fields.emails?.length) body.emails = fields.emails;
+  const res = await request<{ id: string }>("/clients", { method: "POST", body: JSON.stringify(body) });
+  return { id: res.id, dryRun: false };
+}
+
 export type MorningClient = {
   id: string;
   name: string;
