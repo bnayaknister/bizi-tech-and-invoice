@@ -173,7 +173,10 @@ export default function DocumentsClient({
 
   return (
     <main className="max-w-4xl mx-auto p-6">
-      <h1 className="text-lg font-bold mb-1">מסמכים לאישור</h1>
+      <div className="flex items-baseline justify-between">
+        <h1 className="text-lg font-bold mb-1">מסמכים לאישור</h1>
+        <a href="/documents/accrued" className="text-xs text-[var(--violet)] hover:underline">פרקים מסוכמים · פדיון →</a>
+      </div>
       <p className="text-xs text-[var(--faint)] mb-4">
         שום מסמך לא יוצא למורנינג בלי אישור אנושי · סביבה: <span className="font-mono">{env}</span>
         {dryRun && <span className="mr-2 text-[var(--peak)] font-bold">DRY RUN — לא נשלח בפועל</span>}

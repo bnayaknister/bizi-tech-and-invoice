@@ -1,6 +1,6 @@
 import { randomBytes } from "crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { enqueueDocument, type ProductionForBilling } from "@/lib/documents/enqueue";
+import { enqueueDocument, getClientCadence, type ProductionForBilling } from "@/lib/documents/enqueue";
 
 // Client review links (screens-spec §9a). Server-only — every function here
 // runs with the service-role client, since the public page and the response
@@ -291,7 +291,14 @@ export async function applyResponse(
       .limit(1)
       .maybeSingle();
     if (prod) {
-      await enqueueDocument(admin, "deal_invoice", prod as ProductionForBilling, { jobId: link2?.job_id ?? null });
+      // Cadence brake (owner spec 2026-07-28): monthly / every_n clients wait
+      // for redemption — the deal invoice is not enqueued here. per_episode
+      // enqueues immediately, same as the manual board path. The DB trigger
+      // has already created the internal job either way.
+      const cadence = await getClientCadence(admin, prod.client_id);
+      if (cadence === "per_episode") {
+        await enqueueDocument(admin, "deal_invoice", prod as ProductionForBilling, { jobId: link2?.job_id ?? null });
+      }
     }
   }
 

@@ -425,6 +425,15 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const pending72 = pendingNow.filter((d) => agedHours(d) >= 72);
   const pending24 = pendingNow.filter((d) => agedHours(d) >= 24 && agedHours(d) < 72);
 
+  // ---- accrued queue aging (owner spec 2026-07-28): a monthly / every_n
+  // client's work orders sit 'accrued' — owed but deliberately frozen — so
+  // they are NOT part of the 24h/72h "nobody approved" alert above (that would
+  // be a false alarm; accrued is correct, not stuck). But a client whose oldest
+  // accrued episode has waited 30+ days is a client the bookkeeper forgot to
+  // redeem — its own separate signal, pointing at the redemption screen.
+  const accruedRipe = pendingDocs.filter((d) => d.status === "accrued" && agedHours(d) >= 30 * 24);
+  const accruedRipeClients = new Set(accruedRipe.map((d) => d.client_id).filter(Boolean)).size;
+
   // ---- 🟡 a production is gone (cancelled, or its calendar event removed)
   // AFTER a document was already issued in Morning (owner 2026-07-19/21). We
   // never delete anything in Morning — the owner closes it by hand — so this
@@ -452,6 +461,7 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     { key: "billing_blocked", severity: "yellow", title: "הפקת לקוח חסומה לחיוב", count: billingBlocked.length, amount: null, href: "/productions" },
     { key: "cancelled_with_work_order", severity: "yellow", title: "הפקה בוטלה אחרי שהונפקה הזמנת עבודה — לסגור במורנינג", count: cancelledWithWorkOrder.length, amount: null, href: "/productions" },
     { key: "pending_docs_24h", severity: "yellow", title: "מסמכים ממתינים לאישור מעל 24 שעות", count: pending24.length, amount: null, href: "/documents" },
+    { key: "accrued_ripe", severity: "yellow", title: "לקוחות עם פרקים מסוכמים לפדיון (30+ יום)", count: accruedRipeClients, amount: null, href: "/documents/accrued" },
     { key: "unknown_payment", severity: "yellow", title: "סטטוס תשלום חסר", count: unknownPayment.length, amount: sum(unknownPayment), href: "/finance?filter=unknown_payment" },
     { key: "estimated_invoice_date", severity: "yellow", title: "תאריך חשבונית משוער", count: estimatedInvoiceDate.length, amount: null, href: "/finance?filter=estimated" },
     { key: "milestone_approaching", severity: "yellow", title: "אבן דרך בעוד 14 יום", count: milestoneApproaching.length, amount: milestoneApproaching.reduce((s, m) => s + num(m.amount), 0), href: "/contracts" },

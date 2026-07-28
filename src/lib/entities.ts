@@ -146,6 +146,15 @@ export const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
         ],
       },
       { key: "default_rate", label: "מחיר ברירת מחדל", type: "number", view: "money", edit: "money" },
+      {
+        key: "billing_cadence", label: "קצב חיוב (ברירת מחדל)", type: "select", view: "money", edit: "money",
+        options: [
+          { value: "per_episode", label: "פר-פרק (חשבון עסקה מיד)" },
+          { value: "monthly", label: "מרוכז חודשי" },
+          { value: "every_n", label: "מרוכז כל N פרקים" },
+        ],
+      },
+      { key: "billing_every_n", label: "N (רק לקצב 'כל N פרקים')", type: "number", view: "money", edit: "money" },
     ],
   },
   contract: {

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { enqueueDocument } from "@/lib/documents/enqueue";
+import { enqueueDocument, getClientCadence } from "@/lib/documents/enqueue";
 
 // Productions board actions (screens-spec §2). The DB is the wall:
 //  - any status move requires can_edit_stages (trg_guard_production_stages)
@@ -108,8 +108,18 @@ export async function POST(request: Request, { params }: { params: { id: string 
         .eq("production_id", id)
         .limit(1)
         .maybeSingle();
-      const res = await enqueueDocument(admin, "deal_invoice", prod, { jobId: link?.job_id ?? null });
-      queued = res.status;
+      // Cadence brake (owner spec 2026-07-28): a monthly / every_n client's
+      // deal invoice is NOT enqueued on approval — it waits for redemption,
+      // when all accrued episodes become one consolidated invoice. The job
+      // (created by the trigger) sits in "לא חויב" until then. per_episode
+      // enqueues immediately, as always.
+      const cadence = await getClientCadence(admin, prod.client_id);
+      if (cadence === "per_episode") {
+        const res = await enqueueDocument(admin, "deal_invoice", prod, { jobId: link?.job_id ?? null });
+        queued = res.status;
+      } else {
+        queued = "accrued";
+      }
     }
   }
 

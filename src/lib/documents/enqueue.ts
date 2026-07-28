@@ -53,6 +53,28 @@ export type ClientForBilling = {
   morning_client_id: string | null;
 };
 
+// A client's billing_cadence is the DEFAULT rhythm (owner spec 2026-07-28):
+// per_episode issues normally; monthly / every_n freeze the chain — the work
+// order is queued 'accrued' (owed, not issued) and the deal invoice is not
+// enqueued at all until the bookkeeper redeems the client. It is only a
+// default — the bookkeeper always overrides per row in the queue.
+export type BillingCadence = "per_episode" | "monthly" | "every_n";
+
+// Read a client's cadence. The app-layer deal-invoice brake (the two approval
+// call sites) uses this to decide whether to enqueue now or wait for redemption
+// — the DB trigger on_production_approved stays untouched (it only makes the
+// internal job). A missing client / missing column reads as per_episode, so an
+// unapplied 0046 keeps today's behavior.
+export async function getClientCadence(
+  admin: SupabaseClient,
+  clientId: string | null
+): Promise<BillingCadence> {
+  if (!clientId) return "per_episode";
+  const { data } = await admin.from("clients").select("billing_cadence").eq("id", clientId).maybeSingle();
+  const c = (data as { billing_cadence?: string } | null)?.billing_cadence;
+  return c === "monthly" || c === "every_n" ? c : "per_episode";
+}
+
 /**
  * The five cumulative conditions (owner spec 2026-07-19). All must hold:
  *   kind='client' AND show has client_id AND client has morning_client_id
@@ -145,6 +167,7 @@ async function setBlockReason(admin: SupabaseClient, productionId: string, reaso
 
 export type EnqueueResult =
   | { status: "queued"; id: string }
+  | { status: "accrued"; id: string }
   | { status: "exists" }
   | { status: "blocked"; reason: string }
   | { status: "error"; error: string };
@@ -164,7 +187,7 @@ export async function enqueueDocument(
   admin: SupabaseClient,
   docType: PendingDocType,
   production: ProductionForBilling,
-  opts: { jobId?: string | null; amountOverride?: number | null } = {}
+  opts: { jobId?: string | null; amountOverride?: number | null; forcePending?: boolean } = {}
 ): Promise<EnqueueResult> {
   const { data: show } = await admin
     .from("shows")
@@ -174,7 +197,11 @@ export async function enqueueDocument(
 
   const clientId = (show as ShowForBilling | null)?.client_id ?? production.client_id;
   const { data: client } = clientId
-    ? await admin.from("clients").select("id,name,morning_client_id").eq("id", clientId).maybeSingle()
+    ? await admin
+        .from("clients")
+        .select("id,name,morning_client_id,billing_cadence")
+        .eq("id", clientId)
+        .maybeSingle()
     : { data: null };
 
   const elig = checkEligibility(production, show as ShowForBilling | null, client as ClientForBilling | null);
@@ -230,6 +257,17 @@ export async function enqueueDocument(
     extraLines,
   });
 
+  // Cadence brake (owner spec 2026-07-28): a work order for a monthly / every_n
+  // client is queued 'accrued' — owed but frozen — until the bookkeeper
+  // redeems the client. per_episode issues normally. A caller can force the
+  // normal path (forcePending) for a manual "issue now". Add-on-only deal
+  // invoices are never accrued here; their brake lives at the two approval
+  // call sites (the DB trigger is never touched). An accrued row is ELIGIBLE
+  // (it passed the gate) — so we clear any stale block reason, never set one.
+  const cadence = ((client as { billing_cadence?: string } | null)?.billing_cadence ?? "per_episode") as BillingCadence;
+  const accrue = docType === "work_order" && cadence !== "per_episode" && !opts.forcePending;
+  const status = accrue ? "accrued" : "pending";
+
   const { data: inserted, error } = await admin
     .from("pending_documents")
     .insert({
@@ -239,7 +277,7 @@ export async function enqueueDocument(
       client_id: elig.clientId,
       amount, // grand total: base + approved add-ons
       payload,
-      status: "pending",
+      status,
     })
     .select("id")
     .single();
@@ -255,8 +293,8 @@ export async function enqueueDocument(
   await admin.from("events").insert({
     entity_type: "production",
     entity_id: production.id,
-    event_type: "document_queued",
-    payload: { doc_type: docType, pending_document_id: inserted.id, amount },
+    event_type: accrue ? "document_accrued" : "document_queued",
+    payload: { doc_type: docType, pending_document_id: inserted.id, amount, cadence },
   });
-  return { status: "queued", id: inserted.id };
+  return accrue ? { status: "accrued", id: inserted.id } : { status: "queued", id: inserted.id };
 }
