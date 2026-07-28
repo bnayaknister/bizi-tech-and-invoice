@@ -293,6 +293,8 @@ function AddContractModal({
           <ClientCombobox
             clients={localClients}
             value={clientId}
+            morningCreate
+            canEditMoney
             onChange={setClientId}
             onCreated={(c) => setLocalClients((cs) => [...cs, c])}
           />

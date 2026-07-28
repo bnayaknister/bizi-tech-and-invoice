@@ -745,6 +745,10 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
             <ClientCombobox
               clients={data?.optionsData.clients ?? []}
               value={(v as string) ?? null}
+              // reaching this editable branch means the server allowed editing
+              // this (money) field — so this viewer is a can_edit_money user
+              morningCreate
+              canEditMoney={f.editable}
               onChange={(clientId) => void saveField(f.key, clientId)}
               onCreated={(c) =>
                 setData((d) =>

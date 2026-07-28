@@ -106,6 +106,8 @@ export default function AssignClient({ rows, clients: initialClients }: { rows: 
                       clients={clients}
                       value={rs.client_id || null}
                       placeholder="— בחר לקוח —"
+                      morningCreate
+                      canEditMoney
                       onChange={(clientId) => onClientChange(row, clientId ?? "")}
                       onCreated={(c) => setClients((cs) => [...cs, c].sort((a, b) => a.name.localeCompare(b.name, "he")))}
                       onEnterNext={() => focusNextRow(i)}
