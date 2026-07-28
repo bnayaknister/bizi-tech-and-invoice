@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useDrawer } from "@/components/EntityDrawer";
 import IconTile from "@/components/IconTile";
 import AssignDocModal from "@/components/AssignDocModal";
+import ShowLinkModal from "./ShowLinkModal";
 import { deriveState, TAB_META, ALL_TABS, type FinanceState } from "@/lib/finance/state";
 
 type DocSlot = { number: string | null; pdf: string | null; manual: boolean | null };
@@ -78,6 +79,7 @@ export default function FinanceClient({
   const [assignFor, setAssignFor] = useState<FinanceJob | null>(null);
   const [dismissFor, setDismissFor] = useState<FinanceJob | null>(null);
   const [paidLoopFor, setPaidLoopFor] = useState<FinanceJob | null>(null);
+  const [showLinkFor, setShowLinkFor] = useState<FinanceJob | null>(null);
   // bundling several "לא חויב" jobs of one client into a single deal invoice
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bundleOpen, setBundleOpen] = useState(false);
@@ -419,7 +421,20 @@ export default function FinanceClient({
                   )}
                   <td className="px-3 py-2.5 font-mono text-[var(--dim)]">{r.date ?? "—"}</td>
                   <td className="px-3 py-2.5">{r.client_name ?? "—"}</td>
-                  <td className="px-3 py-2.5 text-[var(--dim)]">{r.show_name ?? "—"}</td>
+                  <td className="px-3 py-2.5 text-[var(--dim)]" onClick={(e) => e.stopPropagation()}>
+                    <span className="inline-flex items-center gap-1.5">
+                      {r.show_name ?? <span className="text-[var(--faint)]">— ללא תוכנית</span>}
+                      {canEditMoney && (
+                        <button
+                          onClick={() => setShowLinkFor(r)}
+                          className="text-[10px] text-[var(--signal)] hover:underline"
+                          title="שייך / ערוך תוכנית"
+                        >
+                          {r.show_name ? "ערוך" : "שייך"}
+                        </button>
+                      )}
+                    </span>
+                  </td>
                   <td className="px-3 py-2.5 text-[var(--dim)] max-w-[160px] truncate">{r.campaign ?? "—"}</td>
                   <td className="px-3 py-2.5 font-mono font-bold">{money(r.amount)}</td>
                   <td className="px-3 py-2.5">
@@ -627,6 +642,14 @@ export default function FinanceClient({
               /* IssueModal defaults to showing the manual form too */
             }
           }}
+        />
+      )}
+
+      {showLinkFor && (
+        <ShowLinkModal
+          job={showLinkFor}
+          onClose={() => setShowLinkFor(null)}
+          onChanged={() => router.refresh()}
         />
       )}
 
