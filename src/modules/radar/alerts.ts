@@ -448,6 +448,30 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     (p) => (p.calendar_removed || p.status === "בוטל") && !p.merged_into && issuedDocProds.has(p.id)
   );
 
+  // ---- 🟡 a document was rejected or failed and NOBODY came back to it
+  // (owner 2026-07-29). A rejected/failed queue row whose production is still
+  // live (not cancelled, not merged) and has no ISSUED document of the same
+  // type. This is the exact hole that let a rejected work order sit invisibly
+  // and spawn duplicate productions for one job — until now radar showed
+  // nothing (a rejection sets no billing_block_reason). Cancelling or merging
+  // the production is how you close it, so those are excluded; a job-anchored
+  // row (no production) counts while it is stuck.
+  const prodById = new Map(productions.map((p) => [p.id, p]));
+  const issuedByProdType = new Set(
+    pendingDocs
+      .filter((d) => d.status === "issued" && d.production_id)
+      .map((d) => `${d.production_id}:${d.doc_type}`)
+  );
+  const stuckDocs = pendingDocs.filter((d) => {
+    if (d.status !== "rejected" && d.status !== "failed") return false;
+    if (d.production_id) {
+      const p = prodById.get(d.production_id);
+      if (p && (p.status === "בוטל" || p.merged_into)) return false;
+      if (issuedByProdType.has(`${d.production_id}:${d.doc_type}`)) return false;
+    }
+    return true;
+  });
+
   const sum = (arr: { amount: number | null }[]) => arr.reduce((s, x) => s + num(x.amount), 0);
 
   const allAlerts: RadarAlert[] = [
@@ -461,6 +485,7 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     { key: "billing_blocked", severity: "yellow", title: "הפקת לקוח חסומה לחיוב", count: billingBlocked.length, amount: null, href: "/productions" },
     { key: "cancelled_with_work_order", severity: "yellow", title: "הפקה בוטלה אחרי שהונפקה הזמנת עבודה — לסגור במורנינג", count: cancelledWithWorkOrder.length, amount: null, href: "/productions" },
     { key: "pending_docs_24h", severity: "yellow", title: "מסמכים ממתינים לאישור מעל 24 שעות", count: pending24.length, amount: null, href: "/documents" },
+    { key: "stuck_rejected_doc", severity: "yellow", title: "מסמך נדחה/נכשל ולא טופל", count: stuckDocs.length, amount: null, href: "/documents" },
     { key: "accrued_ripe", severity: "yellow", title: "לקוחות עם פרקים מסוכמים לפדיון (30+ יום)", count: accruedRipeClients, amount: null, href: "/documents/accrued" },
     { key: "unknown_payment", severity: "yellow", title: "סטטוס תשלום חסר", count: unknownPayment.length, amount: sum(unknownPayment), href: "/finance?filter=unknown_payment" },
     { key: "estimated_invoice_date", severity: "yellow", title: "תאריך חשבונית משוער", count: estimatedInvoiceDate.length, amount: null, href: "/finance?filter=estimated" },
