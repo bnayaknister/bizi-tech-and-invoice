@@ -31,7 +31,7 @@ export default async function ShowsPage() {
       .from("productions")
       .select("id,show_id,record_date,status,guest,studio_hours,edit_hours")
       .order("record_date", { ascending: false }),
-    canViewMoney ? supabase.from("clients").select("id,name").order("name") : Promise.resolve({ data: [] }),
+    canViewMoney ? supabase.from("clients").select("id,name,morning_client_id").order("name") : Promise.resolve({ data: [] }),
   ]);
 
   // default_rate via the service role, money-gated — the one money column

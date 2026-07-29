@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import IconTile from "@/components/IconTile";
 import ClientCombobox from "@/components/ClientCombobox";
-import MorningClientField from "@/components/MorningClientField";
+import MorningClientReadonly from "@/components/MorningClientReadonly";
 
 export type ShowRow = {
   id: string;
@@ -33,7 +33,7 @@ export type EpisodeRow = {
   edit_hours: number | null;
 };
 
-type Client = { id: string; name: string };
+type Client = { id: string; name: string; morning_client_id?: string | null };
 
 const NIS = new Intl.NumberFormat("he-IL");
 
@@ -546,7 +546,10 @@ function ShowCard({
           {canViewMoney && (
             <div className="text-xs">
               <span className="block text-[var(--faint)] mb-1">לקוח מורנינג</span>
-              <MorningClientField clientId={show.client_id} canEdit={canEditMoney} />
+              <MorningClientReadonly
+                mapped={!!clients.find((c) => c.id === show.client_id)?.morning_client_id}
+                canEdit={canEditMoney}
+              />
             </div>
           )}
           {canViewMoney && (
@@ -991,7 +994,10 @@ function NewShowModal({
                 {clientId && (
                   <div className="mt-2">
                     <span className="block text-[var(--faint)] text-[11px] mb-1">לקוח מורנינג</span>
-                    <MorningClientField clientId={clientId} canEdit={canEditMoney} />
+                    <MorningClientReadonly
+                      mapped={!!clients.find((c) => c.id === clientId)?.morning_client_id}
+                      canEdit={canEditMoney}
+                    />
                   </div>
                 )}
               </div>
