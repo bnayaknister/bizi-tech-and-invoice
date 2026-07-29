@@ -14,7 +14,7 @@ export default async function SettingsPage() {
 
   const supabase = createClient();
   const [{ data: settings }, { data: events }] = await Promise.all([
-    supabase.from("app_settings").select("calendar_sync_enabled,updated_at").eq("id", true).maybeSingle(),
+    supabase.from("app_settings").select("calendar_sync_enabled,accountant_email,updated_at").eq("id", true).maybeSingle(),
     supabase
       .from("events")
       .select("event_type,payload,created_at")
@@ -37,7 +37,11 @@ export default async function SettingsPage() {
     <div className="min-h-screen">
       <AppHeader profile={profile} />
       <main>
-        <SettingsClient calendarSyncEnabled={settings?.calendar_sync_enabled ?? false} lastSync={lastSync} />
+        <SettingsClient
+          calendarSyncEnabled={settings?.calendar_sync_enabled ?? false}
+          accountantEmail={settings?.accountant_email ?? null}
+          lastSync={lastSync}
+        />
       </main>
     </div>
   );

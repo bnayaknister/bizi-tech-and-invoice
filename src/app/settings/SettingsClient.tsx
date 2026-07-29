@@ -8,11 +8,15 @@ export type LastSync = { at: string; source: "cron" | "manual"; created: number 
 
 const WARNING_TEXT = "הסריקה תרוץ כל בוקר 06:00 ותכניס הקלטות של אותו יום, לפי aliases של התוכניות.";
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 export default function SettingsClient({
   calendarSyncEnabled,
+  accountantEmail,
   lastSync,
 }: {
   calendarSyncEnabled: boolean;
+  accountantEmail: string | null;
   lastSync: LastSync | null;
 }) {
   const router = useRouter();
@@ -22,6 +26,31 @@ export default function SettingsClient({
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [syncResult, setSyncResult] = useState<string | null>(null);
+  const [acctEmail, setAcctEmail] = useState(accountantEmail ?? "");
+  const [savingAcct, setSavingAcct] = useState(false);
+  const [acctSaved, setAcctSaved] = useState(false);
+
+  const acctDirty = acctEmail.trim() !== (accountantEmail ?? "");
+  const acctInvalid = acctEmail.trim() !== "" && !EMAIL_RE.test(acctEmail.trim());
+
+  async function saveAccountant() {
+    setSavingAcct(true);
+    setError(null);
+    setAcctSaved(false);
+    const res = await fetch("/api/settings/accountant-email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: acctEmail.trim() }),
+    });
+    setSavingAcct(false);
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      setError(d.error ?? "העדכון נכשל");
+      return;
+    }
+    setAcctSaved(true);
+    router.refresh();
+  }
 
   async function setSyncEnabled(next: boolean) {
     setToggling(true);
@@ -148,6 +177,35 @@ export default function SettingsClient({
             פתח מיפוי →
           </button>
         </div>
+      </section>
+
+      <section className="glass-card-secondary mt-4" style={{ padding: "18px 20px" }}>
+        <h2 className="text-sm font-bold">מייל הנהלת חשבונות</h2>
+        <p className="text-xs text-[var(--faint)] mt-0.5 mb-3">
+          נמען ברירת המחדל בשליחת מסמכים: חשבון עסקה נשלח ללקוח + לכתובת הזו, חשבונית מס/קבלה לכתובת הזו בלבד. שירי יכולה לשנות לפני כל שליחה.
+        </p>
+        <div className="flex items-center gap-2">
+          <input
+            type="email"
+            dir="ltr"
+            value={acctEmail}
+            onChange={(e) => {
+              setAcctEmail(e.target.value);
+              setAcctSaved(false);
+            }}
+            placeholder="billing@example.com"
+            className="flex-1 bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-sm outline-none focus:border-[var(--violet-light)]"
+          />
+          <button
+            onClick={saveAccountant}
+            disabled={savingAcct || !acctDirty || acctInvalid}
+            className="text-xs font-bold rounded-xl px-4 py-2 border border-[var(--rule2)] shrink-0 disabled:opacity-40"
+          >
+            {savingAcct ? "שומר…" : "שמור"}
+          </button>
+        </div>
+        {acctInvalid && <div className="text-[11px] text-[var(--peak)] mt-1.5">כתובת מייל לא תקינה</div>}
+        {acctSaved && !acctDirty && <div className="text-[11px] text-[var(--green)] mt-1.5">נשמר</div>}
       </section>
 
       {confirming && (
