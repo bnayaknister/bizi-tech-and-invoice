@@ -15,7 +15,7 @@ export default async function RegistryPage() {
 
   const admin = createAdminClient();
   const BASE_COLS =
-    "id,morning_doc_number,type,status,client_id,morning_client_name,amount,currency," +
+    "id,morning_doc_id,morning_doc_number,type,status,client_id,morning_client_name,amount,currency," +
     "document_date,pdf_url,source,production_id,job_id,clients(name),productions(podcast_name)";
   // cancelled_at (0043) + archived_at (0045) columns — read them, but fall back
   // to the base columns if a migration isn't applied yet so the screen keeps
@@ -30,6 +30,7 @@ export default async function RegistryPage() {
 
   const rows: DocRow[] = ((data ?? []) as unknown as Array<Record<string, unknown>>).map((d) => ({
     id: d.id as string,
+    morning_doc_id: (d.morning_doc_id as string | null) ?? null,
     number: (d.morning_doc_number as string | null) ?? null,
     type: d.type as number,
     tab: registryTabForType(d.type as number),

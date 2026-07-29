@@ -12,6 +12,7 @@ const isBilling = (t: number) => BILLING_TYPES.includes(t);
 
 export type DocRow = {
   id: string;
+  morning_doc_id: string | null;
   number: string | null;
   type: number;
   tab: RegistryTab;
@@ -332,13 +333,30 @@ export default function RegistryClient({
                     </span>
                   </td>
                   <td className="py-2 px-2" onClick={(e) => e.stopPropagation()}>
-                    {r.pdf_url ? (
-                      <a href={r.pdf_url} target="_blank" rel="noopener noreferrer" className="text-[var(--signal)] underline">
-                        פתח
-                      </a>
-                    ) : (
-                      "—"
-                    )}
+                    <div className="flex items-center gap-2">
+                      {r.pdf_url ? (
+                        <a href={r.pdf_url} target="_blank" rel="noopener noreferrer" className="text-[var(--signal)] underline">
+                          פתח
+                        </a>
+                      ) : (
+                        "—"
+                      )}
+                      {/* Deep link to the document in Morning's own UI — the only
+                          way to re-send an already-issued document (the API has
+                          no resend endpoint). Pattern verified empirically by the
+                          owner 2026-07-29. */}
+                      {r.morning_doc_id && (
+                        <a
+                          href={`https://app.greeninvoice.co.il/incomes/documents/${r.morning_doc_id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[var(--faint)] underline"
+                          title="פתח במורנינג — לשליחה חוזרת"
+                        >
+                          מורנינג ↗
+                        </a>
+                      )}
+                    </div>
                   </td>
                   <td className="py-2 px-2" onClick={(e) => e.stopPropagation()}>
                     {tab === "archived" ? (
