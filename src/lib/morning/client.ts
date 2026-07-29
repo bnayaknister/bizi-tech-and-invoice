@@ -165,6 +165,25 @@ export async function updateClient(
   return { dryRun: false };
 }
 
+/**
+ * The LIVE email list of one Morning client (GET /clients/{id}). The snapshot
+ * in documents.raw.client.emails is stale (owner: כפיר ארביב empty in 10288,
+ * present in 40283), so the recipient picker must read this instead. Read-only,
+ * runs for real even in DRY_RUN (a read writes nothing). Returns ok:false on any
+ * failure so the caller degrades (accountant-only) rather than blocking issuance.
+ */
+export async function getClientEmails(morningClientId: string): Promise<{ emails: string[]; ok: boolean }> {
+  try {
+    const c = await request<{ emails?: unknown }>(`/clients/${encodeURIComponent(morningClientId)}`, { method: "GET" });
+    const emails = Array.isArray(c.emails)
+      ? c.emails.filter((e): e is string => typeof e === "string" && e.trim() !== "")
+      : [];
+    return { emails, ok: true };
+  } catch {
+    return { emails: [], ok: false };
+  }
+}
+
 export type MorningSearchDoc = {
   id: string;
   type: number;

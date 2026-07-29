@@ -47,7 +47,14 @@ const present = (v: unknown): boolean => v != null && String(v).trim() !== "";
 export async function issuePendingDocument(
   admin: SupabaseClient,
   row: PendingRow,
-  actorId: string
+  actorId: string,
+  // The recipients to email this document to (owner spec 2026-07-29). Injected
+  // into client.emails — the only way Morning emails a document, and only at
+  // creation. An empty array = issue but send to NOBODY (a work order default);
+  // undefined = caller opted out of the feature entirely (client.emails and
+  // sent_to are left untouched). Recorded in sent_to since Morning has no
+  // send-log. The caller (the review route) has already capped/sanitized it.
+  recipients?: string[]
 ): Promise<IssueOutcome> {
   // ---- iron rule 1, before ------------------------------------------------
   if (row.morning_doc_id) {
@@ -65,7 +72,15 @@ export async function issuePendingDocument(
   // path, because this is the ONLY place that calls Morning. The work date
   // stays in the line description (built at enqueue). Owner bug 2026-07-29.
   const docDate = todayInIsrael();
-  const sent: MorningDocumentRequest = { ...row.payload, date: docDate };
+  const sent: MorningDocumentRequest = {
+    ...row.payload,
+    date: docDate,
+    // recipients override client.emails so Morning emails exactly who the
+    // bookkeeper chose; undefined leaves the payload's emails as-is.
+    ...(recipients !== undefined
+      ? { client: { ...row.payload.client, emails: recipients } }
+      : {}),
+  };
   await admin.from("events").insert({
     entity_type: "pending_document",
     entity_id: row.id,
@@ -146,6 +161,8 @@ export async function issuePendingDocument(
       pdf_url: pdfUrl,
       issued_at: issuedAt,
       last_error: null,
+      // our send record (Morning has no send-log). [] = sent to nobody.
+      ...(recipients !== undefined ? { sent_to: recipients } : {}),
     })
     .eq("id", row.id);
   if (updErr) {
@@ -189,6 +206,7 @@ export async function issuePendingDocument(
     // only send the column when there is a bundle, so the non-bundle path
     // stays writable before 0044 is applied
     ...(isBundle ? { bundle_job_ids: bundleJobIds } : {}),
+    ...(recipients !== undefined ? { sent_to: recipients } : {}),
     raw: result,
   });
 
@@ -248,6 +266,19 @@ export async function issuePendingDocument(
       returned: result,
     },
   });
+
+  // Send log (owner spec 2026-07-29): a distinct event when the document was
+  // actually emailed to someone, so "what was sent, to whom, when" is auditable
+  // even though Morning offers no send-log. Nobody selected → no send event.
+  if (recipients && recipients.length > 0) {
+    await admin.from("events").insert({
+      entity_type: "pending_document",
+      entity_id: row.id,
+      event_type: "document_sent",
+      actor_id: actorId,
+      payload: { doc_type: row.doc_type, morning_doc_number: docNumber, recipients },
+    });
+  }
 
   return { ok: true, morningDocId, docNumber, pdfUrl, dryRun };
 }

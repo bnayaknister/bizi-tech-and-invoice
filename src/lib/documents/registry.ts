@@ -24,6 +24,10 @@ export type UpsertDoc = {
   production_id?: string | null;
   job_id?: string | null;
   bundle_job_ids?: string[] | null;
+  // the recipients we asked Morning to email this document to (0048) — mirrored
+  // here at issue so the registry shows them; omitted by the pull, so it never
+  // clobbers a value we set.
+  sent_to?: string[] | null;
   raw?: unknown;
 };
 

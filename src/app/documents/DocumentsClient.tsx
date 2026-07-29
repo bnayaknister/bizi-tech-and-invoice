@@ -38,6 +38,70 @@ const isTax = (t: PendingDocType) => TAX_TYPES.includes(t);
 const money = (n: number | null) =>
   n === null ? "—" : new Intl.NumberFormat("he-IL", { style: "currency", currency: "ILS", maximumFractionDigits: 0 }).format(n);
 
+// The recipient picker (owner spec 2026-07-29). Morning emails a document only
+// at creation, to client.emails, capped at 3. The bookkeeper picks who from the
+// client's LIVE Morning emails + the local accountant default. Reused by both
+// the non-tax approve modal and the tax-confirm modal.
+type RecipientData = { clientEmails: string[]; clientFetchFailed: boolean; accountantEmail: string | null; cap: number };
+
+function buildRecipientOptions(data: RecipientData): { email: string; isAccountant: boolean }[] {
+  const seen = new Set<string>();
+  const out: { email: string; isAccountant: boolean }[] = [];
+  const push = (email: string | null, isAccountant: boolean) => {
+    const e = (email ?? "").trim();
+    if (!e || seen.has(e.toLowerCase())) return;
+    seen.add(e.toLowerCase());
+    out.push({ email: e, isAccountant });
+  };
+  push(data.accountantEmail, true); // accountant first — pinned within the cap
+  for (const e of data.clientEmails) push(e, false);
+  return out;
+}
+
+function RecipientPicker({
+  loading,
+  data,
+  selected,
+  onToggle,
+}: {
+  loading: boolean;
+  data: RecipientData | null;
+  selected: string[];
+  onToggle: (email: string) => void;
+}) {
+  if (loading) return <div className="text-xs text-[var(--faint)] py-4 text-center">טוען נמענים…</div>;
+  if (!data) return null;
+  const options = buildRecipientOptions(data);
+  const has = (email: string) => selected.some((e) => e.toLowerCase() === email.toLowerCase());
+  return (
+    <div className="mb-3">
+      {data.clientFetchFailed && (
+        <div className="text-[11px] text-[var(--warn)] mb-2">לא ניתן למשוך מיילי לקוח ממורנינג — ניתן לשלוח להנה״ח בלבד.</div>
+      )}
+      {options.length === 0 ? (
+        <div className="text-[11px] text-[var(--faint)]">אין כתובות מייל זמינות — המסמך יונפק בלי שליחה.</div>
+      ) : (
+        <div className="space-y-1.5">
+          {options.map((o) => {
+            const checked = has(o.email);
+            const disabled = !checked && selected.length >= data.cap;
+            return (
+              <label key={o.email} className={`flex items-center gap-2 text-sm ${disabled ? "opacity-40" : ""}`}>
+                <input type="checkbox" checked={checked} disabled={disabled} onChange={() => onToggle(o.email)} />
+                <span className="truncate flex-1">{o.email}</span>
+                {o.isAccountant && <span className="text-[10px] text-[var(--faint)] shrink-0">הנה״ח</span>}
+              </label>
+            );
+          })}
+        </div>
+      )}
+      <div className="text-[11px] text-[var(--faint)] mt-2">
+        {selected.length === 0 ? "לא יישלח לאף אחד — המסמך רק יונפק." : `נבחרו ${selected.length}/${data.cap}`} · מורנינג מגביל ל-3 נמענים.
+      </div>
+    </div>
+  );
+}
+
 export default function DocumentsClient({
   rows,
   canApprove,
@@ -61,6 +125,54 @@ export default function DocumentsClient({
   const [editing, setEditing] = useState<string | null>(null);
   const [editAmount, setEditAmount] = useState<string>("");
   const [editDesc, setEditDesc] = useState<string>("");
+  // recipient picker (owner spec 2026-07-29). recipientFor drives the non-tax
+  // modal; the tax-confirm modal reuses the same recipientData/selectedEmails.
+  const [recipientFor, setRecipientFor] = useState<PendingDocRow | null>(null);
+  const [recipientData, setRecipientData] = useState<RecipientData | null>(null);
+  const [selectedEmails, setSelectedEmails] = useState<string[]>([]);
+  const [loadingRecipients, setLoadingRecipients] = useState(false);
+
+  async function loadRecipients(r: PendingDocRow) {
+    setRecipientData(null);
+    setSelectedEmails([]);
+    setLoadingRecipients(true);
+    try {
+      const res = await fetch(`/api/documents/pending/${r.id}/recipients`);
+      const b = await res.json();
+      if (!res.ok) {
+        setError(b.error ?? "טעינת נמענים נכשלה");
+        return;
+      }
+      setRecipientData({
+        clientEmails: b.clientEmails ?? [],
+        clientFetchFailed: !!b.clientFetchFailed,
+        accountantEmail: b.accountantEmail ?? null,
+        cap: b.cap ?? 3,
+      });
+      setSelectedEmails(b.defaultSelected ?? []);
+    } catch {
+      setError("שגיאת רשת");
+    } finally {
+      setLoadingRecipients(false);
+    }
+  }
+
+  function toggleEmail(email: string) {
+    setSelectedEmails((cur) => {
+      const has = cur.some((e) => e.toLowerCase() === email.toLowerCase());
+      if (has) return cur.filter((e) => e.toLowerCase() !== email.toLowerCase());
+      if (cur.length >= (recipientData?.cap ?? 3)) return cur; // hard cap 3
+      return [...cur, email];
+    });
+  }
+
+  // non-tax: the recipient modal's confirm → issue with the chosen recipients
+  function submitRecipients() {
+    const r = recipientFor;
+    if (!r) return;
+    setRecipientFor(null);
+    send([r.id], "approve", { recipients: selectedEmails });
+  }
 
   const groups = useMemo(() => {
     const g = new Map<PendingDocType, PendingDocRow[]>();
@@ -113,6 +225,9 @@ export default function DocumentsClient({
       }
       setSelected(new Set());
       setConfirming(null);
+      setRecipientFor(null);
+      setRecipientData(null);
+      setSelectedEmails([]);
       router.refresh();
     } catch {
       setError("שגיאת רשת");
@@ -122,12 +237,17 @@ export default function DocumentsClient({
   }
 
   function approveOne(r: PendingDocRow) {
+    // both paths pick recipients first (owner spec 2026-07-29): a tax document
+    // folds the picker into its own confirmation modal; everything else gets the
+    // dedicated recipient modal.
     if (isTax(r.doc_type)) {
       setTaxVariant(r.doc_type === "tax_invoice" ? "tax_invoice" : "tax_receipt");
       setConfirming(r);
+      void loadRecipients(r);
       return;
     }
-    send([r.id], "approve");
+    setRecipientFor(r);
+    void loadRecipients(r);
   }
 
   function reject(r: PendingDocRow) {
@@ -387,13 +507,17 @@ export default function DocumentsClient({
                 </select>
               </label>
             </div>
+            <div className="border-t border-[var(--rule)] pt-3 mb-2">
+              <div className="text-xs font-bold mb-2">שליחה במייל</div>
+              <RecipientPicker loading={loadingRecipients} data={recipientData} selected={selectedEmails} onToggle={toggleEmail} />
+            </div>
             <p className="text-[11px] text-[var(--peak)] mb-4">
               מסמך מס אינו הפיך מהאפליקציה. ביטול מחייב חשבונית זיכוי במורנינג ישירות.
             </p>
             <div className="flex gap-2">
               <button
                 disabled={busy}
-                onClick={() => send([confirming.id], "approve", { confirmed: true, tax_variant: taxVariant })}
+                onClick={() => send([confirming.id], "approve", { confirmed: true, tax_variant: taxVariant, recipients: selectedEmails })}
                 className="flex-1 bg-[var(--signal)] text-white text-xs font-bold rounded-xl px-4 py-2 disabled:opacity-40"
               >
                 כן, הנפק
@@ -401,6 +525,35 @@ export default function DocumentsClient({
               <button
                 disabled={busy}
                 onClick={() => setConfirming(null)}
+                className="flex-1 text-xs rounded-xl px-4 py-2 border border-[var(--rule)]"
+              >
+                ביטול
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* recipient picker for a non-tax document (owner spec 2026-07-29) */}
+      {recipientFor && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
+          <div className="bg-[var(--bg)] border border-[var(--rule)] rounded-2xl p-5 max-w-md w-full">
+            <h3 className="font-bold text-sm mb-1">שליחת המסמך במייל</h3>
+            <div className="text-xs text-[var(--faint)] mb-3">
+              {recipientFor.client_name} · {TYPE_LABEL[recipientFor.doc_type]}
+            </div>
+            <RecipientPicker loading={loadingRecipients} data={recipientData} selected={selectedEmails} onToggle={toggleEmail} />
+            <div className="flex gap-2">
+              <button
+                disabled={busy || loadingRecipients}
+                onClick={submitRecipients}
+                className="flex-1 bg-[var(--signal)] text-white text-xs font-bold rounded-xl px-4 py-2 disabled:opacity-40"
+              >
+                {selectedEmails.length ? "אשר ושלח" : "אשר בלי שליחה"}
+              </button>
+              <button
+                disabled={busy}
+                onClick={() => setRecipientFor(null)}
                 className="flex-1 text-xs rounded-xl px-4 py-2 border border-[var(--rule)]"
               >
                 ביטול

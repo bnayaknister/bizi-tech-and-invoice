@@ -4,6 +4,12 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { issuePendingDocument, type PendingRow } from "@/lib/documents/issue";
 import { isDryRun, morningEnv } from "@/lib/morning/client";
 import type { PendingDocType } from "@/lib/morning/types";
+import {
+  getAccountantEmail,
+  fetchClientEmails,
+  resolveDefaultRecipients,
+  sanitizeRecipients,
+} from "@/lib/documents/recipients";
 
 // Approve / reject queued documents. Approving is what makes a document
 // real, so this route is the last gate before Morning.
@@ -36,6 +42,9 @@ export async function POST(request: Request) {
     confirmed?: boolean;
     // tax documents only: which of the two the bookkeeper chose in the modal
     tax_variant?: "tax_invoice" | "tax_receipt";
+    // single-approve only: the recipients the bookkeeper chose in the picker.
+    // For bulk (>1) we ignore this and apply the per-doc-type defaults instead.
+    recipients?: string[];
   };
 
   // Dedupe first. The tax-document guard below counts documents, and a
@@ -107,6 +116,14 @@ export async function POST(request: Request) {
     }
   }
 
+  // Recipients (owner spec 2026-07-29). A single approve carries the picker's
+  // explicit choice; a bulk approve has no picker, so each row falls back to its
+  // per-doc-type default (accountant held locally, client emails read live).
+  // A failed email read degrades to accountant-only — it never blocks issuance.
+  const accountantEmail = await getAccountantEmail(admin);
+  const providedRecipients =
+    ids.length === 1 && Array.isArray(body.recipients) ? sanitizeRecipients(body.recipients) : null;
+
   const results: Array<{ id: string; ok: boolean; detail: string }> = [];
   for (const r of rows) {
     if (r.status !== "pending" && r.status !== "failed") {
@@ -134,7 +151,17 @@ export async function POST(request: Request) {
       .update({ status: "approved", approved_by: user.id, approved_at: new Date().toISOString() })
       .eq("id", r.id);
 
-    const outcome = await issuePendingDocument(admin, row, user.id);
+    // resolve recipients for THIS row (its doc_type may have just been rewritten
+    // by the tax-variant switch above, so read row.doc_type, not r.doc_type)
+    let recipients: string[];
+    if (providedRecipients) {
+      recipients = providedRecipients;
+    } else {
+      const { emails } = await fetchClientEmails(admin, row.client_id);
+      recipients = resolveDefaultRecipients(row.doc_type, emails, accountantEmail);
+    }
+
+    const outcome = await issuePendingDocument(admin, row, user.id, recipients);
     results.push({
       id: r.id,
       ok: outcome.ok,
