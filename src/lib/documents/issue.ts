@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createDocument, MorningError, isDryRun, morningEnv } from "@/lib/morning/client";
 import { DOC_TYPE_TO_MORNING_CODE, type MorningDocumentRequest, type PendingDocType } from "@/lib/morning/types";
 import { upsertDocument } from "@/lib/documents/registry";
+import { todayInIsrael } from "@/lib/dates";
 
 // Turning an APPROVED queue row into a real document. This is the only
 // place in the app that causes a document to exist in Morning.
@@ -56,7 +57,15 @@ export async function issuePendingDocument(
     return { ok: false, error: "המסמך כבר הונפק", alreadyIssued: true };
   }
 
-  const sent = row.payload;
+  // A document's date is its ISSUANCE date — today, in Israel time — never the
+  // recording/job date baked into the payload at enqueue time (which can be a
+  // month old and makes Morning reject it: "התאריך… מוקדם מדי"). Stamp it here,
+  // authoritatively, so a document approved weeks after it was queued still
+  // dates to the real day it goes out. Covers every doc type and every enqueue
+  // path, because this is the ONLY place that calls Morning. The work date
+  // stays in the line description (built at enqueue). Owner bug 2026-07-29.
+  const docDate = todayInIsrael();
+  const sent: MorningDocumentRequest = { ...row.payload, date: docDate };
   await admin.from("events").insert({
     entity_type: "pending_document",
     entity_id: row.id,
@@ -172,7 +181,7 @@ export async function issuePendingDocument(
     type: DOC_TYPE_TO_MORNING_CODE[row.doc_type],
     client_id: row.client_id,
     amount: row.amount,
-    document_date: issuedAt.slice(0, 10),
+    document_date: docDate,
     pdf_url: pdfUrl,
     source: "app",
     production_id: row.production_id,

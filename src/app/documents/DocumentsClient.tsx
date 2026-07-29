@@ -327,7 +327,7 @@ export default function DocumentsClient({
                           onClick={() => approveOne(r)}
                           className="bg-[var(--signal)] text-white text-xs font-bold rounded-xl px-4 py-1.5 disabled:opacity-40"
                         >
-                          אשר
+                          {r.status === "failed" ? "נסה שוב" : "אשר"}
                         </button>
                         <button
                           disabled={busy}

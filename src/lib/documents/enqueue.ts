@@ -6,6 +6,7 @@ import {
   type MorningDocumentRequest,
   type PendingDocType,
 } from "@/lib/morning/types";
+import { todayInIsrael } from "@/lib/dates";
 
 // Enqueueing, not issuing. Nothing in this file talks to Morning — it
 // decides whether a document is OWED, builds the exact payload that would
@@ -124,7 +125,6 @@ export function buildDocumentPayload(args: {
   clientName: string | null;
   description: string;
   amount: number;
-  date?: string | null;
   // approved add-ons become one income row each, after the base line
   // (owner spec 2026-07-21) — the deal invoice bills base + upsells
   extraLines?: ExtraLine[];
@@ -134,7 +134,11 @@ export function buildDocumentPayload(args: {
     lang: "he",
     currency: "ILS",
     vatType: VAT_TYPE_DEFAULT,
-    date: args.date ?? undefined,
+    // the ISSUANCE date, not the recording/job date — the work date is in the
+    // description. issue.ts re-stamps today at the moment it calls Morning, so
+    // a delayed approval is still correct; this keeps the queue preview honest
+    // for the common same-day case. Owner bug 2026-07-29 (see @/lib/dates).
+    date: todayInIsrael(),
     description: args.description,
     client: {
       id: args.morningClientId,
@@ -253,7 +257,6 @@ export async function enqueueDocument(
     clientName: (client as ClientForBilling | null)?.name ?? null,
     description,
     amount: baseAmount, // the base line; add-ons are appended as their own rows
-    date: production.record_date,
     extraLines,
   });
 

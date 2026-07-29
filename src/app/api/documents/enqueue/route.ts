@@ -87,7 +87,6 @@ export async function POST(request: Request) {
     clientName: (client.name as string | null) ?? null,
     description,
     amount,
-    date: (job.date as string | null) ?? null,
   });
 
   const { data: inserted, error } = await admin

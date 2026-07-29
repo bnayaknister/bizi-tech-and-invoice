@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { DOC_TYPE_TO_MORNING_CODE, VAT_TYPE_DEFAULT, type MorningDocumentRequest } from "@/lib/morning/types";
+import { todayInIsrael } from "@/lib/dates";
 
 // Bundling: several per-episode documents folded into ONE Morning document with
 // a line per episode. Two shapes share this file so redemption (owner spec
@@ -90,6 +91,7 @@ export async function createDealInvoiceBundle(
     lang: "he",
     currency: "ILS",
     vatType: VAT_TYPE_DEFAULT,
+    date: todayInIsrael(), // issuance date, not the work dates (issue.ts re-stamps)
     description: `חשבון עסקה מאוגד — ${primaryClient.name ?? ""} (${ordered.length} עבודות)`.trim(),
     client: { id: morningClientId, name: (primaryClient.name as string | null) ?? undefined, add: false },
     income: ordered.map((j) => ({
@@ -166,6 +168,7 @@ export async function createWorkOrderBundle(
     lang: "he",
     currency: "ILS",
     vatType: VAT_TYPE_DEFAULT,
+    date: todayInIsrael(), // issuance date, not the work dates (issue.ts re-stamps)
     description: `הזמנת עבודה מאוגדת — ${baseClient.name ?? ""} (${rows.length} פרקים)`.trim(),
     client: { id: baseClient.id, name: baseClient.name, add: false },
     income,
