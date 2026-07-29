@@ -7,16 +7,19 @@ The live-client-email read hits Morning GET /clients/{id} with a FAKE id, which
 fails fast and exercises the graceful-degrade path. Run against :3100 launched
 with MORNING_DRY_RUN=true.
 
-Proves:
-  1. app_settings.accountant_email seeded by 0048
-  2. recipients endpoint defaults: work_order -> [], deal_invoice -> [accountant];
-     a failed client fetch is reported (clientFetchFailed) and never blocks
+Proves (owner correction 2026-07-29 — defaults are the CLIENT's emails, our
+accountant address is only an optional extra, never a default):
+  1. app_settings.accountant_email still seeded/kept by 0048
+  2. recipients endpoint: defaults are client emails only; the accountant address
+     is RETURNED as an option but NOT in defaultSelected; a fake client (no live
+     emails) yields empty defaults and clientFetchFailed, never blocking
   3. single approve with explicit recipients -> capped+deduped to 3, injected into
      the Morning request's client.emails, stored in pending_documents.sent_to +
      documents.sent_to, and a document_sent audit event
   4. work order approved with no recipients -> sent to NOBODY (sent_to = []), no
      document_sent event
-  5. deal invoice approved with no recipients -> server default = accountant only
+  5. deal invoice, no recipients, no client emails -> nobody (accountant NOT
+     defaulted): sent_to = []
 Self-cleaning in FK order.
 """
 import base64, json, os, sys, time, uuid
@@ -93,14 +96,18 @@ try:
     wo1 = wo_of(p1)
     rc = requests.get(f"{APP}/api/documents/pending/{wo1['id']}/recipients", cookies=ck).json()
     check("2 work_order default = nobody", rc.get("defaultSelected") == [] and rc.get("docType") == "work_order")
-    check("2 accountant + clientFetchFailed reported", rc.get("accountantEmail") == ACCT and rc.get("clientFetchFailed") is True)
+    check("2 accountant returned as an OPTION + clientFetchFailed reported",
+          rc.get("accountantEmail") == ACCT and rc.get("clientFetchFailed") is True)
 
-    # deal invoice: approve production -> deal_invoice enqueued -> its default = [accountant]
+    # deal invoice: approve production -> deal_invoice enqueued -> default = client
+    # emails only. Fake client has no live emails, so default is empty AND the
+    # accountant is offered but NOT pre-selected (the core of the correction).
     requests.post(f"{APP}/api/productions/{p1}", cookies=ck, headers={"Content-Type": "application/json"},
                   json={"status": 'אושר_ע"י_לקוח'})
     di = get(f"pending_documents?production_id=eq.{p1}&doc_type=eq.deal_invoice&select=id")[0]
     rc2 = requests.get(f"{APP}/api/documents/pending/{di['id']}/recipients", cookies=ck).json()
-    check("2 deal_invoice default = [accountant]", rc2.get("defaultSelected") == [ACCT])
+    check("2 deal_invoice default = client emails only (empty for fake client)", rc2.get("defaultSelected") == [])
+    check("2 accountant offered but NOT defaulted", rc2.get("accountantEmail") == ACCT and ACCT not in (rc2.get("defaultSelected") or []))
 
     # 3. single approve work order with explicit recipients -> cap 3 + dedup + inject + log
     dupey = ["a@x.com", "b@x.com", "c@x.com", "d@x.com", "A@x.com"]  # 5 with a dup -> 3
@@ -128,11 +135,12 @@ try:
     ds2 = get(f"events?entity_id=eq.{wo2['id']}&event_type=eq.document_sent&select=id")
     check("4 no document_sent event", ds2 == [])
 
-    # 5. deal invoice approved with NO recipients -> server default = accountant only
+    # 5. deal invoice approved with NO recipients and no client emails -> nobody
+    #    (accountant is NOT a default). sent_to = [].
     approve([di["id"]], {})
     rowdi = sent_of(di["id"])
     if rowdi["morning_doc_id"]: mdids.append(rowdi["morning_doc_id"])
-    check("5 deal invoice default sent_to = [accountant]", rowdi["sent_to"] == [ACCT])
+    check("5 deal invoice default sent_to = [] (accountant not defaulted)", rowdi["sent_to"] == [])
 
 finally:
     for md in mdids:

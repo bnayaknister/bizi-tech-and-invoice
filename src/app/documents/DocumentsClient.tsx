@@ -53,8 +53,8 @@ function buildRecipientOptions(data: RecipientData): { email: string; isAccounta
     seen.add(e.toLowerCase());
     out.push({ email: e, isAccountant });
   };
-  push(data.accountantEmail, true); // accountant first — pinned within the cap
-  for (const e of data.clientEmails) push(e, false);
+  for (const e of data.clientEmails) push(e, false); // client emails are the defaults
+  push(data.accountantEmail, true); // our accountant copy — an optional extra, last
   return out;
 }
 
@@ -76,7 +76,7 @@ function RecipientPicker({
   return (
     <div className="mb-3">
       {data.clientFetchFailed && (
-        <div className="text-[11px] text-[var(--warn)] mb-2">לא ניתן למשוך מיילי לקוח ממורנינג — ניתן לשלוח להנה״ח בלבד.</div>
+        <div className="text-[11px] text-[var(--warn)] mb-2">לא ניתן למשוך מיילי לקוח ממורנינג — בחר נמענים ידנית או הנפק בלי שליחה.</div>
       )}
       {options.length === 0 ? (
         <div className="text-[11px] text-[var(--faint)]">אין כתובות מייל זמינות — המסמך יונפק בלי שליחה.</div>
@@ -89,7 +89,7 @@ function RecipientPicker({
               <label key={o.email} className={`flex items-center gap-2 text-sm ${disabled ? "opacity-40" : ""}`}>
                 <input type="checkbox" checked={checked} disabled={disabled} onChange={() => onToggle(o.email)} />
                 <span className="truncate flex-1">{o.email}</span>
-                {o.isAccountant && <span className="text-[10px] text-[var(--faint)] shrink-0">הנה״ח</span>}
+                {o.isAccountant && <span className="text-[10px] text-[var(--faint)] shrink-0">עותק להנה״ח שלנו</span>}
               </label>
             );
           })}

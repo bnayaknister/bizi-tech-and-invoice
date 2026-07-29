@@ -32,9 +32,11 @@ export async function GET(_request: Request, { params }: { params: { id: string 
   if (!row) return NextResponse.json({ error: "המסמך לא נמצא" }, { status: 404 });
 
   const docType = row.doc_type as PendingDocType;
+  // accountantEmail is returned as an OPTIONAL extra checkbox (owner correction
+  // 2026-07-29) — it is deliberately NOT part of defaultSelected.
   const accountantEmail = await getAccountantEmail(admin);
   const { emails, ok } = await fetchClientEmails(admin, row.client_id as string | null);
-  const defaultSelected = resolveDefaultRecipients(docType, emails, accountantEmail);
+  const defaultSelected = resolveDefaultRecipients(docType, emails);
 
   return NextResponse.json({
     docType,

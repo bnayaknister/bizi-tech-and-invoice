@@ -5,7 +5,6 @@ import { issuePendingDocument, type PendingRow } from "@/lib/documents/issue";
 import { isDryRun, morningEnv } from "@/lib/morning/client";
 import type { PendingDocType } from "@/lib/morning/types";
 import {
-  getAccountantEmail,
   fetchClientEmails,
   resolveDefaultRecipients,
   sanitizeRecipients,
@@ -118,9 +117,8 @@ export async function POST(request: Request) {
 
   // Recipients (owner spec 2026-07-29). A single approve carries the picker's
   // explicit choice; a bulk approve has no picker, so each row falls back to its
-  // per-doc-type default (accountant held locally, client emails read live).
-  // A failed email read degrades to accountant-only — it never blocks issuance.
-  const accountantEmail = await getAccountantEmail(admin);
+  // per-doc-type default = the client's live emails (accountant is not a
+  // default). A failed email read degrades to sending to nobody — never blocks.
   const providedRecipients =
     ids.length === 1 && Array.isArray(body.recipients) ? sanitizeRecipients(body.recipients) : null;
 
@@ -158,7 +156,7 @@ export async function POST(request: Request) {
       recipients = providedRecipients;
     } else {
       const { emails } = await fetchClientEmails(admin, row.client_id);
-      recipients = resolveDefaultRecipients(row.doc_type, emails, accountantEmail);
+      recipients = resolveDefaultRecipients(row.doc_type, emails);
     }
 
     const outcome = await issuePendingDocument(admin, row, user.id, recipients);

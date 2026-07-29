@@ -32,22 +32,17 @@ export function sanitizeRecipients(list: string[]): string[] {
 }
 
 /**
- * The per-doc-type DEFAULT selection:
- *   deal_invoice → client emails + accountant · tax_invoice/tax_receipt →
- *   accountant only · work_order → nobody.
- * The accountant is pinned FIRST so it survives the 3-address cap: a 3-email
- * client on a deal invoice keeps accountant + the first two client addresses.
- * It is only a default — the bookkeeper edits it in the picker before sending.
+ * The per-doc-type DEFAULT selection (owner correction 2026-07-29):
+ *   deal_invoice / tax_invoice / tax_receipt → all the CLIENT's emails (up to
+ *   the 3-address cap, in order) · work_order → nobody.
+ * Morning returns the client's emails unlabelled, so we can't tell contact from
+ * the client's own bookkeeper — the bookkeeper unchecks whoever is irrelevant.
+ * Our accountant copy (app_settings.accountant_email) is NOT a default; it's an
+ * extra checkbox in the picker, off unless the bookkeeper ticks it.
  */
-export function resolveDefaultRecipients(
-  docType: PendingDocType,
-  clientEmails: string[],
-  accountantEmail: string | null
-): string[] {
-  const acct = accountantEmail?.trim() ? [accountantEmail.trim()] : [];
+export function resolveDefaultRecipients(docType: PendingDocType, clientEmails: string[]): string[] {
   if (docType === "work_order") return [];
-  if (docType === "tax_invoice" || docType === "tax_receipt") return sanitizeRecipients(acct);
-  return sanitizeRecipients([...acct, ...clientEmails]); // deal_invoice
+  return sanitizeRecipients(clientEmails); // deal_invoice / tax_* → client emails, capped in order
 }
 
 export async function getAccountantEmail(admin: SupabaseClient): Promise<string | null> {
