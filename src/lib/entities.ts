@@ -61,7 +61,23 @@ export const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
       { key: "on_hold_since", label: "מוקפא מאז", type: "readonly", view: "any", edit: "none" },
       { key: "show_id", label: "תוכנית", type: "select", view: "any", edit: "stages", options: "shows" },
       { key: "client_id", label: "לקוח", type: "select", view: "money", edit: "money", options: "clients" },
-      { key: "kind", label: "סוג", type: "readonly", view: "money", edit: "none" },
+      // Marking a single production internal takes it out of billing entirely
+      // (checkEligibility returns applicable:false on kind<>'client', silently
+      // and correctly) — so it is money editing, not stage editing. NOTE: there
+      // is no DB guard on this column, unlike default_rate/billing_mode; this
+      // registry plus the API route are the only walls today.
+      {
+        key: "kind",
+        label: "סוג הפקה",
+        type: "select",
+        view: "money",
+        edit: "money",
+        options: [
+          { value: "client", label: "לקוח (מחויבת)" },
+          { value: "internal", label: "פנימית (לא מחויבת)" },
+          { value: "contract", label: "חוזה" },
+        ],
+      },
       { key: "notes", label: "הערות", type: "text", view: "any", edit: "either" },
     ],
   },
