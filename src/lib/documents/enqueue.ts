@@ -77,9 +77,9 @@ export async function getClientCadence(
 }
 
 /**
- * The five cumulative conditions (owner spec 2026-07-19). All must hold:
+ * The cumulative conditions (owner spec 2026-07-19). All must hold:
  *   kind='client' AND show has client_id AND client has morning_client_id
- *   AND billing_mode <> 'none' AND legacy=false
+ *   AND billing_mode='per_episode' AND legacy=false
  * Any miss returns a human-readable reason — that string is what the
  * bookkeeper reads on the radar, so it names the fix, not the rule.
  */
@@ -98,6 +98,15 @@ export function checkEligibility(
   }
   // ---- applicable but blocked: a client production that SHOULD bill ----
   if (!show) return { ok: false, applicable: true, reason: "להפקה אין תוכנית משויכת" };
+  // A contract show bills from its milestones, never per episode. Without this
+  // it fell through to the per-episode path below and would have invoiced
+  // default_rate — harmless while billing_mode was reachable only from the CSV
+  // import, live the moment the show card got a selector for it (2026-07-30).
+  // applicable:true on purpose: a contract production reaching the per-episode
+  // queue is a misconfiguration a human must see, not correct silence.
+  if (show.billing_mode === "contract") {
+    return { ok: false, applicable: true, reason: "התוכנית מחויבת לפי חוזה — החיוב מגיע מאבן דרך" };
+  }
   if (!show.client_id) return { ok: false, applicable: true, reason: "לתוכנית אין לקוח משויך" };
   if (!client) return { ok: false, applicable: true, reason: "הלקוח של התוכנית לא נמצא" };
   if (!client.morning_client_id) {
