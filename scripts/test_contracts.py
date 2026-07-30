@@ -103,21 +103,27 @@ try:
     mid = ms[0]["id"] if ms else None
     check("B2. milestone created pending", ms and ms[0]["status"] == "pending", str(ms))
 
-    r = requests.post(f"{APP}/api/contracts/milestones/{mid}/issue", cookies=tech, headers={"Content-Type": "application/json"}, json={"mode": "morning"})
+    r = requests.post(f"{APP}/api/contracts/milestones/{mid}/issue", cookies=tech, headers={"Content-Type": "application/json"}, json={"mode": "manual", "doc_number": "MS-9001"})
     check("C2. technician issue milestone -> 403", r.status_code == 403, str(r.status_code))
 
+    # mode 'morning' was removed (2026-07-30) — this route only records a
+    # document already issued in Morning. Real issuance is /documents.
     r = requests.post(f"{APP}/api/contracts/milestones/{mid}/issue", cookies=money, headers={"Content-Type": "application/json"}, json={"mode": "morning"})
+    check("B3. mode=morning refused -> 400", r.status_code == 400, f"{r.status_code} {r.text[:120]}")
+    check("B3b. refusal points at /documents", "/documents" in r.text, r.text[:160])
+
+    r = requests.post(f"{APP}/api/contracts/milestones/{mid}/issue", cookies=money, headers={"Content-Type": "application/json"}, json={"mode": "manual", "doc_number": "MS-9001", "issued_at": "2026-07-02"})
     ok = r.status_code == 200
     d = r.json() if ok else {}
-    check("B3. issue milestone via Morning accepted", ok, r.text[:120])
-    check("B4. dry_run true", d.get("dry_run") is True, str(d))
+    check("B4. record milestone invoice accepted", ok, r.text[:120])
     if d.get("job_id"): job_ids.append(d["job_id"])
     ms2 = requests.get(rest(f"contract_milestones?id=eq.{mid}&select=status,job_id"), headers=ADMIN).json()[0]
     check("B5. milestone -> invoiced + job linked", ms2["status"] == "invoiced" and ms2["job_id"], str(ms2))
     job = requests.get(rest(f"jobs?id=eq.{ms2['job_id']}&select=contract_id,client_id,invoice_biz,amount"), headers=ADMIN).json()[0]
     check("B6. linked job has contract_id + invoice_biz + amount", job["contract_id"] == contract_id and job["invoice_biz"] and job["amount"] == 60000, str(job))
-    inv = requests.get(rest(f"invoices?job_id=eq.{ms2['job_id']}&select=type,source"), headers=ADMIN).json()
-    check("B7. invoices row source=morning_api", any(i["type"] == "עסקה" and i["source"] == "morning_api" for i in inv), str(inv))
+    inv = requests.get(rest(f"invoices?job_id=eq.{ms2['job_id']}&select=type,source,morning_doc_id"), headers=ADMIN).json()
+    check("B7. invoices row source=manual, no morning id",
+          any(i["type"] == "עסקה" and i["source"] == "manual" and i["morning_doc_id"] is None for i in inv), str(inv))
 
 finally:
     # FK order matters (all RESTRICT): a milestone.job_id points at the

@@ -2,12 +2,18 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 
-// Issue an invoice for a contract milestone — the same two-path flow as the
-// finance screen (Morning dry-run OR manual), but here it also CREATES the
-// linked job (the milestone had none yet) so the billing lands in the money
-// pipeline like everything else: a job (contract_id set) + an invoices row +
-// the milestone flipped to 'invoiced' and pointed at the job.
-const DRY_RUN = process.env.MORNING_DRY_RUN !== "false";
+// Record the invoice for a contract milestone that was already issued in
+// Morning. It also CREATES the linked job (the milestone had none yet) so the
+// billing lands in the money pipeline like everything else: a job (contract_id
+// set) + an invoices row + the milestone flipped to 'invoiced' and pointed at
+// the job.
+//
+// This route does NOT issue anything — see the same note in
+// /api/finance/issue. Its mode 'morning' branch minted a fake "DRY-nnnnnn"
+// number, wrote it into a brand-new job's invoice_biz and advanced the
+// milestone, all without calling Morning. Removed 2026-07-30, never used in
+// production. A milestone's deal invoice can go through the real queue once
+// the job exists: /documents/registry -> "חשבון עסקה חדש" -> pick the job.
 
 export async function POST(request: Request, { params }: { params: { mid: string } }) {
   const supabase = createClient();
@@ -26,6 +32,13 @@ export async function POST(request: Request, { params }: { params: { mid: string
     pdf_url?: string;
   };
 
+  if (body.mode === "morning") {
+    return NextResponse.json(
+      { error: "הנפקה דרך מורנינג לא עוברת כאן — היא עוברת בתור האישורים במסך המסמכים (/documents). כאן רושמים מסמך שהונפק כבר." },
+      { status: 400 }
+    );
+  }
+
   const { data: ms } = await supabase
     .from("contract_milestones")
     .select("id,contract_id,name,amount,job_id,status")
@@ -41,15 +54,10 @@ export async function POST(request: Request, { params }: { params: { mid: string
     .maybeSingle();
   if (!contract?.client_id) return NextResponse.json({ error: "לחוזה אין לקוח" }, { status: 400 });
 
-  const isMorning = body.mode === "morning";
   const amount = body.amount ?? (ms.amount as number);
   const issued_at = body.issued_at ? new Date(body.issued_at).toISOString() : new Date().toISOString();
-  let docNumber = (body.doc_number ?? "").trim();
-  let morningDocId: string | null = null;
-  if (isMorning) {
-    docNumber = docNumber || `DRY-${`${Date.now()}`.slice(-6)}`;
-    morningDocId = `biz-dry-${crypto.randomUUID().slice(0, 8)}`;
-  } else if (!docNumber) {
+  const docNumber = (body.doc_number ?? "").trim();
+  if (!docNumber) {
     return NextResponse.json({ error: "חובה מספר מסמך בהנפקה ידנית" }, { status: 400 });
   }
 
@@ -76,10 +84,10 @@ export async function POST(request: Request, { params }: { params: { mid: string
     job_id: job.id,
     type: "עסקה",
     doc_number: docNumber,
-    morning_doc_id: morningDocId,
+    morning_doc_id: null,
     amount,
     issued_at,
-    source: isMorning ? "morning_api" : "manual",
+    source: "manual",
     issued_by: user.id,
     pdf_url: body.pdf_url?.trim() || null,
     amount_is_estimated: false,
@@ -102,10 +110,10 @@ export async function POST(request: Request, { params }: { params: { mid: string
   await admin.from("events").insert({
     entity_type: "contract",
     entity_id: contract.id,
-    event_type: isMorning ? (DRY_RUN ? "milestone_invoiced_morning_dryrun" : "milestone_invoiced_morning") : "milestone_invoiced_manual",
+    event_type: "milestone_invoiced_manual",
     actor_id: user.id,
-    payload: { milestone_id: ms.id, job_id: job.id, doc_number: docNumber, amount, dry_run: isMorning && DRY_RUN },
+    payload: { milestone_id: ms.id, job_id: job.id, doc_number: docNumber, amount },
   });
 
-  return NextResponse.json({ ok: true, job_id: job.id, dry_run: isMorning && DRY_RUN });
+  return NextResponse.json({ ok: true, job_id: job.id });
 }

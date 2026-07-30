@@ -413,7 +413,7 @@ function IssueModal({ milestone, onClose, onDone, onError }: { milestone: Milest
   const [pdf, setPdf] = useState("");
   const [busy, setBusy] = useState(false);
 
-  async function go(mode: "morning" | "manual") {
+  async function go(mode: "manual") {
     setBusy(true);
     const res = await fetch(`/api/contracts/milestones/${milestone.id}/issue`, {
       method: "POST",
@@ -440,15 +440,10 @@ function IssueModal({ milestone, onClose, onDone, onError }: { milestone: Milest
       <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl" style={PANEL}>
         <h3 className="font-bold mb-1">הנפקת חשבונית — {milestone.name}</h3>
         <p className="text-xs text-[var(--dim)] mb-4 font-mono">{money(milestone.amount)}</p>
-        <button onClick={() => go("morning")} disabled={busy} className="w-full text-white font-bold rounded-xl px-4 py-2.5 text-sm disabled:opacity-40 mb-1" style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))", boxShadow: "0 4px 14px rgba(139,92,246,0.3)" }}>
-          הנפק דרך Morning
-        </button>
-        <p className="text-[10px] text-[var(--amber)] text-center mb-4">הדמיה — MORNING_DRY_RUN פעיל</p>
-        <div className="flex items-center gap-2 mb-3">
-          <div className="flex-1 h-px bg-[var(--rule)]" />
-          <span className="text-[10px] text-[var(--faint)]">או — כבר הנפקתי במורנינג</span>
-          <div className="flex-1 h-px bg-[var(--rule)]" />
-        </div>
+        <p className="text-[11px] text-[var(--dim)] mb-4">
+          כאן רושמים מסמך שהונפק כבר במורנינג. להנפקה עצמה — תור האישורים ב
+          <a href="/documents" className="text-[var(--signal)] font-bold hover:underline"> מסמכים</a>.
+        </p>
         <div className="grid grid-cols-2 gap-2 mb-3">
           <input value={docNumber} onChange={(e) => setDocNumber(e.target.value)} placeholder="מספר מסמך" className={INPUT} style={inputBg} />
           <input value={issuedAt} onChange={(e) => setIssuedAt(e.target.value)} type="date" className={INPUT} style={inputBg} />
