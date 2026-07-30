@@ -8,8 +8,10 @@ Acceptance test for the finance pipeline screen (migration 0023).
 
   Part B — the two-path issuance + the "paid opens" loop, on a THROWAWAY job
   (never touches the real 51):
-    - issue a business invoice via Morning (dry-run) -> job gets invoice_biz,
-      an invoices row lands with source='morning_api', state -> blue
+    - mode='morning' is refused (400) — that path was removed 2026-07-30;
+      real issuance is the /documents approval queue
+    - record the business invoice -> job gets invoice_biz, an invoices row
+      lands with source='manual' and no morning_doc_id, state -> blue
     - mark the job paid -> no tax invoice yet -> state RED, needs_tax=True
     - issue the tax invoice MANUALLY -> invoices row source='manual',
       job.invoice_tax set, state -> closed
@@ -132,25 +134,33 @@ try:
 
     # tech cannot issue or mark paid
     r = requests.post(f"{APP_URL}/api/finance/issue", cookies=tech, headers={"Content-Type": "application/json"},
-                      json={"job_id": job_id, "type": "עסקה", "mode": "morning"})
+                      json={"job_id": job_id, "type": "עסקה", "mode": "manual", "doc_number": "BIZ-9000"})
     check("B0. technician issue -> 403", r.status_code == 403, f"{r.status_code}")
     r = requests.post(f"{APP_URL}/api/finance/mark-paid", cookies=tech, headers={"Content-Type": "application/json"},
                       json={"job_id": job_id})
     check("B0b. technician mark-paid -> 403", r.status_code == 403, f"{r.status_code}")
 
-    # issue business invoice via Morning (dry run)
+    # mode 'morning' was removed (2026-07-30): this route only RECORDS a document
+    # that was already issued. Real issuance is the /documents approval queue.
     r = requests.post(f"{APP_URL}/api/finance/issue", cookies=money, headers={"Content-Type": "application/json"},
                       json={"job_id": job_id, "type": "עסקה", "mode": "morning"})
+    check("B1. mode=morning refused -> 400", r.status_code == 400, f"{r.status_code} {r.text[:120]}")
+    check("B1b. refusal points at /documents", "/documents" in r.text, r.text[:160])
+
+    # record the עסקה invoice that was issued in Morning by hand
+    r = requests.post(f"{APP_URL}/api/finance/issue", cookies=money, headers={"Content-Type": "application/json"},
+                      json={"job_id": job_id, "type": "עסקה", "mode": "manual", "doc_number": "BIZ-9001",
+                            "issued_at": "2026-07-02", "amount": 2000})
     ok = r.status_code == 200
     d = r.json() if ok else {}
-    check("B1. issue עסקה via Morning accepted", ok, r.text[:120])
-    check("B2. dry_run flag true", d.get("dry_run") is True, str(d))
+    check("B2. record עסקה accepted", ok, r.text[:120])
     check("B3. state -> blue (awaiting payment)", d.get("state") == "blue", str(d))
     jrow = requests.get(rest(f"jobs?id=eq.{job_id}&select=invoice_biz,invoice_tax,paid"), headers=ADMIN).json()[0]
     check("B4. job.invoice_biz set", bool(jrow["invoice_biz"]), str(jrow))
-    inv = requests.get(rest(f"invoices?job_id=eq.{job_id}&select=id,type,source"), headers=ADMIN).json()
+    inv = requests.get(rest(f"invoices?job_id=eq.{job_id}&select=id,type,source,morning_doc_id"), headers=ADMIN).json()
     inv_ids += [i["id"] for i in inv]
-    check("B5. invoices row source=morning_api", any(i["type"] == "עסקה" and i["source"] == "morning_api" for i in inv), str(inv))
+    check("B5. invoices row source=manual, no morning id",
+          any(i["type"] == "עסקה" and i["source"] == "manual" and i["morning_doc_id"] is None for i in inv), str(inv))
 
     # mark paid -> no tax invoice yet -> RED + needs_tax
     r = requests.post(f"{APP_URL}/api/finance/mark-paid", cookies=money, headers={"Content-Type": "application/json"},

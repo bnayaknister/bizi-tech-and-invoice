@@ -3,17 +3,19 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { deriveState } from "@/lib/finance/state";
 
-// Issue a document — two routes, ONE record (owner spec 2026-07-18):
-//   mode 'morning' : the Morning API path. MORNING_DRY_RUN is on for now, so
-//                    this SIMULATES — it mints a doc number, writes the
-//                    invoice + event, but never calls the real API. When the
-//                    flag flips, the same button issues for real.
-//   mode 'manual'  : "I already issued it in Morning" — the bookkeeper types
-//                    the number/date/amount/PDF; stored with source='manual'.
-// Either way: one invoices row (the document registry) + the job's quick flag
-// (invoice_biz for עסקה / invoice_tax for מס) is set so the pipeline state
+// Record a document that was already issued in Morning — the bookkeeper types
+// the number/date/amount/PDF, and we write one invoices row plus the job's
+// quick flag (invoice_biz for עסקה / invoice_tax for מס) so the pipeline state
 // moves. can_edit_money gated.
-const DRY_RUN = process.env.MORNING_DRY_RUN !== "false"; // defaults ON
+//
+// This route does NOT issue anything. A mode 'morning' branch used to live here
+// (owner spec 2026-07-18, a day before the real pipeline existed): it minted a
+// fake "DRY-nnnnnn" number and wrote it into invoices + jobs.invoice_biz
+// without ever calling Morning, and once MORNING_DRY_RUN went to false it also
+// logged the event as a real issuance. Removed 2026-07-30 — it had never been
+// called in production (zero events, zero DRY- rows). Real issuance is the
+// approval queue: enqueue -> a human approves -> issue.ts, which is the only
+// code that talks to Morning.
 
 export async function POST(request: Request) {
   const supabase = createClient();
@@ -36,6 +38,12 @@ export async function POST(request: Request) {
   if (!body.job_id || (body.type !== "עסקה" && body.type !== "מס")) {
     return NextResponse.json({ error: "חסרים פרטי הנפקה" }, { status: 400 });
   }
+  if (body.mode === "morning") {
+    return NextResponse.json(
+      { error: "הנפקה דרך מורנינג לא עוברת כאן — היא עוברת בתור האישורים במסך המסמכים (/documents). כאן רושמים מסמך שהונפק כבר." },
+      { status: 400 }
+    );
+  }
 
   const { data: job } = await supabase
     .from("jobs")
@@ -45,20 +53,11 @@ export async function POST(request: Request) {
   if (!job) return NextResponse.json({ error: "החיוב לא נמצא" }, { status: 404 });
   if (!job.client_id) return NextResponse.json({ error: "לחיוב אין לקוח — אי אפשר להנפיק חשבונית" }, { status: 400 });
 
-  const isMorning = body.mode === "morning";
-  const source = isMorning ? "morning_api" : "manual";
   const amount = body.amount ?? (job.amount as number | null) ?? 0;
   const issued_at = body.issued_at ? new Date(body.issued_at).toISOString() : new Date().toISOString();
 
-  let docNumber = (body.doc_number ?? "").trim();
-  let morningDocId: string | null = null;
-  if (isMorning) {
-    // simulated Morning issuance — mint a unique doc number + system id so
-    // the UNIQUE morning_doc_id constraint behaves exactly as it will live
-    const n = `${Date.now()}`.slice(-6);
-    docNumber = docNumber || `DRY-${n}`;
-    morningDocId = `${body.type === "עסקה" ? "biz" : "tax"}-dry-${crypto.randomUUID().slice(0, 8)}`;
-  } else if (!docNumber) {
+  const docNumber = (body.doc_number ?? "").trim();
+  if (!docNumber) {
     return NextResponse.json({ error: "חובה מספר מסמך בהנפקה ידנית" }, { status: 400 });
   }
 
@@ -70,10 +69,12 @@ export async function POST(request: Request) {
       job_id: job.id,
       type: body.type,
       doc_number: docNumber,
-      morning_doc_id: morningDocId,
+      // a hand-recorded document carries no Morning system id — only issue.ts
+      // ever fills that, from the API response
+      morning_doc_id: null,
       amount,
       issued_at,
-      source,
+      source: "manual",
       issued_by: user.id,
       pdf_url: body.pdf_url?.trim() || null,
       amount_is_estimated: false,
@@ -100,15 +101,14 @@ export async function POST(request: Request) {
   await admin.from("events").insert({
     entity_type: "job",
     entity_id: job.id,
-    event_type: isMorning ? (DRY_RUN ? "invoice_issued_morning_dryrun" : "invoice_issued_morning") : "invoice_issued_manual",
+    event_type: "invoice_issued_manual",
     actor_id: user.id,
-    payload: { type: body.type, doc_number: docNumber, source, amount, dry_run: isMorning && DRY_RUN },
+    payload: { type: body.type, doc_number: docNumber, source: "manual", amount },
   });
 
   return NextResponse.json({
     ok: true,
     invoice: inv,
     state: deriveState(updatedJob),
-    dry_run: isMorning && DRY_RUN,
   });
 }

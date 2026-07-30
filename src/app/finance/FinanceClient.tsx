@@ -211,7 +211,7 @@ export default function FinanceClient({
   async function issue(
     job: FinanceJob,
     type: "עסקה" | "מס",
-    mode: "morning" | "manual",
+    mode: "manual",
     fields?: { doc_number?: string; issued_at?: string; amount?: number; pdf_url?: string }
   ): Promise<boolean> {
     setError(null);
@@ -634,13 +634,10 @@ export default function FinanceClient({
         <PaidLoopModal
           job={paidLoopFor}
           onClose={() => setPaidLoopFor(null)}
-          onIssueNow={(manual) => {
+          onIssueNow={() => {
             const job = paidLoopFor;
             setPaidLoopFor(null);
             setIssueFor({ job, type: "מס" });
-            if (manual) {
-              /* IssueModal defaults to showing the manual form too */
-            }
           }}
         />
       )}
@@ -912,7 +909,7 @@ function IssueModal({
   job: FinanceJob;
   type: "עסקה" | "מס";
   onClose: () => void;
-  onIssue: (mode: "morning" | "manual", fields?: { doc_number?: string; issued_at?: string; amount?: number; pdf_url?: string }) => void;
+  onIssue: (mode: "manual", fields?: { doc_number?: string; issued_at?: string; amount?: number; pdf_url?: string }) => void;
 }) {
   const [docNumber, setDocNumber] = useState("");
   const [issuedAt, setIssuedAt] = useState(new Date().toISOString().slice(0, 10));
@@ -936,27 +933,11 @@ function IssueModal({
           {job.client_name ?? "—"} · {job.campaign ?? "—"} · <span className="font-mono">{money(job.amount)}</span>
         </p>
 
-        {/* path A — Morning (dry run) */}
-        <button
-          onClick={() => {
-            setBusy(true);
-            onIssue("morning");
-          }}
-          disabled={busy}
-          className="w-full text-white font-bold rounded-xl px-4 py-2.5 text-sm disabled:opacity-40 mb-1"
-          style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))", boxShadow: "0 4px 14px rgba(139,92,246,0.3)" }}
-        >
-          הנפק דרך Morning
-        </button>
-        <p className="text-[10px] text-[var(--amber)] text-center mb-4">הדמיה — MORNING_DRY_RUN פעיל, לא נשלח ל-API אמיתי</p>
+        <p className="text-[11px] text-[var(--dim)] mb-4">
+          כאן רושמים מסמך שהונפק כבר במורנינג. להנפקה עצמה — תור האישורים ב
+          <a href="/documents" className="text-[var(--signal)] font-bold hover:underline"> מסמכים</a>.
+        </p>
 
-        <div className="flex items-center gap-2 mb-3">
-          <div className="flex-1 h-px bg-[var(--rule)]" />
-          <span className="text-[10px] text-[var(--faint)]">או — כבר הנפקתי במורנינג</span>
-          <div className="flex-1 h-px bg-[var(--rule)]" />
-        </div>
-
-        {/* path B — manual */}
         <div className="grid grid-cols-2 gap-2 mb-3">
           <input value={docNumber} onChange={(e) => setDocNumber(e.target.value)} placeholder="מספר מסמך" className="fin-in" />
           <input type="date" value={issuedAt} onChange={(e) => setIssuedAt(e.target.value)} className="fin-in" />
@@ -1008,7 +989,7 @@ function PaidLoopModal({
 }: {
   job: FinanceJob;
   onClose: () => void;
-  onIssueNow: (manual: boolean) => void;
+  onIssueNow: () => void;
 }) {
   return (
     <div
@@ -1027,17 +1008,11 @@ function PaidLoopModal({
         </p>
         <div className="flex flex-col gap-2">
           <button
-            onClick={() => onIssueNow(false)}
+            onClick={onIssueNow}
             className="text-white font-bold rounded-xl px-4 py-2.5 text-sm"
             style={{ background: "linear-gradient(135deg, var(--red), var(--red-dk))" }}
           >
-            הנפק עכשיו
-          </button>
-          <button
-            onClick={() => onIssueNow(true)}
-            className="border border-[var(--rule2)] rounded-xl px-4 py-2 text-sm text-[var(--ink)] hover:bg-[var(--panel3)] transition-colors"
-          >
-            הוזנה ידנית
+            רשום חשבונית מס
           </button>
           <button onClick={onClose} className="text-[var(--dim)] text-xs py-1.5 hover:text-[var(--ink)] transition-colors">
             אזכיר לי מחר (נשאר בלשונית האדומה)
