@@ -29,7 +29,7 @@ export default async function ShowsPage() {
     supabase.from("shows").select(showColumns).order("name"),
     supabase
       .from("productions")
-      .select("id,show_id,record_date,status,guest,studio_hours,edit_hours")
+      .select("id,show_id,record_date,status,guest")
       .order("record_date", { ascending: false }),
     canViewMoney ? supabase.from("clients").select("id,name,morning_client_id").order("name") : Promise.resolve({ data: [] }),
   ]);
@@ -102,8 +102,6 @@ export default async function ShowsPage() {
       record_date: p.record_date,
       status: p.status,
       guest: p.guest,
-      studio_hours: p.studio_hours,
-      edit_hours: p.edit_hours,
     }));
 
   // shows this viewer already has a pending destructive request on (RLS

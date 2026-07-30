@@ -29,8 +29,6 @@ export type EpisodeRow = {
   record_date: string | null;
   status: string;
   guest: string | null;
-  studio_hours: number | null;
-  edit_hours: number | null;
 };
 
 type Client = { id: string; name: string; morning_client_id?: string | null };
@@ -471,8 +469,6 @@ function ShowCard({
   isPending: boolean;
   onDeleteAsk: (show: ShowRow) => void;
 }) {
-  const studioHours = episodes.reduce((t, e) => t + (e.studio_hours ?? 0), 0);
-  const editHours = episodes.reduce((t, e) => t + (e.edit_hours ?? 0), 0);
   const perEpisode = show.revenue && episodes.length > 0 ? Math.round(show.revenue / episodes.length) : null;
 
   return (
@@ -627,8 +623,10 @@ function ShowCard({
           <div className="grid grid-cols-4 gap-2 mb-5 text-center">
             {[
               ["הכנסה מצטברת", show.revenue ? money(show.revenue) : "—"],
-              ["שעות אולפן", studioHours ? String(studioHours) : "—"],
-              ["שעות עריכה", editHours ? String(editHours) : "—"],
+              // no hours are recorded anywhere yet — productions has no hours
+              // column, so these two stay empty until one lands
+              ["שעות אולפן", "—"],
+              ["שעות עריכה", "—"],
               ["הכנסה לפרק", perEpisode ? money(perEpisode) : "—"],
             ].map(([label, value]) => (
               <div
