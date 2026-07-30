@@ -565,10 +565,19 @@ function ShowCard({
                     key={v}
                     onClick={() => {
                       if (!canEditMoney || show.billing_mode === v) return;
-                      // an internal show carries no price: a blank rate must keep
-                      // exactly one meaning ("nobody priced this yet"), which is
-                      // what the 🟡 radar alert reads
-                      onSave(show.id, v === "none" ? { billing_mode: v, default_rate: null } : { billing_mode: v });
+                      // A show that doesn't bill per episode carries no per-episode
+                      // price: a blank rate must keep exactly one meaning ("nobody
+                      // priced this yet"), which is what the 🟡 radar alert reads.
+                      // Clearing it here also settles the four places that still
+                      // read default_rate without checking billing_mode — chief
+                      // among them the on_production_approved trigger, which would
+                      // otherwise create a job for the stale amount.
+                      const clearsRate = v === "none" || v === "contract";
+                      if (clearsRate && show.default_rate != null) {
+                        const where = v === "none" ? "פנימית" : "מחויבת לפי חוזה";
+                        if (!confirm(`התוכנית תסומן כ${where}, והמחיר ${money(show.default_rate)} יימחק. אין דרך לשחזר אותו.`)) return;
+                      }
+                      onSave(show.id, clearsRate ? { billing_mode: v, default_rate: null } : { billing_mode: v });
                     }}
                     disabled={!canEditMoney}
                     className={`flex-1 rounded-lg py-1.5 border transition-colors disabled:opacity-50 ${
@@ -590,16 +599,22 @@ function ShowCard({
                 key={`rate-${show.billing_mode}-${show.default_rate ?? ""}`}
                 type="number"
                 defaultValue={show.default_rate ?? ""}
-                disabled={!canEditMoney || show.billing_mode === "none"}
+                disabled={!canEditMoney || show.billing_mode !== "per_episode"}
                 onBlur={(e) => {
                   const v = e.target.value === "" ? null : Number(e.target.value);
                   if (v !== show.default_rate) onSave(show.id, { default_rate: v });
                 }}
-                placeholder={show.billing_mode === "none" ? "לא מחויבת" : "—"}
-                className={`w-full border border-[var(--rule)] rounded px-2 py-1.5 ${
+                placeholder={
                   show.billing_mode === "none"
-                    ? "bg-[var(--panel2)] text-[var(--faint)]"
-                    : "bg-[var(--panel)]"
+                    ? "לא מחויבת"
+                    : show.billing_mode === "contract"
+                      ? "החיוב מגיע מאבן דרך"
+                      : "—"
+                }
+                className={`w-full border border-[var(--rule)] rounded px-2 py-1.5 ${
+                  show.billing_mode === "per_episode"
+                    ? "bg-[var(--panel)]"
+                    : "bg-[var(--panel2)] text-[var(--faint)]"
                 }`}
               />
             </label>
