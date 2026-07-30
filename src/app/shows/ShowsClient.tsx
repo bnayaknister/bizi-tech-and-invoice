@@ -29,6 +29,7 @@ export type EpisodeRow = {
   record_date: string | null;
   status: string;
   guest: string | null;
+  legacy: boolean;
 };
 
 type Client = { id: string; name: string; morning_client_id?: string | null };
@@ -651,7 +652,17 @@ function ShowCard({
               >
                 <span className="text-[var(--dim)] w-20 shrink-0">{e.record_date ?? "—"}</span>
                 <span className="flex-1 truncate">{e.guest || ""}</span>
-                <span className="text-[var(--faint)]">{(e.status ?? "").replace(/_/g, " ")}</span>
+                {/* an imported row still sitting on the import default has no
+                    real state — it was delivered and billed straight in
+                    Morning. One that was advanced by hand since does, so its
+                    status is shown as-is. */}
+                {e.legacy && e.status === "עתיד_להתחיל" ? (
+                  <span className="text-[10px] text-[var(--faint)] border border-[var(--rule2)] rounded-full px-1.5 py-0.5 shrink-0">
+                    היסטורי
+                  </span>
+                ) : (
+                  <span className="text-[var(--faint)]">{(e.status ?? "").replace(/_/g, " ")}</span>
+                )}
               </div>
             ))}
             {episodes.length === 0 && (
