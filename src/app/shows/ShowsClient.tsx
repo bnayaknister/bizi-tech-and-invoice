@@ -19,6 +19,7 @@ export type ShowRow = {
   active: boolean;
   is_oneoff: boolean;
   color: string | null;
+  billing_mode: string;
   episodes: number;
   revenue: number | null; // null when the viewer lacks can_view_money
 };
@@ -550,18 +551,56 @@ function ShowCard({
             </div>
           )}
           {canViewMoney && (
+            <div className="text-xs">
+              <span className="block text-[var(--faint)] mb-1">אופן חיוב</span>
+              <div className="flex gap-1">
+                {(
+                  [
+                    ["per_episode", "פר פרק"],
+                    ["contract", "לפי חוזה"],
+                    ["none", "פנימית"],
+                  ] as const
+                ).map(([v, l]) => (
+                  <button
+                    key={v}
+                    onClick={() => {
+                      if (!canEditMoney || show.billing_mode === v) return;
+                      // an internal show carries no price: a blank rate must keep
+                      // exactly one meaning ("nobody priced this yet"), which is
+                      // what the 🟡 radar alert reads
+                      onSave(show.id, v === "none" ? { billing_mode: v, default_rate: null } : { billing_mode: v });
+                    }}
+                    disabled={!canEditMoney}
+                    className={`flex-1 rounded-lg py-1.5 border transition-colors disabled:opacity-50 ${
+                      show.billing_mode === v
+                        ? "border-[var(--violet-light)] text-[var(--violet-light)] font-bold"
+                        : "border-[var(--rule)] text-[var(--dim)]"
+                    }`}
+                  >
+                    {l}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {canViewMoney && (
             <label className="text-xs">
               <span className="block text-[var(--faint)] mb-1">מחיר לפרק</span>
               <input
+                key={`rate-${show.billing_mode}-${show.default_rate ?? ""}`}
                 type="number"
                 defaultValue={show.default_rate ?? ""}
-                disabled={!canEditMoney}
+                disabled={!canEditMoney || show.billing_mode === "none"}
                 onBlur={(e) => {
                   const v = e.target.value === "" ? null : Number(e.target.value);
                   if (v !== show.default_rate) onSave(show.id, { default_rate: v });
                 }}
-                placeholder="—"
-                className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1.5"
+                placeholder={show.billing_mode === "none" ? "לא מחויבת" : "—"}
+                className={`w-full border border-[var(--rule)] rounded px-2 py-1.5 ${
+                  show.billing_mode === "none"
+                    ? "bg-[var(--panel2)] text-[var(--faint)]"
+                    : "bg-[var(--panel)]"
+                }`}
               />
             </label>
           )}
@@ -938,6 +977,7 @@ function NewShowModal({
       active: s.active,
       is_oneoff: s.is_oneoff,
       color: s.color ?? null,
+      billing_mode: s.billing_mode ?? "none",
       episodes: 0,
       revenue: canViewMoney ? 0 : null,
     });

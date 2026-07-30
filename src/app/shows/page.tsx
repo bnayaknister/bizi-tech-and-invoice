@@ -22,8 +22,8 @@ export default async function ShowsPage() {
   // role instead, below, gated on canViewMoney here. Everything else is the
   // same "not present in the response for a stages viewer" pattern.
   const showColumns = canViewMoney
-    ? "id,name,client_id,aliases,default_studio,camera_count,notes,active,is_oneoff,color"
-    : "id,name,aliases,default_studio,camera_count,notes,active,is_oneoff,color";
+    ? "id,name,client_id,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode"
+    : "id,name,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode";
 
   const [{ data: shows }, { data: productions }, { data: clients }] = await Promise.all([
     supabase.from("shows").select(showColumns).order("name"),
@@ -90,6 +90,7 @@ export default async function ShowsPage() {
     active: s.active as boolean,
     is_oneoff: s.is_oneoff as boolean,
     color: (s.color as string) ?? null,
+    billing_mode: (s.billing_mode as string) ?? "per_episode",
     episodes: episodeCounts[s.id as string] ?? 0,
     revenue: canViewMoney ? (revenueByShow[s.id as string] ?? 0) : null,
   }));
