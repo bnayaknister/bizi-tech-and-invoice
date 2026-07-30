@@ -415,7 +415,11 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   // billing_block_reason is set ONLY for applicable blocks (missing client /
   // unmapped client / no rate), never for internal or legacy — so this
   // counts real problems, not correct silence. Merged-away rows stay hidden.
-  const billingBlocked = productions.filter((p) => !p.merged_into && p.billing_block_reason);
+  // A cancelled production keeps its reason as history but owes nothing, so it
+  // is excluded here — otherwise cancelling could never clear the alert.
+  const billingBlocked = productions.filter(
+    (p) => !p.merged_into && p.status !== "בוטל" && p.billing_block_reason
+  );
 
   // ---- document approval queue aging (owner 2026-07-19): 24h -> the
   // bookkeeper is nudged, 72h -> the owner too, here on the radar. A queue
