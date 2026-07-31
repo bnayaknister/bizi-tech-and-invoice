@@ -10,6 +10,11 @@ import { DOC_TYPE_LABEL, type PendingDocType } from "@/lib/morning/types";
 // Downstream documents are handled by what already happened:
 //   - a queued (pending/approved) document -> cancelled in the queue, nothing
 //     ever reaches Morning
+//   - an accrued work order (frozen by the client's billing_cadence, 0046) ->
+//     cancelled the same way. It is a LIVE row that never left the building:
+//     leaving it would fold a cancelled episode into the client's next
+//     redemption bundle and bill work that was never done. Counted separately
+//     from the pending ones so neither counter's meaning drifts over time.
 //   - an already-issued document -> left untouched in Morning (our rule: we
 //     never delete there) and flagged; the radar's cancelled-with-document
 //     alert (gap 2) surfaces it for manual closing
@@ -44,6 +49,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     .select("id,doc_type,status,morning_doc_number")
     .eq("production_id", id);
   const pendingItems = (docs ?? []).filter((d) => d.status === "pending" || d.status === "approved");
+  const accruedItems = (docs ?? []).filter((d) => d.status === "accrued");
   const issuedItems = (docs ?? []).filter((d) => d.status === "issued");
 
   // an issued document means a standing manual-closing task — warn first
@@ -72,15 +78,19 @@ export async function POST(request: Request, { params }: { params: { id: string 
     return NextResponse.json({ error: updErr.message }, { status: denied ? 403 : 400 });
   }
 
-  // queued documents: cancel them — nothing went to Morning
-  for (const d of pendingItems) {
+  // queued AND accrued documents: cancel them — nothing went to Morning
+  for (const d of [...pendingItems, ...accruedItems]) {
     await admin.from("pending_documents").update({ status: "cancelled" }).eq("id", d.id);
     await admin.from("events").insert({
       entity_type: "pending_document",
       entity_id: d.id,
       event_type: "document_cancelled_on_production_cancel",
       actor_id: user.id,
-      payload: { doc_type: d.doc_type, production_id: id },
+      // previous_status distinguishes a pending/approved row from an accrued
+      // one at the ROW level: without it only the aggregate counters on
+      // production_cancelled know which kind was cancelled, and a single event
+      // read back months later cannot tell the two apart.
+      payload: { doc_type: d.doc_type, production_id: id, previous_status: d.status },
     });
   }
 
@@ -103,13 +113,15 @@ export async function POST(request: Request, { params }: { params: { id: string 
     payload: {
       reason,
       cancelled_pending_documents: pendingItems.length,
+      cancelled_accrued_documents: accruedItems.length,
       orphaned_issued_documents: issuedItems.length,
     },
   });
 
   return NextResponse.json({
     ok: true,
-    cancelled_documents: pendingItems.length,
-    flagged_documents: issuedItems.length,
+    cancelled_pending_documents: pendingItems.length,
+    cancelled_accrued_documents: accruedItems.length,
+    orphaned_issued_documents: issuedItems.length,
   });
 }

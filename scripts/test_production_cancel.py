@@ -133,7 +133,7 @@ try:
 
     r = requests.post(f"{APP}/api/productions/{p2}/cancel", cookies=tech,
                       headers={"Content-Type": "application/json"}, json={"reason": "בוטל", "confirm": True})
-    check("2d. confirmed cancel succeeds", r.status_code == 200 and r.json().get("flagged_documents") == 1, r.text[:150])
+    check("2d. confirmed cancel succeeds", r.status_code == 200 and r.json().get("orphaned_issued_documents") == 1, r.text[:150])
     wrow2 = requests.get(rest(f"pending_documents?id=eq.{wo2}&select=status,morning_doc_id"), headers=ADMIN).json()[0]
     check("2e. the issued doc is LEFT in Morning (untouched)", wrow2["status"] == "issued" and wrow2["morning_doc_id"],
           json.dumps(wrow2))
