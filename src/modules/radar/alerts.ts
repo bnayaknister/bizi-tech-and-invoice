@@ -476,6 +476,60 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     return true;
   });
 
+  // ---- 🟡 a deal invoice went out "based on" a work order, and the order is
+  // STILL OPEN in Morning (owner spec 2026-08-02). Issuing the invoice with
+  // linkedDocumentIds is what closes the order there (bundle.ts) — so an open
+  // order means the link did not do its job, and the order sits in the books
+  // forever. The failure this alert exists for was live in production.
+  //
+  // Who links to whom is knowledge only WE hold: Morning's /documents/search
+  // returns no link fields at all (verified 2026-07-31), so the pair can only
+  // be reconstructed from the invoice's own frozen payload.
+  //
+  // Two targeted queries, deliberately NOT folded into the Promise.all above:
+  // `payload` is heavy jsonb and only these few rows need it — the existing
+  // pendingDocs fetch must stay slim, it pages the whole queue on every load.
+  const { data: linkedInvoices } = await supabase
+    .from("pending_documents")
+    .select("id,payload,issued_at")
+    .eq("doc_type", "deal_invoice")
+    .eq("status", "issued")
+    .not("payload->linkedDocumentIds", "is", null);
+  const pairs: { linkedId: string; issuedAt: string }[] = [];
+  for (const d of (linkedInvoices ?? []) as { payload: { linkedDocumentIds?: string[] } | null; issued_at: string | null }[]) {
+    const linkedId = d.payload?.linkedDocumentIds?.[0];
+    if (linkedId && d.issued_at) pairs.push({ linkedId, issuedAt: d.issued_at });
+  }
+  const orderById = new Map<string, { status: number | null; updated_at: string | null }>();
+  for (let i = 0; i < pairs.length; i += 200) {
+    const ids = pairs.slice(i, i + 200).map((p) => p.linkedId);
+    const { data } = await supabase.from("documents").select("morning_doc_id,status,updated_at").in("morning_doc_id", ids);
+    for (const o of data ?? []) {
+      orderById.set(o.morning_doc_id as string, { status: (o.status as number | null) ?? null, updated_at: (o.updated_at as string | null) ?? null });
+    }
+  }
+  const orderNotClosed = pairs.filter((p) => {
+    const o = orderById.get(p.linkedId);
+    if (!o) return false; // never pulled — unknown, not a failure
+    // ONLY 0 is the failure. 1 = closed by the link (the happy path), 2 =
+    // closed by hand (a different route, still closed), null = we have never
+    // seen a status for it. Written as an explicit === 0 on purpose: `!o.status`
+    // would swallow null, and `!== 1` would flag every manual close.
+    // amountOpened is NOT consulted anywhere here — it is not a closure signal
+    // (10292 was status=0 with amountOpened=0).
+    if (o.status !== 0) return false;
+    // Freshness: Morning closes the order the moment the link lands, but OUR
+    // copy of its status only refreshes on the next pull. Without this guard
+    // every correctly-linked invoice would light the alert until then. Require
+    // that a pull saw the order AFTER the invoice went out; `updated_at` is
+    // rewritten on every upsert (registry.ts), so it means "last seen at
+    // Morning". An order outside the incremental window stays silent until the
+    // weekly full scan — a missed alert, never a false one. That's the right
+    // way round for a card the bookkeeper is meant to trust.
+    if (!o.updated_at) return false;
+    return new Date(o.updated_at).getTime() > new Date(p.issuedAt).getTime();
+  });
+
   const sum = (arr: { amount: number | null }[]) => arr.reduce((s, x) => s + num(x.amount), 0);
 
   const allAlerts: RadarAlert[] = [
@@ -488,6 +542,7 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     { key: "open_commitment", severity: "blue", title: "התחייבות פתוחה", count: openMilestones.length, amount: openCommitment, href: "/contracts" },
     { key: "billing_blocked", severity: "yellow", title: "הפקת לקוח חסומה לחיוב", count: billingBlocked.length, amount: null, href: "/productions" },
     { key: "cancelled_with_work_order", severity: "yellow", title: "הפקה בוטלה אחרי שהונפקה הזמנת עבודה — לסגור במורנינג", count: cancelledWithWorkOrder.length, amount: null, href: "/productions" },
+    { key: "order_not_closed", severity: "yellow", title: "חשבון עסקה הונפק וההזמנה לא נסגרה במורנינג · נכון לסנכרון האחרון", count: orderNotClosed.length, amount: null, href: "/documents/registry" },
     { key: "pending_docs_24h", severity: "yellow", title: "מסמכים ממתינים לאישור מעל 24 שעות", count: pending24.length, amount: null, href: "/documents" },
     { key: "stuck_rejected_doc", severity: "yellow", title: "מסמך נדחה/נכשל ולא טופל", count: stuckDocs.length, amount: null, href: "/documents" },
     { key: "accrued_ripe", severity: "yellow", title: "לקוחות עם פרקים מסוכמים לפדיון (30+ יום)", count: accruedRipeClients, amount: null, href: "/documents/accrued" },
