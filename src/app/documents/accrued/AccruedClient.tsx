@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 export type AccruedRow = {
@@ -72,6 +72,21 @@ export default function AccruedClient({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  // The confirmation gate. Both actions it guards move episodes OUT of a
+  // bundle for good — there is no "un-redeem" and no "un-release" — so the
+  // bookkeeper reads what she is giving up before it happens, in the app's own
+  // language and typography (window.confirm is a browser chrome box that
+  // breaks RTL and the design system alike).
+  const [ask, setAsk] = useState<{ body: string; run: () => void } | null>(null);
+
+  useEffect(() => {
+    if (!ask) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAsk(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [ask]);
 
   async function redeem(g: AccruedGroup) {
     if (busy) return;
@@ -94,6 +109,36 @@ export default function AccruedClient({
     } finally {
       setBusy(null);
     }
+  }
+
+  // Redeeming a PARTIAL every_n bundle is the one redemption worth stopping
+  // for: the episodes leave the bundle permanently and the next one starts
+  // from zero, so a bundle billed at 2/6 can never be made whole. A full
+  // bundle is the intended moment and goes straight through, and a monthly
+  // client has no bundle to break — partial redemption is normal there.
+  function askRedeem(g: AccruedGroup) {
+    const n = g.rows.length;
+    const m = g.every_n;
+    if (!(g.cadence === "every_n" && m != null && n < m)) {
+      redeem(g);
+      return;
+    }
+    setAsk({
+      body:
+        `האגד של ${g.client_name} עומד על ${n} מתוך ${m} פרקים. ` +
+        `פדיון עכשיו ייצור הזמנת עבודה מאוגדת על ${n} פרקים (${money(g.total)}) ` +
+        `והפרקים לא ייכללו באגד הבא. לפדות בכל זאת?`,
+      run: () => redeem(g),
+    });
+  }
+
+  // Releasing a single episode always asks: it is a one-way exit from the
+  // accrual for that episode, whatever the client's rhythm.
+  function askRelease(rowId: string) {
+    setAsk({
+      body: "הפרק יוצא מהצבירה ותונפק עליו הזמנת עבודה נפרדת. הוא לא ייכלל באגד. להוציא?",
+      run: () => release(rowId),
+    });
   }
 
   async function convert(o: IssuedOrder) {
@@ -216,7 +261,7 @@ export default function AccruedClient({
                 <div className="font-mono text-xl">{money(g.total)}</div>
                 {canRedeem && (
                   <button
-                    onClick={() => redeem(g)}
+                    onClick={() => askRedeem(g)}
                     disabled={busy !== null}
                     className="mt-2 rounded-lg bg-[var(--violet)] px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
                   >
@@ -283,7 +328,7 @@ export default function AccruedClient({
                     <span className="font-mono opacity-80">{money(r.amount)}</span>
                     {canRedeem && (
                       <button
-                        onClick={() => release(r.id)}
+                        onClick={() => askRelease(r.id)}
                         disabled={busy !== null}
                         className="rounded-md border border-white/15 px-2 py-1 text-xs opacity-80 hover:opacity-100 disabled:opacity-40"
                         title="שחרר את הפרק הזה מהסיכום — הוצא כהזמנת עבודה נפרדת עכשיו"
@@ -298,6 +343,41 @@ export default function AccruedClient({
           </section>
         ))}
       </div>
+
+      {ask && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setAsk(null)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="glass-card w-full max-w-md rounded-2xl p-5" onClick={(e) => e.stopPropagation()}>
+            <p className="text-sm leading-relaxed">{ask.body}</p>
+            <div className="mt-5 flex justify-end gap-2">
+              {/* cancel is the default: it is focused on open, it is what
+                  Escape and a backdrop click do, and it is the outline button —
+                  the weight belongs on the reversible choice */}
+              <button
+                autoFocus
+                onClick={() => setAsk(null)}
+                className="rounded-xl border border-[var(--rule)] px-4 py-1.5 text-sm text-[var(--dim)]"
+              >
+                בטל
+              </button>
+              <button
+                onClick={() => {
+                  const run = ask.run;
+                  setAsk(null);
+                  run();
+                }}
+                className="rounded-xl bg-[var(--violet)] px-4 py-1.5 text-sm font-medium text-white"
+              >
+                המשך
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
