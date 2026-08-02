@@ -206,6 +206,11 @@ export async function createDealInvoiceFromWorkOrder(
   // their production_id, and by now those episodes are client-approved so a job
   // exists. bundle_job_ids is what makes issue.ts stamp the SAME invoice_biz on
   // every one of them — the shared number the mark-paid cascade needs.
+  //
+  // No job means REFUSE, not warn (owner 2026-08-02): an invoice that stamps
+  // invoice_biz on nothing is a charge nobody can see — the jobs stay "not
+  // billed" while the client has a real document in hand — and once the
+  // document is issued in Morning the state cannot be undone.
   const { data: sources } = await admin
     .from("pending_documents")
     .select("production_id")
@@ -215,6 +220,13 @@ export async function createDealInvoiceFromWorkOrder(
   if (productionIds.length) {
     const { data: jp } = await admin.from("job_productions").select("job_id").in("production_id", productionIds);
     jobIds = Array.from(new Set((jp ?? []).map((r) => r.job_id).filter(Boolean))) as string[];
+  }
+  if (jobIds.length === 0) {
+    return {
+      ok: false,
+      status: 409,
+      error: "לא נמצאו עבודות מאושרות לפרקי ההזמנה. חשבון עסקה נוצר רק אחרי שכל פרקי האגד אושרו ע״י הלקוח.",
+    };
   }
 
   const { data: clientRow } = wo.client_id
@@ -242,7 +254,7 @@ export async function createDealInvoiceFromWorkOrder(
       doc_type: "deal_invoice",
       production_id: null,
       job_id: null,
-      bundle_job_ids: jobIds.length ? jobIds : null,
+      bundle_job_ids: jobIds, // guaranteed non-empty by the guard above
       client_id: wo.client_id,
       amount: wo.amount, // the order's total, never recomputed
       payload,
