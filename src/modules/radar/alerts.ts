@@ -75,6 +75,15 @@ export type RadarData = {
 
 const DAY = 86_400_000;
 
+// Calendar boundaries are read in the business's own time zone, never UTC —
+// a monthly client's "did the month close" turns on the hour.
+const ISRAEL_DAY = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Jerusalem",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function fetchAll<T>(supabase: SupabaseClient, table: string, columns: string, filter?: (q: any) => any): Promise<T[]> {
   const out: T[] = [];
@@ -133,7 +142,12 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     fetchAll<{ id: string; client_id: string | null; billing_mode: string; active: boolean; name: string }>(
       supabase, "shows", "id,client_id,billing_mode,active,name"
     ),
-    fetchAll<{ id: string; normalized_name: string | null; name: string }>(supabase, "clients", "id,normalized_name,name"),
+    // billing_cadence / billing_every_n ride along on a table already being
+    // paged — two scalar columns, cheaper than a second round-trip. They drive
+    // the two cadence alerts below.
+    fetchAll<{ id: string; normalized_name: string | null; name: string; billing_cadence: string | null; billing_every_n: number | null }>(
+      supabase, "clients", "id,normalized_name,name,billing_cadence,billing_every_n"
+    ),
     fetchAll<{ id: string; status: string; created_at: string; doc_type: string; production_id: string | null; client_id: string | null; issued_at: string | null }>(
       supabase, "pending_documents", "id,status,created_at,doc_type,production_id,client_id,issued_at"
     ),
@@ -429,14 +443,62 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const pending72 = pendingNow.filter((d) => agedHours(d) >= 72);
   const pending24 = pendingNow.filter((d) => agedHours(d) >= 24 && agedHours(d) < 72);
 
-  // ---- accrued queue aging (owner spec 2026-07-28): a monthly / every_n
-  // client's work orders sit 'accrued' — owed but deliberately frozen — so
-  // they are NOT part of the 24h/72h "nobody approved" alert above (that would
-  // be a false alarm; accrued is correct, not stuck). But a client whose oldest
-  // accrued episode has waited 30+ days is a client the bookkeeper forgot to
-  // redeem — its own separate signal, pointing at the redemption screen.
-  const accruedRipe = pendingDocs.filter((d) => d.status === "accrued" && agedHours(d) >= 30 * 24);
-  const accruedRipeClients = new Set(accruedRipe.map((d) => d.client_id).filter(Boolean)).size;
+  // ---- the accrued queue (owner spec 2026-07-28, reworked 2026-08-02).
+  // A monthly / every_n client's work orders sit 'accrued' — owed but
+  // deliberately frozen — so they are NOT part of the 24h/72h "nobody
+  // approved" alert above (that would be a false alarm; accrued is correct,
+  // not stuck). What IS worth an alert differs by rhythm, and one shared
+  // 30-day threshold got both of them wrong:
+  //   • every_n reaching its N was invisible — a full 6/6 bundle sat silent
+  //     for a month, which is the whole moment the rhythm exists for, while a
+  //     slow show at 2/6 got flagged at day 31 for behaving exactly as
+  //     configured. Crying wolf at the correct state is how a card stops
+  //     being read.
+  //   • monthly was measured from each row's created_at, so an episode
+  //     recorded on the 30th only surfaced near the END of the next month —
+  //     the latest episodes, which need it most, slipped the longest.
+  // So: three disjoint signals, no client counted twice.
+  const cadenceById = new Map(clients.map((c) => [c.id, { cadence: c.billing_cadence ?? "per_episode", everyN: c.billing_every_n }]));
+  const accruedByClient = new Map<string, { created_at: string; production_id: string | null }[]>();
+  for (const d of pendingDocs) {
+    if (d.status !== "accrued" || d.doc_type !== "work_order" || !d.client_id) continue;
+    const arr = accruedByClient.get(d.client_id) ?? [];
+    arr.push({ created_at: d.created_at, production_id: d.production_id });
+    accruedByClient.set(d.client_id, arr);
+  }
+
+  // The month an accrued episode belongs to: record_date, the same anchor the
+  // rate rule uses, with created_at standing in only when the production has
+  // no date. Israel time on both — at 01:00 on the 1st, UTC still says last
+  // month, and for a monthly client that hour decides whether it is late.
+  const recordDateByProd = new Map(productions.map((p) => [p.id, p.record_date]));
+  const israelMonth = (iso: string) => ISRAEL_DAY.format(new Date(iso)).slice(0, 7);
+  const currentMonth = israelMonth(new Date().toISOString());
+
+  // 🟡 every_n: the bundle is FULL. No time threshold — full is full, and the
+  // day it fills is the day to redeem it. Same test the redemption screen
+  // already runs, so the two surfaces can never disagree.
+  let bundleFull = 0;
+  // 🟡 every_n that will plainly never fill (a show that ended at 2/6): still
+  // worth a nudge, but as its own signal. Explicitly NOT full, so it can never
+  // double-report with the card above.
+  let bundleStalled = 0;
+  // 🟡 monthly: a month CLOSED with episodes still accrued in it.
+  let monthClosedUnredeemed = 0;
+  for (const [clientId, rows] of Array.from(accruedByClient)) {
+    const c = cadenceById.get(clientId);
+    if (!c) continue;
+    if (c.cadence === "every_n" && c.everyN != null && c.everyN > 0) {
+      if (rows.length >= c.everyN) bundleFull++;
+      else if (rows.some((r) => agedHours(r) >= 30 * 24)) bundleStalled++;
+    } else if (c.cadence === "monthly") {
+      const late = rows.some((r) => {
+        const rd = r.production_id ? recordDateByProd.get(r.production_id) : null;
+        return (rd ? rd.slice(0, 7) : israelMonth(r.created_at)) < currentMonth;
+      });
+      if (late) monthClosedUnredeemed++;
+    }
+  }
 
   // ---- 🟡 a production is gone (cancelled, or its calendar event removed)
   // AFTER a document was already issued in Morning (owner 2026-07-19/21). We
@@ -545,7 +607,9 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     { key: "order_not_closed", severity: "yellow", title: "חשבון עסקה הונפק וההזמנה לא נסגרה במורנינג · נכון לסנכרון האחרון", count: orderNotClosed.length, amount: null, href: "/documents/registry" },
     { key: "pending_docs_24h", severity: "yellow", title: "מסמכים ממתינים לאישור מעל 24 שעות", count: pending24.length, amount: null, href: "/documents" },
     { key: "stuck_rejected_doc", severity: "yellow", title: "מסמך נדחה/נכשל ולא טופל", count: stuckDocs.length, amount: null, href: "/documents" },
-    { key: "accrued_ripe", severity: "yellow", title: "לקוחות עם פרקים מסוכמים לפדיון (30+ יום)", count: accruedRipeClients, amount: null, href: "/documents/accrued" },
+    { key: "bundle_full", severity: "yellow", title: "אגד מלא וממתין לפדיון", count: bundleFull, amount: null, href: "/documents/accrued" },
+    { key: "month_closed_unredeemed", severity: "yellow", title: "חודש נסגר ולא נפדה", count: monthClosedUnredeemed, amount: null, href: "/documents/accrued" },
+    { key: "accrued_ripe", severity: "yellow", title: "אגד חלקי שתקוע 30+ יום ולא יתמלא", count: bundleStalled, amount: null, href: "/documents/accrued" },
     { key: "unknown_payment", severity: "yellow", title: "סטטוס תשלום חסר", count: unknownPayment.length, amount: sum(unknownPayment), href: "/finance?filter=unknown_payment" },
     { key: "estimated_invoice_date", severity: "yellow", title: "תאריך חשבונית משוער", count: estimatedInvoiceDate.length, amount: null, href: "/finance?filter=estimated" },
     { key: "milestone_approaching", severity: "yellow", title: "אבן דרך בעוד 14 יום", count: milestoneApproaching.length, amount: milestoneApproaching.reduce((s, m) => s + num(m.amount), 0), href: "/contracts" },

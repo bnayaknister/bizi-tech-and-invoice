@@ -12,6 +12,16 @@ export type AccruedRow = {
   age_days: number;
 };
 
+// One month's worth of a monthly client's accrued episodes. `closed` = the
+// month is over and nobody redeemed it — that is the failure, not the count.
+export type AccruedMonth = {
+  key: string; // YYYY-MM
+  label: string;
+  count: number;
+  total: number;
+  closed: boolean;
+};
+
 export type AccruedGroup = {
   client_id: string;
   client_name: string;
@@ -20,6 +30,9 @@ export type AccruedGroup = {
   total: number;
   oldest_age_days: number;
   rows: AccruedRow[];
+  months?: AccruedMonth[];
+  has_closed_month?: boolean;
+  days_to_month_end?: number;
   ready?: boolean;
 };
 
@@ -40,6 +53,11 @@ const money = (n: number | null) =>
 
 const cadenceLabel = (g: AccruedGroup) =>
   g.cadence === "monthly" ? "מרוכז חודשי" : g.cadence === "every_n" ? `מרוכז כל ${g.every_n ?? "?"} פרקים` : "פר-פרק";
+
+const remainingLabel = (n: number) => (n === 1 ? "עוד פרק אחד לאגד מלא" : `עוד ${n} פרקים לאגד מלא`);
+
+const monthEndLabel = (days: number) =>
+  days <= 0 ? "היום האחרון בחודש" : days === 1 ? "החודש נסגר מחר" : `החודש נסגר בעוד ${days} ימים`;
 
 export default function AccruedClient({
   groups,
@@ -207,6 +225,49 @@ export default function AccruedClient({
                 )}
               </div>
             </div>
+
+            {/* every_n has a real numeric target — show the progress toward it,
+                not two separate numbers the eye has to combine. */}
+            {g.cadence === "every_n" && g.every_n != null && (
+              <div className="mb-3">
+                <div className="mb-1 flex items-baseline justify-between gap-2 text-xs">
+                  <span className="opacity-70">
+                    {g.rows.length >= g.every_n ? "האגד מלא — מוכן לפדיון" : remainingLabel(g.every_n - g.rows.length)}
+                  </span>
+                  <span className="font-mono text-sm">
+                    {g.rows.length}/{g.every_n}
+                  </span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${Math.min(100, Math.round((g.rows.length / g.every_n) * 100))}%`,
+                      background: g.rows.length >= g.every_n ? "var(--green)" : "var(--violet)",
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* monthly has no numeric target — the target is the end of the
+                month. A month that already closed is not progress, it is a
+                miss, and it gets the amber dot the rest of the app uses. */}
+            {g.cadence === "monthly" && g.months && g.months.length > 0 && (
+              <div className="mb-3 space-y-1">
+                {g.months.map((m) => (
+                  <div key={m.key} className="flex items-baseline justify-between gap-2 text-xs">
+                    <span className={`flex items-center gap-1.5 ${m.closed ? "text-amber-300" : "opacity-70"}`}>
+                      {m.closed && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />}
+                      {m.label} · {m.count} פרקים
+                    </span>
+                    <span className="opacity-60">
+                      {m.closed ? "חודש שנסגר ולא נפדה" : monthEndLabel(g.days_to_month_end ?? 0)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <ul className="divide-y divide-white/5">
               {g.rows.map((r) => (
