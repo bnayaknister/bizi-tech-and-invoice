@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { getSessionAndProfile } from "@/lib/profile";
 import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
-import AccruedClient, { type AccruedGroup } from "./AccruedClient";
+import AccruedClient, { type AccruedGroup, type IssuedOrder } from "./AccruedClient";
 
 export const dynamic = "force-dynamic";
 
@@ -70,10 +70,52 @@ export default async function AccruedPage() {
   }));
   groups.sort((a, b) => Number(b.ready) - Number(a.ready) || b.oldest_age_days - a.oldest_age_days);
 
+  // Redeemed order bundles that already went out to Morning and are still
+  // waiting for their deal invoice (owner spec 2026-08-02). A bundle is a
+  // consolidated row: production_id is null and its episodes hang off it via
+  // consolidated_into. "Waiting" = no live deal invoice links back to its
+  // Morning id — the same check the builder enforces server-side.
+  const { data: issuedRows } = await admin
+    .from("pending_documents")
+    .select("id,amount,issued_at,morning_doc_number,morning_doc_id,client_id,payload,clients(name)")
+    .eq("doc_type", "work_order")
+    .eq("status", "issued")
+    .is("production_id", null)
+    .not("morning_doc_id", "is", null)
+    .order("issued_at", { ascending: true });
+
+  const { data: liveInvoices } = await admin
+    .from("pending_documents")
+    .select("payload")
+    .eq("doc_type", "deal_invoice")
+    .in("status", ["pending", "approved", "issued"]);
+  const linkedIds = new Set<string>();
+  for (const r of liveInvoices ?? []) {
+    for (const id of ((r.payload as { linkedDocumentIds?: string[] } | null)?.linkedDocumentIds ?? [])) {
+      linkedIds.add(id);
+    }
+  }
+
+  const issuedOrders: IssuedOrder[] = (issuedRows ?? [])
+    .filter((r) => !linkedIds.has(r.morning_doc_id as string))
+    .map((r) => {
+      const income = (r.payload as { income?: unknown[] } | null)?.income ?? [];
+      const client = r.clients as { name?: string } | null;
+      return {
+        id: r.id as string,
+        client_name: client?.name ?? "—",
+        doc_number: (r.morning_doc_number as string | null) ?? null,
+        amount: (r.amount as number | null) ?? null,
+        lines: income.length,
+        issued_at: (r.issued_at as string | null) ?? null,
+        dry_run: String(r.morning_doc_id ?? "").startsWith("dry-"),
+      };
+    });
+
   return (
     <div className="min-h-screen">
       <AppHeader profile={profile} />
-      <AccruedClient groups={groups} canRedeem={!!profile.can_edit_money} />
+      <AccruedClient groups={groups} issuedOrders={issuedOrders} canRedeem={!!profile.can_edit_money} />
     </div>
   );
 }

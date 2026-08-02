@@ -23,13 +23,33 @@ export type AccruedGroup = {
   ready?: boolean;
 };
 
+// A consolidated work order that already went out to Morning and still has no
+// deal invoice linked back to it.
+export type IssuedOrder = {
+  id: string;
+  client_name: string;
+  doc_number: string | null;
+  amount: number | null;
+  lines: number;
+  issued_at: string | null;
+  dry_run: boolean;
+};
+
 const money = (n: number | null) =>
   n === null ? "—" : new Intl.NumberFormat("he-IL", { style: "currency", currency: "ILS", maximumFractionDigits: 0 }).format(n);
 
 const cadenceLabel = (g: AccruedGroup) =>
   g.cadence === "monthly" ? "מרוכז חודשי" : g.cadence === "every_n" ? `מרוכז כל ${g.every_n ?? "?"} פרקים` : "פר-פרק";
 
-export default function AccruedClient({ groups, canRedeem }: { groups: AccruedGroup[]; canRedeem: boolean }) {
+export default function AccruedClient({
+  groups,
+  issuedOrders,
+  canRedeem,
+}: {
+  groups: AccruedGroup[];
+  issuedOrders: IssuedOrder[];
+  canRedeem: boolean;
+}) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -50,6 +70,30 @@ export default function AccruedClient({ groups, canRedeem }: { groups: AccruedGr
       if (!res.ok) throw new Error(j.error ?? "הפדיון נכשל");
       const parts = [`הזמנת עבודה מרוכזת (${j.work_order?.lines} פרקים)`];
       setNote(`${g.client_name}: ${parts.join(" · ")} — נכנסו לתור לאישור`);
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "שגיאה");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function convert(o: IssuedOrder) {
+    if (busy) return;
+    setBusy(o.id);
+    setError(null);
+    setNote(null);
+    try {
+      const res = await fetch("/api/documents/convert", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workOrderPendingId: o.id }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error ?? "היצירה נכשלה");
+      setNote(
+        `${o.client_name}: חשבון עסקה על סמך הזמנה ${o.doc_number ?? ""} (${j.deal_invoice?.lines} פרקים) — נכנס לתור לאישור`
+      );
       router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "שגיאה");
@@ -85,13 +129,53 @@ export default function AccruedClient({ groups, canRedeem }: { groups: AccruedGr
         <a href="/documents" className="text-sm text-[var(--violet)] hover:underline">← לתור המסמכים</a>
       </div>
       <p className="mb-6 text-sm opacity-70">
-        לקוחות בקצב חודשי / כל-N. כל פדיון יוצר הזמנת עבודה מרוכזת + חשבון עסקה מרוכז, שנכנסים לתור הרגיל לאישור.
+        לקוחות בקצב חודשי / כל-N. הפדיון יוצר הזמנת עבודה מרוכזת שנכנסת לתור הרגיל לאישור. אחרי שההזמנה מונפקת,
+        חשבון העסקה נוצר על סמכה — וההזמנה נסגרת במורנינג מעצמה.
       </p>
 
       {error && <div className="mb-4 rounded-lg bg-rose-500/15 px-4 py-3 text-sm text-rose-300">{error}</div>}
       {note && <div className="mb-4 rounded-lg bg-emerald-500/15 px-4 py-3 text-sm text-emerald-300">{note}</div>}
 
-      {groups.length === 0 && (
+      {issuedOrders.length > 0 && (
+        <section className="mb-8">
+          <h2 className="mb-1 text-lg font-semibold">הזמנות שהונפקו וממתינות לחשבונית</h2>
+          <p className="mb-3 text-xs opacity-60">
+            חשבון העסקה נוצר על סמך ההזמנה, באותם סכומים בדיוק, וההזמנה נסגרת במורנינג עם ההנפקה.
+          </p>
+          <div className="space-y-2">
+            {issuedOrders.map((o) => (
+              <div key={o.id} className="glass-card flex items-center justify-between gap-3 rounded-2xl p-4">
+                <div className="min-w-0">
+                  <div className="font-semibold">{o.client_name}</div>
+                  <div className="mt-0.5 text-xs opacity-60">
+                    הזמנה {o.doc_number ?? "—"} · {o.lines} פרקים
+                    {o.issued_at ? ` · הונפקה ${o.issued_at.slice(0, 10)}` : ""}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="font-mono text-lg">{money(o.amount)}</span>
+                  {canRedeem && (
+                    <button
+                      onClick={() => convert(o)}
+                      disabled={busy !== null || o.dry_run}
+                      title={
+                        o.dry_run
+                          ? "ההזמנה הונפקה בהרצה יבשה — אין מסמך אמיתי במורנינג לקשר אליו"
+                          : "צור חשבון עסקה על סמך ההזמנה"
+                      }
+                      className="rounded-lg bg-[var(--violet)] px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                    >
+                      {busy === o.id ? "יוצר…" : "צור חשבון עסקה"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {groups.length === 0 && issuedOrders.length === 0 && (
         <div className="glass-card rounded-2xl px-6 py-12 text-center opacity-70">אין פרקים מסוכמים כרגע.</div>
       )}
 
