@@ -370,7 +370,7 @@ export default function FinanceClient({
             disabled={selected.size < 2 || !sameClient}
             className="mr-auto font-bold rounded-xl px-4 py-1.5 bg-[var(--violet)] text-white disabled:opacity-40"
           >
-            אגד לחשבונית אחת
+            אגד לחשבונית אחת · מסלול חריג
           </button>
         </div>
       )}
@@ -707,9 +707,14 @@ function BundleModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
       <div className="glass-card w-full max-w-lg p-5 rounded-2xl" onClick={(e) => e.stopPropagation()}>
-        <h2 className="text-sm font-bold mb-1">איגוד לחשבון עסקה אחד</h2>
+        <h2 className="text-sm font-bold mb-1">איגוד לחשבון עסקה אחד · מסלול חריג</h2>
         <p className="text-[11px] text-[var(--faint)] mb-3">
           {client} · חשבונית אחת עם שורה לכל עבודה. נכנסת לתור האישורים ומונפקת במורנינג משם.
+        </p>
+        <p className="text-[11px] text-[var(--warn)] mb-3">
+          הדרך הרגילה לחשבון עסקה היא &quot;צור על סמך&quot; מהזמנת עבודה — כך ההזמנה נסגרת במורנינג מעצמה. חשבונית שנוצרת
+          כאן לא קשורה לשום הזמנה. השתמשי בזה רק לעבודות שאין ולא תהיה להן הזמנת עבודה: ייבוא היסטורי, או עבודה שלא
+          מקושרת לאף הפקה.
         </p>
         <div className="border border-[var(--rule)] rounded-xl divide-y divide-[var(--rule)] mb-3 max-h-64 overflow-y-auto">
           {jobs.map((j) => (
