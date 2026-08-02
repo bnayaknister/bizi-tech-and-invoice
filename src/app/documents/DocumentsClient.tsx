@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import ClientCombobox, { type ComboboxClient } from "@/components/ClientCombobox";
 
 export type PendingDocType = "work_order" | "deal_invoice" | "tax_invoice" | "tax_receipt";
 
@@ -125,6 +126,14 @@ export default function DocumentsClient({
   const [editing, setEditing] = useState<string | null>(null);
   const [editAmount, setEditAmount] = useState<string>("");
   const [editDesc, setEditDesc] = useState<string>("");
+  // The recipient the document will be MADE OUT TO. Separate from the client
+  // who owes — a document ordered by one entity and invoiced to another is
+  // normal here (owner 2026-08-02), so this picker lists all of Morning's
+  // clients, not only the ones mapped to ours. Fetched once per session, on
+  // first open: it is a live Morning read and the list barely moves.
+  const [editClient, setEditClient] = useState<string | null>(null);
+  const [morningClients, setMorningClients] = useState<ComboboxClient[] | null>(null);
+  const [loadingClients, setLoadingClients] = useState(false);
   // recipient picker (owner spec 2026-07-29). recipientFor drives the non-tax
   // modal; the tax-confirm modal reuses the same recipientData/selectedEmails.
   const [recipientFor, setRecipientFor] = useState<PendingDocRow | null>(null);
@@ -256,11 +265,33 @@ export default function DocumentsClient({
     send([r.id], "reject", { reason });
   }
 
+  async function loadMorningClients() {
+    if (morningClients || loadingClients) return;
+    setLoadingClients(true);
+    try {
+      const res = await fetch("/api/morning/clients");
+      const body = await res.json();
+      if (!res.ok) {
+        setError(body.error ?? "שליפת לקוחות ממורנינג נכשלה");
+        return;
+      }
+      setMorningClients(
+        ((body.morning_clients ?? []) as { id: string; name: string }[]).map((c) => ({ id: c.id, name: c.name }))
+      );
+    } catch {
+      setError("שגיאת רשת בשליפת לקוחות מורנינג");
+    } finally {
+      setLoadingClients(false);
+    }
+  }
+
   function openEdit(r: PendingDocRow) {
     setEditing(r.id);
     setEditAmount(r.amount === null ? "" : String(r.amount));
     const desc = (r.payload as { description?: string })?.description ?? "";
     setEditDesc(desc);
+    setEditClient((r.payload as { client?: { id?: string } })?.client?.id ?? null);
+    void loadMorningClients();
   }
 
   async function saveEdit(r: PendingDocRow) {
@@ -269,13 +300,27 @@ export default function DocumentsClient({
       setError("סכום חייב להיות מספר חיובי");
       return;
     }
+    // only send the recipient when it actually moved — an unchanged pick must
+    // not cost a live Morning lookup on every save
+    const originalClient = (r.payload as { client?: { id?: string } })?.client?.id ?? null;
+    const clientChanged = editClient !== null && editClient !== originalClient;
     setBusy(true);
     setError(null);
     try {
       const res = await fetch("/api/documents/pending/edit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: r.id, amount: amountNum, description: editDesc.trim() || undefined }),
+        body: JSON.stringify({
+          id: r.id,
+          amount: amountNum,
+          description: editDesc.trim() || undefined,
+          ...(clientChanged
+            ? {
+                morningClientId: editClient,
+                morningClientName: morningClients?.find((c) => c.id === editClient)?.name,
+              }
+            : {}),
+        }),
       });
       const body = await res.json();
       if (!res.ok) {
@@ -399,6 +444,27 @@ export default function DocumentsClient({
                       </div>
                       {editing === r.id && (
                         <div className="mt-2 border border-[var(--rule)] rounded-xl p-2 flex flex-col gap-2">
+                          {/* the recipient comes first: it is the context for
+                              everything under it, not a detail of it */}
+                          <div className="text-[11px]">
+                            <span className="text-[var(--faint)]">נמען (לקוח מורנינג)</span>
+                            {loadingClients && !morningClients ? (
+                              <div className="mt-0.5 text-[var(--faint)]">טוען לקוחות ממורנינג…</div>
+                            ) : (
+                              <ClientCombobox
+                                clients={morningClients ?? []}
+                                value={editClient}
+                                onChange={setEditClient}
+                                morningCreate={false}
+                                className="mt-0.5"
+                                placeholder="— בחר נמען —"
+                              />
+                            )}
+                            <div className="mt-0.5 text-[10px] text-[var(--faint)]">
+                              שינוי הנמען משנה למי המסמך יוצא במורנינג. הסכומים והשורות לא משתנים, והחוב נשאר רשום על{" "}
+                              {r.client_name}.
+                            </div>
+                          </div>
                           <label className="text-[11px]">
                             <span className="text-[var(--faint)]">סכום (₪)</span>
                             <input
