@@ -49,8 +49,6 @@ export default function AccruedClient({ groups, canRedeem }: { groups: AccruedGr
       const j = await res.json();
       if (!res.ok) throw new Error(j.error ?? "הפדיון נכשל");
       const parts = [`הזמנת עבודה מרוכזת (${j.work_order?.lines} פרקים)`];
-      if (j.deal_invoice) parts.push(`חשבון עסקה מרוכז (${j.deal_invoice.lines} עבודות)`);
-      else if (j.deal_invoice_note) parts.push(`חשבון עסקה לא נוצר: ${j.deal_invoice_note}`);
       setNote(`${g.client_name}: ${parts.join(" · ")} — נכנסו לתור לאישור`);
       router.refresh();
     } catch (e) {

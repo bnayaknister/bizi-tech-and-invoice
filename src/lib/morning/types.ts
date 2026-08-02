@@ -89,6 +89,12 @@ export type MorningDocumentRequest = {
   dueDate?: string;
   description?: string;
   remarks?: string;
+  // "Create based on" (Morning OpenAPI): the ids of the documents this one
+  // derives from. Passing the source id here is what makes Morning close the
+  // original — e.g. a deal invoice issued against a work order (type 100).
+  // Declared here only; no caller sets them yet.
+  linkedDocumentIds?: string[];
+  linkType?: string;
   client: {
     id?: string;
     name?: string;

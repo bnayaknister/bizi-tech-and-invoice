@@ -153,7 +153,6 @@ try:
     rj = rr.json()
     check("6 redeem 200", rr.status_code == 200 and rj.get("ok"))
     check("6 consolidated work order, 2 lines", rj.get("work_order", {}).get("lines") == 2)
-    check("6 consolidated deal invoice, 2 jobs", (rj.get("deal_invoice") or {}).get("lines") == 2)
     wo = get(f"pending_documents?id=eq.{rj['work_order']['id']}&select=doc_type,production_id,status,payload")
     check("6 work order bundle: type work_order, prod null, pending, 2 income lines",
           wo[0]["doc_type"] == "work_order" and wo[0]["production_id"] is None and wo[0]["status"] == "pending"
@@ -161,23 +160,31 @@ try:
     src = get(f"pending_documents?client_id=eq.{cliMon['id']}&doc_type=eq.work_order&status=eq.consolidated&select=id,consolidated_into")
     check("6 source rows folded to 'consolidated' pointing at the bundle",
           len(src) == 2 and all(s["consolidated_into"] == rj["work_order"]["id"] for s in src))
-    di_id = rj["deal_invoice"]["id"]
-    dib = get(f"pending_documents?id=eq.{di_id}&select=doc_type,bundle_job_ids")
-    check("6 deal invoice bundle carries 2 job ids", dib[0]["doc_type"] == "deal_invoice" and len(dib[0]["bundle_job_ids"]) == 2)
+    # ---- case 7: approve consolidated deal invoice -> mark paid cascade --
+    # מושבת זמנית — redeem צומצם ליצירת הזמנה בלבד (שלב 2 סעיף 2).
+    # חשבון העסקה יחזור בסעיף 3 דרך "צור על סמך", ואז יש לשכתב
+    # את הבדיקה כך שתאמת יצירה על סמך ההזמנה ולא מ-redeem.
+    # כל מה שבתוך הבלוק הזה תלוי ב-rj["deal_invoice"], שכבר לא קיים בתשובה.
+    SKIP_CASE_7 = True
+    if not SKIP_CASE_7:
+        di_id = rj["deal_invoice"]["id"]
+        dib = get(f"pending_documents?id=eq.{di_id}&select=doc_type,bundle_job_ids")
+        check("6 deal invoice bundle carries 2 job ids", dib[0]["doc_type"] == "deal_invoice" and len(dib[0]["bundle_job_ids"]) == 2)
 
-    # ---- case 7: approve consolidated deal invoice → mark paid cascade --
-    ap = requests.post(f"{APP}/api/documents/pending/review", cookies=money_ck, headers={"Content-Type": "application/json"},
-                       json={"ids": [di_id], "action": "approve"})
-    check("7 approve consolidated deal invoice 200 (dry run)", ap.status_code == 200 and ap.json().get("dry_run") is True)
-    md = get(f"pending_documents?id=eq.{di_id}&select=morning_doc_id")
-    if md and md[0]["morning_doc_id"]: mdids.append(md[0]["morning_doc_id"])
-    jrows = get(f"jobs?client_id=eq.{cliMon['id']}&select=id,invoice_biz")
-    bizset = set(j["invoice_biz"] for j in jrows)
-    check("7 both jobs share one invoice_biz", len(bizset) == 1 and None not in bizset)
-    rp = requests.post(f"{APP}/api/finance/mark-paid", cookies=money_ck, headers={"Content-Type": "application/json"}, json={"job_id": jrows[0]["id"]})
-    check("7 mark-paid cascaded to the other job", rp.status_code == 200 and rp.json().get("cascaded") == 1)
-    paid = get(f"jobs?client_id=eq.{cliMon['id']}&select=paid")
-    check("7 both jobs paid", all(j["paid"] == "כן" for j in paid))
+        ap = requests.post(f"{APP}/api/documents/pending/review", cookies=money_ck, headers={"Content-Type": "application/json"},
+                           json={"ids": [di_id], "action": "approve"})
+        check("7 approve consolidated deal invoice 200 (dry run)", ap.status_code == 200 and ap.json().get("dry_run") is True)
+        md = get(f"pending_documents?id=eq.{di_id}&select=morning_doc_id")
+        if md and md[0]["morning_doc_id"]: mdids.append(md[0]["morning_doc_id"])
+        jrows = get(f"jobs?client_id=eq.{cliMon['id']}&select=id,invoice_biz")
+        bizset = set(j["invoice_biz"] for j in jrows)
+        check("7 both jobs share one invoice_biz", len(bizset) == 1 and None not in bizset)
+        rp = requests.post(f"{APP}/api/finance/mark-paid", cookies=money_ck, headers={"Content-Type": "application/json"}, json={"job_id": jrows[0]["id"]})
+        check("7 mark-paid cascaded to the other job", rp.status_code == 200 and rp.json().get("cascaded") == 1)
+        paid = get(f"jobs?client_id=eq.{cliMon['id']}&select=paid")
+        check("7 both jobs paid", all(j["paid"] == "כן" for j in paid))
+    else:
+        print("SKIP: case 7 (consolidated deal invoice) — see comment above")
 
     # ---- case 8: cadence change doesn't touch existing accrued/consolidated
     patch("clients", f"id=eq.{cliMon['id']}", {"billing_cadence": "per_episode"})
