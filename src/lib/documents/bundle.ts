@@ -19,6 +19,20 @@ import { todayInIsrael } from "@/lib/dates";
 const present = (v: unknown) => v != null && String(v).trim() !== "";
 const LIVE_STATUSES = ["pending", "approved", "issued"];
 
+/**
+ * The title line of a bundled document, printed on the real thing.
+ *
+ * Hebrew has no bare "1 <plural>": "(1 פרקים)" reads as a bug to the client
+ * holding the page. A count of one is NAMED, not counted — and a document
+ * covering one item is not "מאוגד" (bundled) at all, so that word drops with
+ * it. Two or more keep both the number and the bundling.
+ */
+function bundleTitle(kind: string, clientName: string, n: number, one: string, many: string, bundled: string) {
+  return n === 1
+    ? `${kind} — ${clientName} (${one})`.trim()
+    : `${kind} ${bundled} — ${clientName} (${n} ${many})`.trim();
+}
+
 export type BundleResult =
   | { ok: true; id: string; amount: number; lines: number }
   | { ok: false; status: number; error: string };
@@ -118,7 +132,7 @@ export async function createDealInvoiceBundle(
     currency: "ILS",
     vatType: VAT_TYPE_DEFAULT,
     date: todayInIsrael(), // issuance date, not the work dates (issue.ts re-stamps)
-    description: `חשבון עסקה מאוגד — ${primaryClient.name ?? ""} (${ordered.length} עבודות)`.trim(),
+    description: bundleTitle("חשבון עסקה", primaryClient.name ?? "", ordered.length, "עבודה אחת", "עבודות", "מאוגד"),
     client: { id: morningClientId, name: (primaryClient.name as string | null) ?? undefined, add: false },
     income: ordered.map((j) => ({
       description: lineDesc(j),
@@ -179,7 +193,7 @@ export async function createDealInvoiceFromWorkOrder(
 ): Promise<BundleResult> {
   const { data: wo } = await admin
     .from("pending_documents")
-    .select("id,doc_type,status,client_id,amount,payload,morning_doc_id,morning_doc_number,production_id")
+    .select("id,doc_type,status,client_id,amount,payload,morning_doc_id,morning_doc_number,production_id,job_id")
     .eq("id", workOrderPendingId)
     .maybeSingle();
   if (!wo) return { ok: false, status: 404, error: "הזמנת העבודה לא נמצאה" };
@@ -238,11 +252,14 @@ export async function createDealInvoiceFromWorkOrder(
   // billed" while the client has a real document in hand — and once the
   // document is issued in Morning the state cannot be undone.
   //
-  // The episodes come from one of two shapes, and the order decides which:
+  // The episodes come from one of three shapes, tried in this order:
   //   • a CONSOLIDATED order (redemption) — production_id is null on the row
   //     itself and its episodes hang off it via consolidated_into
   //   • a SINGLE per-episode order — no children at all; the episode is the
   //     row's own production_id
+  //   • an order raised from the REGISTRY (/api/documents/enqueue) — it is
+  //     anchored to a job directly and carries no production_id at all, so
+  //     neither production route can find it
   // Reading only the first shape made a single order unconvertible: the
   // children query came back empty, jobIds stayed empty, and the refusal below
   // fired on an order that had a perfectly good job all along.
@@ -260,6 +277,14 @@ export async function createDealInvoiceFromWorkOrder(
   if (productionIds.length) {
     const { data: jp } = await admin.from("job_productions").select("job_id").in("production_id", productionIds);
     jobIds = Array.from(new Set((jp ?? []).map((r) => r.job_id).filter(Boolean))) as string[];
+  }
+  // Last resort, and deliberately keyed on the RESOLVED jobs rather than on
+  // productionIds: this branch may only run where the refusal below would
+  // otherwise have fired unconditionally, so no call that succeeds today can
+  // take a different path. It therefore also covers an order whose production
+  // exists but carries no job_productions row — that case 409s today too.
+  if (jobIds.length === 0 && wo.job_id) {
+    jobIds = [wo.job_id as string];
   }
   if (jobIds.length === 0) {
     return {
@@ -280,7 +305,7 @@ export async function createDealInvoiceFromWorkOrder(
     currency: "ILS",
     vatType: VAT_TYPE_DEFAULT,
     date: todayInIsrael(), // issuance date, not the work dates (issue.ts re-stamps)
-    description: `חשבון עסקה מאוגד — ${clientName} (${income.length} פרקים)`.trim(),
+    description: bundleTitle("חשבון עסקה", clientName, income.length, "פרק אחד", "פרקים", "מאוגד"),
     client: { id: client.id, name: client.name, add: false },
     income, // inherited verbatim: the invoice must total exactly what the order did
     // the link itself. linkType is deliberately absent (not required), and
@@ -364,7 +389,7 @@ export async function createWorkOrderBundle(
     currency: "ILS",
     vatType: VAT_TYPE_DEFAULT,
     date: todayInIsrael(), // issuance date, not the work dates (issue.ts re-stamps)
-    description: `הזמנת עבודה מאוגדת — ${baseClient.name ?? ""} (${rows.length} פרקים)`.trim(),
+    description: bundleTitle("הזמנת עבודה", baseClient.name ?? "", rows.length, "פרק אחד", "פרקים", "מאוגדת"),
     client: { id: baseClient.id, name: baseClient.name, add: false },
     income,
   };
