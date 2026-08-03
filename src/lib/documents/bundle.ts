@@ -179,7 +179,7 @@ export async function createDealInvoiceFromWorkOrder(
 ): Promise<BundleResult> {
   const { data: wo } = await admin
     .from("pending_documents")
-    .select("id,doc_type,status,client_id,amount,payload,morning_doc_id,morning_doc_number")
+    .select("id,doc_type,status,client_id,amount,payload,morning_doc_id,morning_doc_number,production_id")
     .eq("id", workOrderPendingId)
     .maybeSingle();
   if (!wo) return { ok: false, status: 404, error: "הזמנת העבודה לא נמצאה" };
@@ -237,11 +237,25 @@ export async function createDealInvoiceFromWorkOrder(
   // invoice_biz on nothing is a charge nobody can see — the jobs stay "not
   // billed" while the client has a real document in hand — and once the
   // document is issued in Morning the state cannot be undone.
+  //
+  // The episodes come from one of two shapes, and the order decides which:
+  //   • a CONSOLIDATED order (redemption) — production_id is null on the row
+  //     itself and its episodes hang off it via consolidated_into
+  //   • a SINGLE per-episode order — no children at all; the episode is the
+  //     row's own production_id
+  // Reading only the first shape made a single order unconvertible: the
+  // children query came back empty, jobIds stayed empty, and the refusal below
+  // fired on an order that had a perfectly good job all along.
   const { data: sources } = await admin
     .from("pending_documents")
     .select("production_id")
     .eq("consolidated_into", workOrderPendingId);
-  const productionIds = (sources ?? []).map((s) => s.production_id).filter(Boolean) as string[];
+  const childIds = (sources ?? []).map((s) => s.production_id).filter(Boolean) as string[];
+  const productionIds = childIds.length
+    ? childIds
+    : wo.production_id
+      ? [wo.production_id as string]
+      : [];
   let jobIds: string[] = [];
   if (productionIds.length) {
     const { data: jp } = await admin.from("job_productions").select("job_id").in("production_id", productionIds);
@@ -251,7 +265,7 @@ export async function createDealInvoiceFromWorkOrder(
     return {
       ok: false,
       status: 409,
-      error: "לא נמצאו עבודות מאושרות לפרקי ההזמנה. חשבון עסקה נוצר רק אחרי שכל פרקי האגד אושרו ע״י הלקוח.",
+      error: "לא נמצאו עבודות מאושרות. חשבון עסקה נוצר רק אחרי שהפרקים אושרו ע״י הלקוח.",
     };
   }
 
