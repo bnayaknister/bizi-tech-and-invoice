@@ -150,19 +150,40 @@ function ProductionTrackBlock({
   onMediaChange: (v: string) => void;
 }) {
   const ordered = [...stages].sort((a, b) => (STEP_ORDER[a.step] ?? 9) - (STEP_ORDER[b.step] ?? 9));
+  // TWO different measurements live in this block, and until 2026-08-03 both
+  // said "ממתין" — so they read as one contradicting itself (owner). They are
+  // both right and they measure different axes:
+  //   • the badge = the CLIENT's approval of this deliverable
+  //   • the tally = how far the WORK has gone, straight off the stage rows
+  // Everything below keeps them apart: the badge is prefixed "לקוח:", wears a
+  // dashed square instead of a pill, and sits on its own row under the steps —
+  // shape and position, not just colour, so they can't be confused at a glance.
   const badge = approved
-    ? { text: "אושר ✓", cls: "border-emerald-500/50 text-emerald-400" }
+    ? { text: "לקוח: אושר ✓", cls: "border-emerald-500/50 text-emerald-400" }
     : note
-      ? { text: "תיקונים", cls: "border-rose-500/50 text-rose-400" }
-      : { text: "ממתין", cls: "border-[var(--rule)] text-[var(--faint)]" };
+      ? { text: "לקוח: ביקש תיקונים", cls: "border-rose-500/50 text-rose-400" }
+      : { text: "לקוח: ממתין לאישור", cls: "border-[var(--rule)] text-[var(--faint)]" };
+  // Read off the rows already loaded — no extra request. A track with no stage
+  // rows at all renders NO tally: "0/0" on the 708 legacy productions that
+  // never had stages would be noise on every one of them (owner 2026-08-03).
+  const doneCount = stages.filter((s) => s.status === "done").length;
+  const stageTally = stages.length > 0 ? `שלבים ${doneCount}/${stages.length}` : null;
   return (
     <div className="rounded-xl border border-[var(--rule)] p-3" style={{ background: "rgba(255,255,255,0.02)" }}>
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between gap-2 mb-2">
         <span className="text-sm font-bold flex items-center gap-1.5">
           <span>{icon}</span>
           {title}
         </span>
-        <span className={`text-[10px] px-2 py-0.5 rounded-full border ${badge.cls}`}>{badge.text}</span>
+        {stageTally && (
+          <span
+            className={`text-[11px] font-mono shrink-0 ${
+              doneCount === stages.length ? "text-emerald-400" : "text-[var(--dim)]"
+            }`}
+          >
+            {stageTally}
+          </span>
+        )}
       </div>
       {tally && <div className="text-[11px] text-[var(--dim)] mb-2">{tally}</div>}
       <div className="flex items-center gap-1.5 mb-2">
@@ -183,6 +204,10 @@ function ProductionTrackBlock({
             {STEP_LABEL[s.step]}
           </button>
         ))}
+      </div>
+      {/* the client-approval axis, on its own row and in its own shape */}
+      <div className="flex justify-end mb-2">
+        <span className={`text-[10px] px-2 py-0.5 rounded-md border border-dashed ${badge.cls}`}>{badge.text}</span>
       </div>
       {note && (
         <div className="rounded-lg border border-rose-500/40 px-2.5 py-2 mb-2" style={{ background: "rgba(251,113,133,0.10)" }}>
@@ -1080,7 +1105,13 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           </button>
                         )}
                       </div>
-                      <div className="text-[10px] text-[var(--faint)] mt-1">מתעדכן אוטומטית מהשלבים למטה</div>
+                      {/* the old caption promised more than the trigger does:
+                          derive_production_status is forward-only and its top
+                          rank IS 'נערך' (0039), so past that point no stage
+                          change moves this cursor. Say so. */}
+                      <div className="text-[10px] text-[var(--faint)] mt-1">
+                        מתקדם אוטומטית עם השלבים — עד &quot;נערך&quot;. משם והלאה ידני, ואישור הלקוח נמדד בנפרד לכל תוצר.
+                      </div>
                       {excOpen && data.canEditStages && (
                         <div className="mt-2 pt-2 border-t border-[var(--rule)] space-y-2">
                           {next && (
