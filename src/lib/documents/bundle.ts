@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { DOC_TYPE_TO_MORNING_CODE, VAT_TYPE_DEFAULT, type MorningDocumentRequest } from "@/lib/morning/types";
+import { DOC_TYPE_TO_MORNING_CODE, VAT_TYPE_DEFAULT, sourceRemark, type MorningDocumentRequest } from "@/lib/morning/types";
 import { todayInIsrael } from "@/lib/dates";
 
 // Bundling: several per-episode documents folded into ONE Morning document with
@@ -299,6 +299,14 @@ export async function createDealInvoiceFromWorkOrder(
     : { data: null };
   const clientName = (clientRow?.name as string | null) ?? client.name ?? "";
 
+  // The two halves of "created on the basis of", and they are not the same
+  // job: linkedDocumentIds CLOSES the order in Morning, `remarks` is what the
+  // client actually reads. An earlier comment here claimed Morning fills the
+  // remark itself — it does, but only for documents raised in its own UI.
+  // Through the API it leaves the field null, so 40303 went out closing 10306
+  // without naming it anywhere on the page (verified against the PDF).
+  const remark = sourceRemark("deal_invoice", "work_order", [wo.morning_doc_number as string | null]);
+
   const payload: MorningDocumentRequest = {
     type: DOC_TYPE_TO_MORNING_CODE["deal_invoice"],
     lang: "he",
@@ -308,9 +316,11 @@ export async function createDealInvoiceFromWorkOrder(
     description: bundleTitle("חשבון עסקה", clientName, income.length, "פרק אחד", "פרקים", "מאוגד"),
     client: { id: client.id, name: client.name, add: false },
     income, // inherited verbatim: the invoice must total exactly what the order did
-    // the link itself. linkType is deliberately absent (not required), and
-    // remarks is left to Morning, which writes "חשבון עסקה עבור הזמנה NNNNN".
+    // linkType is deliberately absent — not required by the API
     linkedDocumentIds: [linkedId],
+    // spread away when the order somehow carries no number, rather than send
+    // an empty remark
+    ...(remark ? { remarks: remark } : {}),
   };
 
   const { data: inserted, error } = await admin

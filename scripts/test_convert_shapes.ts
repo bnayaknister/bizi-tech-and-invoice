@@ -19,8 +19,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { createDealInvoiceFromWorkOrder } from "../src/lib/documents/bundle";
-import type { MorningDocumentRequest } from "../src/lib/morning/types";
+import { createDealInvoiceBundle, createDealInvoiceFromWorkOrder } from "../src/lib/documents/bundle";
+import { sourceRemark, type MorningDocumentRequest } from "../src/lib/morning/types";
 
 // ---------------------------------------------------------------------------
 // env + client
@@ -101,10 +101,14 @@ async function makeJobWithProduction(clientId: string): Promise<{ job: string; p
 }
 
 /** An ISSUED work order — the only status convert accepts. */
+/** order id -> the Morning number it carries, so the remark can be asserted */
+const orderNumber: Record<string, string> = {};
+
 async function makeIssuedOrder(
   clientId: string,
   extra: { production_id?: string | null; job_id?: string | null; lines?: number }
 ): Promise<string> {
+  const number = String(Math.floor(Math.random() * 100000));
   const id = await insert("pending_documents", {
     doc_type: "work_order",
     status: "issued",
@@ -114,10 +118,11 @@ async function makeIssuedOrder(
     production_id: extra.production_id ?? null,
     job_id: extra.job_id ?? null,
     morning_doc_id: uuid(), // a real-looking id; never sent anywhere
-    morning_doc_number: String(Math.floor(Math.random() * 100000)),
+    morning_doc_number: number,
     issued_at: new Date().toISOString(),
   });
   made.pendingParents.push(id);
+  orderNumber[id] = number;
   return id;
 }
 
@@ -153,9 +158,43 @@ const sameSet = (a: string[] | null, b: string[]) =>
   !!a && a.length === b.length && [...a].sort().join() === [...b].sort().join();
 
 // ---------------------------------------------------------------------------
+// the provenance line — a pure function, so it is checked without any rows
+// ---------------------------------------------------------------------------
+function checkRemarkWording() {
+  console.log("\nsourceRemark — the provenance line");
+  check(
+    "one source",
+    sourceRemark("deal_invoice", "work_order", ["10306"]) === "חשבון עסקה עבור הזמנה 10306",
+    sourceRemark("deal_invoice", "work_order", ["10306"])
+  );
+  check(
+    "two sources: type named once, numbers comma-joined",
+    sourceRemark("tax_receipt", "deal_invoice", ["40277", "40275"]) ===
+      "חשבונית מס / קבלה עבור חשבון עסקה 40277, 40275",
+    sourceRemark("tax_receipt", "deal_invoice", ["40277", "40275"])
+  );
+  check(
+    "Morning's names, not ours (הזמנה, not הזמנת עבודה)",
+    sourceRemark("tax_invoice", "work_order", ["10226"]) === "חשבונית מס עבור הזמנה 10226",
+    sourceRemark("tax_invoice", "work_order", ["10226"])
+  );
+  check("no source at all -> undefined", sourceRemark("deal_invoice", "work_order", []) === undefined);
+  check(
+    "blank / null numbers are not a source",
+    sourceRemark("deal_invoice", "work_order", [null, undefined, "", "  "]) === undefined
+  );
+  check(
+    "duplicate numbers collapse",
+    sourceRemark("deal_invoice", "work_order", ["10306", "10306"]) === "חשבון עסקה עבור הזמנה 10306"
+  );
+}
+
+// ---------------------------------------------------------------------------
 // the run
 // ---------------------------------------------------------------------------
 async function main() {
+  checkRemarkWording();
+
   const clientId = await insert("clients", {
     name: TAG,
     normalized_name: TAG.toLowerCase(),
@@ -176,6 +215,11 @@ async function main() {
     check("bundle_job_ids = both children's jobs", sameSet(row?.bundle_job_ids ?? null, [a1.job, a2.job]), JSON.stringify(row?.bundle_job_ids));
     check("plural title reads '2 פרקים'", !!row?.payload.description?.includes("(2 פרקים)"), row?.payload.description);
     check("title says מאוגד for >1", !!row?.payload.description?.includes("מאוגד"), row?.payload.description);
+    check(
+      "remarks names the order it was raised on",
+      row?.payload.remarks === `חשבון עסקה עבור הזמנה ${orderNumber[orderA]}`,
+      row?.payload.remarks
+    );
   }
 
   // -- shape B: single per-episode order (row's own production_id) ----------
@@ -201,6 +245,11 @@ async function main() {
     check("title drops מאוגד for exactly 1", !row?.payload.description?.includes("מאוגד"), row?.payload.description);
     check("income inherited verbatim (1 line)", row?.payload.income.length === 1, JSON.stringify(row?.payload.income?.length));
     check("links back to the order in Morning", !!row?.payload.linkedDocumentIds?.length, JSON.stringify(row?.payload.linkedDocumentIds));
+    check(
+      "remarks names the order it was raised on",
+      row?.payload.remarks === `חשבון עסקה עבור הזמנה ${orderNumber[orderC]}`,
+      row?.payload.remarks
+    );
   }
 
   // -- shape D: priority — production wins, job_id is last ------------------
@@ -219,6 +268,25 @@ async function main() {
   {
     const { res } = await convert(orderE);
     check("still refuses with 409", !res.ok && res.status === 409, res.ok ? "converted!" : `${res.status}`);
+  }
+
+  // -- shape G: a PARENTLESS invoice must carry no remark at all ------------
+  // The manual bundle is the declared emergency path: it is raised from jobs,
+  // not from a document, so there is nothing to name. A remark here would be
+  // a claim of provenance that does not exist.
+  console.log("\nshape G — parentless bundle: no source, so no remark");
+  const gJob = await insert("jobs", { client_id: clientId, campaign: TAG, amount: 100, date: "2026-01-01" });
+  made.jobs.push(gJob);
+  {
+    const res = await createDealInvoiceBundle(admin, [gJob], null);
+    check("builds", res.ok, res.ok ? "" : res.error);
+    if (res.ok) {
+      made.pendingInvoices.push(res.id);
+      const { data } = await admin.from("pending_documents").select("payload").eq("id", res.id).single();
+      const p = (data as { payload: MorningDocumentRequest }).payload;
+      check("no remarks key on the payload at all", !("remarks" in p), JSON.stringify(p.remarks));
+      check("and no link either", !("linkedDocumentIds" in p), JSON.stringify(p.linkedDocumentIds));
+    }
   }
 
   // -- shape F: a pending order is not convertible at all -------------------

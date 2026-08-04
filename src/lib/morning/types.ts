@@ -38,6 +38,63 @@ export const DOC_TYPE_LABEL: Record<PendingDocType, string> = {
   tax_receipt: "חשבונית מס קבלה",
 };
 
+/**
+ * What MORNING calls each type — its vocabulary, not ours, and the two differ.
+ * Morning has no "הזמנת עבודה": 100 prints as "הזמנה" on the page, and 320 as
+ * "חשבונית מס / קבלה" with the slashes. DOC_TYPE_LABEL above is what WE show
+ * in our own screens; this is what the owner's books already say.
+ *
+ * Read off 1,000 real documents in the account (2026-08-04): every remark
+ * Morning generates for itself is built from exactly these names, so anything
+ * we write has to use them or the archive ends up saying the same thing two
+ * ways. Keyed by Morning's numeric code, not by PendingDocType, because a
+ * SOURCE document can be a type we never issue (a quote, a credit note).
+ */
+export const MORNING_DOC_NAME: Record<number, string> = {
+  [MORNING_DOC_CODE.price_quote]: "הצעת מחיר",
+  [MORNING_DOC_CODE.order]: "הזמנה",
+  [MORNING_DOC_CODE.deal_invoice]: "חשבון עסקה",
+  [MORNING_DOC_CODE.tax_invoice]: "חשבונית מס",
+  [MORNING_DOC_CODE.tax_receipt]: "חשבונית מס / קבלה",
+  [MORNING_DOC_CODE.credit_invoice]: "חשבונית זיכוי",
+  [MORNING_DOC_CODE.receipt]: "קבלה",
+};
+
+/**
+ * The provenance line for a document created ON THE BASIS OF others — e.g.
+ * "חשבון עסקה עבור הזמנה 10306". Belongs in `remarks`.
+ *
+ * Why this exists at all: `linkedDocumentIds` CLOSES the source in Morning, it
+ * does not DESCRIBE it. Nothing about the link reaches the printed page —
+ * verified 2026-08-04 by pulling the PDFs: 40303 names its 2,000 ₪ line and
+ * its client and never once says 10306. `remarks` is the slot that prints,
+ * below the totals, and Morning fills it itself for documents raised in its
+ * own UI (285 in the books read "חשבון עסקה עבור הזמנה NNNNN") but NOT for
+ * ones raised through the API — 40303 and 10306 both carry a link and both
+ * came back with remarks null. So we write it, in Morning's own words.
+ *
+ * The plural form is Morning's too: the source TYPE is named once and the
+ * numbers follow, comma-separated — "חשבונית מס / קבלה עבור חשבון עסקה
+ * 40277, 40275". 22 documents in the account are shaped that way.
+ *
+ * Returns undefined when there is no source, so a caller can spread the result
+ * and have the field simply not appear: a parentless document (the manual
+ * bundle, an order raised from the registry) must never carry one.
+ */
+export function sourceRemark(
+  docType: PendingDocType,
+  sourceType: PendingDocType,
+  sourceNumbers: readonly (string | number | null | undefined)[]
+): string | undefined {
+  const numbers = Array.from(
+    new Set(sourceNumbers.map((n) => String(n ?? "").trim()).filter((n) => n !== ""))
+  );
+  if (numbers.length === 0) return undefined;
+  const self = MORNING_DOC_NAME[DOC_TYPE_TO_MORNING_CODE[docType]];
+  const source = MORNING_DOC_NAME[DOC_TYPE_TO_MORNING_CODE[sourceType]];
+  return `${self} עבור ${source} ${numbers.join(", ")}`;
+}
+
 // Document-level VAT type (spec: 0 default / 1 exempt / 2 mixed).
 export const VAT_TYPE_DEFAULT = 0;
 
