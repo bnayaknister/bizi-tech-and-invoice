@@ -137,13 +137,21 @@ async function main() {
         (await docClient(doc3)) === keep3, await docClient(doc3));
 
   // ---- 4. a legitimate shared mapping still works (0026 not broken) ------
+  // The property under test is "still resolves, deterministically, by name" —
+  // NOT "resolves to whichever row was created first". Ask the database which
+  // name sorts first rather than assuming: ה precedes ו, so the row created
+  // second is the one that wins, and hard-coding the other way tests nothing
+  // but the author's guess at Hebrew collation.
   console.log("\n4. two live clients sharing one Morning entity (0026)");
   const mc4 = uuid();
-  const liveA = await makeClient(`${TAG}_וואן`, mc4);
-  await makeClient(`${TAG}_הנעות`, mc4);
+  const live1 = await makeClient(`${TAG}_וואן`, mc4);
+  const live2 = await makeClient(`${TAG}_הנעות`, mc4);
+  const bothOrdered = await admin.from("clients").select("id,name").in("id", [live1, live2]).order("name");
+  const expected4 = ((bothOrdered.data ?? [])[0] as { id: string } | undefined)?.id;
   const doc4 = await makeUnassignedDoc(mc4);
   await backfillDocumentClients(admin, { morningClientId: mc4 });
-  check("shared mapping still resolves (first by name)", (await docClient(doc4)) === liveA, await docClient(doc4));
+  check("shared mapping still resolves", [live1, live2].includes((await docClient(doc4)) ?? ""), await docClient(doc4));
+  check("…to the row that sorts first by name", (await docClient(doc4)) === expected4, await docClient(doc4));
 
   // ---- 5. the CHECK makes the accident unrepresentable -------------------
   console.log("\n5. the database refuses to map a retired row");
@@ -162,6 +170,12 @@ async function main() {
 
 async function cleanup() {
   console.log("\ncleanup");
+  // backfillDocumentClients writes a documents_client_backfilled event per
+  // client it resolves (backfill.ts). Those name OUR throwaway clients, so
+  // they have to go with them or the audit log keeps rows pointing at ids
+  // that no longer exist — a first run left three behind exactly that way.
+  if (made.clients.length) await admin.from("events").delete().in("entity_id", made.clients);
+  if (made.documents.length) await admin.from("events").delete().in("entity_id", made.documents);
   if (made.documents.length) await admin.from("documents").delete().in("id", made.documents);
   if (made.clients.length) {
     // children before parents: merged_into is a self-FK with no cascade
@@ -173,6 +187,11 @@ async function cleanup() {
     if (!ids.length) continue;
     const { data } = await admin.from(t).select("id").in("id", ids);
     if (data?.length) leftovers.push(`${t}: ${data.length} rows`);
+  }
+  const allIds = [...made.clients, ...made.documents];
+  if (allIds.length) {
+    const { data } = await admin.from("events").select("id").in("entity_id", allIds);
+    if (data?.length) leftovers.push(`events: ${data.length} rows`);
   }
   if (leftovers.length) {
     console.log("  LEFTOVER ROWS — DELETE BY HAND:", leftovers.join(" | "));
