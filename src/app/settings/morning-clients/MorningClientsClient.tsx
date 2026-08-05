@@ -15,6 +15,10 @@ type OurClient = {
   mapped_tax_id?: string | null;
   mapped_missing?: boolean;
   shared_with?: string[];
+  // set when this row was retired by a client merge: it is unmapped on
+  // purpose, and must not be offered back to Morning (0051)
+  merged_into?: string | null;
+  merged_into_name?: string | null;
   suggestion: { id: string; name: string; distance: number } | null;
 };
 
@@ -79,7 +83,11 @@ export default function MorningClientsClient() {
     });
   }, [clients, filter, onlyUnmapped]);
 
-  const mappedCount = clients.filter((c) => c.morning_client_id).length;
+  // retired rows are out of the ratio entirely — counting them as "unmapped"
+  // is what made eight of nine rows look like work waiting to be done
+  const billable = clients.filter((c) => !c.merged_into);
+  const mappedCount = billable.filter((c) => c.morning_client_id).length;
+  const mergedCount = clients.length - billable.length;
 
   async function save(
     clientId: string,
@@ -181,7 +189,8 @@ export default function MorningClientsClient() {
           רק לא ממופים
         </label>
         <span className="text-[var(--faint)] shrink-0">
-          {mappedCount}/{clients.length} ממופים
+          {mappedCount}/{billable.length} ממופים
+          {mergedCount > 0 ? ` · ${mergedCount} מוזגו` : ""}
         </span>
       </div>
 
@@ -194,6 +203,29 @@ export default function MorningClientsClient() {
       <div className="flex flex-col gap-2">
         {shown.map((c) => {
           const sel = choice[c.id] ?? "";
+          // Retired by a merge: shown so the operator can see WHY it sits in
+          // the unmapped list, locked so the 3.8 loop cannot reopen. There is
+          // deliberately no override — undoing a merge is a decision that
+          // belongs in SQL, not one click away from a routine screen.
+          if (c.merged_into) {
+            return (
+              <div
+                key={c.id}
+                className="rounded-2xl border border-dashed border-[var(--rule)] p-3 opacity-60"
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="font-bold text-sm flex-1">{c.name}</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full border border-[var(--rule2)] text-[var(--dim)]">
+                    מוזג ל־{c.merged_into_name ?? "לקוח אחר"}
+                  </span>
+                </div>
+                <div className="text-[11px] text-[var(--faint)] leading-relaxed">
+                  השורה מוזגה ואינה בשימוש. היא לא ממופה למורנינג בכוונה — החיוב עובר דרך{" "}
+                  <span className="font-bold">{c.merged_into_name ?? "הלקוח הזוכה"}</span>. אין למפות אותה מחדש.
+                </div>
+              </div>
+            );
+          }
           return (
             <div key={c.id} className="rounded-2xl border border-[var(--rule)] p-3">
               <div className="flex items-center gap-2 mb-2">

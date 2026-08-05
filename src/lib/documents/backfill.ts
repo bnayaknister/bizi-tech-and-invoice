@@ -18,10 +18,17 @@ export async function backfillDocumentClients(
 ): Promise<{ resolved: number }> {
   // Morning client id -> our client id (first by name wins, same tie-break as
   // the pull, so a Morning client shared by several of ours resolves the same)
+  //
+  // …and the same merged_into exclusion, for the same reason. This copy is the
+  // more dangerous of the two: it runs the instant a client is mapped on the
+  // mapping screen (see the three call sites above), so a retired row that
+  // slipped back into a mapping would be handed documents in that very
+  // request, without waiting for a pull.
   const { data: clients } = await admin
     .from("clients")
     .select("id,morning_client_id")
     .not("morning_client_id", "is", null)
+    .is("merged_into", null)
     .order("name");
   const byMorning = new Map<string, string>();
   for (const c of clients ?? []) {

@@ -163,11 +163,20 @@ export async function runDocumentPull(admin: SupabaseClient, opts?: { full?: boo
   }
 
   // one query: Morning client id -> our client id (first by name wins when
-  // several of ours share one Morning entity)
+  // several of ours share one Morning entity — legitimate, see 0026).
+  //
+  // merged_into is excluded, and that exclusion is the whole defence. On 3.8
+  // seven rows retired by 0050 were re-mapped by hand, and this tie-break
+  // handed them everything: it orders by NAME, and the '[' of the '[מוזג]'
+  // prefix sorts before every Hebrew letter, so the retired row won every
+  // time. The marker meant to take a row out of service is what put it first
+  // in line. 14 documents moved before anyone noticed. A retired row must
+  // never be a resolution target, whatever it is called.
   const { data: clients } = await admin
     .from("clients")
     .select("id,morning_client_id")
     .not("morning_client_id", "is", null)
+    .is("merged_into", null)
     .order("name");
   const clientByMorning = new Map<string, string>();
   for (const c of clients ?? []) {

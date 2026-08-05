@@ -24,7 +24,10 @@ export async function GET() {
   const { data: profile } = await supabase.from("profiles").select("can_edit_money").eq("id", user.id).single();
   if (!profile?.can_edit_money) return NextResponse.json({ error: "אין הרשאת עריכת כספים" }, { status: 403 });
 
-  const { data: ours } = await supabase.from("clients").select("id,name,normalized_name,morning_client_id").order("name");
+  const { data: ours } = await supabase
+    .from("clients")
+    .select("id,name,normalized_name,morning_client_id,merged_into")
+    .order("name");
 
   let morning;
   try {
@@ -56,7 +59,24 @@ export async function GET() {
     ourNamesByMorningId.set(c.morning_client_id, arr);
   }
 
+  const nameById = new Map((ours ?? []).map((c) => [c.id as string, c.name as string]));
+
   const rows = (ours ?? []).map((c) => {
+    // A row retired by a merge is shown, not hidden: hiding it would clean the
+    // list at the cost of the one fact the operator needed on 3.8 — that these
+    // rows are unmapped ON PURPOSE. It comes back locked, with the survivor's
+    // name, and never with a suggestion.
+    if (c.merged_into) {
+      return {
+        ...c,
+        suggestion: null,
+        mapped_name: null,
+        mapped_tax_id: null,
+        mapped_missing: false,
+        shared_with: [],
+        merged_into_name: nameById.get(c.merged_into as string) ?? null,
+      };
+    }
     if (c.morning_client_id) {
       // resolve the name/taxId of what it's mapped to so the row can show
       // it — and flag a mapping that points at a Morning client that no
@@ -114,6 +134,30 @@ export async function POST(request: Request) {
   if (!body.client_id) return NextResponse.json({ error: "חסר מזהה לקוח" }, { status: 400 });
 
   const admin = createAdminClient();
+
+  // A row retired by a merge may not be mapped, at any confirmation level.
+  // The CHECK in 0051 already makes it impossible; this is here so the answer
+  // is a sentence the operator can act on instead of a constraint violation.
+  // Unmapping (null) stays allowed — it is the direction that repairs.
+  if (body.morning_client_id) {
+    const { data: target } = await admin
+      .from("clients")
+      .select("merged_into")
+      .eq("id", body.client_id)
+      .maybeSingle();
+    const mergedInto = (target?.merged_into as string | null) ?? null;
+    if (mergedInto) {
+      // a second plain lookup rather than an embedded resource: the join name
+      // would depend on the FK's generated identifier, and this path must not
+      // be the thing that discovers it is wrong
+      const { data: keeper } = await admin.from("clients").select("name").eq("id", mergedInto).maybeSingle();
+      const into = (keeper?.name as string | null) ?? "לקוח אחר";
+      return NextResponse.json(
+        { error: `השורה מוזגה אל '${into}' ואינה בשימוש — אין למפות אותה. מפו את '${into}' במקומה.` },
+        { status: 409 }
+      );
+    }
+  }
 
   // Sharing one Morning client across several of ours is legitimate (owner,
   // 2026-07-20), but must be a DELIBERATE choice, not a silent one. When the
