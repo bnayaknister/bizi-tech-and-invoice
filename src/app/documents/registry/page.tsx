@@ -28,6 +28,22 @@ export default async function RegistryPage() {
   ]);
   const data = docsRes.error ? (await docsQuery(BASE_COLS)).data : docsRes.data;
 
+  // Which registry rows can raise a tax document. The builder works from a
+  // pending_documents row (it inherits that row's frozen income lines), and
+  // `documents` has no FK to it — morning_doc_id is the only bridge. A document
+  // raised by hand in Morning has no queue row, so it simply gets no button:
+  // the v1 scope enforces itself on screen instead of failing on click.
+  const { data: parentRows } = await admin
+    .from("pending_documents")
+    .select("id,morning_doc_id")
+    .in("doc_type", ["work_order", "deal_invoice"])
+    .eq("status", "issued")
+    .not("morning_doc_id", "is", null);
+  const pendingIdByMorningId = new Map<string, string>();
+  for (const p of (parentRows ?? []) as { id: string; morning_doc_id: string }[]) {
+    pendingIdByMorningId.set(p.morning_doc_id, p.id);
+  }
+
   const rows: DocRow[] = ((data ?? []) as unknown as Array<Record<string, unknown>>).map((d) => ({
     id: d.id as string,
     morning_doc_id: (d.morning_doc_id as string | null) ?? null,
@@ -53,6 +69,7 @@ export default async function RegistryPage() {
     cancel_reason: (d.cancel_reason as string | null) ?? null,
     archived_at: (d.archived_at as string | null) ?? null,
     archive_reason: (d.archive_reason as string | null) ?? null,
+    pending_id: pendingIdByMorningId.get(d.morning_doc_id as string) ?? null,
   }));
 
   return (

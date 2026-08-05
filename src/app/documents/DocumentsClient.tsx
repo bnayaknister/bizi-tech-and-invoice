@@ -103,6 +103,70 @@ function RecipientPicker({
   );
 }
 
+/**
+ * The exact body that will be POSTed to Morning, shown before the last click.
+ *
+ * Deliberately reads the STORED payload and never re-derives anything. The
+ * remark in particular is rebuilt server-side when the variant is switched
+ * (review route) — deriving a second version here is how the printed page and
+ * the screen end up saying different things.
+ */
+function TaxPayloadPreview({
+  payload,
+  variant,
+}: {
+  payload: Record<string, unknown>;
+  variant: "tax_receipt" | "tax_invoice";
+}) {
+  const linked = Array.isArray(payload?.linkedDocumentIds) ? (payload.linkedDocumentIds as string[]) : [];
+  const income = Array.isArray(payload?.income)
+    ? (payload.income as { description?: string; quantity?: number; price?: number }[])
+    : [];
+  const remarks = typeof payload?.remarks === "string" ? payload.remarks : null;
+  const description = typeof payload?.description === "string" ? payload.description : null;
+  const willRebuildRemark = remarks !== null && payload?.type !== (variant === "tax_receipt" ? 320 : 305);
+
+  return (
+    <div className="border-t border-[var(--rule)] pt-3 mb-3">
+      <div className="text-xs font-bold mb-2">מה יישלח למורנינג</div>
+      <div className="text-[11px] space-y-1.5">
+        {description && (
+          <div className="flex gap-2">
+            <span className="text-[var(--faint)] shrink-0">תיאור:</span>
+            <span className="break-all">{description}</span>
+          </div>
+        )}
+        <div className="flex gap-2">
+          <span className="text-[var(--faint)] shrink-0">הערה מודפסת:</span>
+          <span className="break-all">{remarks ?? "— (אין הערת מקור)"}</span>
+        </div>
+        {willRebuildRemark && (
+          <div className="text-[var(--warn)]">ההערה תיבנה מחדש לפי הסוג שנבחר בעת האישור.</div>
+        )}
+        <div className="flex gap-2">
+          <span className="text-[var(--faint)] shrink-0">סוגר במורנינג:</span>
+          <span className="font-mono break-all">{linked.length ? linked.join(", ") : "— (ללא קישור)"}</span>
+        </div>
+        {income.length > 0 && (
+          <div>
+            <div className="text-[var(--faint)] mb-1">שורות הכנסה ({income.length})</div>
+            <div className="space-y-0.5">
+              {income.map((l, i) => (
+                <div key={i} className="flex justify-between gap-2 font-mono">
+                  <span className="truncate">{l.description ?? "—"}</span>
+                  <span className="shrink-0">
+                    {l.quantity ?? 1} × {l.price ?? 0}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function DocumentsClient({
   rows,
   canApprove,
@@ -545,7 +609,7 @@ export default function DocumentsClient({
       {/* ---- the second gate for a tax document ---- */}
       {confirming && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
-          <div className="bg-[var(--bg)] border border-[var(--rule)] rounded-2xl p-5 max-w-md w-full">
+          <div className="bg-[var(--bg)] border border-[var(--rule)] rounded-2xl p-5 max-w-md w-full max-h-[88vh] overflow-y-auto">
             <h3 className="font-bold text-sm mb-3">אישור הנפקת מסמך מס</h3>
             <div className="text-sm space-y-1 mb-4">
               <div>
@@ -573,6 +637,14 @@ export default function DocumentsClient({
                 </select>
               </label>
             </div>
+            {/* The real thing, not a summary of it (owner spec 2026-08-06): the
+                links that close the parents, the remark that gets PRINTED, and
+                every income line. A tax document cannot be corrected once it is
+                in Morning, so whatever is wrong has to be visible HERE.
+                remarks re-renders on the variant switch because the server
+                rebuilds it — the two must never contradict each other. */}
+            <TaxPayloadPreview payload={confirming.payload} variant={taxVariant} />
+
             <div className="border-t border-[var(--rule)] pt-3 mb-2">
               <div className="text-xs font-bold mb-2">שליחה במייל</div>
               <RecipientPicker loading={loadingRecipients} data={recipientData} selected={selectedEmails} onToggle={toggleEmail} />

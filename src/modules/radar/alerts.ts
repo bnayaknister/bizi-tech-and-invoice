@@ -538,8 +538,8 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     return true;
   });
 
-  // ---- 🟡 a deal invoice went out "based on" a work order, and the order is
-  // STILL OPEN in Morning (owner spec 2026-08-02). Issuing the invoice with
+  // ---- 🟡 a document went out "based on" a parent, and the parent is
+  // STILL OPEN in Morning (owner spec 2026-08-02). Issuing the child with
   // linkedDocumentIds is what closes the order there (bundle.ts) — so an open
   // order means the link did not do its job, and the order sits in the books
   // forever. The failure this alert exists for was live in production.
@@ -551,16 +551,24 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   // Two targeted queries, deliberately NOT folded into the Promise.all above:
   // `payload` is heavy jsonb and only these few rows need it — the existing
   // pendingDocs fetch must stay slim, it pages the whole queue on every load.
+  // EVERY child type, not just the deal invoice: the chain is 100 -> 300 ->
+  // 305/320, so a tax document links back to its deal invoice exactly the same
+  // way and can leave it open exactly the same way. Filtering on deal_invoice
+  // made the whole tax rung invisible to this alert.
   const { data: linkedInvoices } = await supabase
     .from("pending_documents")
     .select("id,payload,issued_at")
-    .eq("doc_type", "deal_invoice")
     .eq("status", "issued")
     .not("payload->linkedDocumentIds", "is", null);
   const pairs: { linkedId: string; issuedAt: string }[] = [];
   for (const d of (linkedInvoices ?? []) as { payload: { linkedDocumentIds?: string[] } | null; issued_at: string | null }[]) {
-    const linkedId = d.payload?.linkedDocumentIds?.[0];
-    if (linkedId && d.issued_at) pairs.push({ linkedId, issuedAt: d.issued_at });
+    // ALL the ids, not [0]. A document raised on several parents closes all of
+    // them; reading only the first would silently stop watching the rest —
+    // 22 documents in the books already have more than one source.
+    if (!d.issued_at) continue;
+    for (const linkedId of d.payload?.linkedDocumentIds ?? []) {
+      if (linkedId) pairs.push({ linkedId, issuedAt: d.issued_at });
+    }
   }
   const orderById = new Map<string, { status: number | null; updated_at: string | null }>();
   for (let i = 0; i < pairs.length; i += 200) {
@@ -604,7 +612,7 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     { key: "open_commitment", severity: "blue", title: "התחייבות פתוחה", count: openMilestones.length, amount: openCommitment, href: "/contracts" },
     { key: "billing_blocked", severity: "yellow", title: "הפקת לקוח חסומה לחיוב", count: billingBlocked.length, amount: null, href: "/productions" },
     { key: "cancelled_with_work_order", severity: "yellow", title: "הפקה בוטלה אחרי שהונפקה הזמנת עבודה — לסגור במורנינג", count: cancelledWithWorkOrder.length, amount: null, href: "/productions" },
-    { key: "order_not_closed", severity: "yellow", title: "חשבון עסקה הונפק וההזמנה לא נסגרה במורנינג · נכון לסנכרון האחרון", count: orderNotClosed.length, amount: null, href: "/documents/registry" },
+    { key: "order_not_closed", severity: "yellow", title: "מסמך הונפק על סמך מסמך אב שלא נסגר במורנינג · נכון לסנכרון האחרון", count: orderNotClosed.length, amount: null, href: "/documents/registry" },
     { key: "pending_docs_24h", severity: "yellow", title: "מסמכים ממתינים לאישור מעל 24 שעות", count: pending24.length, amount: null, href: "/documents" },
     { key: "stuck_rejected_doc", severity: "yellow", title: "מסמך נדחה/נכשל ולא טופל", count: stuckDocs.length, amount: null, href: "/documents" },
     { key: "bundle_full", severity: "yellow", title: "אגד מלא וממתין לפדיון", count: bundleFull, amount: null, href: "/documents/accrued" },

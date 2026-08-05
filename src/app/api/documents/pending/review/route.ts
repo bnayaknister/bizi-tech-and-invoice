@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { issuePendingDocument, type PendingRow } from "@/lib/documents/issue";
 import { isDryRun, morningEnv } from "@/lib/morning/client";
-import type { PendingDocType } from "@/lib/morning/types";
+import { DOC_TYPE_TO_MORNING_CODE, sourceRemark, type PendingDocType } from "@/lib/morning/types";
 import {
   fetchClientEmails,
   resolveDefaultRecipients,
@@ -134,14 +134,81 @@ export async function POST(request: Request) {
     // The modal lets the bookkeeper switch between מס קבלה and מס. Honour
     // that choice by rewriting the type on both the row and its payload
     // before issuing, so what goes out matches what she confirmed.
+    //
+    // `remarks` MUST be rebuilt with it. The remark names the document in
+    // Morning's own words ("חשבונית מס / קבלה עבור חשבון עסקה 40277"), so
+    // flipping only the type would print a 305 that calls itself a 320 — a
+    // contradiction on a PDF that cannot be corrected afterwards (there is no
+    // PUT on documents; a fix means cancel + re-issue).
+    //
+    // The parent's TYPE and NUMBERS are not in the payload — only its Morning
+    // ids are — so they are read back from the queue rows those ids belong to.
+    // If that lookup can't produce them, the flip is REFUSED rather than
+    // issuing a document that names no parent (the failure fixed in 7d6136e).
     if (body.tax_variant && TAX_TYPES.includes(r.doc_type as PendingDocType) && body.tax_variant !== r.doc_type) {
-      const { DOC_TYPE_TO_MORNING_CODE } = await import("@/lib/morning/types");
-      const newPayload = { ...(r.payload as object), type: DOC_TYPE_TO_MORNING_CODE[body.tax_variant] };
+      const oldPayload = (r.payload ?? {}) as Record<string, unknown>;
+      const linkedIds = Array.isArray(oldPayload.linkedDocumentIds)
+        ? (oldPayload.linkedDocumentIds as string[])
+        : [];
+      const hasRemark = typeof oldPayload.remarks === "string" && oldPayload.remarks.trim() !== "";
+
+      let newRemark: string | undefined;
+      if (linkedIds.length) {
+        const { data: parents } = await admin
+          .from("pending_documents")
+          .select("doc_type,morning_doc_id,morning_doc_number")
+          .in("morning_doc_id", linkedIds);
+        const byMorningId = new Map(
+          ((parents ?? []) as { doc_type: string; morning_doc_id: string; morning_doc_number: string | null }[]).map(
+            (p) => [p.morning_doc_id, p]
+          )
+        );
+        // every parent must be found, carry a number, and be the same type —
+        // the remark names the type once and lists the numbers after it
+        const resolved = linkedIds.map((id) => byMorningId.get(id));
+        const complete =
+          resolved.length > 0 &&
+          resolved.every((p) => !!p && !!p.morning_doc_number && String(p.morning_doc_number).trim() !== "");
+        const parentTypes = Array.from(new Set(resolved.map((p) => p?.doc_type).filter(Boolean)));
+        if (complete && parentTypes.length === 1) {
+          newRemark = sourceRemark(
+            body.tax_variant,
+            parentTypes[0] as PendingDocType,
+            resolved.map((p) => p!.morning_doc_number)
+          );
+        }
+      }
+
+      // no parent at all and no remark to contradict → a bare type flip is safe
+      const parentless = linkedIds.length === 0 && !hasRemark;
+      if (!parentless && !newRemark) {
+        return NextResponse.json(
+          {
+            error:
+              "לא ניתן להחליף את סוג המסמך: לא נמצאו סוג ומספרי מסמך המקור, והערת המקור הייתה יוצאת שגויה. " +
+              "אשרי את המסמך כפי שהוא, או בטלי אותו וצרי אותו מחדש.",
+          },
+          { status: 409 }
+        );
+      }
+
+      const newPayload: Record<string, unknown> = {
+        ...oldPayload,
+        type: DOC_TYPE_TO_MORNING_CODE[body.tax_variant],
+        ...(newRemark ? { remarks: newRemark } : {}),
+      };
       await admin
         .from("pending_documents")
         .update({ doc_type: body.tax_variant, payload: newPayload })
         .eq("id", r.id);
-      row = { ...row, doc_type: body.tax_variant, payload: newPayload as PendingRow["payload"] };
+      await admin.from("events").insert({
+        entity_type: "pending_document",
+        entity_id: r.id,
+        event_type: "tax_variant_switched",
+        actor_id: user.id,
+        payload: { from: r.doc_type, to: body.tax_variant, remarks: newRemark ?? null },
+      });
+      row = { ...row, doc_type: body.tax_variant, payload: newPayload as unknown as PendingRow["payload"] };
     }
 
     await admin

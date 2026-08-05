@@ -32,7 +32,16 @@ export type DocRow = {
   cancel_reason: string | null;
   archived_at: string | null;
   archive_reason: string | null;
+  // the pending_documents row this document was issued from, when there is one.
+  // null = raised by hand in Morning, so there is no frozen payload to inherit
+  // and no tax document can be built on it.
+  pending_id: string | null;
 };
+
+// A tax document can only be raised on a work order (100) or a deal invoice
+// (300) — our allow-list, mirrored from lib/documents/taxFromParent.ts. The
+// server enforces it; this only decides whether to offer the button.
+const TAX_PARENT_TYPES = [100, 300];
 
 // tab order = the owner's five, then "other", then the unmatched bucket which
 // is a client-match state, not a Morning type (owner: "לשונית לא משויך")
@@ -72,6 +81,7 @@ export default function RegistryClient({
   const [assignDoc, setAssignDoc] = useState<DocRow | null>(null);
   const [cancelDoc, setCancelDoc] = useState<DocRow | null>(null);
   const [newDoc, setNewDoc] = useState<"work_order" | "deal_invoice" | null>(null);
+  const [taxDoc, setTaxDoc] = useState<DocRow | null>(null);
   // in "לא משויך", quotes/orders/credits are noise for the bookkeeper — show
   // only real billing docs by default (owner spec 2026-07-27), the rest behind a toggle
   const [showNonBilling, setShowNonBilling] = useState(false);
@@ -383,6 +393,15 @@ export default function RegistryClient({
                           </button>
                         )}
                         {r.job_id && <span className="text-[10px] text-[var(--green)]">משויך</span>}
+                        {canPull && r.pending_id && TAX_PARENT_TYPES.includes(r.type) && (
+                          <button
+                            onClick={() => setTaxDoc(r)}
+                            className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--signal)]"
+                            title="צור חשבונית מס על סמך מסמך זה — נכנסת לתור האישורים, לא מונפקת מיד"
+                          >
+                            צור חשבונית מס
+                          </button>
+                        )}
                         {canPull && r.type === 300 && (
                           <button
                             onClick={() => setCancelDoc(r)}
@@ -432,6 +451,18 @@ export default function RegistryClient({
         />
       )}
 
+      {taxDoc && (
+        <TaxFromParentModal
+          doc={taxDoc}
+          onClose={() => setTaxDoc(null)}
+          onQueued={(m) => {
+            setTaxDoc(null);
+            setMsg(m);
+            router.refresh();
+          }}
+        />
+      )}
+
       {newDoc && (
         <NewDocModal
           docType={newDoc}
@@ -444,6 +475,165 @@ export default function RegistryClient({
         />
       )}
     </main>
+  );
+}
+
+// What the builder actually produced. Rendered in full — every income line, the
+// links, the printed remark — because a summary is exactly what hides the field
+// that is wrong, and a tax document cannot be corrected once it is in Morning.
+type BuiltPayload = {
+  type: number;
+  description?: string;
+  remarks?: string;
+  linkedDocumentIds?: string[];
+  client?: { id?: string; name?: string };
+  income?: { description: string; quantity: number; price: number }[];
+};
+
+function TaxFromParentModal({
+  doc,
+  onClose,
+  onQueued,
+}: {
+  doc: DocRow;
+  onClose: () => void;
+  onQueued: (msg: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [built, setBuilt] = useState<{
+    id: string;
+    amount: number | null;
+    parentOpennessUnknown: boolean;
+    payload: BuiltPayload | null;
+  } | null>(null);
+
+  async function submit() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch("/api/documents/tax", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceIds: [doc.pending_id] }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setErr(body.error ?? "היצירה נכשלה");
+        return;
+      }
+      const t = body.tax_document ?? {};
+      setBuilt({
+        id: t.id,
+        amount: t.amount ?? null,
+        parentOpennessUnknown: !!t.parent_openness_unknown,
+        payload: (t.payload ?? null) as BuiltPayload | null,
+      });
+    } catch {
+      setErr("שגיאת רשת");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const p = built?.payload;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div
+        className="glass-card w-full max-w-lg p-5 rounded-2xl max-h-[85vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {!built ? (
+          <>
+            <h2 className="text-sm font-bold mb-1">צור חשבונית מס על סמך #{doc.number ?? ""}</h2>
+            <p className="text-[11px] text-[var(--faint)] mb-3 leading-relaxed">
+              המסמך ייווצר כ<b>חשבונית מס קבלה</b> ויכנס לתור האישורים — הוא אינו מונפק כאן. שורות
+              ההכנסה יורשות מהמסמך הזה במדויק, והקישור אליו הוא שסוגר אותו במורנינג. את בוחרת בין
+              &quot;מס קבלה&quot; ל&quot;מס&quot; במסך האישור.
+            </p>
+            <div className="text-xs space-y-1 border border-[var(--rule)] rounded-xl p-3 mb-3">
+              <div>
+                <span className="text-[var(--faint)]">מסמך מקור: </span>
+                <span className="font-mono">#{doc.number ?? "—"}</span>
+              </div>
+              <div>
+                <span className="text-[var(--faint)]">לקוח: </span>
+                {doc.client_name ?? "—"}
+              </div>
+              <div>
+                <span className="text-[var(--faint)]">סכום: </span>
+                <span className="font-mono">{money(doc.amount, doc.currency)}</span>
+              </div>
+            </div>
+            {err && <div className="text-[11px] text-[var(--red)] mb-2">{err}</div>}
+            <div className="flex items-center justify-end gap-2">
+              <button onClick={onClose} className="text-xs rounded-xl px-4 py-1.5 border border-[var(--rule)]">
+                ביטול
+              </button>
+              <button
+                onClick={submit}
+                disabled={busy}
+                className="text-xs font-bold rounded-xl px-4 py-1.5 bg-[var(--signal)] text-white disabled:opacity-40"
+              >
+                {busy ? "יוצר…" : "צור והוסף לתור"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <h2 className="text-sm font-bold mb-1">נוצרה חשבונית מס קבלה — ממתינה לאישור</h2>
+            <p className="text-[11px] text-[var(--faint)] mb-3">
+              זה בדיוק מה שיישלח למורנינג באישור. שום דבר עוד לא יצא.
+            </p>
+            {built.parentOpennessUnknown && (
+              <div className="text-[11px] text-[var(--warn)] border border-[var(--warn)] rounded-xl px-3 py-2 mb-3 leading-relaxed">
+                לא ידוע אם מסמך המקור עדיין פתוח במורנינג — הוא טרם נמשך משם. אם הוא כבר נסגר,
+                הקישור לא יסגור אותו שוב ותידרש בדיקה ידנית.
+              </div>
+            )}
+            <div className="text-[11px] space-y-2 border border-[var(--rule)] rounded-xl p-3 mb-3">
+              <Field label="סוג (קוד מורנינג)" value={String(p?.type ?? "—")} mono />
+              <Field label="תיאור" value={p?.description ?? "—"} />
+              <Field label="הערה מודפסת (remarks)" value={p?.remarks ?? "—"} />
+              <Field label="קישור למסמכי מקור" value={(p?.linkedDocumentIds ?? []).join(", ") || "—"} mono />
+              <Field label="לקוח במורנינג" value={p?.client?.name ?? p?.client?.id ?? "—"} />
+              <div>
+                <div className="text-[var(--faint)] mb-1">שורות הכנסה ({p?.income?.length ?? 0})</div>
+                <div className="space-y-0.5">
+                  {(p?.income ?? []).map((l, i) => (
+                    <div key={i} className="flex justify-between gap-2 font-mono">
+                      <span className="truncate">{l.description}</span>
+                      <span className="shrink-0">
+                        {l.quantity} × {l.price}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <Field label="סכום כולל" value={money(built.amount, doc.currency)} mono />
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => onQueued(`נוצרה חשבונית מס קבלה על סמך #${doc.number ?? ""} — ממתינה לאישור בתור המסמכים`)}
+                className="text-xs font-bold rounded-xl px-4 py-1.5 bg-[var(--signal)] text-white"
+              >
+                סגור
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex gap-2">
+      <span className="text-[var(--faint)] shrink-0">{label}:</span>
+      <span className={`break-all ${mono ? "font-mono" : ""}`}>{value}</span>
+    </div>
   );
 }
 
