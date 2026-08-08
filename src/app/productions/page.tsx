@@ -50,6 +50,15 @@ type RollupRow = {
   in_progress_stages: { track: string; step: string; assignee_id: string | null }[];
   assignee_ids: string[];
 };
+//
+// KNOWN GAP (documented 2026-08-09, deliberately not fixed here): this pager
+// has no ORDER BY, and Postgres does not guarantee a stable row order across
+// two separate queries — so once the rollup exceeds one page, a row could come
+// back twice or be skipped entirely. Harmless today (one production per row,
+// ~713 rows, a single page) and left alone on purpose because the view was
+// measured and is not the bottleneck. fetchProductions below does add
+// .order("id") for exactly this reason; copy that pattern here if this ever
+// needs a second page.
 async function fetchStageRollup(supabase: ReturnType<typeof createClient>) {
   const page = 1000;
   const out: RollupRow[] = [];
@@ -60,6 +69,40 @@ async function fetchStageRollup(supabase: ReturnType<typeof createClient>) {
       .range(from, from + page - 1);
     if (error) throw error;
     const rows = (data ?? []) as RollupRow[];
+    out.push(...rows);
+    if (rows.length < page) return out;
+  }
+}
+
+// Every production, paged. Correctness, not speed: PostgREST silently caps an
+// unbounded select at 1000 rows and returns no error, and there are 743
+// productions today — a 257-row margin. When it is crossed the board would just
+// stop showing some episodes, which is exactly what happened to the stages read
+// before 0035 (see the note above: 546 of 713 cards showing a false 0/0).
+//
+// Costs nothing at today's volume: 743 < 1000, so the first request is also the
+// last, and the loop stops. It only spends a second round-trip once there is
+// genuinely a second page — the moment the old code would have started lying.
+//
+// .order("id") is what makes the paging itself sound: without a stable sort,
+// Postgres may return rows in a different order per request, so a row can
+// repeat on one page and vanish from another. Primary key, so it is free.
+//
+// NOT filtered server-side (no `merged_into is null`, no `legacy = false`),
+// which would drop it under the cap: the merged-away rows are what build the
+// "מוזגו לכאן" indicator below, and the legacy rows are what the board's
+// history toggle reveals. Both are needed in memory; both are filtered in JS.
+async function fetchProductions(supabase: ReturnType<typeof createClient>, select: string) {
+  const page = 1000;
+  const out: ProdRow[] = [];
+  for (let from = 0; ; from += page) {
+    const { data, error } = await supabase
+      .from("productions")
+      .select(select)
+      .order("id")
+      .range(from, from + page - 1);
+    if (error) throw error;
+    const rows = (data ?? []) as unknown as ProdRow[];
     out.push(...rows);
     if (rows.length < page) return out;
   }
@@ -100,16 +143,34 @@ export default async function ProductionsPage() {
     "id,status,record_date,record_time,guest,studio,on_hold,on_hold_reason,on_hold_since,needs_attention,show_id,calendar_uid,split_index,split_count,calendar_dup_ack,merged_into,legacy";
   const prodSelect = canViewMoney ? `${commonCols},client_id` : commonCols;
 
-  // fetched without a merged_into filter — a merged-away / un-split-away
-  // row must still surface as "absorbed" on its survivor's card, it just
-  // never becomes a board entry of its own (see split below)
-  const [prodsRes, { data: shows }, stageRollup, logCounts] = await Promise.all([
-    supabase.from("productions").select(prodSelect),
-    supabase.from("shows").select("id,name,color,active"),
-    fetchStageRollup(supabase),
-    fetchLogCounts(supabase),
-  ]);
-  const allProds = (prodsRes.data ?? []) as unknown as ProdRow[];
+  // ONE network wave, not two. Every read below is independent — none of them
+  // takes an id or a filter from another — so they all belong in the same
+  // Promise.all. The profiles/clients pair used to sit in a second wave after
+  // this one purely because the code that consumes them appears later in the
+  // file; at ~250ms per round-trip (functions and DB in sin1, the office in
+  // Tel Aviv) that ordering cost a quarter second for nothing.
+  //
+  // Assignee names come from the SERVICE client because profiles RLS is
+  // manager-only, while staff names on the board are visible to the whole team
+  // by design (screens-spec §2). Client names are money, so that read only
+  // happens with the permission — the board never carries money for a
+  // stages-only viewer.
+  //
+  // productions is fetched without a merged_into filter — a merged-away /
+  // un-split-away row must still surface as "absorbed" on its survivor's card,
+  // it just never becomes a board entry of its own (see split below).
+  const admin = createAdminClient();
+  const [allProds, { data: shows }, stageRollup, logCounts, { data: profilesRows }, clientsRes] =
+    await Promise.all([
+      fetchProductions(supabase, prodSelect),
+      supabase.from("shows").select("id,name,color,active"),
+      fetchStageRollup(supabase),
+      fetchLogCounts(supabase),
+      admin.from("profiles").select("id,name,email"),
+      canViewMoney
+        ? supabase.from("clients").select("id,name")
+        : Promise.resolve({ data: [] as { id: string; name: string }[] }),
+    ]);
   const prods = allProds.filter((p) => !p.merged_into);
 
   // productions absorbed into a survivor (calendar-duplicate merge, or an
@@ -158,16 +219,6 @@ export default async function ProductionsPage() {
     });
   }
 
-  // client names (money only) and assignee names — assignees fetched via the
-  // service client because profiles RLS is manager-only, but staff names on
-  // the board are visible to the whole team by design (screens-spec §2)
-  const admin = createAdminClient();
-  const [{ data: profilesRows }, clientsRes] = await Promise.all([
-    admin.from("profiles").select("id,name,email"),
-    canViewMoney
-      ? supabase.from("clients").select("id,name")
-      : Promise.resolve({ data: [] as { id: string; name: string }[] }),
-  ]);
   const nameById = new Map((profilesRows ?? []).map((p) => [p.id, p.name || p.email || "—"]));
   const clientById = new Map((clientsRes.data ?? []).map((c) => [c.id, c.name]));
 
