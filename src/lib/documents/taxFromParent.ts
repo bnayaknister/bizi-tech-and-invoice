@@ -31,15 +31,22 @@ import { todayInIsrael } from "@/lib/dates";
 const LIVE_STATUSES = ["pending", "approved", "issued"];
 
 /**
- * What the row is created as. The bookkeeper flips it to 305 in the approval
+ * What the row is created as. The bookkeeper flips it to 320 in the approval
  * modal (tax_variant), which also rebuilds `remarks` — the two must never
  * disagree, because a document that says "חשבונית מס / קבלה" while being a 305
  * cannot be corrected once issued.
  *
- * 320 is the default because it is the common case: by the time we invoice, the
- * money is usually already in.
+ * 305 is the default because the two mistakes are not equal in cost (owner
+ * 2026-08-09). A 320 is an invoice AND a receipt: issuing one declares to the
+ * tax authority that the money came in. Approve without touching the selector
+ * and a receipt goes out for money that may never have arrived — irreversible,
+ * and there is no PUT on documents. The opposite mistake is ordinary: a 305
+ * that turns out to be paid is closed by a separate receipt.
+ *
+ * So the default is the one that is safe to be wrong about, and collecting the
+ * money is a deliberate act.
  */
-export const DEFAULT_TAX_VARIANT: PendingDocType = "tax_receipt";
+export const DEFAULT_TAX_VARIANT: PendingDocType = "tax_invoice";
 
 /** The tax children this builder can produce. 100 -> 300 is not one of them. */
 const TAX_CHILD_CODES: number[] = [MORNING_DOC_CODE.tax_invoice, MORNING_DOC_CODE.tax_receipt];

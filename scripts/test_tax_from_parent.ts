@@ -253,14 +253,16 @@ async function main() {
   made.clients.push(clientId);
 
   // -- A: the happy path on an open work order ------------------------------
-  console.log("\nA — open work order (ref full) -> 320");
+  console.log("\nA — open work order (ref full) -> 305, the default");
   {
     const job = await makeJob(clientId);
     const p = await makeParent({ docType: "work_order", morningClientId, clientId, jobId: job, lines: 2, ref: REF_OPEN_100 });
     const { res, row } = await build([p]);
     check("builds", res.ok, res.ok ? "" : res.error);
-    check("doc_type is tax_receipt (the default)", row?.doc_type === "tax_receipt", row?.doc_type);
-    check("payload type is 320", row?.payload.type === 320, String(row?.payload.type));
+    // 305 is the default on purpose: a 320 declares to the tax authority that
+    // the money arrived, and cannot be undone. See DEFAULT_TAX_VARIANT.
+    check("doc_type is tax_invoice (the default)", row?.doc_type === "tax_invoice", row?.doc_type);
+    check("payload type is 305, never 320 by omission", row?.payload.type === 305, String(row?.payload.type));
     check("status pending — nothing was issued", row?.status === "pending", row?.status);
     check("production_id null", row?.production_id === null);
     check("job_id null — the jobs live in bundle_job_ids", row?.job_id === null);
@@ -272,7 +274,7 @@ async function main() {
     );
     check(
       "remarks names the parent",
-      row?.payload.remarks === `חשבונית מס / קבלה עבור הזמנה ${parentNumber[p]}`,
+      row?.payload.remarks === `חשבונית מס עבור הזמנה ${parentNumber[p]}`,
       row?.payload.remarks
     );
     check("income inherited verbatim (2 lines)", row?.payload.income.length === 2, String(row?.payload.income.length));
@@ -282,7 +284,7 @@ async function main() {
   }
 
   // -- B: a deal invoice parent --------------------------------------------
-  console.log("\nB — open deal invoice (ref full) -> 320");
+  console.log("\nB — open deal invoice (ref full) -> 305");
   {
     const job = await makeJob(clientId);
     const p = await makeParent({ docType: "deal_invoice", morningClientId, clientId, jobId: job, ref: REF_OPEN_300 });
@@ -290,7 +292,7 @@ async function main() {
     check("builds", res.ok, res.ok ? "" : res.error);
     check(
       "remarks names it as a deal invoice",
-      row?.payload.remarks === `חשבונית מס / קבלה עבור חשבון עסקה ${parentNumber[p]}`,
+      row?.payload.remarks === `חשבונית מס עבור חשבון עסקה ${parentNumber[p]}`,
       row?.payload.remarks
     );
   }
@@ -331,7 +333,7 @@ async function main() {
   }
 
   // -- F: ref present but does not allow this child -------------------------
-  console.log("F — ref open but without 320: refuse, and blame Morning honestly");
+  console.log("F — ref open but without 305: refuse, and blame Morning honestly");
   {
     const job = await makeJob(clientId);
     const p = await makeParent({ docType: "work_order", morningClientId, clientId, jobId: job, ref: [200, 400] });
@@ -406,7 +408,7 @@ async function main() {
     );
     check(
       "remarks lists both numbers after one type name",
-      row?.payload.remarks === `חשבונית מס / קבלה עבור חשבון עסקה ${parentNumber[p1]}, ${parentNumber[p2]}`,
+      row?.payload.remarks === `חשבונית מס עבור חשבון עסקה ${parentNumber[p1]}, ${parentNumber[p2]}`,
       row?.payload.remarks
     );
     check("bundle_job_ids = both jobs", sameSet(row?.bundle_job_ids, [j1, j2]), JSON.stringify(row?.bundle_job_ids));
@@ -481,17 +483,19 @@ async function main() {
     check("refuses", !res.ok && res.status === 400, res.ok ? "built!" : String(res.status));
   }
 
-  // -- R: a 305 child carries the 305 wording -------------------------------
-  console.log("R — building a 305 directly: type and remark agree");
+  // -- R: 320 is reachable, but only when ASKED for --------------------------
+  // The mirror of A: the receipt variant still works end to end, it just never
+  // happens by leaving the selector alone.
+  console.log("R — building a 320 explicitly: type and remark agree");
   {
     const job = await makeJob(clientId);
     const p = await makeParent({ docType: "deal_invoice", morningClientId, clientId, jobId: job, ref: REF_OPEN_300 });
-    const { res, row } = await build([p], "tax_invoice");
+    const { res, row } = await build([p], "tax_receipt");
     check("builds", res.ok, res.ok ? "" : res.error);
-    check("payload type is 305", row?.payload.type === 305, String(row?.payload.type));
+    check("payload type is 320", row?.payload.type === 320, String(row?.payload.type));
     check(
-      "remark says חשבונית מס, not מס / קבלה",
-      row?.payload.remarks === `חשבונית מס עבור חשבון עסקה ${parentNumber[p]}`,
+      "remark says מס / קבלה, not חשבונית מס",
+      row?.payload.remarks === `חשבונית מס / קבלה עבור חשבון עסקה ${parentNumber[p]}`,
       row?.payload.remarks
     );
   }

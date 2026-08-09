@@ -43,6 +43,39 @@ export type DocRow = {
 // server enforces it; this only decides whether to offer the button.
 const TAX_PARENT_TYPES = [100, 300];
 
+/**
+ * Can this document still father a tax document?
+ *
+ * documents.status is Morning's own state, refreshed on every pull, and it is a
+ * perfect predictor of the builder's openness gate — verified across 609
+ * documents (owner 2026-08-09): status=0 always carries a ref containing BOTH
+ * 305 and 320; status=1 and status=2 always carry an empty ref. So the screen
+ * reads `status` and never `raw->'ref'`, which would mean hauling heavy jsonb
+ * across a 5,000-row query to learn the same thing.
+ *
+ * The proportion is the point: only 23 of those 609 are open. Until now the
+ * button lit on all of them, so it was mostly an invitation to a 409.
+ *
+ * null / anything unexpected = we have no state for it (an app-issued document
+ * carries no status until the next pull — issue.ts never writes one). The
+ * builder ALLOWS that case and flags it, so the button stays lit and the chip
+ * says so rather than pretending to know.
+ */
+type Openness = { open: boolean; label: string; tone: "open" | "closed" | "unknown" };
+
+function parentOpenness(status: number | null): Openness {
+  if (status === 0) return { open: true, label: "פתוח", tone: "open" };
+  if (status === 1) return { open: false, label: "נסגר אוטומטית", tone: "closed" };
+  if (status === 2) return { open: false, label: "נסגר ידנית", tone: "closed" };
+  return { open: true, label: "טרם נמשך ממורנינג", tone: "unknown" };
+}
+
+const OPENNESS_TITLE: Record<Openness["tone"], string> = {
+  open: "פתוח במורנינג — אפשר להנפיק על סמכו מסמך מס",
+  closed: "סגור במורנינג — כבר לא ניתן להנפיק על סמכו",
+  unknown: "המסמך טרם נמשך ממורנינג, ולכן מצבו אינו ידוע. אפשר לנסות — הבדיקה תיעשה בשרת.",
+};
+
 // tab order = the owner's five, then "other", then the unmatched bucket which
 // is a client-match state, not a Morning type (owner: "לשונית לא משויך")
 const TAB_ORDER: (RegistryTab | "unmatched" | "cancelled" | "archived")[] = [
@@ -393,15 +426,38 @@ export default function RegistryClient({
                           </button>
                         )}
                         {r.job_id && <span className="text-[10px] text-[var(--green)]">משויך</span>}
-                        {canPull && r.pending_id && TAX_PARENT_TYPES.includes(r.type) && (
-                          <button
-                            onClick={() => setTaxDoc(r)}
-                            className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--signal)]"
-                            title="צור חשבונית מס על סמך מסמך זה — נכנסת לתור האישורים, לא מונפקת מיד"
-                          >
-                            צור חשבונית מס
-                          </button>
-                        )}
+                        {/* The chip and the button tell ONE story: the chip is
+                            why the button is or isn't there. Shown only on
+                            100/300, the rows where "can I still build on this?"
+                            is a real question — on a 320 or a 400 it is noise. */}
+                        {TAX_PARENT_TYPES.includes(r.type) && (() => {
+                          const o = parentOpenness(r.status);
+                          return (
+                            <>
+                              <span
+                                title={OPENNESS_TITLE[o.tone]}
+                                className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
+                                  o.tone === "open"
+                                    ? "border-[var(--green)] text-[var(--green)]"
+                                    : o.tone === "unknown"
+                                      ? "border-[var(--warn)] text-[var(--warn)]"
+                                      : "border-[var(--rule)] text-[var(--faint)]"
+                                }`}
+                              >
+                                {o.label}
+                              </span>
+                              {canPull && r.pending_id && o.open && (
+                                <button
+                                  onClick={() => setTaxDoc(r)}
+                                  className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--signal)]"
+                                  title="צור מסמך מס על סמך מסמך זה — נכנס לתור האישורים, לא מונפק מיד"
+                                >
+                                  צור חשבונית מס
+                                </button>
+                              )}
+                            </>
+                          );
+                        })()}
                         {canPull && r.type === 300 && (
                           <button
                             onClick={() => setCancelDoc(r)}
@@ -546,11 +602,11 @@ function TaxFromParentModal({
       >
         {!built ? (
           <>
-            <h2 className="text-sm font-bold mb-1">צור חשבונית מס על סמך #{doc.number ?? ""}</h2>
+            <h2 className="text-sm font-bold mb-1">צור מסמך מס על סמך #{doc.number ?? ""}</h2>
             <p className="text-[11px] text-[var(--faint)] mb-3 leading-relaxed">
-              המסמך ייווצר כ<b>חשבונית מס קבלה</b> ויכנס לתור האישורים — הוא אינו מונפק כאן. שורות
-              ההכנסה יורשות מהמסמך הזה במדויק, והקישור אליו הוא שסוגר אותו במורנינג. את בוחרת בין
-              &quot;מס קבלה&quot; ל&quot;מס&quot; במסך האישור.
+              המסמך ייווצר כ<b>חשבונית מס</b> ויכנס לתור האישורים — הוא אינו מונפק כאן. שורות
+              ההכנסה יורשות מהמסמך הזה במדויק, והקישור אליו הוא שסוגר אותו במורנינג. במסך האישור
+              תוכלי להחליף ל<b>חשבונית מס קבלה</b> — אבל רק אם הכסף כבר התקבל, כי היא מצהירה על כך.
             </p>
             <div className="text-xs space-y-1 border border-[var(--rule)] rounded-xl p-3 mb-3">
               <div>
@@ -582,7 +638,7 @@ function TaxFromParentModal({
           </>
         ) : (
           <>
-            <h2 className="text-sm font-bold mb-1">נוצרה חשבונית מס קבלה — ממתינה לאישור</h2>
+            <h2 className="text-sm font-bold mb-1">נוצר מסמך מס — ממתין לאישור</h2>
             <p className="text-[11px] text-[var(--faint)] mb-3">
               זה בדיוק מה שיישלח למורנינג באישור. שום דבר עוד לא יצא.
             </p>
@@ -615,7 +671,7 @@ function TaxFromParentModal({
             </div>
             <div className="flex items-center justify-end gap-2">
               <button
-                onClick={() => onQueued(`נוצרה חשבונית מס קבלה על סמך #${doc.number ?? ""} — ממתינה לאישור בתור המסמכים`)}
+                onClick={() => onQueued(`נוצר מסמך מס על סמך #${doc.number ?? ""} — ממתין לאישור בתור המסמכים`)}
                 className="text-xs font-bold rounded-xl px-4 py-1.5 bg-[var(--signal)] text-white"
               >
                 סגור

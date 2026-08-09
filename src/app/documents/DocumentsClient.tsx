@@ -185,7 +185,10 @@ export default function DocumentsClient({
   const [expanded, setExpanded] = useState<string | null>(null);
   // the second gate for a tax document
   const [confirming, setConfirming] = useState<PendingDocRow | null>(null);
-  const [taxVariant, setTaxVariant] = useState<"tax_receipt" | "tax_invoice">("tax_receipt");
+  // 305 by default, matching DEFAULT_TAX_VARIANT — a receipt declares the money
+  // arrived and cannot be taken back, so it is chosen on purpose, never by
+  // leaving the selector alone
+  const [taxVariant, setTaxVariant] = useState<"tax_receipt" | "tax_invoice">("tax_invoice");
   // inline "edit before approve"
   const [editing, setEditing] = useState<string | null>(null);
   const [editAmount, setEditAmount] = useState<string>("");
@@ -631,9 +634,10 @@ export default function DocumentsClient({
                   onChange={(e) => setTaxVariant(e.target.value as "tax_receipt" | "tax_invoice")}
                   className="w-full mt-1 bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-sm"
                 >
-                  {/* default: the money is already in */}
-                  <option value="tax_receipt">חשבונית מס קבלה</option>
+                  {/* 305 first and default: it is the reversible one. 320 says
+                      the money is in, and says it to the tax authority. */}
                   <option value="tax_invoice">חשבונית מס</option>
+                  <option value="tax_receipt">חשבונית מס קבלה — הכסף התקבל</option>
                 </select>
               </label>
             </div>
