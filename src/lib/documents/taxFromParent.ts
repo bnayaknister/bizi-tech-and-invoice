@@ -204,6 +204,39 @@ export async function createTaxFromParents(
     };
   }
 
+  // ---- gate: one Morning document per request -----------------------------
+  // The Set on `sourceIds` above dedupes a REPEATED id. This catches something
+  // else: two DIFFERENT local rows pointing at the SAME Morning document.
+  //
+  // Unreachable today — pending_documents.morning_doc_id is UNIQUE (0025) — and
+  // reachable the moment a second source table is mixed in, because an
+  // app-issued document exists in BOTH tables under two different local ids
+  // (issue.ts write-through), keyed on the same morning_doc_id.
+  //
+  // Refuse, never fold. income and amount are summed per source below, so a
+  // duplicate bills twice — while `sourceRemark` collapses repeated numbers,
+  // meaning the payload preview would show a perfectly correct-looking remark
+  // above a doubled total. The last visual defence is blind to exactly this
+  // case, so it has to stop here, in the server, loudly.
+  //
+  // Only real ids are compared: a missing morning_doc_id is a per-source
+  // failure with its own, more precise message further down.
+  {
+    const seenMorningIds = new Set<string>();
+    for (const r of rows) {
+      const mid = (r.morning_doc_id ?? "").trim();
+      if (!mid) continue;
+      if (seenMorningIds.has(mid)) {
+        return {
+          ok: false,
+          status: 400,
+          error: `${nameOf(r)}: אותו מסמך מורנינג נבחר יותר מפעם אחת — הסכום היה נכפל`,
+        };
+      }
+      seenMorningIds.add(mid);
+    }
+  }
+
   // ---- gate: parent type, and no mixing -----------------------------------
   for (const r of rows) {
     if (!ALLOWED_CHILDREN[r.doc_type]) {
