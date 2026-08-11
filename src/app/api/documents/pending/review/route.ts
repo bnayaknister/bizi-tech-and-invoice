@@ -3,7 +3,16 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { issuePendingDocument, type PendingRow } from "@/lib/documents/issue";
 import { isDryRun, morningEnv } from "@/lib/morning/client";
-import { DOC_TYPE_TO_MORNING_CODE, sourceRemark, type PendingDocType } from "@/lib/morning/types";
+import {
+  DOC_TYPE_LABEL,
+  DOC_TYPE_TO_MORNING_CODE,
+  MORNING_DOC_CODE,
+  requiresPayment,
+  sourceRemark,
+  type MorningDocumentRequest,
+  type MorningPaymentRow,
+  type PendingDocType,
+} from "@/lib/morning/types";
 import {
   fetchClientEmails,
   resolveDefaultRecipients,
@@ -44,6 +53,10 @@ export async function POST(request: Request) {
     // single-approve only: the recipients the bookkeeper chose in the picker.
     // For bulk (>1) we ignore this and apply the per-doc-type defaults instead.
     recipients?: string[];
+    // 320 / 400 only: the money that actually moved, chosen at approval rather
+    // than when the row was built. An array — withholding tax rides as a second
+    // line beside the transfer (see MorningPaymentRow).
+    payment?: MorningPaymentRow[];
   };
 
   // Dedupe first. The tax-document guard below counts documents, and a
@@ -211,6 +224,29 @@ export async function POST(request: Request) {
       row = { ...row, doc_type: body.tax_variant, payload: newPayload as unknown as PendingRow["payload"] };
     }
 
+    // ---- the payment gate ---------------------------------------------------
+    // Runs AFTER the variant flip (so the final type is known) and BEFORE the
+    // row is marked approved (so a refusal leaves it exactly as it was —
+    // 'pending', re-approvable, with nothing sent to Morning).
+    //
+    // Since `income` became optional in 0053, the type no longer guarantees that
+    // a document declares anything at all. This gate is that guarantee now, and
+    // it is a three-way split rather than a yes/no:
+    //
+    //   100 / 300 / 305   income required · payment FORBIDDEN — a debt, not money
+    //   320               income required · payment required  — invoice AND receipt
+    //   400               income forbidden · payment required — money only
+    //
+    // A payload carrying neither fails all three.
+    {
+      const gate = await checkPaymentShape(admin, row, body.payment);
+      if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
+      if (gate.payload) {
+        await admin.from("pending_documents").update({ payload: gate.payload }).eq("id", r.id);
+        row = { ...row, payload: gate.payload as unknown as PendingRow["payload"] };
+      }
+    }
+
     await admin
       .from("pending_documents")
       .update({ status: "approved", approved_by: user.id, approved_at: new Date().toISOString() })
@@ -240,4 +276,158 @@ export async function POST(request: Request) {
     env: morningEnv(),
     results,
   });
+}
+
+// ---------------------------------------------------------------------------
+// the payment gate
+// ---------------------------------------------------------------------------
+
+/**
+ * Rounding slack on the money comparison, in shekels.
+ *
+ * It exists for ONE reason: both sides are floats that travelled through JSON,
+ * so 2360 can arrive as 2359.9999999999995. A hundredth of a shekel is wider
+ * than any such artefact and narrower than any real error.
+ *
+ * It is NOT slack for a VAT difference, and must never be widened into one. A
+ * payment that misses the document total by the tax — the classic net-instead-
+ * of-gross mistake, 2000 against 2360 — is 360 shekels out and has to be
+ * stopped, loudly, every time. If this number ever needs to grow to make a
+ * document go through, the document is wrong, not the tolerance.
+ */
+const AMOUNT_EPSILON = 0.01;
+
+type GateResult =
+  | { ok: true; payload?: MorningDocumentRequest }
+  | { ok: false; status: number; error: string };
+
+/**
+ * Validate — and, when the caller supplied one, inject — the payment block.
+ *
+ * Returns a rewritten payload only when something changed, so the common path
+ * (an invoice, no payment) writes nothing.
+ */
+async function checkPaymentShape(
+  admin: ReturnType<typeof createAdminClient>,
+  row: PendingRow,
+  supplied: MorningPaymentRow[] | undefined
+): Promise<GateResult> {
+  const code = DOC_TYPE_TO_MORNING_CODE[row.doc_type];
+  const payload = { ...(row.payload as unknown as MorningDocumentRequest) };
+  const needsPayment = requiresPayment(code);
+  const isReceipt = code === MORNING_DOC_CODE.receipt;
+
+  // the caller's block wins over whatever the row carried — the money is chosen
+  // at approval, and a stale block from an earlier attempt must not survive
+  if (supplied !== undefined) payload.payment = supplied;
+  const paymentRows = Array.isArray(payload.payment) ? payload.payment : [];
+  const incomeRows = Array.isArray(payload.income) ? payload.income : [];
+
+  // ---- payment: forbidden where it does not belong ------------------------
+  if (!needsPayment && paymentRows.length > 0) {
+    return {
+      ok: false,
+      status: 400,
+      error: `${DOC_TYPE_LABEL[row.doc_type]} אינו נושא שורות תקבול — הוא מצהיר על חוב, לא על כסף שהתקבל`,
+    };
+  }
+
+  // ---- income: required except on a receipt -------------------------------
+  if (isReceipt && incomeRows.length > 0) {
+    return { ok: false, status: 400, error: "קבלה אינה נושאת שורות הכנסה" };
+  }
+  if (!isReceipt && incomeRows.length === 0) {
+    return {
+      ok: false,
+      status: 400,
+      error: `${DOC_TYPE_LABEL[row.doc_type]} בלי שורות הכנסה — אין מה להנפיק`,
+    };
+  }
+
+  if (!needsPayment) return { ok: true, payload: supplied !== undefined ? payload : undefined };
+
+  // ---- payment: required, and shaped ---------------------------------------
+  if (paymentRows.length === 0) {
+    return {
+      ok: false,
+      status: 400,
+      error: `${DOC_TYPE_LABEL[row.doc_type]} מצהיר שהכסף התקבל, ולכן חייב שורת תקבול. יש למלא אמצעי, סכום ותאריך.`,
+    };
+  }
+  for (let i = 0; i < paymentRows.length; i++) {
+    const p = paymentRows[i];
+    const amount = Number(p?.amount);
+    if (!Number.isFinite(amount)) {
+      return { ok: false, status: 400, error: `שורת תקבול ${i + 1}: סכום לא תקין` };
+    }
+    if (!Number.isFinite(Number(p?.type))) {
+      return { ok: false, status: 400, error: `שורת תקבול ${i + 1}: חסר אמצעי תשלום` };
+    }
+    if (!p?.date || !/^\d{4}-\d{2}-\d{2}$/.test(String(p.date))) {
+      return { ok: false, status: 400, error: `שורת תקבול ${i + 1}: תאריך לא תקין` };
+    }
+    // verified on all 278 payment lines in the account: price always equals
+    // amount. A row where they diverge is a caller bug, not a case we support.
+    if (p.price !== undefined && Math.abs(Number(p.price) - amount) > AMOUNT_EPSILON) {
+      return { ok: false, status: 400, error: `שורת תקבול ${i + 1}: price ו-amount חייבים להיות זהים` };
+    }
+  }
+
+  // ---- the sum, against the gross Morning itself computed on the parent ----
+  // One source for both 320 and 400: documents.raw->'amount' of the parents
+  // named in linkedDocumentIds. Not the queue row's own amount — that column is
+  // net for a 320 and gross only for a 400 — and not income x a VAT rate, which
+  // would put Morning's tax settings inside our issuance path.
+  const linkedIds = Array.isArray(payload.linkedDocumentIds) ? payload.linkedDocumentIds : [];
+  if (linkedIds.length === 0) {
+    return {
+      ok: false,
+      status: 409,
+      error: `${DOC_TYPE_LABEL[row.doc_type]} בלי מסמך מקור — לא ניתן לאמת את סכום התקבול`,
+    };
+  }
+
+  const { data: parents } = await admin
+    .from("documents")
+    .select("morning_doc_id,morning_doc_number,raw")
+    .in("morning_doc_id", linkedIds);
+  const byId = new Map(
+    ((parents ?? []) as { morning_doc_id: string; morning_doc_number: string | null; raw: unknown }[]).map((d) => [
+      d.morning_doc_id,
+      d,
+    ])
+  );
+
+  let gross = 0;
+  for (const id of linkedIds) {
+    const parent = byId.get(id);
+    const raw = parent?.raw;
+    const value =
+      raw && typeof raw === "object" ? (raw as Record<string, unknown>).amount : undefined;
+    const amount = value === null || value === undefined ? NaN : Number(value);
+    if (!Number.isFinite(amount)) {
+      // the parent exists in Morning but our copy of it predates the nightly
+      // pull, so the gross it computed has not reached us yet
+      const label = parent?.morning_doc_number ? `#${parent.morning_doc_number}` : id;
+      return {
+        ok: false,
+        status: 409,
+        error: `${label}: מסמך המקור טרם נמשך ממורנינג ואין לנו את הסכום שחושב בו. נסי אחרי הסנכרון הבא.`,
+      };
+    }
+    gross += amount;
+  }
+
+  const paid = paymentRows.reduce((sum, p) => sum + Number(p.amount), 0);
+  if (Math.abs(paid - gross) > AMOUNT_EPSILON) {
+    return {
+      ok: false,
+      status: 400,
+      error:
+        `סכום התקבול (${paid.toFixed(2)}) אינו תואם את סכום המסמך (${gross.toFixed(2)}). ` +
+        "סכום כל שורות התקבול, כולל ניכוי במקור, חייב להיות שווה לסכום המסמך ברוטו.",
+    };
+  }
+
+  return { ok: true, payload };
 }

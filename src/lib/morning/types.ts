@@ -97,6 +97,28 @@ export function sourceRemark(
   return `${self} עבור ${source} ${numbers.join(", ")}`;
 }
 
+/**
+ * The types that carry a `payment` block — money that actually moved.
+ *
+ *  320 חשבונית מס / קבלה — an invoice AND a receipt in one
+ *  400 קבלה             — a receipt alone
+ *
+ * Everything else (100 / 300 / 305) declares a debt, not a payment, and must
+ * NOT carry the block at all.
+ *
+ * Lives here, beside the document codes it is made of, because it is a fact
+ * about Morning's document model — not about our reconciliation. The matcher in
+ * lib/documents/reconcile.ts imports it from here; before 0053 it owned the
+ * constant, which meant the issuance path had to reach into the after-the-fact
+ * matching engine to learn what a receipt is.
+ */
+export const PAYMENT_TYPES: number[] = [MORNING_DOC_CODE.tax_receipt, MORNING_DOC_CODE.receipt];
+
+/** Does a document of this Morning type require a `payment` block to be valid? */
+export function requiresPayment(morningTypeCode: number): boolean {
+  return PAYMENT_TYPES.includes(morningTypeCode);
+}
+
 // Document-level VAT type (spec: 0 default / 1 exempt / 2 mixed).
 export const VAT_TYPE_DEFAULT = 0;
 
@@ -207,8 +229,8 @@ export type MorningDocumentRequest = {
   income?: MorningIncomeRow[];
   /**
    * The money side. Required on 320 and 400, forbidden on 100/300/305 — the
-   * same split `PAYMENT_TYPES` already draws in lib/documents/reconcile.ts.
-   * An array: withholding tax rides as a second line (see MorningPaymentRow).
+   * split `PAYMENT_TYPES` above draws. An array: withholding tax rides as a
+   * second line (see MorningPaymentRow).
    */
   payment?: MorningPaymentRow[];
 };

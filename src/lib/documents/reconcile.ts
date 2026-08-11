@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { deriveState } from "@/lib/finance/state";
+import { PAYMENT_TYPES } from "@/lib/morning/types";
 
 // The reconciliation engine — the systematic bridge between "what happened"
 // (documents that exist in Morning) and "what the system knows" (jobs and
@@ -27,7 +28,11 @@ const DEAL_TYPE = 300; // חשבון עסקה
 const RECEIPT_TYPE = 400; // קבלה
 // proof of PAYMENT (money received): a קבלה, and a מס/קבלה which is a combined
 // tax-invoice + receipt. Linking one to an unpaid job flips paid → כן.
-export const PAYMENT_TYPES = [320, RECEIPT_TYPE];
+// Defined in lib/morning/types.ts as of 0053 and re-exported here so the
+// existing importers of this module keep working: what carries a payment block
+// is a fact about Morning's documents, and the issuance path needs it without
+// pulling in this whole matching engine.
+export { PAYMENT_TYPES };
 const BILLING_TYPES = [...TAX_TYPES, DEAL_TYPE, RECEIPT_TYPE];
 
 const AMOUNT_TOL = 2; // shekels
