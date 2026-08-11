@@ -10,6 +10,7 @@ import {
   type PendingDocType,
 } from "@/lib/morning/types";
 import { todayInIsrael } from "@/lib/dates";
+import { fetchPullSources } from "@/lib/documents/pullSource";
 
 // The generic parent -> tax-child builder (owner spec 2026-08-06). Creates ONE
 // pending tax document on the basis of N already-issued parents, linked to them
@@ -166,9 +167,13 @@ function readOpenness(raw: unknown): Openness {
 /**
  * Build ONE tax document (305/320) on the basis of N issued parents.
  *
- * `sourceIds` are pending_documents.id — a source without a queue row is out of
- * scope by design (a document raised by hand in Morning has no frozen payload
- * to inherit, and inheriting is what keeps the child's total honest).
+ * `sourceIds` are pending_documents.id. A document raised by hand in Morning
+ * has no queue row and enters through `opts.documentIds` (documents.id)
+ * instead — stage 2, owner approved 2026-08-11: its pulled raw is mapped into
+ * the same SourceRow shape by pullSource.ts, which PROVES the mapped amount is
+ * the net (two independent derivations must equal Morning's own
+ * amountExcludeVat) before it is allowed in. Inheriting a proven net is what
+ * keeps the child's total honest on that path too.
  *
  * Every gate below refuses the WHOLE request on a single bad source. Building
  * from "the valid ones" would hand the client a document covering part of the
@@ -179,30 +184,49 @@ export async function createTaxFromParents(
   admin: SupabaseClient,
   sourceIds: string[],
   actorId: string | null,
-  variant: PendingDocType = DEFAULT_TAX_VARIANT
+  variant: PendingDocType = DEFAULT_TAX_VARIANT,
+  opts?: { documentIds?: string[] }
 ): Promise<TaxBuildResult> {
   const ids = Array.from(new Set((sourceIds ?? []).filter(Boolean)));
-  if (!ids.length) return { ok: false, status: 400, error: "לא נבחרו מסמכי מקור" };
+  const docIds = Array.from(new Set((opts?.documentIds ?? []).filter(Boolean)));
+  if (!ids.length && !docIds.length) return { ok: false, status: 400, error: "לא נבחרו מסמכי מקור" };
 
   if (!TAX_CHILD_CODES.includes(DOC_TYPE_TO_MORNING_CODE[variant])) {
     return { ok: false, status: 400, error: "הבנאי הזה יוצר חשבונית מס או חשבונית מס קבלה בלבד" };
   }
   const childCode = DOC_TYPE_TO_MORNING_CODE[variant];
 
-  const { data, error } = await admin
-    .from("pending_documents")
-    .select("id,doc_type,status,client_id,amount,payload,morning_doc_id,morning_doc_number,job_id")
-    .in("id", ids);
-  if (error) return { ok: false, status: 400, error: error.message };
-  const rows = (data ?? []) as unknown as SourceRow[];
-  // never act on a partial set — the operator's intent no longer matches what
-  // we hold (same rule as the review route)
-  if (rows.length !== ids.length) {
-    return {
-      ok: false,
-      status: 409,
-      error: `נמצאו ${rows.length} מסמכי מקור מתוך ${ids.length} — רענני את המסך ונסי שוב`,
-    };
+  let rows: SourceRow[] = [];
+  if (ids.length) {
+    const { data, error } = await admin
+      .from("pending_documents")
+      .select("id,doc_type,status,client_id,amount,payload,morning_doc_id,morning_doc_number,job_id")
+      .in("id", ids);
+    if (error) return { ok: false, status: 400, error: error.message };
+    rows = (data ?? []) as unknown as SourceRow[];
+    // never act on a partial set — the operator's intent no longer matches what
+    // we hold (same rule as the review route)
+    if (rows.length !== ids.length) {
+      return {
+        ok: false,
+        status: 409,
+        error: `נמצאו ${rows.length} מסמכי מקור מתוך ${ids.length} — רענני את המסך ונסי שוב`,
+      };
+    }
+  }
+
+  // ---- pull-sourced parents (stage 2, owner approved 2026-08-11) ----------
+  // A document raised by hand in Morning has no queue row; its pulled raw is
+  // mapped into the same SourceRow shape — amount NET, proven arithmetically
+  // against Morning's own amountExcludeVat, payload synthesized IN MEMORY only
+  // (persisting one was considered and rejected: pending rows record what we
+  // actually sent). From here down every gate runs on the merged list
+  // unchanged — including the one-Morning-doc-per-request gate below, which
+  // was written for exactly this merge and is reachable for the first time.
+  if (docIds.length) {
+    const pulled = await fetchPullSources(admin, docIds, childCode);
+    if (!pulled.ok) return { ok: false, status: pulled.status, error: pulled.error };
+    rows.push(...pulled.sources);
   }
 
   // ---- gate: one Morning document per request -----------------------------
@@ -385,7 +409,7 @@ export async function createTaxFromParents(
   // document that stamps invoice_tax on nothing leaves the jobs looking unbilled
   // while the client holds a real document, and it cannot be undone.
   const jobIds = new Set<string>();
-  {
+  if (ids.length) {
     const { data: bundleRows, error: bundleErr } = await admin
       .from("pending_documents")
       .select("id,bundle_job_ids")
@@ -397,6 +421,8 @@ export async function createTaxFromParents(
     }
   }
   for (const r of rows) {
+    // pull-sourced rows carry documents.job_id here — the bundle lookup above
+    // is pending-only and skips them by construction
     if (r.job_id) jobIds.add(r.job_id);
   }
   if (jobIds.size === 0) {
@@ -405,6 +431,38 @@ export async function createTaxFromParents(
       status: 409,
       error: "לא נמצאו עבודות מקושרות למסמכי המקור — מסמך מס חייב לסמן את העבודות שהוא סוגר",
     };
+  }
+
+  // ---- gate: no job is billed a second tax document -----------------------
+  // BEHAVIOR CHANGE to a proven path, approved explicitly (owner 2026-08-11):
+  // this gate runs on EVERY job in the set — pending-sourced parents included,
+  // not only pull sources. What changed: until now a request whose job already
+  // carried invoice_tax sailed through, because the idempotency gate above
+  // only sees children WE queued (it matches payload.linkedDocumentIds) and is
+  // blind to a tax invoice raised by hand in Morning and stamped onto the job
+  // by the reconciliation engine (reconcile.ts) — which is most of the
+  // account's history. Without this gate that job would be billed a second
+  // 305: two tax documents for one debt, unfixable once issued (no PUT on
+  // documents). Census 2026-08-11: 28 jobs carry invoice_tax, all paid, none
+  // linked to an open parent — the gate refuses no real case today; it exists
+  // for the first one that would otherwise slip through tomorrow.
+  {
+    const { data: taxedJobs, error: taxedErr } = await admin
+      .from("jobs")
+      .select("id,campaign,invoice_tax")
+      .in("id", Array.from(jobIds));
+    // an unreadable jobs table must not become a silent pass on an
+    // irreversible action — refuse and say why
+    if (taxedErr) return { ok: false, status: 400, error: taxedErr.message };
+    for (const j of (taxedJobs ?? []) as { id: string; campaign: string | null; invoice_tax: string | null }[]) {
+      if (j.invoice_tax && String(j.invoice_tax).trim()) {
+        return {
+          ok: false,
+          status: 409,
+          error: `העבודה "${j.campaign ?? j.id}" כבר נושאת חשבונית מס ${j.invoice_tax} — ייתכן שכבר הונפקה על עבודה זו. בדקי ברישום לפני הנפקה נוספת`,
+        };
+      }
+    }
   }
 
   // ---- the payload --------------------------------------------------------
@@ -480,6 +538,7 @@ export async function createTaxFromParents(
       via: "tax_from_parent",
       parent_doc_type: parentType,
       source_pending_ids: ids,
+      source_document_ids: docIds,
       linked_morning_doc_ids: morningIds,
       linked_morning_doc_numbers: sourceNumbers,
       client_id: localClientIds[0] ?? null,

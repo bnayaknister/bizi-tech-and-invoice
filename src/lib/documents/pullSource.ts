@@ -1,15 +1,17 @@
-import { MORNING_DOC_CODE, type MorningIncomeRow } from "@/lib/morning/types";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { MORNING_DOC_CODE, VAT_TYPE_DEFAULT, type MorningDocumentRequest, type MorningIncomeRow } from "@/lib/morning/types";
 
 // The pull -> tax-source mapper (owner spec 2026-08-11). Turns a `documents`
 // row whose raw came from the daily pull into the SourceRow shape the tax
 // builder (taxFromParent.ts) inherits from — so a document raised by hand in
 // Morning can father a 305/320 exactly like one the app issued.
 //
-// ⚠️ UNREACHABLE BY DESIGN, stage 1 of a staged rollout: no route calls this
-// and no button reaches it. Stage 2 wires it into createTaxFromParents behind
-// the same gates; until then the only caller is the read-only eligibility
-// report in scripts/report_pull_tax_eligibility.ts. Same discipline as the
-// receipt builder before its review gate existed.
+// ⚠️ STILL UNREACHABLE, stage 2 of a staged rollout: createTaxFromParents now
+// accepts documentIds and feeds them through fetchPullSources below — but no
+// route passes any and no button exists. Stage 3 opens the route, stage 4 the
+// screen. Until then the callers are the read-only eligibility report
+// (scripts/report_pull_tax_eligibility.ts) and the builder seam. Same
+// discipline as the receipt builder before its review gate existed.
 //
 // Everything here is PURE and read-only: the caller fetches the row, this file
 // judges and maps it. Nothing is persisted — deliberately. The rejected
@@ -344,4 +346,89 @@ export function mapPullDocToSource(
       job_id: doc.job_id,
     },
   };
+}
+
+/**
+ * The SourceRow shape the tax builder inherits from, assembled from a pulled
+ * document. Structurally assignable to taxFromParent's private SourceRow —
+ * declared here rather than imported so the dependency points one way only:
+ * taxFromParent imports pullSource, never the reverse.
+ */
+export type PullSourceRow = {
+  /** documents.id — NOT a pending id; the builder's bundle lookup keys on pending ids and must skip these */
+  id: string;
+  doc_type: "deal_invoice";
+  status: "issued";
+  client_id: string | null;
+  /** NET, from the mapped income lines — never documents.amount */
+  amount: number;
+  /**
+   * IN-MEMORY ONLY — never persisted. Reconstructs the two fields the
+   * builder's gates and inheritance read (client, income); writing it anywhere
+   * would be the shadow-row lie this file's header rejects. The only payload
+   * that reaches the DB is the CHILD's, which really is what we will send.
+   */
+  payload: MorningDocumentRequest;
+  morning_doc_id: string;
+  morning_doc_number: string;
+  job_id: string | null;
+};
+
+/**
+ * Fetch + map + refuse-whole: turn documentIds into builder-ready sources.
+ *
+ * Read-only, like everything in this file. Refuses the WHOLE list on a single
+ * bad document — same rule as the builder's own fetch, and for the same
+ * reason: acting on "the valid ones" hands the operator a document covering
+ * part of what they selected.
+ */
+export async function fetchPullSources(
+  admin: SupabaseClient,
+  documentIds: string[],
+  childCode: number = MORNING_DOC_CODE.tax_invoice
+): Promise<{ ok: true; sources: PullSourceRow[] } | { ok: false; status: number; error: string }> {
+  const ids = Array.from(new Set((documentIds ?? []).filter(Boolean)));
+  if (!ids.length) return { ok: true, sources: [] };
+
+  const { data, error } = await admin
+    .from("documents")
+    .select("id,morning_doc_id,morning_doc_number,type,source,client_id,job_id,amount,cancelled_at,archived_at,raw")
+    .in("id", ids);
+  if (error) return { ok: false, status: 400, error: error.message };
+  const rows = (data ?? []) as unknown as PullDocRow[];
+  // never act on a partial set — the operator's intent no longer matches what
+  // we hold (same rule as the builder's pending fetch)
+  if (rows.length !== ids.length) {
+    return {
+      ok: false,
+      status: 409,
+      error: `נמצאו ${rows.length} מסמכי מקור מתוך ${ids.length} — רענני את המסך ונסי שוב`,
+    };
+  }
+
+  const sources: PullSourceRow[] = [];
+  for (const d of rows) {
+    const res = mapPullDocToSource(d, childCode);
+    if (!res.ok) return { ok: false, status: 400, error: res.error };
+    const s = res.source;
+    sources.push({
+      id: s.id,
+      doc_type: s.doc_type,
+      status: s.status,
+      client_id: s.client_id,
+      amount: s.amount,
+      payload: {
+        type: MORNING_DOC_CODE.deal_invoice,
+        lang: "he",
+        currency: "ILS",
+        vatType: VAT_TYPE_DEFAULT,
+        client: { id: s.morning_client_id, name: s.morning_client_name ?? undefined, add: false },
+        income: s.income,
+      },
+      morning_doc_id: s.morning_doc_id,
+      morning_doc_number: s.morning_doc_number,
+      job_id: s.job_id,
+    });
+  }
+  return { ok: true, sources };
 }
