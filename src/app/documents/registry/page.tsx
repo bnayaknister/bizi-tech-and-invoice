@@ -3,7 +3,8 @@ import { getSessionAndProfile } from "@/lib/profile";
 import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import RegistryClient, { type DocRow } from "./RegistryClient";
-import { registryTabForType } from "@/lib/morning/types";
+import { registryTabForType, type PendingDocType } from "@/lib/morning/types";
+import { ALLOWED_CHILDREN } from "@/lib/documents/taxFromParent";
 
 export const dynamic = "force-dynamic";
 
@@ -36,13 +37,27 @@ export default async function RegistryPage() {
   const { data: parentRows } = await admin
     .from("pending_documents")
     .select("id,morning_doc_id")
-    .in("doc_type", ["work_order", "deal_invoice"])
+    .in("doc_type", ["work_order", "deal_invoice", "tax_invoice"])
     .eq("status", "issued")
     .not("morning_doc_id", "is", null);
   const pendingIdByMorningId = new Map<string, string>();
   for (const p of (parentRows ?? []) as { id: string; morning_doc_id: string }[]) {
     pendingIdByMorningId.set(p.morning_doc_id, p.id);
   }
+
+  // Which child a row may raise, derived from the allow-list in taxFromParent.ts
+  // rather than a hand-kept list of type codes on the screen. One source of
+  // truth: when a rung opens or closes there, the buttons follow.
+  //
+  // Resolved here rather than in the client so the builders themselves never
+  // reach the browser bundle.
+  const childActionFor = (type: number): DocRow["child_action"] => {
+    const parent = registryTabForType(type) as PendingDocType;
+    const rules = (ALLOWED_CHILDREN[parent] ?? []).filter((r) => r.implemented);
+    if (rules.some((r) => r.via === "receipt_from_tax_invoice")) return "receipt";
+    if (rules.some((r) => r.via === "tax_from_parent")) return "tax";
+    return null;
+  };
 
   const rows: DocRow[] = ((data ?? []) as unknown as Array<Record<string, unknown>>).map((d) => ({
     id: d.id as string,
@@ -70,6 +85,7 @@ export default async function RegistryPage() {
     archived_at: (d.archived_at as string | null) ?? null,
     archive_reason: (d.archive_reason as string | null) ?? null,
     pending_id: pendingIdByMorningId.get(d.morning_doc_id as string) ?? null,
+    child_action: childActionFor(d.type as number),
   }));
 
   return (

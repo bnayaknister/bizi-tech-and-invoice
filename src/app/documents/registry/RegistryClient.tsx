@@ -36,12 +36,21 @@ export type DocRow = {
   // null = raised by hand in Morning, so there is no frozen payload to inherit
   // and no tax document can be built on it.
   pending_id: string | null;
+  // Which child this row may raise, resolved server-side from the allow-list in
+  // taxFromParent.ts. null = a leaf (320, 400) or a type we never build on.
+  // Not a list of codes kept here: the rungs are declared in one place.
+  child_action: "tax" | "receipt" | null;
 };
 
-// A tax document can only be raised on a work order (100) or a deal invoice
-// (300) — our allow-list, mirrored from lib/documents/taxFromParent.ts. The
-// server enforces it; this only decides whether to offer the button.
-const TAX_PARENT_TYPES = [100, 300];
+const CHILD_ACTION_LABEL: Record<"tax" | "receipt", string> = {
+  tax: "צור חשבונית מס",
+  receipt: "צור קבלה",
+};
+
+const CHILD_ACTION_ENDPOINT: Record<"tax" | "receipt", string> = {
+  tax: "/api/documents/tax",
+  receipt: "/api/documents/receipt",
+};
 
 /**
  * Can this document still father a tax document?
@@ -64,10 +73,21 @@ const TAX_PARENT_TYPES = [100, 300];
 type Openness = { open: boolean; label: string; tone: "open" | "closed" | "unknown" };
 
 function parentOpenness(status: number | null): Openness {
+  // null = never pulled, so we genuinely do not know. Everything else Morning
+  // gave us a state for.
+  if (status === null || status === undefined) {
+    return { open: true, label: "טרם נמשך ממורנינג", tone: "unknown" };
+  }
   if (status === 0) return { open: true, label: "פתוח", tone: "open" };
   if (status === 1) return { open: false, label: "נסגר אוטומטית", tone: "closed" };
   if (status === 2) return { open: false, label: "נסגר ידנית", tone: "closed" };
-  return { open: true, label: "טרם נמשך ממורנינג", tone: "unknown" };
+  // Any OTHER code counts as closed, and that is deliberate. We met status=4 on
+  // five 305s (2026-08-11) having only ever seen 0/1/2 — and its ref was empty,
+  // exactly like 1 and 2. Treating an unrecognised code as "unknown" would light
+  // the button on a document the builder is about to refuse; treating it as
+  // closed matches every observation and fails safe. Only 0 has ever carried a
+  // non-empty ref.
+  return { open: false, label: "סגור", tone: "closed" };
 }
 
 const OPENNESS_TITLE: Record<Openness["tone"], string> = {
@@ -114,7 +134,7 @@ export default function RegistryClient({
   const [assignDoc, setAssignDoc] = useState<DocRow | null>(null);
   const [cancelDoc, setCancelDoc] = useState<DocRow | null>(null);
   const [newDoc, setNewDoc] = useState<"work_order" | "deal_invoice" | null>(null);
-  const [taxDoc, setTaxDoc] = useState<DocRow | null>(null);
+  const [childDoc, setChildDoc] = useState<{ row: DocRow; action: "tax" | "receipt" } | null>(null);
   // in "לא משויך", quotes/orders/credits are noise for the bookkeeper — show
   // only real billing docs by default (owner spec 2026-07-27), the rest behind a toggle
   const [showNonBilling, setShowNonBilling] = useState(false);
@@ -430,8 +450,9 @@ export default function RegistryClient({
                             why the button is or isn't there. Shown only on
                             100/300, the rows where "can I still build on this?"
                             is a real question — on a 320 or a 400 it is noise. */}
-                        {TAX_PARENT_TYPES.includes(r.type) && (() => {
+                        {r.child_action && (() => {
                           const o = parentOpenness(r.status);
+                          const action = r.child_action!;
                           return (
                             <>
                               <span
@@ -448,11 +469,11 @@ export default function RegistryClient({
                               </span>
                               {canPull && r.pending_id && o.open && (
                                 <button
-                                  onClick={() => setTaxDoc(r)}
+                                  onClick={() => setChildDoc({ row: r, action })}
                                   className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--signal)]"
-                                  title="צור מסמך מס על סמך מסמך זה — נכנס לתור האישורים, לא מונפק מיד"
+                                  title="נכנס לתור האישורים, לא מונפק מיד"
                                 >
-                                  צור חשבונית מס
+                                  {CHILD_ACTION_LABEL[action]}
                                 </button>
                               )}
                             </>
@@ -507,12 +528,13 @@ export default function RegistryClient({
         />
       )}
 
-      {taxDoc && (
+      {childDoc && (
         <TaxFromParentModal
-          doc={taxDoc}
-          onClose={() => setTaxDoc(null)}
+          doc={childDoc.row}
+          action={childDoc.action}
+          onClose={() => setChildDoc(null)}
           onQueued={(m) => {
-            setTaxDoc(null);
+            setChildDoc(null);
             setMsg(m);
             router.refresh();
           }}
@@ -548,13 +570,16 @@ type BuiltPayload = {
 
 function TaxFromParentModal({
   doc,
+  action,
   onClose,
   onQueued,
 }: {
   doc: DocRow;
+  action: "tax" | "receipt";
   onClose: () => void;
   onQueued: (msg: string) => void;
 }) {
+  const isReceipt = action === "receipt";
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [built, setBuilt] = useState<{
@@ -568,7 +593,7 @@ function TaxFromParentModal({
     setBusy(true);
     setErr(null);
     try {
-      const res = await fetch("/api/documents/tax", {
+      const res = await fetch(CHILD_ACTION_ENDPOINT[action], {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sourceIds: [doc.pending_id] }),
@@ -578,7 +603,7 @@ function TaxFromParentModal({
         setErr(body.error ?? "היצירה נכשלה");
         return;
       }
-      const t = body.tax_document ?? {};
+      const t = body.tax_document ?? body.receipt ?? {};
       setBuilt({
         id: t.id,
         amount: t.amount ?? null,
@@ -602,12 +627,22 @@ function TaxFromParentModal({
       >
         {!built ? (
           <>
-            <h2 className="text-sm font-bold mb-1">צור מסמך מס על סמך #{doc.number ?? ""}</h2>
-            <p className="text-[11px] text-[var(--faint)] mb-3 leading-relaxed">
-              המסמך ייווצר כ<b>חשבונית מס</b> ויכנס לתור האישורים — הוא אינו מונפק כאן. שורות
-              ההכנסה יורשות מהמסמך הזה במדויק, והקישור אליו הוא שסוגר אותו במורנינג. במסך האישור
-              תוכלי להחליף ל<b>חשבונית מס קבלה</b> — אבל רק אם הכסף כבר התקבל, כי היא מצהירה על כך.
-            </p>
+            <h2 className="text-sm font-bold mb-1">
+              {isReceipt ? "צור קבלה" : "צור מסמך מס"} על סמך #{doc.number ?? ""}
+            </h2>
+            {isReceipt ? (
+              <p className="text-[11px] text-[var(--faint)] mb-3 leading-relaxed">
+                הקבלה תיכנס לתור האישורים — היא אינה מונפקת כאן. היא אינה נושאת שורות הכנסה, רק את
+                הסכום שהתקבל, והקישור לחשבונית הוא שסוגר אותה במורנינג. את פרטי התקבול — אמצעי, סכום
+                ותאריך — ממלאים במסך האישור.
+              </p>
+            ) : (
+              <p className="text-[11px] text-[var(--faint)] mb-3 leading-relaxed">
+                המסמך ייווצר כ<b>חשבונית מס</b> ויכנס לתור האישורים — הוא אינו מונפק כאן. שורות
+                ההכנסה יורשות מהמסמך הזה במדויק, והקישור אליו הוא שסוגר אותו במורנינג. במסך האישור
+                תוכלי להחליף ל<b>חשבונית מס קבלה</b> — אבל רק אם הכסף כבר התקבל, כי היא מצהירה על כך.
+              </p>
+            )}
             <div className="text-xs space-y-1 border border-[var(--rule)] rounded-xl p-3 mb-3">
               <div>
                 <span className="text-[var(--faint)]">מסמך מקור: </span>
@@ -638,7 +673,7 @@ function TaxFromParentModal({
           </>
         ) : (
           <>
-            <h2 className="text-sm font-bold mb-1">נוצר מסמך מס — ממתין לאישור</h2>
+            <h2 className="text-sm font-bold mb-1">{isReceipt ? "נוצרה קבלה" : "נוצר מסמך מס"} — ממתין לאישור</h2>
             <p className="text-[11px] text-[var(--faint)] mb-3">
               זה בדיוק מה שיישלח למורנינג באישור. שום דבר עוד לא יצא.
             </p>
@@ -671,7 +706,7 @@ function TaxFromParentModal({
             </div>
             <div className="flex items-center justify-end gap-2">
               <button
-                onClick={() => onQueued(`נוצר מסמך מס על סמך #${doc.number ?? ""} — ממתין לאישור בתור המסמכים`)}
+                onClick={() => onQueued(`${isReceipt ? "נוצרה קבלה" : "נוצר מסמך מס"} על סמך #${doc.number ?? ""} — ממתין לאישור בתור המסמכים`)}
                 className="text-xs font-bold rounded-xl px-4 py-1.5 bg-[var(--signal)] text-white"
               >
                 סגור
