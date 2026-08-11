@@ -61,7 +61,7 @@ export type ChildRule = {
    */
   implemented: boolean;
   /** which function produces it; this file only ever produces `tax_from_parent` */
-  via: "tax_from_parent" | "create_deal_invoice_from_work_order";
+  via: "tax_from_parent" | "create_deal_invoice_from_work_order" | "receipt_from_tax_invoice";
 };
 
 /**
@@ -87,8 +87,9 @@ export const ALLOWED_CHILDREN: Partial<Record<PendingDocType, ChildRule[]>> = {
     { code: MORNING_DOC_CODE.tax_receipt, implemented: true, via: "tax_from_parent" },
   ],
   tax_invoice: [
-    // policy-allowed, not built — see ChildRule.implemented
-    { code: MORNING_DOC_CODE.receipt, implemented: false, via: "tax_from_parent" },
+    // built by receiptFromTaxInvoice.ts, not by this file — a receipt carries
+    // no income lines and has nothing to inherit, so it gets its own path
+    { code: MORNING_DOC_CODE.receipt, implemented: true, via: "receipt_from_tax_invoice" },
   ],
   // tax_receipt is a leaf: it is invoice+receipt in one and closes on birth,
   // so it never has a ref to give and can never be a parent.
