@@ -19,6 +19,19 @@ import { createTaxFromParents } from "@/lib/documents/taxFromParent";
 // The row is created as tax_receipt (320). The 305/320 choice belongs to the
 // approval modal, which sees the money; the review route rewrites both the type
 // AND the remark when it is flipped.
+//
+// TWO source kinds since stage 3 (owner approved 2026-08-11), one per request:
+//   sourceIds   — pending_documents.id, the original path, N allowed (bundles)
+//   documentIds — documents.id of a PULLED parent, mapped from its raw by
+//                 pullSource.ts. EXACTLY ONE: v1 is one document per source,
+//                 and aggregating pulled parents is a business decision the
+//                 owner deferred, not a technical gap. The builder underneath
+//                 keeps its N-source capability — this route is the v1 valve,
+//                 and widening it later means deleting one check here.
+// Mixing the two kinds in one request is refused for the same reason. An
+// app-issued document sent as a documentId is refused by the builder's source
+// gate toward its queue row — deliberately a refusal, not a silent redirect:
+// the server must never act on a row the operator did not pick.
 export async function POST(request: Request) {
   const supabase = createClient();
   const {
@@ -28,12 +41,27 @@ export async function POST(request: Request) {
   const { data: profile } = await supabase.from("profiles").select("can_edit_money").eq("id", user.id).single();
   if (!profile?.can_edit_money) return NextResponse.json({ error: "אין הרשאת עריכת כספים" }, { status: 403 });
 
-  const body = (await request.json().catch(() => ({}))) as { sourceIds?: string[] };
+  const body = (await request.json().catch(() => ({}))) as { sourceIds?: string[]; documentIds?: string[] };
   const sourceIds = Array.isArray(body.sourceIds) ? body.sourceIds.filter(Boolean) : [];
-  if (!sourceIds.length) return NextResponse.json({ error: "חסרים מסמכי מקור" }, { status: 400 });
+  const documentIds = Array.isArray(body.documentIds) ? body.documentIds.filter(Boolean) : [];
+  if (!sourceIds.length && !documentIds.length) {
+    return NextResponse.json({ error: "חסרים מסמכי מקור" }, { status: 400 });
+  }
+  if (sourceIds.length && documentIds.length) {
+    return NextResponse.json(
+      { error: "לא ניתן לשלב מקור מתור האישורים ומסמך מהרישום באותה בקשה" },
+      { status: 400 }
+    );
+  }
+  if (documentIds.length > 1) {
+    return NextResponse.json(
+      { error: "מסמך נמשך אחד לבקשה — איגוד מסמכים מהרישום אינו נתמך בשלב זה" },
+      { status: 400 }
+    );
+  }
 
   const admin = createAdminClient();
-  const res = await createTaxFromParents(admin, sourceIds, user.id);
+  const res = await createTaxFromParents(admin, sourceIds, user.id, undefined, documentIds.length ? { documentIds } : undefined);
   if (!res.ok) return NextResponse.json({ error: res.error }, { status: res.status });
 
   // hand the built payload back so the screen can show the real thing — the

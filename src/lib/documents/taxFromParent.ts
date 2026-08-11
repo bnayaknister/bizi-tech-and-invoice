@@ -426,10 +426,16 @@ export async function createTaxFromParents(
     if (r.job_id) jobIds.add(r.job_id);
   }
   if (jobIds.size === 0) {
+    // Reworded 2026-08-11 (owner): once the screen disables the button up
+    // front, this message is met only through direct API use or a race — the
+    // assignment was removed between page load and click. So it must say what
+    // to DO, not just what is missing.
     return {
       ok: false,
       status: 409,
-      error: "לא נמצאו עבודות מקושרות למסמכי המקור — מסמך מס חייב לסמן את העבודות שהוא סוגר",
+      error:
+        "לא נמצאו עבודות מקושרות למסמכי המקור — מסמך מס חייב לסמן את העבודות שהוא סוגר. " +
+        "שייכי את המסמך לעבודה (כפתור \"שייך ל-job\" ברישום) ונסי שוב",
     };
   }
 
