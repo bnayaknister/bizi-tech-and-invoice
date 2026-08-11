@@ -5,6 +5,7 @@ import AppHeader from "@/components/AppHeader";
 import RegistryClient, { type DocRow } from "./RegistryClient";
 import { registryTabForType, type PendingDocType } from "@/lib/morning/types";
 import { ALLOWED_CHILDREN } from "@/lib/documents/taxFromParent";
+import { mapPullDocToSource, type PullDocRow } from "@/lib/documents/pullSource";
 
 export const dynamic = "force-dynamic";
 
@@ -29,21 +30,89 @@ export default async function RegistryPage() {
   ]);
   const data = docsRes.error ? (await docsQuery(BASE_COLS)).data : docsRes.data;
 
-  // Which registry rows can raise a tax document. The builder works from a
-  // pending_documents row (it inherits that row's frozen income lines), and
-  // `documents` has no FK to it — morning_doc_id is the only bridge. A document
-  // raised by hand in Morning has no queue row, so it simply gets no button:
-  // the v1 scope enforces itself on screen instead of failing on click.
-  const { data: parentRows } = await admin
-    .from("pending_documents")
-    .select("id,morning_doc_id")
-    .in("doc_type", ["work_order", "deal_invoice", "tax_invoice"])
-    .eq("status", "issued")
-    .not("morning_doc_id", "is", null);
+  // Which registry rows can raise a tax document. Two doors, one per source:
+  //  • a pending_documents row (app-issued) — the original path, keyed by
+  //    morning_doc_id, inherits the frozen payload we actually sent.
+  //  • the raw path (stage 4, owner approved 2026-08-11) — a PULLED open 300
+  //    with no queue row is judged by the SAME mapper the route runs
+  //    (mapPullDocToSource), server-side, so the button never promises what
+  //    the server would refuse: the ceiling, an unmatched client, a closed
+  //    ref, a job already carrying invoice_tax — each shows its own refusal
+  //    up front instead of a 409 after the click. One function, two callers,
+  //    zero drift.
+  //
+  // The candidate query is the only one that hauls raw, and it is bounded:
+  // open pulled 300s trend toward zero BECAUSE of this feature (a built 305
+  // closes its parent on the next pull), so a growing population is itself a
+  // pathology. The LIMIT is a circuit breaker, not pagination — and it is not
+  // silent: rows beyond it get a block message saying the screen capped, so
+  // truncation never reads as "no button for you, no reason given".
+  const RAW_CANDIDATE_LIMIT = 120;
+  const [{ data: parentRows }, { data: candRows }] = await Promise.all([
+    admin
+      .from("pending_documents")
+      .select("id,morning_doc_id")
+      .in("doc_type", ["work_order", "deal_invoice", "tax_invoice"])
+      .eq("status", "issued")
+      .not("morning_doc_id", "is", null),
+    admin
+      .from("documents")
+      .select("id,morning_doc_id,morning_doc_number,type,source,client_id,job_id,amount,cancelled_at,archived_at,raw")
+      .eq("type", 300)
+      .eq("status", 0)
+      .eq("source", "pull")
+      .is("cancelled_at", null)
+      .is("archived_at", null)
+      .order("document_date", { ascending: false, nullsFirst: false })
+      .limit(RAW_CANDIDATE_LIMIT),
+  ]);
   const pendingIdByMorningId = new Map<string, string>();
   for (const p of (parentRows ?? []) as { id: string; morning_doc_id: string }[]) {
     pendingIdByMorningId.set(p.morning_doc_id, p.id);
   }
+
+  // judge every candidate with the real mapper, then the job pre-checks —
+  // in exactly the server's order, so the screen's verdict IS the server's
+  type RawState = { state: "raw"; net: number } | { state: "blocked"; reason: string };
+  const rawStateByDocId = new Map<string, RawState>();
+  const cands = (candRows ?? []) as unknown as PullDocRow[];
+  const candJobIds = Array.from(new Set(cands.map((c) => c.job_id).filter(Boolean))) as string[];
+  const taxedByJob = new Map<string, string>();
+  if (candJobIds.length) {
+    const { data: jobRows } = await admin.from("jobs").select("id,invoice_tax").in("id", candJobIds);
+    for (const j of (jobRows ?? []) as { id: string; invoice_tax: string | null }[]) {
+      if (j.invoice_tax && String(j.invoice_tax).trim()) taxedByJob.set(j.id, String(j.invoice_tax));
+    }
+  }
+  for (const c of cands) {
+    // a pull doc with a queue row cannot occur through any code path, but if
+    // one ever does, the pending door wins — same rule as the route
+    if (c.morning_doc_id && pendingIdByMorningId.has(c.morning_doc_id)) continue;
+    const res = mapPullDocToSource(c);
+    if (!res.ok) {
+      rawStateByDocId.set(c.id, { state: "blocked", reason: res.error });
+      continue;
+    }
+    if (!c.job_id) {
+      // guidance, not a description of the lack — the assign button sits in
+      // the same cell (owner rule 2026-08-11)
+      rawStateByDocId.set(c.id, {
+        state: "blocked",
+        reason: 'יש לשייך את המסמך לעבודה לפני יצירת חשבונית מס — כפתור "שייך ל-job" כאן בשורה',
+      });
+      continue;
+    }
+    const taxed = taxedByJob.get(c.job_id);
+    if (taxed) {
+      rawStateByDocId.set(c.id, {
+        state: "blocked",
+        reason: `העבודה המקושרת כבר נושאת חשבונית מס ${taxed} — בדקי ברישום לפני הנפקה נוספת`,
+      });
+      continue;
+    }
+    rawStateByDocId.set(c.id, { state: "raw", net: res.source.amount });
+  }
+  const candidatesCapped = cands.length === RAW_CANDIDATE_LIMIT;
 
   // Which child a row may raise, derived from the allow-list in taxFromParent.ts
   // rather than a hand-kept list of type codes on the screen. One source of
@@ -57,6 +126,30 @@ export default async function RegistryPage() {
     if (rules.some((r) => r.via === "receipt_from_tax_invoice")) return "receipt";
     if (rules.some((r) => r.via === "tax_from_parent")) return "tax";
     return null;
+  };
+
+  // the three action-cell states, resolved per row: 'pending' (queue row —
+  // the original door), 'raw' (pulled, judged buildable by the mapper), or
+  // null with build_block carrying the exact reason the button is dark
+  const buildState = (d: Record<string, unknown>): Pick<DocRow, "buildable" | "build_block" | "net_amount"> => {
+    if (pendingIdByMorningId.has(d.morning_doc_id as string)) {
+      return { buildable: "pending", build_block: null, net_amount: null };
+    }
+    const rs = rawStateByDocId.get(d.id as string);
+    if (rs?.state === "raw") return { buildable: "raw", build_block: null, net_amount: rs.net };
+    if (rs?.state === "blocked") return { buildable: null, build_block: rs.reason, net_amount: null };
+    // an open pulled 300 that is not in the candidate map at all can only
+    // mean the LIMIT capped it out — say so rather than go quietly dark
+    const isOpenPull300 =
+      d.type === 300 && d.status === 0 && d.source === "pull" && !d.cancelled_at && !d.archived_at;
+    if (isOpenPull300 && candidatesCapped) {
+      return {
+        buildable: null,
+        build_block: `יותר מ-${RAW_CANDIDATE_LIMIT} מסמכים פתוחים ממורנינג — המסך ממפה את החדשים תחילה; טפלי בהם ורענני`,
+        net_amount: null,
+      };
+    }
+    return { buildable: null, build_block: null, net_amount: null };
   };
 
   const rows: DocRow[] = ((data ?? []) as unknown as Array<Record<string, unknown>>).map((d) => ({
@@ -86,6 +179,7 @@ export default async function RegistryPage() {
     archive_reason: (d.archive_reason as string | null) ?? null,
     pending_id: pendingIdByMorningId.get(d.morning_doc_id as string) ?? null,
     child_action: childActionFor(d.type as number),
+    ...buildState(d),
   }));
 
   return (

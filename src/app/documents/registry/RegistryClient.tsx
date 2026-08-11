@@ -34,12 +34,25 @@ export type DocRow = {
   archive_reason: string | null;
   // the pending_documents row this document was issued from, when there is one.
   // null = raised by hand in Morning, so there is no frozen payload to inherit
-  // and no tax document can be built on it.
+  // — since stage 4 such a document may still be buildable through the raw path.
   pending_id: string | null;
   // Which child this row may raise, resolved server-side from the allow-list in
   // taxFromParent.ts. null = a leaf (320, 400) or a type we never build on.
   // Not a list of codes kept here: the rungs are declared in one place.
   child_action: "tax" | "receipt" | null;
+  // The action-cell verdict, resolved SERVER-SIDE by the same mapper the route
+  // runs — the button never promises what the server would refuse.
+  //   'pending' — build from the queue row (sourceIds, the original door)
+  //   'raw'     — build from the pulled document (documentIds)
+  //   null      — no button; if build_block is set, a DISABLED button shows it
+  buildable: "pending" | "raw" | null;
+  // why the button is dark, in the server's own words (ceiling, assign-a-job
+  // guidance, invoice_tax already stamped, …). null = no button at all.
+  build_block: string | null;
+  // the proven net for a raw-buildable row. documents.amount is GROSS for pull
+  // rows — showing it in the modal against a net child bred distrust, so the
+  // modal shows both, labelled.
+  net_amount: number | null;
 };
 
 const CHILD_ACTION_LABEL: Record<"tax" | "receipt", string> = {
@@ -467,14 +480,32 @@ export default function RegistryClient({
                               >
                                 {o.label}
                               </span>
-                              {canPull && r.pending_id && o.open && (
+                              {canPull && r.buildable && o.open && (
                                 <button
                                   onClick={() => setChildDoc({ row: r, action })}
                                   className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--signal)]"
-                                  title="נכנס לתור האישורים, לא מונפק מיד"
+                                  title={
+                                    r.buildable === "raw"
+                                      ? "נבנה מהמסמך שנמשך ממורנינג — נכנס לתור האישורים, לא מונפק מיד"
+                                      : "נכנס לתור האישורים, לא מונפק מיד"
+                                  }
                                 >
                                   {CHILD_ACTION_LABEL[action]}
                                 </button>
+                              )}
+                              {/* the dark button carries its reason — the
+                                  server's own message, shown BEFORE the click.
+                                  title sits on a span: browsers don't reliably
+                                  show tooltips on disabled elements. */}
+                              {canPull && !r.buildable && r.build_block && o.open && (
+                                <span title={r.build_block}>
+                                  <button
+                                    disabled
+                                    className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule)] text-[var(--faint)] opacity-50 cursor-not-allowed"
+                                  >
+                                    {CHILD_ACTION_LABEL[action]}
+                                  </button>
+                                </span>
                               )}
                             </>
                           );
@@ -593,10 +624,14 @@ function TaxFromParentModal({
     setBusy(true);
     setErr(null);
     try {
+      // which door: the queue row when there is one, the pulled document
+      // otherwise — mirrors the server's pending-wins rule exactly
       const res = await fetch(CHILD_ACTION_ENDPOINT[action], {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sourceIds: [doc.pending_id] }),
+        body: JSON.stringify(
+          doc.buildable === "raw" ? { documentIds: [doc.id] } : { sourceIds: [doc.pending_id] }
+        ),
       });
       const body = await res.json();
       if (!res.ok) {
@@ -641,6 +676,9 @@ function TaxFromParentModal({
                 המסמך ייווצר כ<b>חשבונית מס</b> ויכנס לתור האישורים — הוא אינו מונפק כאן. שורות
                 ההכנסה יורשות מהמסמך הזה במדויק, והקישור אליו הוא שסוגר אותו במורנינג. במסך האישור
                 תוכלי להחליף ל<b>חשבונית מס קבלה</b> — אבל רק אם הכסף כבר התקבל, כי היא מצהירה על כך.
+                {doc.buildable === "raw" && (
+                  <> המסמך הזה נמשך ממורנינג — הירושה היא מהנתונים שנמשכו, לפי הנטו המאומת.</>
+                )}
               </p>
             )}
             <div className="text-xs space-y-1 border border-[var(--rule)] rounded-xl p-3 mb-3">
@@ -652,10 +690,21 @@ function TaxFromParentModal({
                 <span className="text-[var(--faint)]">לקוח: </span>
                 {doc.client_name ?? "—"}
               </div>
-              <div>
-                <span className="text-[var(--faint)]">סכום: </span>
-                <span className="font-mono">{money(doc.amount, doc.currency)}</span>
-              </div>
+              {/* a pull row's `amount` is the GROSS; the child is built on the
+                  proven NET. Showing only the gross against a net child bred
+                  distrust — so show both, labelled, net first. */}
+              {doc.buildable === "raw" && doc.net_amount !== null ? (
+                <div>
+                  <span className="text-[var(--faint)]">סכום נטו: </span>
+                  <span className="font-mono">{money(doc.net_amount, doc.currency)}</span>
+                  <span className="text-[var(--faint)]"> (ברוטו {money(doc.amount, doc.currency)})</span>
+                </div>
+              ) : (
+                <div>
+                  <span className="text-[var(--faint)]">סכום: </span>
+                  <span className="font-mono">{money(doc.amount, doc.currency)}</span>
+                </div>
+              )}
             </div>
             {err && <div className="text-[11px] text-[var(--red)] mb-2">{err}</div>}
             <div className="flex items-center justify-end gap-2">
