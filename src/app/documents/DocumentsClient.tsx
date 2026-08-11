@@ -3,7 +3,12 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import ClientCombobox, { type ComboboxClient } from "@/components/ClientCombobox";
-import { DOC_TYPE_TO_MORNING_CODE, MORNING_DOC_CODE, requiresPayment } from "@/lib/morning/types";
+import {
+  DOC_TYPE_TO_MORNING_CODE,
+  MORNING_DOC_CODE,
+  relabelDocDescription,
+  requiresPayment,
+} from "@/lib/morning/types";
 
 // NOTE: a local copy of the type in lib/morning/types.ts, not an import — it
 // has to stay in step with it or this screen mislabels a row it is handed.
@@ -138,12 +143,18 @@ function RecipientPicker({
  */
 function TaxPayloadPreview({
   payload,
-  variant,
+  finalType,
   gross,
   paid,
 }: {
   payload: Record<string, unknown>;
-  variant: "tax_receipt" | "tax_invoice";
+  /**
+   * The type that will ACTUALLY be issued — the modal's finalType, not the tax
+   * selector. It used to be the selector, which meant a receipt (400) was
+   * measured against 305 and told the operator its remark would be rebuilt when
+   * nothing of the sort was going to happen.
+   */
+  finalType: PendingDocType;
   /** the parent's gross, when this type has one — see PendingDocRow */
   gross?: number | null;
   /** what the payment fields currently add up to, when they are shown */
@@ -160,7 +171,20 @@ function TaxPayloadPreview({
   const net = income.length
     ? income.reduce((s, l) => s + Number(l.price ?? 0) * Number(l.quantity ?? 1), 0)
     : null;
-  const willRebuildRemark = remarks !== null && payload?.type !== (variant === "tax_receipt" ? 320 : 305);
+  const willRebuildRemark = remarks !== null && payload?.type !== DOC_TYPE_TO_MORNING_CODE[finalType];
+
+  // The description carries a printed label too, and the server normalizes it at
+  // approval — same function, so what is promised here is what will be sent.
+  // Only a 305/320 is normalized server-side, so only those are promised here.
+  // The stored value stays on screen above; this states what it becomes, because
+  // a line that is about to change without saying so is worse than no preview.
+  const relabelled = isTax(finalType) ? relabelDocDescription(description, finalType) : ({ ok: false } as const);
+  const nextDescription = relabelled.ok && relabelled.changed ? relabelled.description : null;
+  // hand-edited: left exactly as written, which is right — and worth saying,
+  // because on a 320 it is the one case where the label can still contradict
+  // the document, and there is no fixing that after the click
+  const descriptionStuck =
+    isTax(finalType) && description !== null && !relabelled.ok;
 
   return (
     <div className="border-t border-[var(--rule)] pt-3 mb-3">
@@ -170,6 +194,16 @@ function TaxPayloadPreview({
           <div className="flex gap-2">
             <span className="text-[var(--faint)] shrink-0">תיאור:</span>
             <span className="break-all">{description}</span>
+          </div>
+        )}
+        {nextDescription && (
+          <div className="text-[var(--warn)] break-all">
+            התיאור יעודכן בעת האישור ל: {nextDescription}
+          </div>
+        )}
+        {descriptionStuck && (
+          <div className="text-[var(--warn)]">
+            התיאור נערך ידנית ולא יעודכן אוטומטית — ודאי שהוא תואם את סוג המסמך שנבחר.
           </div>
         )}
         <div className="flex gap-2">
@@ -821,11 +855,12 @@ export default function DocumentsClient({
                 links that close the parents, the remark that gets PRINTED, and
                 every income line. A tax document cannot be corrected once it is
                 in Morning, so whatever is wrong has to be visible HERE.
-                remarks re-renders on the variant switch because the server
-                rebuilds it — the two must never contradict each other. */}
+                remarks and the description's label both re-render on the variant
+                switch because the server rebuilds them — the three must never
+                contradict each other. */}
             <TaxPayloadPreview
               payload={confirming.payload}
-              variant={taxVariant}
+              finalType={finalType}
               gross={confirming.parent_gross}
               paid={needsPayment && Number.isFinite(paidNum) ? paidNum : null}
             />

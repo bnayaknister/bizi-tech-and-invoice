@@ -16,9 +16,16 @@ import { createTaxFromParents } from "@/lib/documents/taxFromParent";
 // work_order|deal_invoice — that is a deliberate owner decision ("tax documents
 // keep their own guarded path"), not a limitation to route around.
 //
-// The row is created as tax_receipt (320). The 305/320 choice belongs to the
-// approval modal, which sees the money; the review route rewrites both the type
-// AND the remark when it is flipped.
+// The row is created as tax_invoice (305) — DEFAULT_TAX_VARIANT, and this route
+// never overrides it. 305 because it is the one that is safe to be wrong about:
+// a 320 declares to the tax authority that the money arrived, and cannot be
+// taken back (the reasoning lives in full on DEFAULT_TAX_VARIANT). An earlier
+// version of this comment claimed 320 and was simply wrong about its own route.
+//
+// The 305/320 choice belongs to the approval modal, which sees the money. The
+// review route rewrites the type, the remark, AND the printed label at the head
+// of `description` — all three name the document, and a page where they
+// disagree cannot be corrected once it is in Morning.
 //
 // TWO source kinds since stage 3 (owner approved 2026-08-11), one per request:
 //   sourceIds   — pending_documents.id, the original path, N allowed (bundles)

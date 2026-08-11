@@ -7,6 +7,7 @@ import {
   DOC_TYPE_LABEL,
   DOC_TYPE_TO_MORNING_CODE,
   MORNING_DOC_CODE,
+  relabelDocDescription,
   requiresPayment,
   sourceRemark,
   type MorningDocumentRequest,
@@ -247,6 +248,58 @@ export async function POST(request: Request) {
         payload: { from: r.doc_type, to: body.tax_variant, remarks: newRemark ?? null },
       });
       row = { ...row, doc_type: body.tax_variant, payload: newPayload as unknown as PendingRow["payload"] };
+    }
+
+    // ---- the printed label on the description -------------------------------
+    // `description` is the BOLD line above the item table on the PDF, and it
+    // opens with the document's own name. It was built once, when the row was
+    // queued — always as 305, the only thing this app creates — so a row
+    // approved as 320 went out saying "חשבונית מס" at the top of a page titled
+    // "חשבונית מס / קבלה", contradicting both its own title and the remark
+    // below the totals. 320 cannot be corrected afterwards.
+    //
+    // Runs OUTSIDE the flip block above, on every tax approval, on purpose. A
+    // row already flipped to 320 by an earlier attempt that then failed to issue
+    // is sitting in the queue as 320 with the old label; approving it again does
+    // not re-enter the flip block, and the bug would survive there untouched.
+    // Idempotent — a description already carrying the right label reports
+    // `changed: false` and nothing is written.
+    //
+    // Only the LABEL is swapped. The remainder (client name, bundle count) is
+    // carried across verbatim, so this never re-derives anything the builder
+    // decided and can never disagree with it.
+    if (TAX_VARIANTS.includes(row.doc_type as PendingDocType)) {
+      const currentDesc = row.payload?.description;
+      const relabelled = relabelDocDescription(currentDesc, row.doc_type as PendingDocType);
+      if (relabelled.ok && relabelled.changed) {
+        const relabelledPayload: MorningDocumentRequest = {
+          ...row.payload,
+          description: relabelled.description,
+        };
+        await admin.from("pending_documents").update({ payload: relabelledPayload }).eq("id", r.id);
+        await admin.from("events").insert({
+          entity_type: "pending_document",
+          entity_id: r.id,
+          event_type: "document_description_relabeled",
+          actor_id: user.id,
+          payload: { doc_type: row.doc_type, from: currentDesc ?? null, to: relabelled.description },
+        });
+        // what reaches Morning is THIS object, not the row in the table — the
+        // update above is the audit trail, the line below is the document
+        row = { ...row, payload: relabelledPayload as unknown as PendingRow["payload"] };
+      } else if (!relabelled.ok && typeof currentDesc === "string" && currentDesc.trim() !== "") {
+        // a description nobody's builder produced = a human wrote it. Left
+        // exactly as written — overwriting a person's sentence to fix a label is
+        // the worse mistake — and recorded, so a page whose label disagrees with
+        // its type is explainable later. The modal warns before the click.
+        await admin.from("events").insert({
+          entity_type: "pending_document",
+          entity_id: r.id,
+          event_type: "document_description_not_relabeled",
+          actor_id: user.id,
+          payload: { doc_type: row.doc_type, description: currentDesc },
+        });
+      }
     }
 
     // ---- the payment gate ---------------------------------------------------

@@ -5,6 +5,7 @@ import {
   MORNING_DOC_CODE,
   MORNING_DOC_NAME,
   VAT_TYPE_DEFAULT,
+  docDescriptionLabel,
   sourceRemark,
   type MorningDocumentRequest,
   type PendingDocType,
@@ -497,10 +498,16 @@ export async function createTaxFromParents(
     return { ok: false, status: 500, error: "לא ניתן לבנות את הערת המקור" };
   }
 
+  // The label comes from docDescriptionLabel — Morning's vocabulary, one source
+  // shared with the normalizer in the review route, which swaps it for the final
+  // variant's at approval. Byte-identical to the DOC_TYPE_LABEL this replaced
+  // for 305, which is what every row is created as; nothing in the queue moves.
+  // DOC_TYPE_LABEL is still right for our own screens and for the error messages
+  // above — it is only barred from what gets PRINTED.
   const description =
     rows.length === 1
-      ? `${DOC_TYPE_LABEL[variant]} — ${clientName}`.trim()
-      : `${DOC_TYPE_LABEL[variant]} מאוגד — ${clientName} (${rows.length} מסמכי מקור)`.trim();
+      ? `${docDescriptionLabel(variant)} — ${clientName}`.trim()
+      : `${docDescriptionLabel(variant)} מאוגד — ${clientName} (${rows.length} מסמכי מקור)`.trim();
 
   const payload: MorningDocumentRequest = {
     type: childCode,

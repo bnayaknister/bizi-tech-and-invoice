@@ -98,6 +98,110 @@ export function sourceRemark(
 }
 
 /**
+ * The label that PRINTS at the head of a document's `description` — the bold
+ * line above the item table on the PDF.
+ *
+ * Morning's vocabulary, for the same reason sourceRemark above uses it: the
+ * remark a few lines further down the SAME page already says "חשבונית מס /
+ * קבלה", and a page that names itself two ways is a page nobody can reconcile
+ * against the books. DOC_TYPE_LABEL stays what our own SCREENS say and must not
+ * reach a printed document.
+ *
+ * ONE source for the label, two callers — the builder (taxFromParent) and the
+ * normalizer below. Neither composes the string itself. That is the whole point:
+ * the bug this replaces was a description built once, at enqueue, from the type
+ * the row happened to start as, while the variant is chosen much later.
+ *
+ * For 305 this returns the same bytes DOC_TYPE_LABEL did ("חשבונית מס",
+ * verified byte-for-byte 2026-08-11), so moving the builder onto it moves no
+ * existing row. 320 is the value that changes, and is the bug.
+ */
+export function docDescriptionLabel(docType: PendingDocType): string {
+  return MORNING_DOC_NAME[DOC_TYPE_TO_MORNING_CODE[docType]];
+}
+
+/**
+ * The separator between the label and the rest of a description, and the word
+ * the bundled form inserts before it.
+ *
+ * Verified byte-for-byte against the builder (2026-08-11): SPACE, U+2014 EM
+ * DASH, SPACE — `20 e2 80 94 20`. NOT a hyphen. If this constant and the
+ * builder's template ever disagree, every row stops matching and the normalizer
+ * silently does nothing, which is exactly the failure this comment exists to
+ * prevent.
+ */
+const DESCRIPTION_SEPARATOR = " — ";
+const DESCRIPTION_BUNDLE_MARK = "מאוגד";
+
+/**
+ * Every label a tax description could be carrying, longest FIRST.
+ *
+ * Longest-first is required, not cosmetic: "חשבונית מס" is a prefix of both
+ * "חשבונית מס / קבלה" and "חשבונית מס קבלה", so a shortest-first scan would
+ * match a 320's description on the 305 label, fail to recognize the remainder,
+ * and declare a perfectly ordinary row hand-edited.
+ *
+ * DOC_TYPE_LABEL is in the set too. Nothing writes it into a description today
+ * (the builder is moving off it in this same change), but recognizing it costs
+ * nothing and means a row written by any past version is still normalizable.
+ */
+const TAX_DESCRIPTION_LABELS: string[] = Array.from(
+  new Set(
+    (["tax_invoice", "tax_receipt"] as PendingDocType[]).flatMap((t) => [
+      MORNING_DOC_NAME[DOC_TYPE_TO_MORNING_CODE[t]],
+      DOC_TYPE_LABEL[t],
+    ])
+  )
+).sort((a, b) => b.length - a.length);
+
+export type RelabelResult =
+  | { ok: true; description: string; changed: boolean }
+  | { ok: false };
+
+/**
+ * Swap the LABEL at the head of a description for the one the final type wants,
+ * and change nothing else.
+ *
+ * Deliberately not a rebuild. The remainder — the client name, the bundle
+ * count, whatever a human typed after the separator — is carried across
+ * verbatim, so this never needs to know who the client is or how many sources
+ * there were, and can never disagree with the builder about either.
+ *
+ * The two shapes the builder produces, and ONLY those, are recognized:
+ *     "<label> — <rest>"
+ *     "<label> מאוגד — <rest>"
+ * Anything else is a sentence a person wrote. `ok: false` means "leave it
+ * alone" — never "fail": a hand-edited description that no longer matches its
+ * type is a thing to warn about, not a thing to overwrite.
+ *
+ * Idempotent by construction: a description already carrying the right label
+ * comes back `changed: false`, so running it on every approval is a no-op on
+ * every row that is already correct.
+ */
+export function relabelDocDescription(
+  description: string | null | undefined,
+  finalType: PendingDocType
+): RelabelResult {
+  if (typeof description !== "string" || description.trim() === "") return { ok: false };
+  const target = docDescriptionLabel(finalType);
+  if (!target) return { ok: false };
+
+  for (const label of TAX_DESCRIPTION_LABELS) {
+    if (!description.startsWith(label)) continue;
+    const rest = description.slice(label.length);
+    const shaped =
+      rest.startsWith(DESCRIPTION_SEPARATOR) ||
+      rest.startsWith(` ${DESCRIPTION_BUNDLE_MARK}${DESCRIPTION_SEPARATOR}`);
+    // the longest matching label decides; a match whose remainder is not one of
+    // the builder's shapes is hand-edited, not a reason to try a shorter one
+    if (!shaped) return { ok: false };
+    const next = target + rest;
+    return { ok: true, description: next, changed: next !== description };
+  }
+  return { ok: false };
+}
+
+/**
  * The types that carry a `payment` block — money that actually moved.
  *
  *  320 חשבונית מס / קבלה — an invoice AND a receipt in one
