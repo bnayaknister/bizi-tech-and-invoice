@@ -6,6 +6,7 @@ import ClientCombobox, { type ComboboxClient } from "@/components/ClientCombobox
 import {
   DOC_TYPE_TO_MORNING_CODE,
   MORNING_DOC_CODE,
+  PAYMENT_METHODS,
   relabelDocDescription,
   requiresPayment,
 } from "@/lib/morning/types";
@@ -37,20 +38,21 @@ export type PendingDocRow = {
   parent_gross_error: string | null;
 };
 
-// Morning's payment-method codes, as actually used in this account (2026-08-10).
-// Only the bank transfer is offered in v1 — the rest are listed so the next one
-// is a one-line change and nobody has to go hunting for the number again.
+// The four payment methods come from lib/morning/types.ts — the SAME list the
+// review route refuses everything outside of. Deliberately not a copy with an
+// `enabled` flag beside it: a flag only this file honoured would be a rule the
+// screen enforces and the server does not, which is exactly how a 305's printed
+// label once reached a 320. Removing a method there removes it from the picker
+// and from the server in one edit.
 //
-// 0 (ניכוי במקור) is deliberately ABSENT: it is not a payment method, it is
-// withholding — a second line beside the real payment, where the two together
-// make the document total. Offering it in this picker would let someone issue a
-// receipt declaring that nothing was actually received.
-const PAYMENT_METHODS: { code: number; label: string; enabled: boolean }[] = [
-  { code: 4, label: "העברה בנקאית", enabled: true },
-  { code: 2, label: "צ׳ק", enabled: false },
-  { code: 3, label: "כרטיס אשראי", enabled: false },
-  { code: 10, label: "אפליקציית תשלום", enabled: false },
-];
+// The bank transfer stays the default (222 of 278 lines in the books); the
+// modal resets to it on every open, so a method chosen for one document never
+// leaks into the next.
+//
+// A document with withholding still cannot be issued from this screen, and that
+// is correct rather than pending: the payment gate on the server sums an ARRAY
+// and is ready for it, but this modal builds exactly one line. Two-line entry is
+// its own piece of work, with its own arithmetic on screen.
 
 const TYPE_LABEL: Record<PendingDocType, string> = {
   work_order: "הזמנות עבודה",
@@ -827,7 +829,7 @@ export default function DocumentsClient({
                         onChange={(e) => setPayMethod(Number(e.target.value))}
                         className="w-full mt-1 bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-sm"
                       >
-                        {PAYMENT_METHODS.filter((m) => m.enabled).map((m) => (
+                        {PAYMENT_METHODS.map((m) => (
                           <option key={m.code} value={m.code}>
                             {m.label}
                           </option>

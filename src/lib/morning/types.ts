@@ -299,6 +299,47 @@ export type MorningPaymentRow = {
   description?: string;
 };
 
+/**
+ * The payment methods this app accepts, in picker order — a closed ALLOW-LIST,
+ * not a copy of Morning's code table.
+ *
+ * Counted off 278 real payment lines in the owner's own books (2026-08-10):
+ *   4  העברה בנקאית   (222)   ← the default, and most of the account
+ *   2  צ׳ק            (19)
+ *   10 אפליקציית תשלום (4)
+ *   3  כרטיס אשראי     (2)
+ * A code we cannot read off a real document is a code we cannot label honestly,
+ * so it is not here. Morning documents others; that is not sufficient.
+ *
+ * 0 (ניכוי במקור) is ABSENT and must stay absent — see MorningPaymentRow. It is
+ * withholding, a SECOND line beside the real payment, never a payment on its
+ * own. A receipt whose only line is code 0 declares that money arrived when
+ * none did, and a receipt cannot be taken back.
+ *
+ * ONE list, two enforcers: the picker builds its options from it and the review
+ * route refuses anything outside it. Removing a method here removes it from
+ * both at once. It lives on the server side of the line because `type` became
+ * client-supplied input the moment the picker offered a choice, and issue.ts
+ * sends the payload to Morning verbatim — a rule the screen enforces and the
+ * server does not is not a rule.
+ */
+export const PAYMENT_METHODS: readonly { code: number; label: string }[] = [
+  { code: 4, label: "העברה בנקאית" },
+  { code: 2, label: "צ׳ק" },
+  { code: 3, label: "כרטיס אשראי" },
+  { code: 10, label: "אפליקציית תשלום" },
+];
+
+/** Is this one of the methods above? Anything else is refused, including 0. */
+export function isAllowedPaymentMethod(code: number): boolean {
+  return PAYMENT_METHODS.some((m) => m.code === code);
+}
+
+/** The methods named the way the books name them, for an error message. */
+export function paymentMethodsSentence(): string {
+  return PAYMENT_METHODS.map((m) => `${m.label} (${m.code})`).join(", ");
+}
+
 export type MorningDocumentRequest = {
   type: number;
   lang: string;

@@ -7,6 +7,8 @@ import {
   DOC_TYPE_LABEL,
   DOC_TYPE_TO_MORNING_CODE,
   MORNING_DOC_CODE,
+  isAllowedPaymentMethod,
+  paymentMethodsSentence,
   relabelDocDescription,
   requiresPayment,
   sourceRemark,
@@ -440,6 +442,37 @@ async function checkPaymentShape(
     }
     if (!Number.isFinite(Number(p?.type))) {
       return { ok: false, status: 400, error: `שורת תקבול ${i + 1}: חסר אמצעי תשלום` };
+    }
+    // ---- the method allow-list ---------------------------------------------
+    // Input validation, and it belongs HERE rather than only in the picker:
+    // `type` became client-supplied the moment the modal offered a choice, and
+    // issue.ts sends this payload to Morning verbatim. A rule only the screen
+    // enforces is not a rule — the same pattern that let a 305's printed label
+    // reach a 320.
+    //
+    // Runs before the arithmetic below and is independent of it: this decides
+    // whether the METHOD is one we recognize, never how much money it is.
+    const methodCode = Number(p.type);
+    if (!isAllowedPaymentMethod(methodCode)) {
+      // 0 gets its own sentence. It is the code most likely to arrive by
+      // mistake, and "unsupported" would be a misleading way to describe it: it
+      // is a real Morning code that means something specific and dangerous here.
+      if (methodCode === 0) {
+        return {
+          ok: false,
+          status: 400,
+          error:
+            `שורת תקבול ${i + 1}: ניכוי במקור אינו אמצעי תשלום אלא הפרש, ` +
+            "והוא נרשם כשורה שנייה לצד התקבול עצמו. מסמך עם ניכוי אינו ניתן להנפקה מהמסך הזה.",
+        };
+      }
+      return {
+        ok: false,
+        status: 400,
+        error:
+          `שורת תקבול ${i + 1}: אמצעי תשלום ${methodCode} אינו נתמך. ` +
+          `האמצעים הנתמכים: ${paymentMethodsSentence()}.`,
+      };
     }
     if (!p?.date || !/^\d{4}-\d{2}-\d{2}$/.test(String(p.date))) {
       return { ok: false, status: 400, error: `שורת תקבול ${i + 1}: תאריך לא תקין` };
