@@ -277,7 +277,7 @@ async function main() {
       row?.payload.remarks === `חשבונית מס עבור הזמנה ${parentNumber[p]}`,
       row?.payload.remarks
     );
-    check("income inherited verbatim (2 lines)", row?.payload.income.length === 2, String(row?.payload.income.length));
+    check("income inherited verbatim (2 lines)", (row?.payload.income ?? []).length === 2, String(row?.payload.income?.length));
     check("amount = the parent's amount, not recomputed", Number(row?.amount) === 200, String(row?.amount));
     check("linkType is absent — unverified for this rung, so not sent", !("linkType" in (row?.payload ?? {})));
     check("openness known -> no warning flag", res.ok && res.parentOpennessUnknown === false);
@@ -399,7 +399,7 @@ async function main() {
     const p2 = await makeParent({ docType: "deal_invoice", morningClientId, clientId, jobId: j2, lines: 2, price: 100, ref: REF_OPEN_300 });
     const { res, row } = await build([p1, p2]);
     check("builds", res.ok, res.ok ? "" : res.error);
-    check("income is the concatenation (1 + 2 = 3 lines)", row?.payload.income.length === 3, String(row?.payload.income.length));
+    check("income is the concatenation (1 + 2 = 3 lines)", (row?.payload.income ?? []).length === 3, String(row?.payload.income?.length));
     check("amount = 150 + 200, summed not recomputed", Number(row?.amount) === 350, String(row?.amount));
     check(
       "linkedDocumentIds closes BOTH parents",

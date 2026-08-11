@@ -4,7 +4,10 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import ClientCombobox, { type ComboboxClient } from "@/components/ClientCombobox";
 
-export type PendingDocType = "work_order" | "deal_invoice" | "tax_invoice" | "tax_receipt";
+// NOTE: a local copy of the type in lib/morning/types.ts, not an import — it
+// has to stay in step with it or this screen mislabels a row it is handed.
+// 'receipt' added with 0053.
+export type PendingDocType = "work_order" | "deal_invoice" | "tax_invoice" | "tax_receipt" | "receipt";
 
 export type PendingDocRow = {
   id: string;
@@ -28,6 +31,7 @@ const TYPE_LABEL: Record<PendingDocType, string> = {
   deal_invoice: "חשבוניות עסקה",
   tax_invoice: "חשבוניות מס",
   tax_receipt: "חשבוניות מס קבלה",
+  receipt: "קבלות",
 };
 
 // Tax documents are issued one at a time behind their own confirmation.

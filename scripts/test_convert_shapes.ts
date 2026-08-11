@@ -243,7 +243,7 @@ async function main() {
     check("bundle_job_ids = the order's own job", sameSet(row?.bundle_job_ids ?? null, [cJob]), JSON.stringify(row?.bundle_job_ids));
     check("singular title reads 'פרק אחד'", !!row?.payload.description?.includes("(פרק אחד)"), row?.payload.description);
     check("title drops מאוגד for exactly 1", !row?.payload.description?.includes("מאוגד"), row?.payload.description);
-    check("income inherited verbatim (1 line)", row?.payload.income.length === 1, JSON.stringify(row?.payload.income?.length));
+    check("income inherited verbatim (1 line)", (row?.payload.income ?? []).length === 1, JSON.stringify(row?.payload.income?.length));
     check("links back to the order in Morning", !!row?.payload.linkedDocumentIds?.length, JSON.stringify(row?.payload.linkedDocumentIds));
     check(
       "remarks names the order it was raised on",

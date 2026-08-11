@@ -414,7 +414,10 @@ export async function createTaxFromParents(
 
   // inherited verbatim, in source order: the child must total exactly what its
   // parents did. Nothing is recomputed anywhere on this path.
-  const income = rows.flatMap((r) => r.payload!.income);
+  // `?? []` only because income went optional in 0053 (a receipt carries none).
+  // Unreachable here: the per-source gate above already refuses an empty one,
+  // so by this point every source has lines. Same guard as that gate.
+  const income = rows.flatMap((r) => r.payload!.income ?? []);
   const amount = rows.reduce((sum, r) => sum + Number(r.amount ?? 0), 0);
   const sourceNumbers = rows.map((r) => String(r.morning_doc_number));
 

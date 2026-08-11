@@ -20,15 +20,16 @@ export const MORNING_DOC_CODE = {
   receipt: 400,
 } as const;
 
-// The four document types this app can queue. Maps 1:1 onto the
-// pending_doc_type enum in migration 0025.
-export type PendingDocType = "work_order" | "deal_invoice" | "tax_invoice" | "tax_receipt";
+// The document types this app can queue. Maps 1:1 onto the pending_doc_type
+// enum — four values in 0025, plus 'receipt' in 0053.
+export type PendingDocType = "work_order" | "deal_invoice" | "tax_invoice" | "tax_receipt" | "receipt";
 
 export const DOC_TYPE_TO_MORNING_CODE: Record<PendingDocType, number> = {
   work_order: MORNING_DOC_CODE.order,
   deal_invoice: MORNING_DOC_CODE.deal_invoice,
   tax_invoice: MORNING_DOC_CODE.tax_invoice,
   tax_receipt: MORNING_DOC_CODE.tax_receipt,
+  receipt: MORNING_DOC_CODE.receipt,
 };
 
 export const DOC_TYPE_LABEL: Record<PendingDocType, string> = {
@@ -36,6 +37,7 @@ export const DOC_TYPE_LABEL: Record<PendingDocType, string> = {
   deal_invoice: "חשבון עסקה",
   tax_invoice: "חשבונית מס",
   tax_receipt: "חשבונית מס קבלה",
+  receipt: "קבלה",
 };
 
 /**
@@ -137,6 +139,40 @@ export type MorningIncomeRow = {
   vatType: number;
 };
 
+/**
+ * One line of the money side of a document — what was actually received.
+ *
+ * Read off 66 real payment lines across 5 tax-receipts and 61 receipts in the
+ * account (2026-08-10), not from documentation:
+ *
+ *  • `price` and `amount` were EQUAL on all 278 lines, zero exceptions, and
+ *    both are GROSS (the income lines are net; Morning adds the VAT). Write the
+ *    same gross value into both — there is no case here where they diverge.
+ *  • `type` is Morning's payment-method code. The five in use, by volume:
+ *      4  העברה בנקאית   (222)
+ *      0  ניכוי במקור     (31)
+ *      2  צ׳ק            (19)
+ *      10 אפליקציית תשלום (4)
+ *      3  כרטיס אשראי     (2)
+ *  • type 0 is NOT a payment method — it is withholding tax, and it appears as
+ *    a SECOND line beside the real one: the bank transfer plus the withheld
+ *    amount together make the document total. That is why this is an array,
+ *    and why a validator must sum the lines rather than read the first.
+ *
+ * `currencyRate` is 1 for ILS. Kept explicit because Morning returns it.
+ */
+export type MorningPaymentRow = {
+  type: number;
+  date: string;
+  /** gross. always equal to `amount` — see the note above */
+  price: number;
+  /** gross. always equal to `price` */
+  amount: number;
+  currency: string;
+  currencyRate: number;
+  description?: string;
+};
+
 export type MorningDocumentRequest = {
   type: number;
   lang: string;
@@ -161,7 +197,20 @@ export type MorningDocumentRequest = {
     // to issue at all, so `add` is hard-wired false at the call site.
     add: false;
   };
-  income: MorningIncomeRow[];
+  /**
+   * OPTIONAL as of 0053, and only because a receipt (400) carries none: all 61
+   * receipts in the account have zero income lines and a payment block instead.
+   * Every other type still requires them — that pairing is enforced in the
+   * review route before issuing, not by this type. A payload with neither is a
+   * server-side refusal, not a compile error.
+   */
+  income?: MorningIncomeRow[];
+  /**
+   * The money side. Required on 320 and 400, forbidden on 100/300/305 — the
+   * same split `PAYMENT_TYPES` already draws in lib/documents/reconcile.ts.
+   * An array: withholding tax rides as a second line (see MorningPaymentRow).
+   */
+  payment?: MorningPaymentRow[];
 };
 
 // POST /documents -> 201
