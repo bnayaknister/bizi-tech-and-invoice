@@ -26,14 +26,38 @@ import { sumParentGross } from "@/lib/documents/parentGross";
 // Two human gates, both enforced HERE and not only in the UI (owner rule
 // 2026-07-19: "לחיצה אחת לא מספיקה. לעולם."):
 //   1. can_edit_money
-//   2. for a TAX document (חשבונית מס / מס קבלה) the request must carry
-//      confirmed:true — the second modal. A client that forgets it gets a
-//      412 telling it to confirm, never an issued tax document.
+//   2. for anything in REQUIRES_CONFIRMATION (חשבונית מס / מס קבלה / קבלה) the
+//      request must carry confirmed:true — the second modal. A client that
+//      forgets it gets a 412 telling it to confirm, never an issued document.
 // Bulk approval is allowed for work orders and deal invoices (the busy-day
-// case the owner asked for) and REFUSED for tax documents: each one needs
-// its own confirmation.
+// case the owner asked for) and REFUSED for those three: each one needs its own
+// confirmation.
+//
+// A receipt joined that set on 2026-08-11. Nothing could reach Morning without
+// confirmation before then either — the payment gate refuses a 400 with no
+// payment block, and only the modal sends one — but that made the rule depend
+// on the client, and this rule is not allowed to.
 
-const TAX_TYPES: PendingDocType[] = ["tax_invoice", "tax_receipt"];
+/**
+ * The types that may not go out on one click: both human gates below apply to
+ * them, and only to them.
+ *
+ * Named for the CRITERION, not for a property of the document. A deal invoice
+ * is nearly irreversible too — undoing one means acting inside Morning — and it
+ * is still fine to approve in bulk. What these three share is that a mistake is
+ * a mistake against the tax authority, which is what earns the second click.
+ */
+const REQUIRES_CONFIRMATION: PendingDocType[] = ["tax_invoice", "tax_receipt", "receipt"];
+
+/**
+ * The two types that are the SAME document in two forms, and the only pair the
+ * approval modal's selector switches between.
+ *
+ * Deliberately NOT the set above. A receipt is not a variant of anything: if it
+ * were in this list, a request carrying tax_variant would silently rewrite a
+ * 400 into a 320 — turning a receipt into a tax invoice without anyone asking.
+ */
+const TAX_VARIANTS: PendingDocType[] = ["tax_invoice", "tax_receipt"];
 
 export async function POST(request: Request) {
   const supabase = createClient();
@@ -107,20 +131,20 @@ export async function POST(request: Request) {
   }
 
   // ---- approve ------------------------------------------------------------
-  const taxRows = rows.filter((r) => TAX_TYPES.includes(r.doc_type as PendingDocType));
-  if (taxRows.length) {
+  const guardedRows = rows.filter((r) => REQUIRES_CONFIRMATION.includes(r.doc_type as PendingDocType));
+  if (guardedRows.length) {
     if (rows.length > 1) {
       return NextResponse.json(
-        { error: "מסמך מס מאושר אחד-אחד בלבד — אישור מרוכז אינו אפשרי" },
+        { error: "מסמך מס או קבלה מאושר אחד-אחד בלבד — אישור מרוכז אינו אפשרי" },
         { status: 400 }
       );
     }
     if (!body.confirmed) {
       // 412: the caller must show the confirmation modal and come back.
-      const r = taxRows[0];
+      const r = guardedRows[0];
       return NextResponse.json(
         {
-          error: "מסמך מס דורש אישור נוסף",
+          error: "מסמך מס או קבלה דורש אישור נוסף",
           needs_confirmation: true,
           document: { id: r.id, doc_type: r.doc_type, amount: r.amount, payload: r.payload },
         },
@@ -159,7 +183,7 @@ export async function POST(request: Request) {
     // ids are — so they are read back from the queue rows those ids belong to.
     // If that lookup can't produce them, the flip is REFUSED rather than
     // issuing a document that names no parent (the failure fixed in 7d6136e).
-    if (body.tax_variant && TAX_TYPES.includes(r.doc_type as PendingDocType) && body.tax_variant !== r.doc_type) {
+    if (body.tax_variant && TAX_VARIANTS.includes(r.doc_type as PendingDocType) && body.tax_variant !== r.doc_type) {
       const oldPayload = (r.payload ?? {}) as Record<string, unknown>;
       const linkedIds = Array.isArray(oldPayload.linkedDocumentIds)
         ? (oldPayload.linkedDocumentIds as string[])
