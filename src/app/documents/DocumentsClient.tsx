@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import ClientCombobox, { type ComboboxClient } from "@/components/ClientCombobox";
+import { DOC_TYPE_TO_MORNING_CODE, MORNING_DOC_CODE, requiresPayment } from "@/lib/morning/types";
 
 // NOTE: a local copy of the type in lib/morning/types.ts, not an import — it
 // has to stay in step with it or this screen mislabels a row it is handed.
@@ -24,7 +25,27 @@ export type PendingDocRow = {
   payload: Record<string, unknown>;
   last_error: string | null;
   attempts: number;
+  // 320 / 400 only: the gross Morning computed on the parent, read server-side
+  // through the same helper the approval gate uses. null with a reason set means
+  // we cannot know it yet — almost always a parent issued after the last pull.
+  parent_gross: number | null;
+  parent_gross_error: string | null;
 };
+
+// Morning's payment-method codes, as actually used in this account (2026-08-10).
+// Only the bank transfer is offered in v1 — the rest are listed so the next one
+// is a one-line change and nobody has to go hunting for the number again.
+//
+// 0 (ניכוי במקור) is deliberately ABSENT: it is not a payment method, it is
+// withholding — a second line beside the real payment, where the two together
+// make the document total. Offering it in this picker would let someone issue a
+// receipt declaring that nothing was actually received.
+const PAYMENT_METHODS: { code: number; label: string; enabled: boolean }[] = [
+  { code: 4, label: "העברה בנקאית", enabled: true },
+  { code: 2, label: "צ׳ק", enabled: false },
+  { code: 3, label: "כרטיס אשראי", enabled: false },
+  { code: 10, label: "אפליקציית תשלום", enabled: false },
+];
 
 const TYPE_LABEL: Record<PendingDocType, string> = {
   work_order: "הזמנות עבודה",
@@ -118,9 +139,15 @@ function RecipientPicker({
 function TaxPayloadPreview({
   payload,
   variant,
+  gross,
+  paid,
 }: {
   payload: Record<string, unknown>;
   variant: "tax_receipt" | "tax_invoice";
+  /** the parent's gross, when this type has one — see PendingDocRow */
+  gross?: number | null;
+  /** what the payment fields currently add up to, when they are shown */
+  paid?: number | null;
 }) {
   const linked = Array.isArray(payload?.linkedDocumentIds) ? (payload.linkedDocumentIds as string[]) : [];
   const income = Array.isArray(payload?.income)
@@ -128,6 +155,11 @@ function TaxPayloadPreview({
     : [];
   const remarks = typeof payload?.remarks === "string" ? payload.remarks : null;
   const description = typeof payload?.description === "string" ? payload.description : null;
+  // a receipt carries no income lines, so there is no net to show for it —
+  // only the gross it collects
+  const net = income.length
+    ? income.reduce((s, l) => s + Number(l.price ?? 0) * Number(l.quantity ?? 1), 0)
+    : null;
   const willRebuildRemark = remarks !== null && payload?.type !== (variant === "tax_receipt" ? 320 : 305);
 
   return (
@@ -166,6 +198,46 @@ function TaxPayloadPreview({
             </div>
           </div>
         )}
+
+        {/* The arithmetic laid out, so the jump from the net lines above to the
+            gross the payment has to match is visible rather than suspicious.
+            The VAT is shown as the DIFFERENCE, never as a rate we applied —
+            the gross is Morning's own number, read back from the parent. */}
+        {(gross !== null && gross !== undefined) && (
+          <div className="border-t border-[var(--rule)] mt-2 pt-2 space-y-0.5">
+            {net !== null && (
+              <div className="flex justify-between gap-2 font-mono">
+                <span className="text-[var(--faint)]">נטו</span>
+                <span>{net.toFixed(2)}</span>
+              </div>
+            )}
+            {net !== null && (
+              <div className="flex justify-between gap-2 font-mono">
+                <span className="text-[var(--faint)]">מע״מ</span>
+                <span>{(gross - net).toFixed(2)}</span>
+              </div>
+            )}
+            <div className="flex justify-between gap-2 font-mono font-bold">
+              <span className="text-[var(--faint)]">ברוטו</span>
+              <span>{gross.toFixed(2)}</span>
+            </div>
+            {paid !== null && paid !== undefined && (
+              <div
+                className={`flex justify-between gap-2 font-mono font-bold ${
+                  Math.abs(paid - gross) > 0.01 ? "text-[var(--peak)]" : "text-[var(--green)]"
+                }`}
+              >
+                <span>תקבול</span>
+                <span>{paid.toFixed(2)}</span>
+              </div>
+            )}
+            {paid !== null && paid !== undefined && Math.abs(paid - gross) > 0.01 && (
+              <div className="text-[10px] text-[var(--peak)]">
+                התקבול אינו שווה לברוטו — ההנפקה תידחה.
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -193,6 +265,10 @@ export default function DocumentsClient({
   // arrived and cannot be taken back, so it is chosen on purpose, never by
   // leaving the selector alone
   const [taxVariant, setTaxVariant] = useState<"tax_receipt" | "tax_invoice">("tax_invoice");
+  // the payment block, for the types that declare money actually moved
+  const [payMethod, setPayMethod] = useState<number>(4);
+  const [payAmount, setPayAmount] = useState<string>("");
+  const [payDate, setPayDate] = useState<string>("");
   // inline "edit before approve"
   const [editing, setEditing] = useState<string | null>(null);
   const [editAmount, setEditAmount] = useState<string>("");
@@ -320,8 +396,18 @@ export default function DocumentsClient({
     // both paths pick recipients first (owner spec 2026-07-29): a tax document
     // folds the picker into its own confirmation modal; everything else gets the
     // dedicated recipient modal.
-    if (isTax(r.doc_type)) {
-      setTaxVariant(r.doc_type === "tax_invoice" ? "tax_invoice" : "tax_receipt");
+    //
+    // A receipt (400) goes down the confirmation path too — not because it needs
+    // the 305/320 choice (it has none) but because that modal is where the
+    // payment block is filled, and it cannot be issued without one.
+    if (isTax(r.doc_type) || requiresPayment(DOC_TYPE_TO_MORNING_CODE[r.doc_type])) {
+      if (isTax(r.doc_type)) setTaxVariant(r.doc_type === "tax_invoice" ? "tax_invoice" : "tax_receipt");
+      // the amount defaults to the parent's gross — the exact figure the server
+      // will compare against — and the date to today, editable backwards because
+      // money usually arrives before anyone gets to this screen
+      setPayMethod(4);
+      setPayAmount(r.parent_gross !== null ? String(r.parent_gross) : "");
+      setPayDate(new Date().toISOString().slice(0, 10));
       setConfirming(r);
       void loadRecipients(r);
       return;
@@ -614,10 +700,40 @@ export default function DocumentsClient({
       })}
 
       {/* ---- the second gate for a tax document ---- */}
-      {confirming && (
+      {confirming && (() => {
+        // The type that will actually be issued: for a 305/320 row that is the
+        // variant chosen right here, for anything else it is what the row
+        // already is. Everything below keys off THIS, never off taxVariant —
+        // a receipt has no variant to read.
+        const finalType = isTax(confirming.doc_type) ? taxVariant : confirming.doc_type;
+        const finalCode = DOC_TYPE_TO_MORNING_CODE[finalType];
+        const needsPayment = requiresPayment(finalCode);
+        const isReceipt = finalCode === MORNING_DOC_CODE.receipt;
+        // we cannot know the total until the parent has been pulled, and the
+        // server will refuse for exactly the same reason — so say so here and
+        // do not offer the button at all
+        const grossUnknown = needsPayment && confirming.parent_gross === null;
+        const paidNum = Number(payAmount);
+        const paymentReady =
+          !needsPayment ||
+          (!grossUnknown && Number.isFinite(paidNum) && paidNum > 0 && /^\d{4}-\d{2}-\d{2}$/.test(payDate));
+        const paymentRows = needsPayment
+          ? [{
+              type: payMethod,
+              date: payDate,
+              // verified on all 278 payment lines in the account: these two are
+              // always the same number
+              price: paidNum,
+              amount: paidNum,
+              currency: "ILS",
+              currencyRate: 1,
+            }]
+          : undefined;
+
+        return (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
           <div className="bg-[var(--bg)] border border-[var(--rule)] rounded-2xl p-5 max-w-md w-full max-h-[88vh] overflow-y-auto">
-            <h3 className="font-bold text-sm mb-3">אישור הנפקת מסמך מס</h3>
+            <h3 className="font-bold text-sm mb-3">{isReceipt ? "אישור הנפקת קבלה" : "אישור הנפקת מסמך מס"}</h3>
             <div className="text-sm space-y-1 mb-4">
               <div>
                 <span className="text-[var(--faint)]">לקוח: </span>
@@ -631,27 +747,88 @@ export default function DocumentsClient({
                 <span className="text-[var(--faint)]">סכום: </span>
                 <span className="font-bold">{money(confirming.amount)}</span>
               </div>
-              <label className="block pt-2">
-                <span className="text-[var(--faint)] text-xs">סוג המסמך</span>
-                <select
-                  value={taxVariant}
-                  onChange={(e) => setTaxVariant(e.target.value as "tax_receipt" | "tax_invoice")}
-                  className="w-full mt-1 bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-sm"
-                >
-                  {/* 305 first and default: it is the reversible one. 320 says
-                      the money is in, and says it to the tax authority. */}
-                  <option value="tax_invoice">חשבונית מס</option>
-                  <option value="tax_receipt">חשבונית מס קבלה — הכסף התקבל</option>
-                </select>
-              </label>
+              {/* only a 305/320 row has this choice — a receipt is what it is */}
+              {isTax(confirming.doc_type) && (
+                <label className="block pt-2">
+                  <span className="text-[var(--faint)] text-xs">סוג המסמך</span>
+                  <select
+                    value={taxVariant}
+                    onChange={(e) => setTaxVariant(e.target.value as "tax_receipt" | "tax_invoice")}
+                    className="w-full mt-1 bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-sm"
+                  >
+                    {/* 305 first and default: it is the reversible one. 320 says
+                        the money is in, and says it to the tax authority. */}
+                    <option value="tax_invoice">חשבונית מס</option>
+                    <option value="tax_receipt">חשבונית מס קבלה — הכסף התקבל</option>
+                  </select>
+                </label>
+              )}
             </div>
+
+            {/* ---- the money side, only for the types that declare it ---- */}
+            {needsPayment && (
+              <div className="border-t border-[var(--rule)] pt-3 mb-3">
+                <div className="text-xs font-bold mb-2">פרטי התקבול</div>
+                {grossUnknown ? (
+                  <div className="text-[11px] text-[var(--warn)] border border-[var(--warn)] rounded-xl px-3 py-2 leading-relaxed">
+                    {confirming.parent_gross_error ??
+                      "מסמך המקור טרם נמשך ממורנינג ולכן סכום המסמך אינו ידוע."}{" "}
+                    אפשר להנפיק אחרי הסנכרון הבא.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <label className="block">
+                      <span className="text-[var(--faint)] text-[11px]">אמצעי</span>
+                      <select
+                        value={payMethod}
+                        onChange={(e) => setPayMethod(Number(e.target.value))}
+                        className="w-full mt-1 bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-sm"
+                      >
+                        {PAYMENT_METHODS.filter((m) => m.enabled).map((m) => (
+                          <option key={m.code} value={m.code}>
+                            {m.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="text-[var(--faint)] text-[11px]">סכום שהתקבל (ברוטו)</span>
+                      <input
+                        value={payAmount}
+                        onChange={(e) => setPayAmount(e.target.value)}
+                        inputMode="decimal"
+                        className="w-full mt-1 bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-sm font-mono"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-[var(--faint)] text-[11px]">תאריך התקבול</span>
+                      <input
+                        type="date"
+                        value={payDate}
+                        onChange={(e) => setPayDate(e.target.value)}
+                        className="w-full mt-1 bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-sm font-mono"
+                      />
+                      <span className="text-[10px] text-[var(--faint)]">
+                        מתי הכסף התקבל בפועל — לא בהכרח תאריך המסמך.
+                      </span>
+                    </label>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* The real thing, not a summary of it (owner spec 2026-08-06): the
                 links that close the parents, the remark that gets PRINTED, and
                 every income line. A tax document cannot be corrected once it is
                 in Morning, so whatever is wrong has to be visible HERE.
                 remarks re-renders on the variant switch because the server
                 rebuilds it — the two must never contradict each other. */}
-            <TaxPayloadPreview payload={confirming.payload} variant={taxVariant} />
+            <TaxPayloadPreview
+              payload={confirming.payload}
+              variant={taxVariant}
+              gross={confirming.parent_gross}
+              paid={needsPayment && Number.isFinite(paidNum) ? paidNum : null}
+            />
 
             <div className="border-t border-[var(--rule)] pt-3 mb-2">
               <div className="text-xs font-bold mb-2">שליחה במייל</div>
@@ -662,8 +839,15 @@ export default function DocumentsClient({
             </p>
             <div className="flex gap-2">
               <button
-                disabled={busy}
-                onClick={() => send([confirming.id], "approve", { confirmed: true, tax_variant: taxVariant, recipients: selectedEmails })}
+                disabled={busy || !paymentReady}
+                onClick={() =>
+                  send([confirming.id], "approve", {
+                    confirmed: true,
+                    tax_variant: taxVariant,
+                    recipients: selectedEmails,
+                    ...(paymentRows ? { payment: paymentRows } : {}),
+                  })
+                }
                 className="flex-1 bg-[var(--signal)] text-white text-xs font-bold rounded-xl px-4 py-2 disabled:opacity-40"
               >
                 כן, הנפק
@@ -678,7 +862,8 @@ export default function DocumentsClient({
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* recipient picker for a non-tax document (owner spec 2026-07-29) */}
       {recipientFor && (

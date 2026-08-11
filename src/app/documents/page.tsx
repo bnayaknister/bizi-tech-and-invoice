@@ -4,6 +4,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import DocumentsClient, { type PendingDocRow } from "./DocumentsClient";
 import { isDryRun, morningEnv } from "@/lib/morning/client";
+import { DOC_TYPE_TO_MORNING_CODE, requiresPayment, type PendingDocType } from "@/lib/morning/types";
+import { sumParentGross } from "@/lib/documents/parentGross";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +24,26 @@ export default async function DocumentsPage() {
     )
     .in("status", ["pending", "failed"])
     .order("created_at", { ascending: true });
+
+  // A 320 or a 400 declares money that moved, and the payment block it carries
+  // has to total the gross Morning computed on the parent. Read that here, once,
+  // through the SAME helper the approval gate uses — the modal must not show a
+  // figure the server would then reject.
+  //
+  // Only for rows that need it, and one read each: this queue holds pending and
+  // failed rows only, and payment-bearing ones are the rare case.
+  const grossByRow = new Map<string, { gross: number | null; error: string | null }>();
+  for (const r of (data ?? []) as unknown as Array<Record<string, unknown>>) {
+    if (!requiresPayment(DOC_TYPE_TO_MORNING_CODE[r.doc_type as PendingDocType])) continue;
+    const payload = (r.payload ?? {}) as { linkedDocumentIds?: string[] };
+    const linked = Array.isArray(payload.linkedDocumentIds) ? payload.linkedDocumentIds : [];
+    if (!linked.length) {
+      grossByRow.set(r.id as string, { gross: null, error: "למסמך אין מסמך מקור — לא ניתן לאמת את סכום התקבול" });
+      continue;
+    }
+    const res = await sumParentGross(admin, linked);
+    grossByRow.set(r.id as string, res.ok ? { gross: res.gross, error: null } : { gross: null, error: res.error });
+  }
 
   const now = Date.now();
   const rows: PendingDocRow[] = (
@@ -45,6 +67,8 @@ export default async function DocumentsPage() {
       payload: r.payload as Record<string, unknown>,
       last_error: (r.last_error as string | null) ?? null,
       attempts: (r.attempts as number | null) ?? 0,
+      parent_gross: grossByRow.get(r.id as string)?.gross ?? null,
+      parent_gross_error: grossByRow.get(r.id as string)?.error ?? null,
     };
   });
 
