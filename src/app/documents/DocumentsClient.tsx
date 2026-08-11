@@ -804,11 +804,20 @@ export default function DocumentsClient({
               <div className="border-t border-[var(--rule)] pt-3 mb-3">
                 <div className="text-xs font-bold mb-2">פרטי התקבול</div>
                 {grossUnknown ? (
-                  <div className="text-[11px] text-[var(--warn)] border border-[var(--warn)] rounded-xl px-3 py-2 leading-relaxed">
-                    {confirming.parent_gross_error ??
-                      "מסמך המקור טרם נמשך ממורנינג ולכן סכום המסמך אינו ידוע."}{" "}
-                    אפשר להנפיק אחרי הסנכרון הבא.
-                  </div>
+                  /* The server's own sentence, or nothing. The default that used
+                     to sit here guessed "the source document has not been pulled
+                     from Morning yet" — and said it about a document that HAD
+                     been pulled, whose raw held the amount, because the gross was
+                     never read for a 305 row at all. A guessed diagnosis sends
+                     the bookkeeper to wait for a sync that will not change a
+                     thing. The trailing "issue after the next sync" went with it
+                     for the same reason: the real errors already say what to do,
+                     and for a parentless row a sync is not the answer. */
+                  confirming.parent_gross_error ? (
+                    <div className="text-[11px] text-[var(--warn)] border border-[var(--warn)] rounded-xl px-3 py-2 leading-relaxed">
+                      {confirming.parent_gross_error}
+                    </div>
+                  ) : null
                 ) : (
                   <div className="space-y-2">
                     <label className="block">

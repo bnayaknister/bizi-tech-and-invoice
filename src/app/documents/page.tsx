@@ -30,11 +30,25 @@ export default async function DocumentsPage() {
   // through the SAME helper the approval gate uses — the modal must not show a
   // figure the server would then reject.
   //
-  // Only for rows that need it, and one read each: this queue holds pending and
-  // failed rows only, and payment-bearing ones are the rare case.
+  // Read for every row that COULD need it at approval, which is not the same as
+  // every row that needs it as stored. A tax row is always queued as 305
+  // (DEFAULT_TAX_VARIANT — this app creates nothing else), and the bookkeeper
+  // flips it to 320 in the modal. Keying this off the STORED type meant the
+  // gross was never read for the one path that ends up needing it: choosing 320
+  // left parent_gross null, the modal called that "the parent has not been
+  // pulled yet" — about a parent that had been pulled, whose raw carried the
+  // amount all along — and disabled the issue button. No 320 could be approved
+  // at all. Same defect family as the description label: a value derived from
+  // what the row IS instead of from what it is about to BECOME.
+  //
+  // One read each, and this queue holds pending/failed rows only, so widening
+  // it costs a handful of lookups.
+  const mayCarryPayment = (docType: PendingDocType): boolean =>
+    requiresPayment(DOC_TYPE_TO_MORNING_CODE[docType]) || docType === "tax_invoice";
+
   const grossByRow = new Map<string, { gross: number | null; error: string | null }>();
   for (const r of (data ?? []) as unknown as Array<Record<string, unknown>>) {
-    if (!requiresPayment(DOC_TYPE_TO_MORNING_CODE[r.doc_type as PendingDocType])) continue;
+    if (!mayCarryPayment(r.doc_type as PendingDocType)) continue;
     const payload = (r.payload ?? {}) as { linkedDocumentIds?: string[] };
     const linked = Array.isArray(payload.linkedDocumentIds) ? payload.linkedDocumentIds : [];
     if (!linked.length) {
