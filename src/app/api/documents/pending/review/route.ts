@@ -18,6 +18,7 @@ import {
   resolveDefaultRecipients,
   sanitizeRecipients,
 } from "@/lib/documents/recipients";
+import { sumParentGross } from "@/lib/documents/parentGross";
 
 // Approve / reject queued documents. Approving is what makes a document
 // real, so this route is the last gate before Morning.
@@ -387,36 +388,12 @@ async function checkPaymentShape(
     };
   }
 
-  const { data: parents } = await admin
-    .from("documents")
-    .select("morning_doc_id,morning_doc_number,raw")
-    .in("morning_doc_id", linkedIds);
-  const byId = new Map(
-    ((parents ?? []) as { morning_doc_id: string; morning_doc_number: string | null; raw: unknown }[]).map((d) => [
-      d.morning_doc_id,
-      d,
-    ])
-  );
-
-  let gross = 0;
-  for (const id of linkedIds) {
-    const parent = byId.get(id);
-    const raw = parent?.raw;
-    const value =
-      raw && typeof raw === "object" ? (raw as Record<string, unknown>).amount : undefined;
-    const amount = value === null || value === undefined ? NaN : Number(value);
-    if (!Number.isFinite(amount)) {
-      // the parent exists in Morning but our copy of it predates the nightly
-      // pull, so the gross it computed has not reached us yet
-      const label = parent?.morning_doc_number ? `#${parent.morning_doc_number}` : id;
-      return {
-        ok: false,
-        status: 409,
-        error: `${label}: מסמך המקור טרם נמשך ממורנינג ואין לנו את הסכום שחושב בו. נסי אחרי הסנכרון הבא.`,
-      };
-    }
-    gross += amount;
-  }
+  // Same read the queue screen uses to prefill the amount — see parentGross.ts.
+  // One implementation on purpose: a modal showing one figure while the server
+  // enforced another would be worse than no prefill at all.
+  const parents = await sumParentGross(admin, linkedIds);
+  if (!parents.ok) return { ok: false, status: 409, error: parents.error };
+  const gross = parents.gross;
 
   const paid = paymentRows.reduce((sum, p) => sum + Number(p.amount), 0);
   if (Math.abs(paid - gross) > AMOUNT_EPSILON) {
