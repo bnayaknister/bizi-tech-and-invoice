@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { getSessionAndProfile } from "@/lib/profile";
-import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createTypedClient } from "@/lib/supabase/server";
+import { createTypedAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import ShowsClient, { type EpisodeRow, type ShowRow, type ContractOption } from "./ShowsClient";
 import { mustRows, type QueryResult } from "@/lib/supabase/unwrap";
@@ -14,7 +14,7 @@ export default async function ShowsPage() {
   if (!profile?.approved) redirect("/pending");
   if (!profile.can_view_stages && !profile.can_view_money) redirect("/");
 
-  const supabase = createClient();
+  const supabase = createTypedClient();
   const canViewMoney = profile.can_view_money;
 
   // default_rate's SELECT privilege is revoked from the authenticated role
@@ -26,13 +26,14 @@ export default async function ShowsPage() {
   // them. They are readable only because 0055 added them to the column-explicit
   // grant 0022 introduced — a new shows column is invisible to `authenticated`
   // until it is named in a grant.
-  // annotated `string` on purpose: supabase-js parses a select() literal into
-  // a row type, and a ternary of two lists this long makes tsc give up with
-  // "union type that is too complex to represent". The rows are re-shaped by
-  // hand into ShowRow below anyway, so the inferred type buys nothing here.
-  const showColumns: string = canViewMoney
-    ? "id,name,client_id,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count"
-    : "id,name,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count";
+  // שתי קריאות שלמות ולא select(‎טרנרי של שני ליטרלים): ליטרל בודד בתוך
+  // select() נבדק מול הסכמה ונותן טיפוס שורה מדויק; טרנרי הופך את הארגומנט
+  // ליוניון, וסופאבייס מוותר בשקט על הבדיקה (או ש-tsc נופל על
+  // "union type too complex"). כל ענף כאן הוא קריאה מלאה עם ליטרל אחד —
+  // עמודה שגויה בכל אחד מהם היא כשל build, לא 400 בזמן ריצה.
+  const showsRes = canViewMoney
+    ? await supabase.from("shows").select("id,name,client_id,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count").order("name")
+    : await supabase.from("shows").select("id,name,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count").order("name");
 
   // mustRows, not `?? []`: these three ARE the screen. A failure here used to
   // render "0 פעילות · 0 חד־פעמיות" with a clean console — see lib/supabase/
@@ -40,8 +41,7 @@ export default async function ShowsPage() {
   // stack in the terminal, which is what a shows page that cannot read shows
   // should do. (The contracts panel below is the deliberate exception: it is
   // one panel, so it degrades in place instead of taking the page down.)
-  const [showsRes, productionsRes, clientsRes] = await Promise.all([
-    supabase.from("shows").select(showColumns).order("name"),
+  const [productionsRes, clientsRes] = await Promise.all([
     supabase
       .from("productions")
       .select("id,show_id,record_date,status,guest,legacy")
@@ -50,7 +50,10 @@ export default async function ShowsPage() {
       ? supabase.from("clients").select("id,name,morning_client_id").order("name")
       : Promise.resolve({ data: [], error: null }),
   ]);
-  const shows = mustRows(showsRes as QueryResult<Record<string, unknown>[]>, "טעינת התוכניות");
+  // בלי קאסט, בכוונה: הקאסט מחק את SelectQueryError — הטיפוס שסופאבייס מחזיר
+  // כששם עמודה ב-select שגוי, ושמתפוצץ רק בגישה לשדה — ולכן עמודה מומצאת
+  // עברה כאן בשקט עד היום. בשתי הקריאות הבאות הקאסט עדיין קיים; להסיר גם שם.
+  const shows = mustRows(showsRes, "טעינת התוכניות");
   const productions = mustRows(
     productionsRes as QueryResult<{ id: string; show_id: string | null; record_date: string | null; status: string; guest: string | null; legacy: boolean }[]>,
     "טעינת ההפקות למסך התוכניות"
@@ -67,7 +70,7 @@ export default async function ShowsPage() {
   const contracts: ContractOption[] = [];
   let contractsError: string | null = null;
   if (canViewMoney) {
-    const admin = createAdminClient();
+    const admin = createTypedAdminClient();
     const { data: rateRows } = await admin.from("shows").select("id,default_rate");
     for (const r of rateRows ?? []) rateByShow[r.id as string] = (r.default_rate as number) ?? null;
 
@@ -140,7 +143,7 @@ export default async function ShowsPage() {
   const rows: ShowRow[] = shows.map((s) => ({
     id: s.id as string,
     name: s.name as string,
-    client_id: (s.client_id as string) ?? null,
+    client_id: canViewMoney && "client_id" in s && typeof s.client_id === "string" ? s.client_id : null,
     aliases: (s.aliases as string[]) ?? [],
     default_rate: canViewMoney ? (rateByShow[s.id as string] ?? null) : null,
     default_studio: (s.default_studio as string) ?? null,
@@ -179,7 +182,7 @@ export default async function ShowsPage() {
   // staff for the "עורך קבוע" picker in the new-show modal — names are
   // team-visible by design (same as the productions board), fetched via the
   // service role since profiles RLS is manager-only
-  const { data: staffRows } = await createAdminClient().from("profiles").select("id,name,email").order("name");
+  const { data: staffRows } = await createTypedAdminClient().from("profiles").select("id,name,email").order("name");
   const staff = (staffRows ?? []).map((p) => ({ id: p.id as string, name: (p.name as string) || (p.email as string) || "—" }));
 
   return (
@@ -203,3 +206,4 @@ export default async function ShowsPage() {
     </div>
   );
 }
+
