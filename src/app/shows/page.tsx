@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import ShowsClient, { type EpisodeRow, type ShowRow, type ContractOption } from "./ShowsClient";
+import { mustRows, type QueryResult } from "@/lib/supabase/unwrap";
 
 export const dynamic = "force-dynamic";
 
@@ -33,14 +34,28 @@ export default async function ShowsPage() {
     ? "id,name,client_id,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count"
     : "id,name,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count";
 
-  const [{ data: shows }, { data: productions }, { data: clients }] = await Promise.all([
+  // mustRows, not `?? []`: these three ARE the screen. A failure here used to
+  // render "0 פעילות · 0 חד־פעמיות" with a clean console — see lib/supabase/
+  // unwrap.ts. Throwing surfaces Next's error overlay in dev and a 500 with a
+  // stack in the terminal, which is what a shows page that cannot read shows
+  // should do. (The contracts panel below is the deliberate exception: it is
+  // one panel, so it degrades in place instead of taking the page down.)
+  const [showsRes, productionsRes, clientsRes] = await Promise.all([
     supabase.from("shows").select(showColumns).order("name"),
     supabase
       .from("productions")
       .select("id,show_id,record_date,status,guest,legacy")
       .order("record_date", { ascending: false }),
-    canViewMoney ? supabase.from("clients").select("id,name,morning_client_id").order("name") : Promise.resolve({ data: [] }),
+    canViewMoney
+      ? supabase.from("clients").select("id,name,morning_client_id").order("name")
+      : Promise.resolve({ data: [], error: null }),
   ]);
+  const shows = mustRows(showsRes as QueryResult<Record<string, unknown>[]>, "טעינת התוכניות");
+  const productions = mustRows(
+    productionsRes as QueryResult<{ id: string; show_id: string | null; record_date: string | null; status: string; guest: string | null; legacy: boolean }[]>,
+    "טעינת ההפקות למסך התוכניות"
+  );
+  const clients = mustRows(clientsRes as QueryResult<{ id: string; name: string; morning_client_id?: string | null }[]>, "טעינת הלקוחות");
 
   // default_rate via the service role, money-gated — the one money column
   // that lives on an otherwise stages-readable table (0021)
@@ -97,7 +112,7 @@ export default async function ShowsPage() {
       supabase.from("job_productions").select("job_id,production_id"),
     ]);
     const showByProduction: Record<string, string> = {};
-    for (const p of productions ?? []) {
+    for (const p of productions) {
       if (p.show_id) showByProduction[p.id] = p.show_id;
     }
     const amountByJob: Record<string, number> = {};
@@ -118,11 +133,11 @@ export default async function ShowsPage() {
   }
 
   const episodeCounts: Record<string, number> = {};
-  for (const p of productions ?? []) {
+  for (const p of productions) {
     if (p.show_id) episodeCounts[p.show_id] = (episodeCounts[p.show_id] ?? 0) + 1;
   }
 
-  const rows: ShowRow[] = ((shows ?? []) as unknown as Record<string, unknown>[]).map((s) => ({
+  const rows: ShowRow[] = shows.map((s) => ({
     id: s.id as string,
     name: s.name as string,
     client_id: (s.client_id as string) ?? null,
@@ -141,7 +156,7 @@ export default async function ShowsPage() {
     revenue: canViewMoney ? (revenueByShow[s.id as string] ?? 0) : null,
   }));
 
-  const episodes: EpisodeRow[] = (productions ?? [])
+  const episodes: EpisodeRow[] = productions
     .filter((p) => p.show_id)
     .map((p) => ({
       id: p.id,
@@ -174,7 +189,7 @@ export default async function ShowsPage() {
         <ShowsClient
           shows={rows}
           episodes={episodes}
-          clients={clients ?? []}
+          clients={clients}
           canViewMoney={canViewMoney}
           canEditMoney={profile.can_edit_money}
           canEditStages={profile.can_edit_stages}

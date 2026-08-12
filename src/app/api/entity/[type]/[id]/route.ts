@@ -11,6 +11,7 @@ import {
   selectColumns,
   type EntityType,
 } from "@/lib/entities";
+import { must, SupabaseReadError, type QueryResult } from "@/lib/supabase/unwrap";
 
 // EntityDrawer backend. Everything flows through the user's own client so
 // RLS and the 0010 column-guard triggers are the real gates; the field
@@ -22,7 +23,25 @@ function parseType(type: string): EntityType | null {
   return (ENTITY_TYPES as string[]).includes(type) ? (type as EntityType) : null;
 }
 
+// A read that fails must reach the caller as a failure. Without this the
+// SupabaseReadError below would surface as a bare 500 with no message; with
+// it, the drawer shows which read broke and why (see lib/supabase/unwrap.ts).
 export async function GET(
+  request: Request,
+  ctx: { params: { type: string; id: string } }
+) {
+  try {
+    return await handleGet(request, ctx);
+  } catch (e) {
+    if (e instanceof SupabaseReadError) {
+      console.error("[entity]", e);
+      return NextResponse.json({ error: e.message }, { status: 500 });
+    }
+    throw e;
+  }
+}
+
+async function handleGet(
   _request: Request,
   { params }: { params: { type: string; id: string } }
 ) {
@@ -81,11 +100,20 @@ export async function GET(
 
     // per-track client-review state (the corrections notes render inside the
     // matching workflow block in the drawer, not in a generic field)
-    const { data: r } = await supabase
-      .from("productions")
-      .select("review_episode_approved,review_reels_approved,review_reels_required,review_episode_note,review_reels_note,reels_count")
-      .eq("id", params.id)
-      .maybeSingle();
+    // must, not a bare destructure: a failure here used to drop the whole
+    // client-review block and the reels tally out of the drawer with no sign
+    // that anything had gone wrong — the technician just saw a production
+    // that looked like it had never been sent for approval.
+    const r = must<Record<string, unknown>>(
+      (await supabase
+        .from("productions")
+        .select(
+          "review_episode_approved,review_reels_approved,review_reels_required,review_episode_note,review_reels_note,reels_count"
+        )
+        .eq("id", params.id)
+        .maybeSingle()) as QueryResult<Record<string, unknown>>,
+      "טעינת מצב אישור הלקוח של ההפקה"
+    );
     if (r) {
       review = {
         episode_approved: !!r.review_episode_approved,

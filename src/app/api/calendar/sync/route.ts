@@ -5,6 +5,7 @@ import { fetchAndParseIcs, parseIcsText, type CalendarEvent } from "@/lib/calend
 import { buildSyncPlan, type ExistingProductionRow } from "@/lib/calendar/sync";
 import { extractGuestFromTitle, type ShowForMatch } from "@/lib/calendar/match";
 import { enqueueDocument } from "@/lib/documents/enqueue";
+import { mustRows, type QueryResult } from "@/lib/supabase/unwrap";
 
 // Google Calendar sync (screens-spec §11, owner rules 2026-07-16/17):
 //   GET  — Vercel Cron trigger. Authorizes via CRON_SECRET, always reads
@@ -148,10 +149,18 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
     events = events.filter((e) => !e.uid || !cancelledUids.has(e.uid));
   }
 
-  const { data: shows } = await admin
-    .from("shows")
-    .select("id,name,aliases,client_id,billing_mode,default_studio,camera_count,default_editor_id,active,has_episode,reels_count");
-  const showRows = (shows ?? []) as ShowRow[];
+  // mustRows, not `?? []`. An empty list here is indistinguishable from "no
+  // show matched anything": every calendar event would fail to match, the run
+  // would create nothing, and it would report success. This job runs unattended
+  // at 06:00 — a silent no-op day is the worst possible failure mode for it.
+  const showRows = mustRows<ShowRow>(
+    (await admin
+      .from("shows")
+      .select(
+        "id,name,aliases,client_id,billing_mode,default_studio,camera_count,default_editor_id,active,has_episode,reels_count"
+      )) as QueryResult<ShowRow[]>,
+    "טעינת התוכניות לסנכרון היומן"
+  );
 
   // active contract per show (0056) — one query for the whole run. The partial
   // unique index guarantees at most one active contract per show, so this Map
