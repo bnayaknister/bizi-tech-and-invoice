@@ -1,6 +1,7 @@
 import { randomBytes } from "crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { enqueueDocument, getClientCadence, type ProductionForBilling } from "@/lib/documents/enqueue";
+import { bumpReelsCountForAddons } from "@/lib/production/reels";
 
 // Client review links (screens-spec §9a). Server-only — every function here
 // runs with the service-role client, since the public page and the response
@@ -224,16 +225,26 @@ export async function applyResponse(
   // note 2026-07-21). A rejected line is recorded, never billed; only priced,
   // still-proposed lines are touched — an already-decided line is immutable.
   if (approvedAll && resp.addons) {
+    const justApproved: string[] = [];
     for (const [addonId, decision] of Object.entries(resp.addons)) {
       if (decision !== "approved" && decision !== "rejected") continue;
-      await admin
+      const { data: touched } = await admin
         .from("production_addons")
         .update({ status: decision, approved_via: "link" })
         .eq("id", addonId)
         .eq("production_id", production.id)
         .eq("status", "proposed")
-        .not("unit_price", "is", null);
+        .not("unit_price", "is", null)
+        .select("id")
+        .maybeSingle();
+      if (touched && decision === "approved") justApproved.push(addonId);
     }
+    // A reels add-on the client just bought raises the production's
+    // reels_count — the tally's only source since 0055. Only lines this call
+    // actually flipped are counted, so a replayed response can't inflate it.
+    // Runs before the status patch below, so the count is already right by the
+    // time on_production_approved fires.
+    await bumpReelsCountForAddons(admin, production.id, justApproved);
   }
 
   const { error: prodErr } = await admin.from("productions").update(patch).eq("id", production.id);

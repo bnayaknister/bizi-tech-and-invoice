@@ -45,7 +45,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const { data: original, error: origErr } = await supabase
     .from("productions")
     .select(
-      "id,podcast_name,show_id,client_id,kind,contract_id,record_date,record_time,studio,camera_count,calendar_uid,split_count"
+      "id,podcast_name,show_id,client_id,kind,contract_id,record_date,record_time,studio,camera_count,calendar_uid,split_count,has_episode,reels_count"
     )
     .eq("id", params.id)
     .maybeSingle();
@@ -70,6 +70,10 @@ export async function POST(request: Request, { params }: { params: { id: string 
     record_time: original.record_time,
     studio: original.studio,
     camera_count: original.camera_count,
+    // a split sibling is the same session: it inherits the composition from
+    // the original production, not from the show (which may have moved on)
+    has_episode: original.has_episode,
+    reels_count: original.reels_count,
     calendar_uid: uid,
     split_index: i + 2,
     split_count: count,

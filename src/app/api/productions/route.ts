@@ -57,7 +57,7 @@ export async function POST(request: Request) {
   // money columns, exactly as the calendar sync does
   const { data: show } = await admin
     .from("shows")
-    .select("id,name,client_id,billing_mode,default_studio,camera_count,default_editor_id")
+    .select("id,name,client_id,billing_mode,default_studio,camera_count,default_editor_id,has_episode,reels_count")
     .eq("id", showId)
     .maybeSingle();
   if (!show) return NextResponse.json({ error: "התוכנית לא נמצאה" }, { status: 404 });
@@ -70,6 +70,27 @@ export async function POST(request: Request) {
       ? "client"
       : "internal";
 
+  // the show's active contract, if it has one (0056) — attribution, not a
+  // charge; see the same note in the sync's create branch
+  let contractId: string | null = null;
+  if (show.billing_mode === "contract") {
+    const { data: c, error: cErr } = await createAdminClient()
+      .from("contracts")
+      .select("id")
+      .eq("show_id", show.id)
+      .eq("status", "active")
+      .maybeSingle();
+    // a failed lookup must not read as "no contract" — that would create the
+    // production with contract_id=null and blame the configuration for it
+    if (cErr) {
+      return NextResponse.json(
+        { error: `קריאת החוזה של התוכנית נכשלה: ${cErr.message} (${cErr.code ?? "?"})` },
+        { status: 500 }
+      );
+    }
+    contractId = (c?.id as string) ?? null;
+  }
+
   const { data: inserted, error } = await supabase
     .from("productions")
     .insert({
@@ -77,11 +98,17 @@ export async function POST(request: Request) {
       show_id: show.id,
       client_id: show.client_id,
       kind,
+      contract_id: contractId,
       record_date: recordDate,
       record_time: body.record_time?.trim() || null,
       guest: body.guest?.trim() || null,
       studio: body.studio?.trim() || show.default_studio || null,
       camera_count: show.camera_count,
+      // deliverables composition, copied show -> production (0055) — the
+      // sync's create branch does the identical copy, which is what keeps a
+      // hand-made production indistinguishable from a synced one downstream
+      has_episode: show.has_episode,
+      reels_count: show.reels_count,
       notes: body.notes?.trim() || null,
       calendar_uid: null,
       legacy: false,

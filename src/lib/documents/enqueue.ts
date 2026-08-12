@@ -54,6 +54,16 @@ export type ClientForBilling = {
   morning_client_id: string | null;
 };
 
+// The active contract of a contract-billed show (0056). Fetched by
+// enqueueDocument and passed in, so checkEligibility stays a pure function of
+// its arguments — it is the one piece of billing logic that is testable
+// without a database, and that is worth keeping.
+export type ContractForBilling = {
+  id: string;
+  name: string | null;
+  milestoneCount: number;
+};
+
 // A client's billing_cadence is the DEFAULT rhythm (owner spec 2026-07-28):
 // per_episode issues normally; monthly / every_n freeze the chain — the work
 // order is queued 'accrued' (owed, not issued) and the deal invoice is not
@@ -86,7 +96,8 @@ export async function getClientCadence(
 export function checkEligibility(
   production: ProductionForBilling,
   show: ShowForBilling | null,
-  client: ClientForBilling | null
+  client: ClientForBilling | null,
+  contract: ContractForBilling | null = null
 ): Eligibility {
   // ---- not applicable: no document is owed, and that's correct ----
   if (production.legacy) return { ok: false, applicable: false, reason: "הפקה היסטורית (legacy)" };
@@ -98,14 +109,34 @@ export function checkEligibility(
   }
   // ---- applicable but blocked: a client production that SHOULD bill ----
   if (!show) return { ok: false, applicable: true, reason: "להפקה אין תוכנית משויכת" };
-  // A contract show bills from its milestones, never per episode. Without this
-  // it fell through to the per-episode path below and would have invoiced
-  // default_rate — harmless while billing_mode was reachable only from the CSV
-  // import, live the moment the show card got a selector for it (2026-07-30).
-  // applicable:true on purpose: a contract production reaching the per-episode
-  // queue is a misconfiguration a human must see, not correct silence.
+  // A contract show bills from its milestones, never per episode. Until 0056
+  // every such production returned applicable:true — a 🟡 on the radar — which
+  // made 'contract' unusable in practice and is why the Ofer Golan show was
+  // silenced with billing_mode='none' + kind='internal' instead: three manual
+  // workarounds standing in for one declaration.
+  //
+  // The split below keeps the 0024 rule intact — silence must be documented,
+  // never merely quiet. A contract show is correct silence ONLY when there is
+  // a contract that can actually pay: linked, and carrying at least one
+  // milestone. The issue route builds its job from a milestone, so a contract
+  // with none cannot produce a single shekel — that is exactly the Ofer Golan
+  // failure, and it stays loud instead of turning into a second silent hole.
   if (show.billing_mode === "contract") {
-    return { ok: false, applicable: true, reason: "התוכנית מחויבת לפי חוזה — החיוב מגיע מאבן דרך" };
+    if (!contract) {
+      return {
+        ok: false,
+        applicable: true,
+        reason: "התוכנית מסומנת כמחויבת בחוזה, אך לא מקושר אליה חוזה פעיל",
+      };
+    }
+    if (contract.milestoneCount === 0) {
+      return {
+        ok: false,
+        applicable: true,
+        reason: `לחוזה '${contract.name ?? ""}' אין אבני דרך — אי אפשר להנפיק ממנו`,
+      };
+    }
+    return { ok: false, applicable: false, reason: "התוכנית מחויבת לפי חוזה — החיוב מגיע מאבן דרך" };
   }
   if (!show.client_id) return { ok: false, applicable: true, reason: "לתוכנית אין לקוח משויך" };
   if (!client) return { ok: false, applicable: true, reason: "הלקוח של התוכנית לא נמצא" };
@@ -217,7 +248,32 @@ export async function enqueueDocument(
         .maybeSingle()
     : { data: null };
 
-  const elig = checkEligibility(production, show as ShowForBilling | null, client as ClientForBilling | null);
+  // The contract is only ever needed for a contract-billed show, so this costs
+  // one extra round trip on exactly the shows that need it and none otherwise.
+  // The embedded count is one query, not two (verified against PostgREST).
+  let contract: ContractForBilling | null = null;
+  if ((show as ShowForBilling | null)?.billing_mode === "contract" && production.show_id) {
+    const { data: c, error: cErr } = await admin
+      .from("contracts")
+      .select("id,name,contract_milestones(count)")
+      .eq("show_id", production.show_id)
+      .eq("status", "active")
+      .maybeSingle();
+    // Do not swallow. A failed lookup here would silently read as "no contract
+    // linked" and fire a 🟡 that blames the configuration for a query fault.
+    if (cErr) return { status: "error", error: `קריאת החוזה של התוכנית נכשלה: ${cErr.message}` };
+    if (c) {
+      const embedded = (c as { contract_milestones?: { count: number }[] }).contract_milestones;
+      contract = { id: c.id as string, name: (c.name as string) ?? null, milestoneCount: embedded?.[0]?.count ?? 0 };
+    }
+  }
+
+  const elig = checkEligibility(
+    production,
+    show as ShowForBilling | null,
+    client as ClientForBilling | null,
+    contract
+  );
   if (!elig.ok) {
     if (elig.applicable) {
       // a client production that should bill but can't — flag it (🟡 radar)

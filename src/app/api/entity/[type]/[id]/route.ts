@@ -69,7 +69,7 @@ export async function GET(
     episode_approved: boolean; reels_approved: boolean; reels_required: boolean;
     episode_note: string | null; reels_note: string | null;
   } | null = null;
-  let reelsSummary: { base: number; extra: number; total: number } | null = null;
+  let reelsSummary: { count: number } | null = null;
   if (type === "production" && profile.can_view_stages) {
     const { data } = await supabase
       .from("stages")
@@ -83,7 +83,7 @@ export async function GET(
     // matching workflow block in the drawer, not in a generic field)
     const { data: r } = await supabase
       .from("productions")
-      .select("review_episode_approved,review_reels_approved,review_reels_required,review_episode_note,review_reels_note")
+      .select("review_episode_approved,review_reels_approved,review_reels_required,review_episode_note,review_reels_note,reels_count")
       .eq("id", params.id)
       .maybeSingle();
     if (r) {
@@ -94,22 +94,14 @@ export async function GET(
         episode_note: (r.review_episode_note as string) ?? null,
         reels_note: (r.review_reels_note as string) ?? null,
       };
+      // reels tally — one number, straight off the production (0055). This
+      // reverses 0036, which made the add-on lines the counter because there
+      // was no plan number to count from; now there is. reels_count is the
+      // TOTAL planned for this production: it starts as the show's figure and
+      // an approved reels add-on raises it, so nothing has to be summed here.
+      // production_addons stays the money record, not the tally.
+      reelsSummary = { count: Number(r.reels_count) || 0 };
     }
-
-    // reels tally = 2 standard + extra reels bought via add-ons. Add-ons stay
-    // the single source of truth (owner decision 2026-07-22: no reels_count
-    // column to drift) — this is a display roll-up over the still-live
-    // (proposed/approved) add-on lines explicitly flagged is_reels_addon
-    // (migration 0036), not a fragile title match.
-    const REELS_BASE = 2;
-    const { data: addons } = await supabase
-      .from("production_addons")
-      .select("quantity,status,is_reels_addon")
-      .eq("production_id", params.id)
-      .eq("is_reels_addon", true)
-      .in("status", ["proposed", "approved"]);
-    const extra = (addons ?? []).reduce((s, a) => s + (Number(a.quantity) || 0), 0);
-    reelsSummary = { base: REELS_BASE, extra, total: REELS_BASE + extra };
   }
 
   // production journal (§3, owner 2026-07-24) + disk autocomplete (§2). Both

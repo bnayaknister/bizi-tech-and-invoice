@@ -126,6 +126,8 @@ type ShowRow = {
   camera_count: number | null;
   default_editor_id: string | null;
   active: boolean;
+  has_episode: boolean;
+  reels_count: number;
 };
 
 async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
@@ -148,8 +150,36 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
 
   const { data: shows } = await admin
     .from("shows")
-    .select("id,name,aliases,client_id,billing_mode,default_studio,camera_count,default_editor_id,active");
+    .select("id,name,aliases,client_id,billing_mode,default_studio,camera_count,default_editor_id,active,has_episode,reels_count");
   const showRows = (shows ?? []) as ShowRow[];
+
+  // active contract per show (0056) — one query for the whole run. The partial
+  // unique index guarantees at most one active contract per show, so this Map
+  // can never be ambiguous. A contract-billed show with no linked contract is
+  // left null here and surfaces as a 🟡 through checkEligibility, not silently.
+  // Skipped entirely when no ACTIVE show bills by contract — this run has no
+  // contract to attribute anything to, so the query buys nothing. It also
+  // keeps the 06:00 cron alive in the window between deploying this code and
+  // applying 0056, since the only query that needs the new column never fires.
+  const contractByShow = new Map<string, string>();
+  if (showRows.some((s) => s.active && s.billing_mode === "contract")) {
+    const { data: contractRows, error: contractsErr } = await admin
+      .from("contracts")
+      .select("id,show_id")
+      .eq("status", "active")
+      .not("show_id", "is", null);
+    // Throw rather than fall through with an empty Map: empty is
+    // indistinguishable from "no show has a contract", and every production
+    // this run creates would be written with contract_id=null — wrong data,
+    // silently, in a job that runs unattended.
+    if (contractsErr) {
+      throw new Error(
+        `טעינת החוזים נכשלה: ${contractsErr.message} (${contractsErr.code ?? "?"}). ` +
+          `אם contracts.show_id חסרה — מיגרציה 0056 טרם הורצה.`
+      );
+    }
+    for (const c of contractRows ?? []) contractByShow.set(c.show_id as string, c.id as string);
+  }
   // only active shows open the gate — an archived/retired show's old alias
   // shouldn't start pulling in new recordings again
   const showsForMatch: ShowForMatch[] = showRows
@@ -226,6 +256,14 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
         show_id: show.id,
         client_id: show.client_id,
         kind,
+        // which contract this session belongs to (0056). This is an
+        // ATTRIBUTION, not a charge: on_production_approved only creates a job
+        // when kind='client', and a contract show's productions are
+        // kind='contract'. The money still comes from milestones alone. What
+        // it buys is the per-contract delivery picture ("7 episodes in the
+        // contract, 4 recorded") and, in the switched-show case, a job that
+        // already carries its contract.
+        contract_id: contractByShow.get(show.id) ?? null,
         record_date: recordDate,
         record_time: action.event.start ? israelTimeHHMM(action.event.start) : null,
         guest: extractGuestFromTitle(action.event.title, action.alias),
@@ -233,6 +271,13 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
         // camera_count has no such override, it's a straight copy
         studio: action.event.location || show.default_studio || null,
         camera_count: show.camera_count,
+        // deliverables composition, copied show -> production (0055). Same
+        // template semantics as camera_count and default_rate (0032): editing
+        // the show affects NEW productions only, never retroactively. The
+        // create_default_stages trigger reads these off the inserted row to
+        // decide which stage lines to seed.
+        has_episode: show.has_episode,
+        reels_count: show.reels_count,
         calendar_uid: action.event.uid,
         calendar_synced_at: new Date().toISOString(),
         legacy: false,

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getSessionAndProfile } from "@/lib/profile";
+import { bumpReelsCountForAddons } from "@/lib/production/reels";
 
 // Session add-ons / upsells (owner spec 2026-07-21). Server-only: the
 // price columns are revoked from the shared authenticated role (0031), so
@@ -206,6 +207,9 @@ export async function POST(request: Request, { params }: { params: { id: string 
       if (error) return NextResponse.json({ error: error.message }, { status: 400 });
       if (!data) return NextResponse.json({ error: "התוספת לא נמצאה" }, { status: 404 });
       await logEvent(status === "approved" ? "addon_approved" : "addon_rejected", { addon_id: body.addon_id, via: "manual" });
+      // an approved reels add-on raises the production's reels_count, which is
+      // the tally's only source since 0055 — see lib/production/reels.ts
+      if (status === "approved") await bumpReelsCountForAddons(admin, params.id, [body.addon_id]);
       return NextResponse.json({ ok: true });
     }
 

@@ -20,8 +20,31 @@ export type ShowRow = {
   is_oneoff: boolean;
   color: string | null;
   billing_mode: string;
+  // deliverables composition (0055) — what the production chain produces
+  has_episode: boolean;
+  reels_count: number;
   episodes: number;
   revenue: number | null; // null when the viewer lacks can_view_money
+};
+
+// one-line composition label, e.g. "פרק + 5 רילז" / "רילז בלבד ×5" / "פרק בלבד"
+export function compositionLabel(hasEpisode: boolean, reelsCount: number): string {
+  if (hasEpisode && reelsCount > 0) return `פרק + ${reelsCount} רילז`;
+  if (hasEpisode) return "פרק בלבד";
+  if (reelsCount > 0) return `רילז בלבד ×${reelsCount}`;
+  return "—";
+}
+
+// an active contract, for the "מחויבת בחוזה" picker (0056). milestone_count
+// rides along because a contract with none cannot issue a shekel — the issue
+// route builds its job from a milestone — and the card must say so.
+export type ContractOption = {
+  id: string;
+  name: string;
+  client_id: string | null;
+  show_id: string | null;
+  total_amount: number | null;
+  milestone_count: number;
 };
 
 export type EpisodeRow = {
@@ -51,6 +74,8 @@ export default function ShowsClient({
   canManageUsers,
   pendingShowIds,
   staff,
+  contracts: initialContracts,
+  contractsError,
 }: {
   shows: ShowRow[];
   episodes: EpisodeRow[];
@@ -61,10 +86,13 @@ export default function ShowsClient({
   canManageUsers: boolean;
   pendingShowIds: string[];
   staff: { id: string; name: string }[];
+  contracts: ContractOption[];
+  contractsError: string | null;
 }) {
   const router = useRouter();
   const [shows, setShows] = useState(initialShows);
   const [clients, setClients] = useState(initialClients);
+  const [contracts, setContracts] = useState(initialContracts);
   const [tab, setTab] = useState<"active" | "oneoff" | "all">("active");
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
@@ -258,6 +286,14 @@ export default function ShowsClient({
                     />
                     <span className={s.active ? "" : "text-[var(--dim)]"}>{s.name}</span>
                     {s.is_oneoff && <span className="text-[10px] text-[var(--faint)]">חד־פעמית</span>}
+                    {/* composition is only worth a badge when it deviates from
+                        the house standard (episode + 2 reels) — otherwise it
+                        would print on all 105 rows and mean nothing */}
+                    {!(s.has_episode && s.reels_count === 2) && (
+                      <span className="text-[10px] text-[var(--violet-light)] border border-[var(--violet)]/50 rounded-full px-1.5 py-0.5">
+                        {compositionLabel(s.has_episode, s.reels_count)}
+                      </span>
+                    )}
                     {pendingIds.has(s.id) && (
                       <span className="text-[10px] text-[var(--amber)] border border-[var(--amber)] rounded-full px-1.5 py-0.5">
                         ממתין לאישור
@@ -316,6 +352,32 @@ export default function ShowsClient({
           onClientCreated={(c) => setClients((cs) => [...cs, c].sort((a, b) => a.name.localeCompare(b.name, "he")))}
           canManageUsers={canManageUsers}
           isPending={pendingIds.has(open.id)}
+          contracts={contracts}
+          contractsError={contractsError}
+          onLinkContract={async (showId, contractId) => {
+            const res = await fetch(`/api/shows/${showId}/contract`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ contract_id: contractId }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              alert(data.error ?? "צירוף החוזה נכשל");
+              return false;
+            }
+            // one active contract per show: clear the incumbent locally too,
+            // mirroring what the route did in the DB
+            setContracts((cs) =>
+              cs.map((c) =>
+                c.id === contractId
+                  ? { ...c, show_id: showId }
+                  : c.show_id === showId
+                    ? { ...c, show_id: null }
+                    : c
+              )
+            );
+            return true;
+          }}
           onDeleteAsk={(s) => {
             setOpenId(null);
             setDeleteFor(s);
@@ -456,6 +518,9 @@ function ShowCard({
   onClientCreated,
   canManageUsers,
   isPending,
+  contracts,
+  contractsError,
+  onLinkContract,
   onDeleteAsk,
 }: {
   show: ShowRow;
@@ -469,6 +534,9 @@ function ShowCard({
   onClientCreated: (client: Client) => void;
   canManageUsers: boolean;
   isPending: boolean;
+  contracts: ContractOption[];
+  contractsError: string | null;
+  onLinkContract: (showId: string, contractId: string | null) => Promise<boolean>;
   onDeleteAsk: (show: ShowRow) => void;
 }) {
   const perEpisode = show.revenue && episodes.length > 0 ? Math.round(show.revenue / episodes.length) : null;
@@ -592,6 +660,21 @@ function ShowCard({
               </div>
             </div>
           )}
+          {/* ── החוזה שמחייב את התוכנית (0056) ─────────────────────────
+              מופיע רק כשנבחר "לפי חוזה". עד 0056 הבחירה הזו לא רשמה שום
+              דבר — היא רק מחקה את המחיר, ולכן הייתה בלתי-מבחינה מ"פנימית".
+              זו העקיפה שעופר גולן קיבל. */}
+          {canViewMoney && show.billing_mode === "contract" && (
+            <div className="col-span-2">
+              <ContractLink
+                show={show}
+                contracts={contracts}
+                contractsError={contractsError}
+                canEditMoney={canEditMoney}
+                onLink={onLinkContract}
+              />
+            </div>
+          )}
           {canViewMoney && (
             <label className="text-xs">
               <span className="block text-[var(--faint)] mb-1">מחיר לפרק</span>
@@ -657,6 +740,69 @@ function ShowCard({
               className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1.5"
             />
           </label>
+
+          {/* ── הרכב תוצרים (0055) ──────────────────────────────────────
+              What the production chain actually produces. Stage-tier, like
+              camera_count — this is production configuration, not pricing.
+              It is a TEMPLATE: it seeds the stage lines of productions
+              created from here on, and never touches existing ones (same
+              rule as default_rate, 0032). */}
+          <div className="col-span-2 rounded-lg border border-[var(--rule)] p-2.5">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-[var(--faint)]">הרכב תוצרים</span>
+              <span className="text-[10px] text-[var(--violet-light)]">
+                {compositionLabel(show.has_episode, show.reels_count)}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="flex items-center gap-2 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={show.has_episode}
+                  disabled={!canEdit}
+                  onChange={(e) => {
+                    const next = e.target.checked;
+                    if (!next && show.reels_count === 0) {
+                      alert("תוכנית חייבת לכלול פרק מוקלט או לפחות ריל אחד — אחרת היא לא מייצרת שום תוצר");
+                      return;
+                    }
+                    void onSave(show.id, { has_episode: next });
+                  }}
+                />
+                פרק מוקלט
+              </label>
+              <label className="text-xs">
+                <span className="block text-[var(--faint)] mb-1">כמות רילז (0 = אין)</span>
+                <input
+                  key={`reels-${show.reels_count}`}
+                  type="number"
+                  min={0}
+                  defaultValue={show.reels_count}
+                  disabled={!canEdit}
+                  onBlur={(e) => {
+                    const v = e.target.value === "" ? 0 : Number(e.target.value);
+                    if (!Number.isInteger(v) || v < 0) {
+                      alert("כמות הרילז חייבת להיות מספר שלם שאינו שלילי");
+                      e.target.value = String(show.reels_count);
+                      return;
+                    }
+                    if (v === show.reels_count) return;
+                    if (v === 0 && !show.has_episode) {
+                      alert("תוכנית חייבת לכלול פרק מוקלט או לפחות ריל אחד — אחרת היא לא מייצרת שום תוצר");
+                      e.target.value = String(show.reels_count);
+                      return;
+                    }
+                    void onSave(show.id, { reels_count: v });
+                  }}
+                  className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1.5"
+                />
+              </label>
+            </div>
+            <p className="mt-2 text-[10px] text-[var(--faint)] leading-relaxed">
+              חל על הפקות חדשות בלבד. הפקות קיימות שומרות את ההרכב שאיתו נוצרו —
+              השלבים שלהן כבר נזרעו לפיו.
+            </p>
+          </div>
         </div>
 
         <label className="block text-xs mb-5">
@@ -904,6 +1050,123 @@ function DeleteRequestModal({
   );
 }
 
+// The contract that bills a contract-mode show (0056, item G).
+//
+// Three states, and the empty one is the point: a show marked "לפי חוזה" with
+// nothing attached used to be silent, which is exactly how Ofer Golan ended up
+// as a floating contract with zero milestones. Here it is loud, and it is the
+// same condition checkEligibility raises a 🟡 for — the screen and the radar
+// tell the same story.
+//
+// Creating a contract deep-links to /contracts rather than duplicating the
+// milestone editor: that screen already owns contract creation, and a second
+// form would be a guaranteed source of drift.
+function ContractLink({
+  show,
+  contracts,
+  contractsError,
+  canEditMoney,
+  onLink,
+}: {
+  show: ShowRow;
+  contracts: ContractOption[];
+  contractsError: string | null;
+  canEditMoney: boolean;
+  onLink: (showId: string, contractId: string | null) => Promise<boolean>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const linked = contracts.find((c) => c.show_id === show.id) ?? null;
+  // a contract belongs to a client, so only the show's own client's contracts
+  // are offerable — and only ones not already spoken for
+  const available = contracts.filter(
+    (c) => c.client_id && c.client_id === show.client_id && (!c.show_id || c.show_id === show.id)
+  );
+
+  async function pick(id: string | null) {
+    setBusy(true);
+    await onLink(show.id, id);
+    setBusy(false);
+  }
+
+  return (
+    <div className="rounded-lg border border-[var(--rule)] p-2.5">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-[var(--faint)]">חוזה מחייב</span>
+        <Link href="/contracts" className="text-[10px] text-[var(--violet-light)] hover:underline">
+          נהל חוזים ↗
+        </Link>
+      </div>
+
+      {contractsError ? (
+        // the panel says it is broken instead of showing an empty picker that
+        // would read as "this client has no contracts"
+        <div className="text-[11px] text-rose-400 border border-rose-500/40 rounded-lg px-2.5 py-2">
+          {contractsError}
+        </div>
+      ) : !show.client_id ? (
+        <div className="text-[11px] text-amber-400 border border-amber-500/40 rounded-lg px-2.5 py-2">
+          לתוכנית אין לקוח משויך — חוזה שייך ללקוח. שייך לקוח קודם.
+        </div>
+      ) : linked ? (
+        <div className="space-y-1.5">
+          <div className="text-xs">{linked.name}</div>
+          <div className="text-[11px] text-[var(--dim)] font-mono">
+            {linked.total_amount != null ? `${money(linked.total_amount)} לפני מע״מ` : "—"}
+          </div>
+          {linked.milestone_count === 0 ? (
+            <div className="text-[11px] text-amber-400 border border-amber-500/40 rounded-lg px-2.5 py-2">
+              לחוזה אין אבני דרך — אי אפשר להנפיק ממנו שקל. הוסף אבני דרך במסך החוזים.
+            </div>
+          ) : (
+            <div className="text-[11px] text-[var(--dim)]">{linked.milestone_count} אבני דרך</div>
+          )}
+          {canEditMoney && (
+            <button
+              disabled={busy}
+              onClick={() => void pick(null)}
+              className="text-[11px] border border-[var(--rule)] rounded-lg px-2.5 py-1 text-[var(--dim)] hover:bg-[var(--panel3)] disabled:opacity-40"
+            >
+              נתק חוזה
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          <div className="text-[11px] text-amber-400 border border-amber-500/40 rounded-lg px-2.5 py-2">
+            מסומנת כמחויבת בחוזה, אך לא מקושר אליה חוזה — ההפקות שלה יסומנו 🟡 ברדאר.
+          </div>
+          {canEditMoney &&
+            (available.length > 0 ? (
+              <select
+                disabled={busy}
+                defaultValue=""
+                onChange={(e) => {
+                  if (e.target.value) void pick(e.target.value);
+                }}
+                className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1.5 text-xs"
+              >
+                <option value="">— בחר חוזה קיים —</option>
+                {available.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                    {c.milestone_count === 0 ? " (ללא אבני דרך)" : ` (${c.milestone_count} אבני דרך)`}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="text-[11px] text-[var(--faint)]">
+                אין חוזה פעיל פנוי ללקוח הזה.{" "}
+                <Link href="/contracts" className="text-[var(--violet-light)] hover:underline">
+                  צור חוזה חדש ↗
+                </Link>
+              </div>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // "+ תוכנית חדשה" — create a show for a podcast that never came through the
 // import. Operational fields are always editable; money fields (client / rate /
 // billing) show only for a can_view_money viewer, so a stages-only tech creates
@@ -933,6 +1196,10 @@ function NewShowModal({
   const [rate, setRate] = useState("");
   const [studio, setStudio] = useState("");
   const [cameras, setCameras] = useState("");
+  // deliverables composition (0055) — defaults are the house standard, so a
+  // show created without touching them behaves exactly as before
+  const [hasEpisode, setHasEpisode] = useState(true);
+  const [reelsCount, setReelsCount] = useState("2");
   const [editorId, setEditorId] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
@@ -952,6 +1219,15 @@ function NewShowModal({
       setError("שם התוכנית חובה");
       return;
     }
+    const reels = reelsCount.trim() === "" ? 0 : Number(reelsCount);
+    if (!Number.isInteger(reels) || reels < 0) {
+      setError("כמות הרילז חייבת להיות מספר שלם שאינו שלילי");
+      return;
+    }
+    if (!hasEpisode && reels === 0) {
+      setError("תוכנית חייבת לכלול פרק מוקלט או לפחות ריל אחד — אחרת היא לא מייצרת שום תוצר");
+      return;
+    }
     setBusy(true);
     const res = await fetch("/api/shows", {
       method: "POST",
@@ -964,6 +1240,8 @@ function NewShowModal({
         default_rate: canEditMoney && billingMode === "per_episode" && rate.trim() ? Number(rate) : null,
         default_studio: studio.trim() || null,
         camera_count: cameras.trim() ? Number(cameras) : null,
+        has_episode: hasEpisode,
+        reels_count: reels,
         default_editor_id: editorId,
         notes: notes.trim() || null,
         internal_confirmed: internalConfirmed,
@@ -993,6 +1271,8 @@ function NewShowModal({
       is_oneoff: s.is_oneoff,
       color: s.color ?? null,
       billing_mode: s.billing_mode ?? "none",
+      has_episode: s.has_episode ?? true,
+      reels_count: s.reels_count ?? 2,
       episodes: 0,
       revenue: canViewMoney ? 0 : null,
     });
@@ -1102,6 +1382,29 @@ function NewShowModal({
               <label className={labelCls}>מספר מצלמות</label>
               <input value={cameras} onChange={(e) => setCameras(e.target.value.replace(/\D/g, ""))} className={field} inputMode="numeric" />
             </div>
+          </div>
+
+          {/* הרכב תוצרים — נקבע כאן כדי שההפקה הראשונה כבר תיוולד נכון */}
+          <div className="rounded-lg border border-[var(--rule)] p-2.5">
+            <label className={labelCls}>הרכב תוצרים</label>
+            <div className="grid grid-cols-2 gap-2 items-end">
+              <label className="flex items-center gap-2 text-sm cursor-pointer py-2">
+                <input type="checkbox" checked={hasEpisode} onChange={(e) => setHasEpisode(e.target.checked)} />
+                פרק מוקלט
+              </label>
+              <div>
+                <label className={labelCls}>כמות רילז (0 = אין)</label>
+                <input
+                  value={reelsCount}
+                  onChange={(e) => setReelsCount(e.target.value.replace(/\D/g, ""))}
+                  className={field}
+                  inputMode="numeric"
+                />
+              </div>
+            </div>
+            <p className="mt-1.5 text-[10px] text-[var(--faint)]">
+              {compositionLabel(hasEpisode, reelsCount.trim() === "" ? 0 : Number(reelsCount))} — קובע אילו שלבים ייווצרו לכל הפקה
+            </p>
           </div>
 
           <div>

@@ -47,6 +47,11 @@ export async function POST(request: Request) {
     default_editor_id?: string | null;
     notes?: string | null;
     internal_confirmed?: boolean;
+    // deliverables composition (0055) — stage-tier, so a stages-only creator
+    // sets it too. Omitted => the column defaults (episode + 2 reels), which
+    // is what every show looked like before 0055.
+    has_episode?: boolean;
+    reels_count?: number | null;
   };
 
   const name = (body.name ?? "").trim().replace(/\s+/g, " ");
@@ -55,6 +60,21 @@ export async function POST(request: Request) {
   const aliases = Array.from(
     new Set((body.aliases ?? []).map((a) => a.trim().replace(/\s+/g, " ")).filter((a) => a && a !== name))
   );
+
+  // ---- deliverables composition (0055) ----
+  const hasEpisode = body.has_episode ?? true;
+  const reelsCount = body.reels_count == null ? 2 : Number(body.reels_count);
+  if (!Number.isInteger(reelsCount) || reelsCount < 0) {
+    return NextResponse.json({ error: "כמות הרילז חייבת להיות מספר שלם שאינו שלילי" }, { status: 400 });
+  }
+  // the DB guard says the same thing; catching it here returns the sentence
+  // without a round trip and without a raw postgres error in the UI
+  if (!hasEpisode && reelsCount === 0) {
+    return NextResponse.json(
+      { error: "תוכנית חייבת לכלול פרק מוקלט או לפחות ריל אחד — אחרת היא לא מייצרת שום תוצר" },
+      { status: 400 }
+    );
+  }
 
   const admin = createAdminClient();
 
@@ -104,8 +124,10 @@ export async function POST(request: Request) {
       default_editor_id: body.default_editor_id || null,
       notes: body.notes?.trim() || null,
       active: true,
+      has_episode: hasEpisode,
+      reels_count: reelsCount,
     })
-    .select("id,name,client_id,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode")
+    .select("id,name,client_id,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count")
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
@@ -114,7 +136,7 @@ export async function POST(request: Request) {
     entity_id: show.id,
     event_type: "show_created",
     actor_id: user.id,
-    payload: { name, aliases, client_id, billing_mode, internal: !client_id },
+    payload: { name, aliases, client_id, billing_mode, internal: !client_id, has_episode: hasEpisode, reels_count: reelsCount },
   });
 
   return NextResponse.json({ ok: true, show, default_rate });

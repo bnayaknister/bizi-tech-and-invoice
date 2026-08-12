@@ -105,7 +105,7 @@ type DrawerData = {
     episode_approved: boolean; reels_approved: boolean; reels_required: boolean;
     episode_note: string | null; reels_note: string | null;
   } | null;
-  reelsSummary: { base: number; extra: number; total: number } | null;
+  reelsSummary: { count: number } | null;
   log: LogEntry[] | null;
   diskOptions: string[] | null;
 };
@@ -1169,12 +1169,15 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                   const epStages = data.stages!.filter((s) => s.track === "episode");
                   const reelStages = data.stages!.filter((s) => s.track === "reels");
                   const rs = data.reelsSummary;
-                  const reelsTally = rs
-                    ? rs.extra > 0
-                      ? `${rs.base} סטנדרט + ${rs.extra} תוספת = ${rs.total} רילז`
-                      : `${rs.base} רילז (סטנדרט)`
-                    : null;
-                  const reelsShown = reelStages.length > 0 && data.review?.reels_required !== false;
+                  const reelsTally = rs && rs.count > 0 ? `${rs.count} רילז` : null;
+                  // 0055: the stage rows ARE the composition. A production
+                  // without reels has no reels rows at all (create_default_
+                  // stages never seeds them), so their presence is the whole
+                  // test. review_reels_required is deliberately not consulted
+                  // here any more — it means "the client wasn't asked in this
+                  // round", never "this production has no reels", and mixing
+                  // the two hid a live work line from the technician.
+                  const reelsShown = reelStages.length > 0;
                   // unified send available when both blocks are present, at
                   // least one media link is filled, and both aren't already
                   // approved (nothing left to send)

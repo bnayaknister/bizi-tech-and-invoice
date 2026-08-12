@@ -3,7 +3,7 @@ import { getSessionAndProfile } from "@/lib/profile";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
-import ShowsClient, { type EpisodeRow, type ShowRow } from "./ShowsClient";
+import ShowsClient, { type EpisodeRow, type ShowRow, type ContractOption } from "./ShowsClient";
 
 export const dynamic = "force-dynamic";
 
@@ -21,9 +21,17 @@ export default async function ShowsPage() {
   // query never mentions it. Money users get the rate through the service
   // role instead, below, gated on canViewMoney here. Everything else is the
   // same "not present in the response for a stages viewer" pattern.
-  const showColumns = canViewMoney
-    ? "id,name,client_id,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode"
-    : "id,name,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode";
+  // has_episode / reels_count are stage-tier (0055) so both branches carry
+  // them. They are readable only because 0055 added them to the column-explicit
+  // grant 0022 introduced — a new shows column is invisible to `authenticated`
+  // until it is named in a grant.
+  // annotated `string` on purpose: supabase-js parses a select() literal into
+  // a row type, and a ternary of two lists this long makes tsc give up with
+  // "union type that is too complex to represent". The rows are re-shaped by
+  // hand into ShowRow below anyway, so the inferred type buys nothing here.
+  const showColumns: string = canViewMoney
+    ? "id,name,client_id,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count"
+    : "id,name,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count";
 
   const [{ data: shows }, { data: productions }, { data: clients }] = await Promise.all([
     supabase.from("shows").select(showColumns).order("name"),
@@ -37,9 +45,45 @@ export default async function ShowsPage() {
   // default_rate via the service role, money-gated — the one money column
   // that lives on an otherwise stages-readable table (0021)
   const rateByShow: Record<string, number | null> = {};
+  // contracts for the "מחויבת בחוזה" picker (0056). Money viewers only —
+  // contracts are can_view_money throughout. The milestone count rides along
+  // because a contract with none cannot issue anything, and the card has to
+  // say so rather than present the show as settled.
+  const contracts: ContractOption[] = [];
+  let contractsError: string | null = null;
   if (canViewMoney) {
-    const { data: rateRows } = await createAdminClient().from("shows").select("id,default_rate");
+    const admin = createAdminClient();
+    const { data: rateRows } = await admin.from("shows").select("id,default_rate");
     for (const r of rateRows ?? []) rateByShow[r.id as string] = (r.default_rate as number) ?? null;
+
+    const { data: contractRows, error: contractsErr } = await admin
+      .from("contracts")
+      .select("id,name,client_id,show_id,status,total_amount,contract_milestones(count)")
+      .eq("status", "active")
+      .order("name");
+    // Degrade explicitly, never silently. Swallowing this would render an
+    // empty picker that reads as "this client has no contracts" — a plausible
+    // screen that is simply wrong, the exact failure mode that cost a
+    // debugging round on 2026-08-12. Throwing would take the whole shows
+    // screen down over one panel. So: the screen lives, and the panel that
+    // cannot load says it cannot load.
+    if (contractsErr) {
+      contractsError = `טעינת החוזים נכשלה: ${contractsErr.message}${
+        contractsErr.code === "42703" ? " — נראה שמיגרציה 0056 טרם הורצה" : ""
+      }`;
+      console.error("[shows] contracts load failed:", contractsErr);
+    }
+    for (const c of contractRows ?? []) {
+      const embedded = (c as { contract_milestones?: { count: number }[] }).contract_milestones;
+      contracts.push({
+        id: c.id as string,
+        name: (c.name as string) ?? "",
+        client_id: (c.client_id as string) ?? null,
+        show_id: (c.show_id as string) ?? null,
+        total_amount: (c.total_amount as number) ?? null,
+        milestone_count: embedded?.[0]?.count ?? 0,
+      });
+    }
   }
 
   // cumulative revenue per show: jobs → job_productions → production → show.
@@ -91,6 +135,8 @@ export default async function ShowsPage() {
     is_oneoff: s.is_oneoff as boolean,
     color: (s.color as string) ?? null,
     billing_mode: (s.billing_mode as string) ?? "per_episode",
+    has_episode: (s.has_episode as boolean) ?? true,
+    reels_count: (s.reels_count as number) ?? 2,
     episodes: episodeCounts[s.id as string] ?? 0,
     revenue: canViewMoney ? (revenueByShow[s.id as string] ?? 0) : null,
   }));
@@ -135,6 +181,8 @@ export default async function ShowsPage() {
           canManageUsers={profile.can_manage_users}
           pendingShowIds={pendingShowIds}
           staff={staff}
+          contracts={contracts}
+          contractsError={contractsError}
         />
       </main>
     </div>
