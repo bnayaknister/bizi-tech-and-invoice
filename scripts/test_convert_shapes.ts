@@ -20,7 +20,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { createDealInvoiceBundle, createDealInvoiceFromWorkOrder } from "../src/lib/documents/bundle";
-import { sourceRemark, type MorningDocumentRequest } from "../src/lib/morning/types";
+import { MORNING_DOC_CODE, sourceRemark, type MorningDocumentRequest } from "../src/lib/morning/types";
 
 // ---------------------------------------------------------------------------
 // env + client
@@ -164,28 +164,28 @@ function checkRemarkWording() {
   console.log("\nsourceRemark — the provenance line");
   check(
     "one source",
-    sourceRemark("deal_invoice", "work_order", ["10306"]) === "חשבון עסקה עבור הזמנה 10306",
-    sourceRemark("deal_invoice", "work_order", ["10306"])
+    sourceRemark("deal_invoice", MORNING_DOC_CODE.order, ["10306"]) === "חשבון עסקה עבור הזמנה 10306",
+    sourceRemark("deal_invoice", MORNING_DOC_CODE.order, ["10306"])
   );
   check(
     "two sources: type named once, numbers comma-joined",
-    sourceRemark("tax_receipt", "deal_invoice", ["40277", "40275"]) ===
+    sourceRemark("tax_receipt", MORNING_DOC_CODE.deal_invoice, ["40277", "40275"]) ===
       "חשבונית מס / קבלה עבור חשבון עסקה 40277, 40275",
-    sourceRemark("tax_receipt", "deal_invoice", ["40277", "40275"])
+    sourceRemark("tax_receipt", MORNING_DOC_CODE.deal_invoice, ["40277", "40275"])
   );
   check(
     "Morning's names, not ours (הזמנה, not הזמנת עבודה)",
-    sourceRemark("tax_invoice", "work_order", ["10226"]) === "חשבונית מס עבור הזמנה 10226",
-    sourceRemark("tax_invoice", "work_order", ["10226"])
+    sourceRemark("tax_invoice", MORNING_DOC_CODE.order, ["10226"]) === "חשבונית מס עבור הזמנה 10226",
+    sourceRemark("tax_invoice", MORNING_DOC_CODE.order, ["10226"])
   );
-  check("no source at all -> undefined", sourceRemark("deal_invoice", "work_order", []) === undefined);
+  check("no source at all -> undefined", sourceRemark("deal_invoice", MORNING_DOC_CODE.order, []) === undefined);
   check(
     "blank / null numbers are not a source",
-    sourceRemark("deal_invoice", "work_order", [null, undefined, "", "  "]) === undefined
+    sourceRemark("deal_invoice", MORNING_DOC_CODE.order, [null, undefined, "", "  "]) === undefined
   );
   check(
     "duplicate numbers collapse",
-    sourceRemark("deal_invoice", "work_order", ["10306", "10306"]) === "חשבון עסקה עבור הזמנה 10306"
+    sourceRemark("deal_invoice", MORNING_DOC_CODE.order, ["10306", "10306"]) === "חשבון עסקה עבור הזמנה 10306"
   );
 }
 

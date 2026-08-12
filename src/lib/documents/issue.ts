@@ -192,7 +192,18 @@ export async function issuePendingDocument(
   // and receipts) so an app-issued document shows on the 5-tab screen at
   // once, not only after the next daily pull. Same morning_doc_id the pull
   // upserts on, so the two never duplicate.
-  await upsertDocument(admin, {
+  //
+  // Its failure is now LOUD (owner decision 2026-08-12). It used to be
+  // discarded, which was tolerable only while nothing read the registry; the
+  // tax_variant flip now resolves a parent's type and number here and nowhere
+  // else, so a missing row is a document that cannot be converted later.
+  //
+  // Loud does NOT mean aborting: the document already exists in Morning and the
+  // queue row already says so. Stopping here would leave the invoices row
+  // unwritten and the jobs unstamped — a second failure, larger than the first.
+  // So the rest of the local bookkeeping runs to completion and the outcome is
+  // reported at the end, exactly as a failed queue-row update already is above.
+  const registryWrite = await upsertDocument(admin, {
     morning_doc_id: morningDocId,
     morning_doc_number: docNumber || null,
     type: DOC_TYPE_TO_MORNING_CODE[row.doc_type],
@@ -209,6 +220,20 @@ export async function issuePendingDocument(
     ...(recipients !== undefined ? { sent_to: recipients } : {}),
     raw: result,
   });
+  if (!registryWrite.ok) {
+    await admin.from("events").insert({
+      entity_type: "pending_document",
+      entity_id: row.id,
+      event_type: "registry_write_failed",
+      actor_id: actorId,
+      payload: {
+        doc_type: row.doc_type,
+        morning_doc_id: morningDocId,
+        doc_number: docNumber,
+        error: registryWrite.error,
+      },
+    });
+  }
 
   // Invoices (not work orders) also land in the finance registry, so the
   // existing finance screen keeps showing every document that exists. One
@@ -278,6 +303,17 @@ export async function issuePendingDocument(
       actor_id: actorId,
       payload: { doc_type: row.doc_type, morning_doc_number: docNumber, recipients },
     });
+  }
+
+  // The document is real and every other local write succeeded — but the
+  // registry row is missing, so the screens will not show it and it cannot
+  // father a tax document until the next daily pull heals it. The operator has
+  // to know that now, not discover it at the next conversion.
+  if (!registryWrite.ok) {
+    return {
+      ok: false,
+      error: `המסמך הונפק במורנינג (${docNumber || morningDocId}) אך רישומו במרשם המסמכים נכשל: ${registryWrite.error}. אין צורך להנפיק שוב — המשיכה היומית תשלים את הרישום`,
+    };
   }
 
   return { ok: true, morningDocId, docNumber, pdfUrl, dryRun };

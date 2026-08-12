@@ -320,7 +320,7 @@ export async function createReceiptFromTaxInvoices(
   // linkedDocumentIds closes the invoice in Morning; remarks is what the client
   // reads on the page. Morning fills the remark itself only for documents raised
   // in its own UI — through the API it leaves it null.
-  const remark = sourceRemark(RECEIPT_VARIANT, PARENT_VARIANT, sourceNumbers);
+  const remark = sourceRemark(RECEIPT_VARIANT, DOC_TYPE_TO_MORNING_CODE[PARENT_VARIANT], sourceNumbers);
   if (!remark) {
     // unreachable: every number was checked above
     return { ok: false, status: 500, error: "לא ניתן לבנות את הערת המקור" };

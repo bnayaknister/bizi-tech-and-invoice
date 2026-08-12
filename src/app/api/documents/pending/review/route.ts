@@ -182,10 +182,29 @@ export async function POST(request: Request) {
     // contradiction on a PDF that cannot be corrected afterwards (there is no
     // PUT on documents; a fix means cancel + re-issue).
     //
-    // The parent's TYPE and NUMBERS are not in the payload — only its Morning
-    // ids are — so they are read back from the queue rows those ids belong to.
-    // If that lookup can't produce them, the flip is REFUSED rather than
-    // issuing a document that names no parent (the failure fixed in 7d6136e).
+    // The parent's TYPE and NUMBER are not in the payload — only its Morning
+    // ids are — so they are read back from `documents`, the registry of what
+    // exists in Morning. If that lookup can't produce them, the flip is REFUSED
+    // rather than issuing a document that names no parent (7d6136e).
+    //
+    // WHY `documents` AND NOT `pending_documents` (owner decision 2026-08-12,
+    // production failure on 40291). The queue records what WE sent; the
+    // registry records what EXISTS in Morning. A parent raised by hand in
+    // Morning — which is most of this account's history, and the whole point of
+    // the pull -> tax route — has no queue row at all, so the old lookup found
+    // nothing and refused every pull-sourced flip. A parent the app issued sits
+    // in BOTH tables under the same morning_doc_id (issue.ts write-through), so
+    // the registry covers that case too: one lookup, both paths.
+    //
+    // Deliberately NO fallback to the queue. The one hole the registry could
+    // have had was issue.ts discarding its write result — that is fixed at the
+    // source in this same change (registry.ts), rather than papered over with a
+    // second read path here.
+    //
+    // The type arrives as Morning's numeric CODE and stays one all the way into
+    // sourceRemark. No reverse code -> PendingDocType map: the registry holds
+    // types we never issue (quotes, credit notes), so such a map could only be
+    // partial while looking total.
     if (body.tax_variant && TAX_VARIANTS.includes(r.doc_type as PendingDocType) && body.tax_variant !== r.doc_type) {
       const oldPayload = (r.payload ?? {}) as Record<string, unknown>;
       const linkedIds = Array.isArray(oldPayload.linkedDocumentIds)
@@ -194,28 +213,35 @@ export async function POST(request: Request) {
       const hasRemark = typeof oldPayload.remarks === "string" && oldPayload.remarks.trim() !== "";
 
       let newRemark: string | undefined;
+      // per-parent audit trail — what the refusal event reports, and the only
+      // way the NEXT failure gets diagnosed without a screenshot
+      let lookup: Array<{ morning_doc_id: string; found: boolean; type: number | null; number: string | null }> = [];
+      let readError: string | null = null;
       if (linkedIds.length) {
-        const { data: parents } = await admin
-          .from("pending_documents")
-          .select("doc_type,morning_doc_id,morning_doc_number")
+        const { data: parents, error: parentsErr } = await admin
+          .from("documents")
+          .select("morning_doc_id,type,morning_doc_number")
           .in("morning_doc_id", linkedIds);
+        readError = parentsErr?.message ?? null;
         const byMorningId = new Map(
-          ((parents ?? []) as { doc_type: string; morning_doc_id: string; morning_doc_number: string | null }[]).map(
+          ((parents ?? []) as { morning_doc_id: string; type: number | null; morning_doc_number: string | null }[]).map(
             (p) => [p.morning_doc_id, p]
           )
         );
-        // every parent must be found, carry a number, and be the same type —
-        // the remark names the type once and lists the numbers after it
-        const resolved = linkedIds.map((id) => byMorningId.get(id));
-        const complete =
-          resolved.length > 0 &&
-          resolved.every((p) => !!p && !!p.morning_doc_number && String(p.morning_doc_number).trim() !== "");
-        const parentTypes = Array.from(new Set(resolved.map((p) => p?.doc_type).filter(Boolean)));
-        if (complete && parentTypes.length === 1) {
+        lookup = linkedIds.map((id) => {
+          const p = byMorningId.get(id);
+          const number = p?.morning_doc_number ? String(p.morning_doc_number).trim() : "";
+          return { morning_doc_id: id, found: !!p, type: p?.type ?? null, number: number || null };
+        });
+        // every parent must be found, carry a number and a type, and be the
+        // same type — the remark names the type once and lists the numbers
+        const complete = lookup.length > 0 && lookup.every((p) => p.found && !!p.number && p.type !== null);
+        const parentCodes = Array.from(new Set(lookup.map((p) => p.type).filter((t): t is number => t !== null)));
+        if (complete && parentCodes.length === 1) {
           newRemark = sourceRemark(
             body.tax_variant,
-            parentTypes[0] as PendingDocType,
-            resolved.map((p) => p!.morning_doc_number)
+            parentCodes[0],
+            lookup.map((p) => p.number)
           );
         }
       }
@@ -223,11 +249,74 @@ export async function POST(request: Request) {
       // no parent at all and no remark to contradict → a bare type flip is safe
       const parentless = linkedIds.length === 0 && !hasRemark;
       if (!parentless && !newRemark) {
+        // Name the parents we could not resolve. A number when we hold one (the
+        // bookkeeper recognises documents by number), the Morning id when we
+        // don't — never a bare "not found" that doesn't say of what.
+        const unresolved = lookup.filter((p) => !p.found || !p.number || p.type === null);
+        const named = (unresolved.length ? unresolved : lookup)
+          .map((p) => (p.number ? `#${p.number}` : p.morning_doc_id))
+          .join(", ");
+        const parentCodes = Array.from(new Set(lookup.map((p) => p.type).filter((t): t is number => t !== null)));
+        const reason = readError
+          ? "registry_read_failed"
+          : !linkedIds.length
+            ? "no_linked_ids"
+            : unresolved.length
+              ? "parent_not_in_registry"
+              : parentCodes.length > 1
+                ? "mixed_parent_types"
+                : "unknown_parent_type";
+
+        // The refusal used to be silent — no row written, no event, nothing to
+        // read the next morning. Every 409 in this block now leaves a record
+        // (owner rule 2026-08-12).
+        await admin.from("events").insert({
+          entity_type: "pending_document",
+          entity_id: r.id,
+          event_type: "tax_variant_switch_refused",
+          actor_id: user.id,
+          payload: {
+            from: r.doc_type,
+            to: body.tax_variant,
+            reason,
+            source_table: "documents",
+            linked_document_ids: linkedIds,
+            parents: lookup,
+            parent_codes: parentCodes,
+            has_remark: hasRemark,
+            read_error: readError,
+          },
+        });
+
+        // The old message said "cancel it and create it again". That was worse
+        // than useless: a rebuild produces the identical row with the identical
+        // linkedDocumentIds and fails at exactly this line, so it sent the
+        // bookkeeper to delete a perfectly good document (owner, 2026-08-12).
+        //
+        // What is actually true is said instead: the row is fine, approving it
+        // as it stands issues a correct document, and the block is our bug and
+        // not something she can fix. The CURRENT type is named from the row —
+        // the flip runs in both directions and telling her "approve as 305"
+        // while she is holding a 320 would be a new wrong instruction.
+        const currentType = r.doc_type as PendingDocType;
+        const nameType = (t: PendingDocType) => `${DOC_TYPE_LABEL[t]} (${DOC_TYPE_TO_MORNING_CODE[t]})`;
+        const why =
+          reason === "registry_read_failed"
+            ? `קריאת מרשם המסמכים נכשלה (${readError})`
+            : reason === "no_linked_ids"
+              ? "לשורה יש הערת מקור אך אין מסמכי מקור מקושרים"
+              : reason === "mixed_parent_types"
+                ? `מסמכי המקור ${named} אינם מאותו סוג`
+                : reason === "unknown_parent_type"
+                  ? `סוג מסמך המקור ${named} אינו מוכר`
+                  : `מסמך המקור ${named} לא נמצא במרשם המסמכים`;
+
         return NextResponse.json(
           {
             error:
-              "לא ניתן להחליף את סוג המסמך: לא נמצאו סוג ומספרי מסמך המקור, והערת המקור הייתה יוצאת שגויה. " +
-              "אשרי את המסמך כפי שהוא, או בטלי אותו וצרי אותו מחדש.",
+              `לא ניתן להחליף ל${nameType(body.tax_variant)}: ${why}, ולכן לא ניתן לבנות את הערת המקור. ` +
+              `השורה עצמה תקינה — אפשר לאשר אותה כ${nameType(currentType)} והמסמך ייצא נכון. ` +
+              "החסימה היא תקלה בקוד ולא משהו שצריך לתקן בשורה — דווחי עליה.",
           },
           { status: 409 }
         );

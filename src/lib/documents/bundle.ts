@@ -1,5 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { DOC_TYPE_TO_MORNING_CODE, VAT_TYPE_DEFAULT, sourceRemark, type MorningDocumentRequest } from "@/lib/morning/types";
+import {
+  DOC_TYPE_TO_MORNING_CODE,
+  MORNING_DOC_CODE,
+  VAT_TYPE_DEFAULT,
+  sourceRemark,
+  type MorningDocumentRequest,
+} from "@/lib/morning/types";
 import { todayInIsrael } from "@/lib/dates";
 
 // Bundling: several per-episode documents folded into ONE Morning document with
@@ -305,7 +311,9 @@ export async function createDealInvoiceFromWorkOrder(
   // remark itself — it does, but only for documents raised in its own UI.
   // Through the API it leaves the field null, so 40303 went out closing 10306
   // without naming it anywhere on the page (verified against the PDF).
-  const remark = sourceRemark("deal_invoice", "work_order", [wo.morning_doc_number as string | null]);
+  const remark = sourceRemark("deal_invoice", MORNING_DOC_CODE.order, [
+    wo.morning_doc_number as string | null,
+  ]);
 
   const payload: MorningDocumentRequest = {
     type: DOC_TYPE_TO_MORNING_CODE["deal_invoice"],

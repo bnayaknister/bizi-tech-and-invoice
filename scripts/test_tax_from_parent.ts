@@ -218,22 +218,22 @@ function checkRemarkWording() {
   console.log("\nsourceRemark — both variants, Morning's own words");
   check(
     "320 on a deal invoice",
-    sourceRemark("tax_receipt", "deal_invoice", ["40277"]) === "חשבונית מס / קבלה עבור חשבון עסקה 40277",
-    sourceRemark("tax_receipt", "deal_invoice", ["40277"])
+    sourceRemark("tax_receipt", MORNING_DOC_CODE.deal_invoice, ["40277"]) === "חשבונית מס / קבלה עבור חשבון עסקה 40277",
+    sourceRemark("tax_receipt", MORNING_DOC_CODE.deal_invoice, ["40277"])
   );
   check(
     "305 on the same parent reads differently — this is why the flip must rebuild it",
-    sourceRemark("tax_invoice", "deal_invoice", ["40277"]) === "חשבונית מס עבור חשבון עסקה 40277",
-    sourceRemark("tax_invoice", "deal_invoice", ["40277"])
+    sourceRemark("tax_invoice", MORNING_DOC_CODE.deal_invoice, ["40277"]) === "חשבונית מס עבור חשבון עסקה 40277",
+    sourceRemark("tax_invoice", MORNING_DOC_CODE.deal_invoice, ["40277"])
   );
   check(
     "several parents: type named once, numbers comma-joined",
-    sourceRemark("tax_receipt", "deal_invoice", ["40277", "40275"]) ===
+    sourceRemark("tax_receipt", MORNING_DOC_CODE.deal_invoice, ["40277", "40275"]) ===
       "חשבונית מס / קבלה עבור חשבון עסקה 40277, 40275"
   );
   check(
     "on a work order Morning says הזמנה, not הזמנת עבודה",
-    sourceRemark("tax_receipt", "work_order", ["10306"]) === "חשבונית מס / קבלה עבור הזמנה 10306"
+    sourceRemark("tax_receipt", MORNING_DOC_CODE.order, ["10306"]) === "חשבונית מס / קבלה עבור הזמנה 10306"
   );
 }
 

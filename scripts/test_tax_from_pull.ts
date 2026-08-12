@@ -250,7 +250,7 @@ async function main() {
       check("income price is the NET per unit", row.payload.income?.[0]?.price === 1000, JSON.stringify(row.payload.income));
       check("linked to the parent", (row.payload.linkedDocumentIds ?? []).join() === doc.morningDocId);
       check("remark names the parent in Morning's words",
-        row.payload.remarks === sourceRemark("tax_invoice", "deal_invoice", [doc.number]),
+        row.payload.remarks === sourceRemark("tax_invoice", MORNING_DOC_CODE.deal_invoice, [doc.number]),
         row.payload.remarks ?? "(none)");
       check("bundle_job_ids carries the documents.job_id", (row.bundle_job_ids ?? []).join() === job);
       check("client attributed", row.client_id === clientId);

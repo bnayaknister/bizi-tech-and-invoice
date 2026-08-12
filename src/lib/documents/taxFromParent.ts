@@ -491,7 +491,7 @@ export async function createTaxFromParents(
   // linkedDocumentIds CLOSES the parents in Morning, remarks is what the client
   // reads on the page. Morning fills the remark itself only for documents
   // raised in its own UI — through the API it leaves it null (bundle.ts:302).
-  const remark = sourceRemark(variant, parentType, sourceNumbers);
+  const remark = sourceRemark(variant, DOC_TYPE_TO_MORNING_CODE[parentType], sourceNumbers);
   if (!remark) {
     // unreachable: every number was checked above. Refuse rather than send a
     // document that names no parent.

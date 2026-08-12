@@ -31,15 +31,33 @@ export type UpsertDoc = {
   raw?: unknown;
 };
 
-export async function upsertDocument(admin: SupabaseClient, doc: UpsertDoc) {
+/**
+ * Every write here reports. It used to swallow all three database results
+ * (owner fix 2026-08-12): a failed registry write left `documents` without a
+ * row while the queue said 'issued', and nothing anywhere said so.
+ *
+ * That was survivable only while nothing depended on the registry. The
+ * tax_variant flip now reads the parent's type and number from `documents` and
+ * from nowhere else, so a lost row is a document the bookkeeper cannot convert
+ * — with no trace of why. Report the failure; the caller decides what it means.
+ *
+ * The read is checked too, not only the writes: an unreadable `existing` would
+ * otherwise take the insert branch and either duplicate the document or trip
+ * the unique constraint on morning_doc_id, and the second is what actually
+ * happens — an error, previously discarded.
+ */
+export type UpsertDocResult = { ok: true; inserted: boolean } | { ok: false; error: string };
+
+export async function upsertDocument(admin: SupabaseClient, doc: UpsertDoc): Promise<UpsertDocResult> {
   // On conflict, refresh the mutable fields but never downgrade source from
   // 'app' to 'pull': a document we issued and already attributed shouldn't
   // lose that when the daily pull later sees the same id.
-  const { data: existing } = await admin
+  const { data: existing, error: readErr } = await admin
     .from("documents")
     .select("id,source,client_id")
     .eq("morning_doc_id", doc.morning_doc_id)
     .maybeSingle();
+  if (readErr) return { ok: false, error: readErr.message };
 
   const row = {
     ...doc,
@@ -52,11 +70,13 @@ export async function upsertDocument(admin: SupabaseClient, doc: UpsertDoc) {
   };
 
   if (existing) {
-    await admin.from("documents").update(row).eq("id", existing.id);
-    return { inserted: false };
+    const { error } = await admin.from("documents").update(row).eq("id", existing.id);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, inserted: false };
   }
-  await admin.from("documents").insert(row);
-  return { inserted: true };
+  const { error } = await admin.from("documents").insert(row);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, inserted: true };
 }
 
 export type PullSummary = { pulled: number; inserted: number; updated: number; unmatched: number; linked: number; backfilled: number; full: boolean; fromDate: string };

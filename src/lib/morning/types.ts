@@ -82,18 +82,33 @@ export const MORNING_DOC_NAME: Record<number, string> = {
  * Returns undefined when there is no source, so a caller can spread the result
  * and have the field simply not appear: a parentless document (the manual
  * bundle, an order raised from the registry) must never carry one.
+ *
+ * WHY THE SOURCE IS A CODE AND THE SELF IS NOT (owner decision 2026-08-12).
+ * The two sides are not symmetric. `docType` is the document WE are about to
+ * issue, so it is always one of ours and PendingDocType says exactly that. The
+ * SOURCE is whatever the parent happens to be — and the parent's type is now
+ * read from `documents.type`, which is Morning's numeric code, over a registry
+ * that holds types we never issue (106 quotes, 11 credit notes as of
+ * 2026-08-12). A reverse code -> PendingDocType map would therefore be a
+ * partial function pretending to be total; MORNING_DOC_NAME is already keyed by
+ * code and already covers 10 and 330, exactly as its own comment says.
+ *
+ * An unrecognised code returns undefined rather than printing "undefined" onto
+ * a document that cannot be corrected afterwards. Callers already treat a
+ * missing remark as a refusal.
  */
 export function sourceRemark(
   docType: PendingDocType,
-  sourceType: PendingDocType,
+  sourceCode: number,
   sourceNumbers: readonly (string | number | null | undefined)[]
 ): string | undefined {
   const numbers = Array.from(
     new Set(sourceNumbers.map((n) => String(n ?? "").trim()).filter((n) => n !== ""))
   );
   if (numbers.length === 0) return undefined;
+  const source = MORNING_DOC_NAME[sourceCode];
+  if (!source) return undefined;
   const self = MORNING_DOC_NAME[DOC_TYPE_TO_MORNING_CODE[docType]];
-  const source = MORNING_DOC_NAME[DOC_TYPE_TO_MORNING_CODE[sourceType]];
   return `${self} עבור ${source} ${numbers.join(", ")}`;
 }
 
