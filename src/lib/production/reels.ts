@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "@/lib/supabase/database.types";
 
 // productions.reels_count is the single source of truth for "how many reels
 // does this production owe" (0055). It starts as the show's figure, copied at
@@ -17,8 +18,13 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 //
 // Runs on the service role: production_addons' price columns are revoked from
 // the shared role (0031), and the caller has already done its permission check.
+// First file on the schema-aware client (2026-08-12). The parameter is typed
+// SupabaseClient<Database>, so every table name, column name and payload below
+// is checked against database.types.ts at build time. Untyped callers still
+// pass their existing createAdminClient() result — SupabaseClient<any> is
+// assignable here — so converting this file changed nothing at its call sites.
 export async function bumpReelsCountForAddons(
-  admin: SupabaseClient,
+  admin: SupabaseClient<Database>,
   productionId: string,
   addonIds: string[]
 ): Promise<number> {

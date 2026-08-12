@@ -18,6 +18,25 @@ import { must, SupabaseReadError, type QueryResult } from "@/lib/supabase/unwrap
 // registry decides which columns are even selected (a field without view
 // permission is never in the response), and events are written through the
 // service client stamped with the acting user.
+//
+// ─── This route stays on the UNTYPED supabase client. By decision, not debt.
+//
+// It is a generic entity gateway: both the table (`config.table`) and the
+// column list (`selectColumns(type, profile)`) are resolved at runtime from
+// the field registry and the caller's permissions. That indirection is the
+// feature — one route serves every entity, and a field's visibility is
+// declared once in lib/entities.ts rather than duplicated per endpoint.
+//
+// A schema-aware client wants both of those as compile-time literals. Measured
+// 2026-08-12: adding the generic here produces 12 of the repo's 35 errors, and
+// every one of them is TypeScript objecting to the dynamism on purpose. The
+// only way to satisfy it would be to unroll the registry into a literal per
+// entity — trading the single source of truth for type coverage on a route
+// whose whole job is to not have one.
+//
+// So: this file is deliberately excluded. Its safety net is the field registry
+// plus RLS plus the DB guards, not the type system. Everything else in the repo
+// should move to the typed client; do not "fix" this one to match.
 
 function parseType(type: string): EntityType | null {
   return (ENTITY_TYPES as string[]).includes(type) ? (type as EntityType) : null;

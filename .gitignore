@@ -37,3 +37,6 @@ next-env.d.ts
 .env*
 .owner-temp-password.txt
 .password.txt
+
+# supabase CLI local state (created by `gen types` / `link`)
+supabase/.temp/

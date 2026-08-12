@@ -20,3 +20,15 @@
 
 הבדיקה **fail-open**: מפתח חסר, נקודת קצה לא זמינה, timeout או קובץ שלא ניתן
 לנתח — כולם מדלגים ומחזירים 0. רק פער מאומת מפיל בילד. עקיפה: `SKIP_SCHEMA_DRIFT_CHECK=1`.
+
+> ### 🔴 פריט פתוח — הבודק מגן מקומית בלבד עד שיאומת
+> הבדיקה דורשת את `SUPABASE_SERVICE_ROLE_KEY` (מפתח ה-anon מקבל 401 על
+> `/rest/v1/`). **טרם אומת שהוא זמין בסביבת הבילד של Vercel** — אין CLI ואין
+> אישורים במחשב, וגישת הדשבורד חסומה. עד לאימות יש להניח שהבודק **אינו רץ
+> ב-deploy**, ושההגנה קיימת רק ב-`npm run build` מקומי.
+>
+> **איך לאמת:** בלוג של כל deploy, בשלב `prebuild` —
+> `עדיין אין database.types.ts` או `✅ מסונכרן` ⇒ המפתח זמין, הבודק פועל.
+> `חסר NEXT_PUBLIC_SUPABASE_URL או SUPABASE_SERVICE_ROLE_KEY` ⇒ אינו זמין,
+> והתיקון הוא להוסיף אותו ב-Project Settings → Environment Variables
+> (Production + Preview).
