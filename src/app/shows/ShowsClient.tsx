@@ -1192,7 +1192,7 @@ function NewShowModal({
   const [aliases, setAliases] = useState<string[]>([]);
   const [aliasDraft, setAliasDraft] = useState("");
   const [clientId, setClientId] = useState<string | null>(null);
-  const [billingMode, setBillingMode] = useState<"per_episode" | "none">("per_episode");
+  const [billingMode, setBillingMode] = useState<"per_episode" | "contract" | "none">("per_episode");
   const [rate, setRate] = useState("");
   const [studio, setStudio] = useState("");
   const [cameras, setCameras] = useState("");
@@ -1349,7 +1349,7 @@ function NewShowModal({
               <div>
                 <label className={labelCls}>אופן חיוב</label>
                 <div className="flex gap-2">
-                  {([["per_episode", "לפי פרק"], ["none", "ללא חיוב"]] as const).map(([v, l]) => (
+                  {([["per_episode", "לפי פרק"], ["contract", "לפי חוזה"], ["none", "ללא חיוב"]] as const).map(([v, l]) => (
                     <button
                       key={v}
                       onClick={() => canEditMoney && setBillingMode(v)}
@@ -1362,6 +1362,11 @@ function NewShowModal({
                     </button>
                   ))}
                 </div>
+                {billingMode === "contract" && (
+                  <div className="text-[10px] text-[var(--faint)] mt-1">
+                    אין כאן בחירת חוזה — תוכנית נפתחת לפעמים לפני שהחוזה נחתם. הקישור לחוזה נעשה בכרטיס התוכנית.
+                  </div>
+                )}
               </div>
 
               {billingMode === "per_episode" && canEditMoney && (
