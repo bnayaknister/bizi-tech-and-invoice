@@ -3,9 +3,9 @@ import { getSessionAndProfile } from "@/lib/profile";
 import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import RegistryClient, { type DocRow } from "./RegistryClient";
-import { MORNING_DOC_CODE, registryTabForType, type PendingDocType } from "@/lib/morning/types";
+import { registryTabForType, type PendingDocType } from "@/lib/morning/types";
 import { ALLOWED_CHILDREN } from "@/lib/documents/taxFromParent";
-import { mapPullDocToSource, type PullDocRow } from "@/lib/documents/pullSource";
+import { mapPullDocToReceiptSource, mapPullDocToSource, type PullDocRow } from "@/lib/documents/pullSource";
 
 export const dynamic = "force-dynamic";
 
@@ -33,14 +33,13 @@ export default async function RegistryPage() {
   // Which registry rows can raise a tax document. Two doors, one per source:
   //  • a pending_documents row (app-issued) — the original path, keyed by
   //    morning_doc_id, inherits the frozen payload we actually sent.
-  //  • the raw path — a PULLED open document with no queue row, two rungs:
-  //    a 300 (stage 4, owner approved 2026-08-11) judged by the SAME mapper
-  //    the tax route runs (mapPullDocToSource), and a 305 (2026-08-13) judged
-  //    for a receipt by mirroring the receipt builder's own door gates — that
-  //    builder (receiptFromTaxInvoice.ts, d22ed0e) is the authority; the tax
-  //    mapper never sees a 305. Either way the button never promises what the
-  //    server would refuse: each block shows its own refusal up front instead
-  //    of a 4xx after the click.
+  //  • the raw path — a PULLED open document with no queue row, two rungs,
+  //    each judged by the SAME pure mapper its server door runs (one function,
+  //    two callers, zero drift): a 300 (stage 4, owner approved 2026-08-11)
+  //    through mapPullDocToSource, a 305 (2026-08-13) through
+  //    mapPullDocToReceiptSource. Either way the button never promises what
+  //    the server would refuse: each block shows its own refusal up front
+  //    instead of a 4xx after the click.
   //
   // The candidate query is the only one that hauls raw, and it is bounded:
   // open pulled 300s and 305s trend toward zero BECAUSE of this feature (a
@@ -58,7 +57,8 @@ export default async function RegistryPage() {
       .not("morning_doc_id", "is", null),
     admin
       .from("documents")
-      .select("id,morning_doc_id,morning_doc_number,type,source,client_id,job_id,amount,cancelled_at,archived_at,raw")
+      // `status` is hauled, not only filtered on — the receipt mapper judges it
+      .select("id,morning_doc_id,morning_doc_number,type,status,source,client_id,job_id,amount,cancelled_at,archived_at,raw")
       .in("type", [300, 305])
       .eq("status", 0)
       .eq("source", "pull")
@@ -74,7 +74,7 @@ export default async function RegistryPage() {
 
   // judge every candidate in exactly the server's order, so the screen's
   // verdict IS the server's: a 300 through the real tax mapper + job
-  // pre-checks, a 305 through the receipt judge below
+  // pre-checks, a 305 through the real receipt mapper
   type RawState = { state: "raw"; net: number | null } | { state: "blocked"; reason: string };
   const rawStateByDocId = new Map<string, RawState>();
   const cands = (candRows ?? []) as unknown as PullDocRow[];
@@ -91,52 +91,18 @@ export default async function RegistryPage() {
     }
   }
 
-  // The receipt verdict for a pulled 305 — a read-only MIRROR of the door
-  // gates in createReceiptFromTaxInvoices (d22ed0e), same order, same
-  // sentences, because the builder cannot be called to judge (it inserts on
-  // success) and exports no mapper. If a gate changes there, change it here.
-  // The query above already guarantees source='pull', type, status=0, not
-  // cancelled, not archived — only the rest is judged.
-  const judgeReceiptCandidate = (c: PullDocRow): RawState => {
-    const label = c.morning_doc_number ? `#${c.morning_doc_number}` : (c.morning_doc_id ?? c.id);
-    const blocked = (reason: string): RawState => ({ state: "blocked", reason: `${label}: ${reason}` });
-    if (!c.morning_doc_id) return blocked("אין מזהה מורנינג — לא ניתן לקשר אליו");
-    if (!c.morning_doc_number || !String(c.morning_doc_number).trim()) {
-      return blocked("אין מספר מסמך — לא ניתן לציין אותו בהערת המקור");
-    }
-    if (!c.client_id) return blocked("הלקוח אינו משויך באפליקציה — שייכי אותו במסך הלקוחות קודם");
-    const rawRec = c.raw && typeof c.raw === "object" ? (c.raw as Record<string, unknown>) : null;
-    const rawClient =
-      rawRec && rawRec.client && typeof rawRec.client === "object" ? (rawRec.client as Record<string, unknown>) : null;
-    if (typeof rawClient?.id !== "string" || !rawClient.id) {
-      return blocked("אין מזהה לקוח מורנינג במסמך שנמשך — לא ניתן לבנות קבלה");
-    }
-    // the same three-state openness read the builder runs: not-an-array =
-    // unknown, empty = closed, else the allowed child codes
-    const ref = rawRec?.ref;
-    if (!Array.isArray(ref)) return blocked("לא ניתן לקרוא את מצב המסמך ממורנינג (אין ref) — רענני את המשיכה ונסי שוב");
-    if (ref.length === 0) return blocked("כבר סגור במורנינג — לא ניתן להנפיק על סמכו");
-    const allowedCodes = ref.map((v) => Number(v)).filter((n) => Number.isFinite(n));
-    if (!allowedCodes.includes(MORNING_DOC_CODE.receipt)) {
-      return blocked("מורנינג אינה מתירה להנפיק על סמכו קבלה");
-    }
-    const docCurrency = typeof rawRec?.currency === "string" ? rawRec.currency : "";
-    if (docCurrency !== "ILS") return blocked(`מטבע ${docCurrency || "חסר"} — מסלול זה מנפיק בשקלים בלבד`);
-    // the gross the builder will read — raw only, never documents.amount
-    const rawAmount = rawRec?.amount;
-    if (rawAmount === null || rawAmount === undefined || !Number.isFinite(Number(rawAmount))) {
-      return blocked("אין סכום במסמך שנמשך ממורנינג — לא ניתן לבנות קבלה");
-    }
-    // no net: a receipt is built on the GROSS, and the modal labels it so
-    return { state: "raw", net: null };
-  };
-
   for (const c of cands) {
     // a pull doc with a queue row cannot occur through any code path, but if
     // one ever does, the pending door wins — same rule as the route
     if (c.morning_doc_id && pendingIdByMorningId.has(c.morning_doc_id)) continue;
     if (c.type === 305) {
-      rawStateByDocId.set(c.id, judgeReceiptCandidate(c));
+      // the SAME pure mapper the builder's raw door runs. No net: a receipt
+      // is built on the GROSS, and the modal labels it so.
+      const receipt = mapPullDocToReceiptSource(c);
+      rawStateByDocId.set(
+        c.id,
+        receipt.ok ? { state: "raw", net: null } : { state: "blocked", reason: receipt.error }
+      );
       continue;
     }
     const res = mapPullDocToSource(c);

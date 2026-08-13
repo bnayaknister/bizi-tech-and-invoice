@@ -10,6 +10,7 @@ import {
   type PendingDocType,
 } from "@/lib/morning/types";
 import { childRule } from "@/lib/documents/taxFromParent";
+import { mapPullDocToReceiptSource, type PullDocRow } from "@/lib/documents/pullSource";
 import { todayInIsrael } from "@/lib/dates";
 
 // The last rung of the chain: a receipt (400) raised on a tax invoice (305).
@@ -21,9 +22,10 @@ import { todayInIsrael } from "@/lib/dates";
 //  • `sourceIds` — pending_documents rows, the original door: a 305 the app
 //    itself issued, judged by its queue row.
 //  • `opts.documentIds` — documents rows: a 305 raised by hand in Morning has
-//    no queue row; its pulled raw is judged here (type, openness, client,
-//    gross) and mapped into the same SourceRow shape, IN MEMORY only. From the
-//    merge down, every shared gate — one-Morning-doc-per-request, one-client,
+//    no queue row; its pulled raw is judged by mapPullDocToReceiptSource
+//    (pullSource.ts — the SAME mapper the registry screen runs) and mapped
+//    into the same SourceRow shape, IN MEMORY only. From the merge down,
+//    every shared gate — one-Morning-doc-per-request, one-client,
 //    openness+gross, idempotency — runs on both doors unchanged.
 //
 // WHY THIS IS NOT A BRANCH IN taxFromParent.ts, which builds 305/320:
@@ -76,25 +78,6 @@ type SourceRow = {
   payload: MorningDocumentRequest | null;
   morning_doc_id: string | null;
   morning_doc_number: string | null;
-};
-
-/**
- * A `documents` row as the pulled door reads it. Local rather than imported
- * from pullSource.ts so the dependency graph does not grow: this file already
- * shares only the allow-list with its siblings, on purpose (see header).
- */
-type PulledDocRow = {
-  id: string;
-  morning_doc_id: string | null;
-  morning_doc_number: string | null;
-  type: number;
-  /** Morning's open/closed flag as pulled: 0 = open */
-  status: number;
-  source: string | null;
-  client_id: string | null;
-  cancelled_at: string | null;
-  archived_at: string | null;
-  raw: unknown;
 };
 
 /** How a source is named in an error message — always the most human id we hold. */
@@ -192,17 +175,19 @@ export async function createReceiptFromTaxInvoices(
   }
 
   // ---- the second door: pulled 305s ---------------------------------------
-  // Judged here, at the door, rather than trusting the shared tail alone: the
-  // tail re-reads raw by morning_doc_id and would catch openness and gross
-  // anyway, but each gate below owns its own sentence — the whole point of
-  // this door is that a refusal is never silent.
+  // Judged by mapPullDocToReceiptSource — the same pure mapper the registry
+  // screen runs for the button verdict, so the screen and this door can never
+  // drift (one function, two callers, exactly like the tax path). The fetch
+  // and the partial-set rule stay here; the mapper owns every gate and its
+  // sentence, and any refusal returns a uniform 400, same convention as
+  // fetchPullSources.
   if (docIds.length) {
     const { data, error } = await admin
       .from("documents")
-      .select("id,morning_doc_id,morning_doc_number,type,status,source,client_id,cancelled_at,archived_at,raw")
+      .select("id,morning_doc_id,morning_doc_number,type,status,source,client_id,job_id,amount,cancelled_at,archived_at,raw")
       .in("id", docIds);
     if (error) return { ok: false, status: 400, error: error.message };
-    const docs = (data ?? []) as unknown as PulledDocRow[];
+    const docs = (data ?? []) as unknown as PullDocRow[];
     // never act on a partial set — same rule as the pending fetch above
     if (docs.length !== docIds.length) {
       return {
@@ -213,132 +198,26 @@ export async function createReceiptFromTaxInvoices(
     }
 
     for (const d of docs) {
-      // an app-issued 305 exists in documents too (issue.ts write-through),
-      // but it has a queue row — that door must win, never this reconstruction
-      if (d.source !== "pull") {
-        return {
-          ok: false,
-          status: 400,
-          error: `${nameOf(d)}: מקורו ${d.source ?? "לא ידוע"} ולא מהמשיכה — מסמך שהאפליקציה הנפיקה נבנה משורת התור שלו`,
-        };
-      }
-      if (d.type !== MORNING_DOC_CODE.tax_invoice) {
-        return {
-          ok: false,
-          status: 400,
-          error: `${nameOf(d)}: קבלה במסלול המשיכה נבנית על חשבונית מס (305) בלבד — התקבל type ${d.type}`,
-        };
-      }
-      if (d.cancelled_at) {
-        return { ok: false, status: 409, error: `${nameOf(d)}: סומן כמבוטל — לא ניתן להנפיק על סמכו` };
-      }
-      if (d.archived_at) {
-        return { ok: false, status: 409, error: `${nameOf(d)}: מאורכב — לא ניתן להנפיק על סמכו` };
-      }
-      // Morning's own open/closed flag, as pulled. A closed 305 usually means
-      // a receipt already exists there — say so instead of a bare refusal.
-      if (d.status !== 0) {
-        return {
-          ok: false,
-          status: 409,
-          error: `${nameOf(d)}: אינו פתוח במורנינג (status ${d.status}) — ייתכן שכבר יצאה עליו קבלה; בדקי במורנינג`,
-        };
-      }
-      if (!d.morning_doc_id) {
-        return { ok: false, status: 409, error: `${d.id}: אין מזהה מורנינג — לא ניתן לקשר אליו` };
-      }
-      // the number is what gets PRINTED on the receipt (remarks) — refuse,
-      // never omit quietly. Same rule as the pending door.
-      if (!d.morning_doc_number || !String(d.morning_doc_number).trim()) {
-        return {
-          ok: false,
-          status: 409,
-          error: `${d.morning_doc_id}: אין מספר מסמך — לא ניתן לציין אותו בהערת המקור`,
-        };
-      }
-      // both halves of the client identity: ours (attribution of the child
-      // row) and Morning's (it goes into the outgoing payload).
-      if (!d.client_id) {
-        return {
-          ok: false,
-          status: 400,
-          error: `${nameOf(d)}: הלקוח אינו משויך באפליקציה — שייכי אותו במסך הלקוחות קודם`,
-        };
-      }
-      const rawRec = d.raw && typeof d.raw === "object" ? (d.raw as Record<string, unknown>) : null;
-      const rawClient =
-        rawRec && rawRec.client && typeof rawRec.client === "object" ? (rawRec.client as Record<string, unknown>) : null;
-      const morningClientId = typeof rawClient?.id === "string" ? rawClient.id : "";
-      if (!morningClientId) {
-        return {
-          ok: false,
-          status: 409,
-          error: `${nameOf(d)}: אין מזהה לקוח מורנינג במסמך שנמשך — לא ניתן לבנות קבלה`,
-        };
-      }
-      // openness, from the raw we already hold. unknown and closed BOTH refuse
-      // — and both say why. For a pulled row a missing ref means the raw shape
-      // moved under us; the next pull is the honest fix either way.
-      const openness = readOpenness(d.raw);
-      if (openness.state === "unknown") {
-        return {
-          ok: false,
-          status: 409,
-          error: `${nameOf(d)}: לא ניתן לקרוא את מצב המסמך ממורנינג (אין ref) — רענני את המשיכה ונסי שוב`,
-        };
-      }
-      if (openness.state === "closed") {
-        return { ok: false, status: 409, error: `${nameOf(d)}: כבר סגור במורנינג — לא ניתן להנפיק על סמכו` };
-      }
-      if (!openness.allowedCodes.includes(childCode)) {
-        return {
-          ok: false,
-          status: 409,
-          error: `${nameOf(d)}: מורנינג אינה מתירה להנפיק על סמכו ${MORNING_DOC_NAME[childCode]}`,
-        };
-      }
-      // the receipt payload pins ILS and the gross below is read raw — a
-      // foreign-currency parent is out of this route's scope, same refusal as
-      // the tax path's mapper
-      const docCurrency = typeof rawRec?.currency === "string" ? rawRec.currency : "";
-      if (docCurrency !== "ILS") {
-        return {
-          ok: false,
-          status: 400,
-          error: `${nameOf(d)}: מטבע ${docCurrency || "חסר"} — מסלול זה מנפיק בשקלים בלבד`,
-        };
-      }
-      // the gross Morning itself computed — raw only, NEVER documents.amount
-      // (that column holds our net until the next pull overwrites it)
-      if (grossFromRaw(d.raw) === null) {
-        return {
-          ok: false,
-          status: 409,
-          error: `${nameOf(d)}: אין סכום במסמך שנמשך ממורנינג — לא ניתן לבנות קבלה`,
-        };
-      }
-
+      const res = mapPullDocToReceiptSource(d);
+      if (!res.ok) return { ok: false, status: 400, error: res.error };
+      const s = res.source;
       // IN-MEMORY ONLY — never persisted (same rule as pullSource.ts): this
       // payload reconstructs the one field the shared gates read (client). The
       // only payload that reaches the DB is the receipt's own, built below.
       rows.push({
-        id: d.id,
+        id: s.id,
         doc_type: PARENT_VARIANT,
         status: "issued",
-        client_id: d.client_id,
+        client_id: s.client_id,
         payload: {
           type: MORNING_DOC_CODE.tax_invoice,
           lang: "he",
           currency: "ILS",
           vatType: VAT_TYPE_DEFAULT,
-          client: {
-            id: morningClientId,
-            name: typeof rawClient?.name === "string" ? rawClient.name : undefined,
-            add: false,
-          },
+          client: { id: s.morning_client_id, name: s.morning_client_name ?? undefined, add: false },
         },
-        morning_doc_id: d.morning_doc_id,
-        morning_doc_number: d.morning_doc_number,
+        morning_doc_id: s.morning_doc_id,
+        morning_doc_number: s.morning_doc_number,
       });
     }
   }
