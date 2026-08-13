@@ -494,9 +494,13 @@ export default function RegistryClient({
                                 </button>
                               )}
                               {/* the dark button carries its reason — the
-                                  server's own message, shown BEFORE the click.
-                                  title sits on a span: browsers don't reliably
-                                  show tooltips on disabled elements. */}
+                                  server's own message, VISIBLE beside it, not
+                                  only in a hover tooltip (40258 taught that a
+                                  title-only reason reads as no reason at all).
+                                  title stays on the span for the full text
+                                  when the visible copy truncates; it also
+                                  works around disabled elements not reliably
+                                  showing tooltips. */}
                               {canPull && !r.buildable && r.build_block && o.open && (
                                 <span title={r.build_block}>
                                   <button
@@ -505,6 +509,9 @@ export default function RegistryClient({
                                   >
                                     {CHILD_ACTION_LABEL[action]}
                                   </button>
+                                  <span className="text-[10px] text-[var(--faint)] inline-block max-w-[240px] truncate align-middle mr-1.5">
+                                    {r.build_block}
+                                  </span>
                                 </span>
                               )}
                             </>
