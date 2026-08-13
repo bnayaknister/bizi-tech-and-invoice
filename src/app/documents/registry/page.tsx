@@ -3,7 +3,7 @@ import { getSessionAndProfile } from "@/lib/profile";
 import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import RegistryClient, { type DocRow } from "./RegistryClient";
-import { registryTabForType, type PendingDocType } from "@/lib/morning/types";
+import { MORNING_DOC_CODE, registryTabForType, type PendingDocType } from "@/lib/morning/types";
 import { ALLOWED_CHILDREN } from "@/lib/documents/taxFromParent";
 import { mapPullDocToSource, type PullDocRow } from "@/lib/documents/pullSource";
 
@@ -33,20 +33,21 @@ export default async function RegistryPage() {
   // Which registry rows can raise a tax document. Two doors, one per source:
   //  • a pending_documents row (app-issued) — the original path, keyed by
   //    morning_doc_id, inherits the frozen payload we actually sent.
-  //  • the raw path (stage 4, owner approved 2026-08-11) — a PULLED open 300
-  //    with no queue row is judged by the SAME mapper the route runs
-  //    (mapPullDocToSource), server-side, so the button never promises what
-  //    the server would refuse: the ceiling, an unmatched client, a closed
-  //    ref, a job already carrying invoice_tax — each shows its own refusal
-  //    up front instead of a 409 after the click. One function, two callers,
-  //    zero drift.
+  //  • the raw path — a PULLED open document with no queue row, two rungs:
+  //    a 300 (stage 4, owner approved 2026-08-11) judged by the SAME mapper
+  //    the tax route runs (mapPullDocToSource), and a 305 (2026-08-13) judged
+  //    for a receipt by mirroring the receipt builder's own door gates — that
+  //    builder (receiptFromTaxInvoice.ts, d22ed0e) is the authority; the tax
+  //    mapper never sees a 305. Either way the button never promises what the
+  //    server would refuse: each block shows its own refusal up front instead
+  //    of a 4xx after the click.
   //
   // The candidate query is the only one that hauls raw, and it is bounded:
-  // open pulled 300s trend toward zero BECAUSE of this feature (a built 305
-  // closes its parent on the next pull), so a growing population is itself a
-  // pathology. The LIMIT is a circuit breaker, not pagination — and it is not
-  // silent: rows beyond it get a block message saying the screen capped, so
-  // truncation never reads as "no button for you, no reason given".
+  // open pulled 300s and 305s trend toward zero BECAUSE of this feature (a
+  // built child closes its parent on the next pull), so a growing population
+  // is itself a pathology. The LIMIT is a circuit breaker, not pagination —
+  // and it is not silent: rows beyond it get a block message saying the screen
+  // capped, so truncation never reads as "no button for you, no reason given".
   const RAW_CANDIDATE_LIMIT = 120;
   const [{ data: parentRows }, { data: candRows }] = await Promise.all([
     admin
@@ -58,7 +59,7 @@ export default async function RegistryPage() {
     admin
       .from("documents")
       .select("id,morning_doc_id,morning_doc_number,type,source,client_id,job_id,amount,cancelled_at,archived_at,raw")
-      .eq("type", 300)
+      .in("type", [300, 305])
       .eq("status", 0)
       .eq("source", "pull")
       .is("cancelled_at", null)
@@ -71,12 +72,17 @@ export default async function RegistryPage() {
     pendingIdByMorningId.set(p.morning_doc_id, p.id);
   }
 
-  // judge every candidate with the real mapper, then the job pre-checks —
-  // in exactly the server's order, so the screen's verdict IS the server's
-  type RawState = { state: "raw"; net: number } | { state: "blocked"; reason: string };
+  // judge every candidate in exactly the server's order, so the screen's
+  // verdict IS the server's: a 300 through the real tax mapper + job
+  // pre-checks, a 305 through the receipt judge below
+  type RawState = { state: "raw"; net: number | null } | { state: "blocked"; reason: string };
   const rawStateByDocId = new Map<string, RawState>();
   const cands = (candRows ?? []) as unknown as PullDocRow[];
-  const candJobIds = Array.from(new Set(cands.map((c) => c.job_id).filter(Boolean))) as string[];
+  // jobs matter only to the tax rung — a receipt has no jobs gate (it stamps
+  // nothing; the money side closes via payment reconciliation)
+  const candJobIds = Array.from(
+    new Set(cands.filter((c) => c.type === 300).map((c) => c.job_id).filter(Boolean))
+  ) as string[];
   const taxedByJob = new Map<string, string>();
   if (candJobIds.length) {
     const { data: jobRows } = await admin.from("jobs").select("id,invoice_tax").in("id", candJobIds);
@@ -84,10 +90,55 @@ export default async function RegistryPage() {
       if (j.invoice_tax && String(j.invoice_tax).trim()) taxedByJob.set(j.id, String(j.invoice_tax));
     }
   }
+
+  // The receipt verdict for a pulled 305 — a read-only MIRROR of the door
+  // gates in createReceiptFromTaxInvoices (d22ed0e), same order, same
+  // sentences, because the builder cannot be called to judge (it inserts on
+  // success) and exports no mapper. If a gate changes there, change it here.
+  // The query above already guarantees source='pull', type, status=0, not
+  // cancelled, not archived — only the rest is judged.
+  const judgeReceiptCandidate = (c: PullDocRow): RawState => {
+    const label = c.morning_doc_number ? `#${c.morning_doc_number}` : (c.morning_doc_id ?? c.id);
+    const blocked = (reason: string): RawState => ({ state: "blocked", reason: `${label}: ${reason}` });
+    if (!c.morning_doc_id) return blocked("אין מזהה מורנינג — לא ניתן לקשר אליו");
+    if (!c.morning_doc_number || !String(c.morning_doc_number).trim()) {
+      return blocked("אין מספר מסמך — לא ניתן לציין אותו בהערת המקור");
+    }
+    if (!c.client_id) return blocked("הלקוח אינו משויך באפליקציה — שייכי אותו במסך הלקוחות קודם");
+    const rawRec = c.raw && typeof c.raw === "object" ? (c.raw as Record<string, unknown>) : null;
+    const rawClient =
+      rawRec && rawRec.client && typeof rawRec.client === "object" ? (rawRec.client as Record<string, unknown>) : null;
+    if (typeof rawClient?.id !== "string" || !rawClient.id) {
+      return blocked("אין מזהה לקוח מורנינג במסמך שנמשך — לא ניתן לבנות קבלה");
+    }
+    // the same three-state openness read the builder runs: not-an-array =
+    // unknown, empty = closed, else the allowed child codes
+    const ref = rawRec?.ref;
+    if (!Array.isArray(ref)) return blocked("לא ניתן לקרוא את מצב המסמך ממורנינג (אין ref) — רענני את המשיכה ונסי שוב");
+    if (ref.length === 0) return blocked("כבר סגור במורנינג — לא ניתן להנפיק על סמכו");
+    const allowedCodes = ref.map((v) => Number(v)).filter((n) => Number.isFinite(n));
+    if (!allowedCodes.includes(MORNING_DOC_CODE.receipt)) {
+      return blocked("מורנינג אינה מתירה להנפיק על סמכו קבלה");
+    }
+    const docCurrency = typeof rawRec?.currency === "string" ? rawRec.currency : "";
+    if (docCurrency !== "ILS") return blocked(`מטבע ${docCurrency || "חסר"} — מסלול זה מנפיק בשקלים בלבד`);
+    // the gross the builder will read — raw only, never documents.amount
+    const rawAmount = rawRec?.amount;
+    if (rawAmount === null || rawAmount === undefined || !Number.isFinite(Number(rawAmount))) {
+      return blocked("אין סכום במסמך שנמשך ממורנינג — לא ניתן לבנות קבלה");
+    }
+    // no net: a receipt is built on the GROSS, and the modal labels it so
+    return { state: "raw", net: null };
+  };
+
   for (const c of cands) {
     // a pull doc with a queue row cannot occur through any code path, but if
     // one ever does, the pending door wins — same rule as the route
     if (c.morning_doc_id && pendingIdByMorningId.has(c.morning_doc_id)) continue;
+    if (c.type === 305) {
+      rawStateByDocId.set(c.id, judgeReceiptCandidate(c));
+      continue;
+    }
     const res = mapPullDocToSource(c);
     if (!res.ok) {
       rawStateByDocId.set(c.id, { state: "blocked", reason: res.error });
@@ -132,17 +183,28 @@ export default async function RegistryPage() {
   // the original door), 'raw' (pulled, judged buildable by the mapper), or
   // null with build_block carrying the exact reason the button is dark
   const buildState = (d: Record<string, unknown>): Pick<DocRow, "buildable" | "build_block" | "net_amount"> => {
+    // a 320 is invoice AND receipt in one — the payment is inside it, so a
+    // further receipt is never raised on it. Said in words, never null/null:
+    // the silent action cell is exactly the hole this screen exists to close.
+    if (d.type === 320) {
+      return {
+        buildable: null,
+        build_block: "חשבונית מס קבלה כוללת את התקבול — לא מונפקת עליה קבלה נוספת",
+        net_amount: null,
+      };
+    }
     if (pendingIdByMorningId.has(d.morning_doc_id as string)) {
       return { buildable: "pending", build_block: null, net_amount: null };
     }
     const rs = rawStateByDocId.get(d.id as string);
     if (rs?.state === "raw") return { buildable: "raw", build_block: null, net_amount: rs.net };
     if (rs?.state === "blocked") return { buildable: null, build_block: rs.reason, net_amount: null };
-    // an open pulled 300 that is not in the candidate map at all can only
-    // mean the LIMIT capped it out — say so rather than go quietly dark
-    const isOpenPull300 =
-      d.type === 300 && d.status === 0 && d.source === "pull" && !d.cancelled_at && !d.archived_at;
-    if (isOpenPull300 && candidatesCapped) {
+    // an open pulled candidate (300 or 305) that is not in the candidate map
+    // at all can only mean the LIMIT capped it out — say so rather than go
+    // quietly dark
+    const isOpenPullCandidate =
+      (d.type === 300 || d.type === 305) && d.status === 0 && d.source === "pull" && !d.cancelled_at && !d.archived_at;
+    if (isOpenPullCandidate && candidatesCapped) {
       return {
         buildable: null,
         build_block: `יותר מ-${RAW_CANDIDATE_LIMIT} מסמכים פתוחים ממורנינג — המסך ממפה את החדשים תחילה; טפלי בהם ורענני`,

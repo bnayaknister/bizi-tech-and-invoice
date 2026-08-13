@@ -510,6 +510,15 @@ export default function RegistryClient({
                             </>
                           );
                         })()}
+                        {/* a row that can never father a child but carries a
+                            reason — today only the 320 case — shows the reason
+                            instead of an empty cell. No dark button: this is a
+                            permanent "never", not a fixable block. */}
+                        {canPull && !r.child_action && r.build_block && (
+                          <span className="text-[10px] text-[var(--faint)]" title={r.build_block}>
+                            {r.build_block}
+                          </span>
+                        )}
                         {canPull && r.type === 300 && (
                           <button
                             onClick={() => setCancelDoc(r)}
@@ -690,10 +699,17 @@ function TaxFromParentModal({
                 <span className="text-[var(--faint)]">לקוח: </span>
                 {doc.client_name ?? "—"}
               </div>
-              {/* a pull row's `amount` is the GROSS; the child is built on the
-                  proven NET. Showing only the gross against a net child bred
-                  distrust — so show both, labelled, net first. */}
-              {doc.buildable === "raw" && doc.net_amount !== null ? (
+              {/* a pull row's `amount` is the GROSS; a TAX child is built on
+                  the proven NET, so that modal shows both, net first. A receipt
+                  is the opposite: it states money that already moved, tax
+                  included — the gross IS its number, and a net line here would
+                  be the classic net-instead-of-gross mistake in reverse. */}
+              {doc.buildable === "raw" && isReceipt ? (
+                <div>
+                  <span className="text-[var(--faint)]">סכום (ברוטו): </span>
+                  <span className="font-mono">{money(doc.amount, doc.currency)}</span>
+                </div>
+              ) : doc.buildable === "raw" && doc.net_amount !== null ? (
                 <div>
                   <span className="text-[var(--faint)]">סכום נטו: </span>
                   <span className="font-mono">{money(doc.net_amount, doc.currency)}</span>
