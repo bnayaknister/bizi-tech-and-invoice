@@ -466,6 +466,11 @@ export default function RegistryClient({
                         {r.child_action && (() => {
                           const o = parentOpenness(r.status);
                           const action = r.child_action!;
+                          // mirrors the "שייך ל-job" button's condition above:
+                          // when that button is in the cell, the visible block
+                          // sentence would say the same thing twice — the
+                          // tooltip keeps the full reason either way
+                          const assignShown = canPull && !r.job_id && BILLING_TYPES.includes(r.type);
                           return (
                             <>
                               <span
@@ -509,9 +514,11 @@ export default function RegistryClient({
                                   >
                                     {CHILD_ACTION_LABEL[action]}
                                   </button>
-                                  <span className="text-[10px] text-[var(--faint)] inline-block max-w-[240px] truncate align-middle mr-1.5">
-                                    {r.build_block}
-                                  </span>
+                                  {!assignShown && (
+                                    <span className="text-[10px] text-[var(--faint)] inline-block max-w-[240px] truncate align-middle mr-1.5">
+                                      {r.build_block}
+                                    </span>
+                                  )}
                                 </span>
                               )}
                             </>
