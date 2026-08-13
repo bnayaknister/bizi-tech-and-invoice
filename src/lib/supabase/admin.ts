@@ -26,10 +26,21 @@ export function createAdminClient() {
 // becomes a build failure instead of a 400/42703 at runtime that reads as an
 // empty result (see lib/supabase/unwrap.ts for what that cost).
 //
-// Caveat worth knowing before converting a file: a select built at runtime
-// (`const cols: string = …`) silently opts out — it compiles and checks
-// nothing. Verified: a nonsense column inside such a select produced zero
-// errors. Conditional selects must be split into literals to get any safety.
+// Where the safety actually lives: the field access, not the `.select()`.
+// supabase-js does not validate column names when the query is built — it
+// returns a `SelectQueryError` carrying the message, and that only surfaces
+// the moment a row's field is touched. Any cast between the call and the
+// access (`as QueryResult<…>`, `as Record<string, unknown>[]`) erases it
+// completely, leaving a file that looks typed and checks nothing.
+//
+// Splitting a conditional select into literals is necessary but NOT
+// sufficient — a split select behind a cast still checks nothing. Verified
+// 13.8: the split was done in full and a nonsense column still passed
+// silently; removing the cast is what made it fail.
+//
+// Acceptance test, per converted file: a wrong column name in `.select()`
+// must break the build with `column '<name>' does not exist on '<table>'`.
+// A clean `tsc --noEmit` proves nothing on its own.
 export function createTypedAdminClient(): SupabaseClient<Database> {
   return createSupabaseClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
