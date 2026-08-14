@@ -40,3 +40,9 @@ next-env.d.ts
 
 # supabase CLI local state (created by `gen types` / `link`)
 supabase/.temp/
+
+# migration working files (2026-08-14)
+*.sql
+baseline-*.txt
+new-rows.txt
+seq-*.txt
