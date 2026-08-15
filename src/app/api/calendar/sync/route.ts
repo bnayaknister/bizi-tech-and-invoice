@@ -5,7 +5,7 @@ import { fetchAndParseIcs, parseIcsText, type CalendarEvent } from "@/lib/calend
 import { buildSyncPlan, type ExistingProductionRow } from "@/lib/calendar/sync";
 import { extractGuestFromTitle, type ShowForMatch } from "@/lib/calendar/match";
 import { enqueueDocument } from "@/lib/documents/enqueue";
-import { mustRows, type QueryResult } from "@/lib/supabase/unwrap";
+import { must, mustRows, type QueryResult } from "@/lib/supabase/unwrap";
 
 // Google Calendar sync (screens-spec §11, owner rules 2026-07-16/17):
 //   GET  — Vercel Cron trigger. Authorizes via CRON_SECRET, always reads
@@ -113,8 +113,15 @@ async function alreadySyncedToday(admin: ReturnType<typeof createAdminClient>, i
 }
 
 async function syncEnabled(admin: ReturnType<typeof createAdminClient>): Promise<boolean> {
-  const { data } = await admin.from("app_settings").select("calendar_sync_enabled").eq("id", true).maybeSingle();
-  return data?.calendar_sync_enabled === true;
+  const settings = must<{ calendar_sync_enabled: boolean }>(
+    (await admin
+      .from("app_settings")
+      .select("calendar_sync_enabled")
+      .eq("id", true)
+      .maybeSingle()) as QueryResult<{ calendar_sync_enabled: boolean }>,
+    "טעינת הגדרות סנכרון היומן"
+  );
+  return settings?.calendar_sync_enabled === true;
 }
 
 type ShowRow = {
