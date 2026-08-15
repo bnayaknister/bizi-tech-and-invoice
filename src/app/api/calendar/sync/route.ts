@@ -139,12 +139,15 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
   // recreating the production the owner just cancelled. Drop those events up
   // front so they never reach create/update/flag logic at all. Not limited to
   // today — a cancellation must survive every future sync.
-  const { data: cancelledRows } = await admin
-    .from("productions")
-    .select("calendar_uid")
-    .eq("status", "בוטל")
-    .not("calendar_uid", "is", null);
-  const cancelledUids = new Set((cancelledRows ?? []).map((r) => r.calendar_uid as string));
+  const cancelledRows = mustRows<{ calendar_uid: string }>(
+    (await admin
+      .from("productions")
+      .select("calendar_uid")
+      .eq("status", "בוטל")
+      .not("calendar_uid", "is", null)) as QueryResult<{ calendar_uid: string }[]>,
+    "טעינת ההפקות המבוטלות"
+  );
+  const cancelledUids = new Set(cancelledRows.map((r) => r.calendar_uid));
   if (cancelledUids.size) {
     events = events.filter((e) => !e.uid || !cancelledUids.has(e.uid));
   }
@@ -203,16 +206,17 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
   // part of to begin with
   // merged-away productions (calendar duplicate merged, or split undone) are
   // soft-hidden from the board — they must stay invisible to the sync too
-  const { data: existingRows } = await admin
-    .from("productions")
-    .select("id,calendar_uid,status,calendar_removed")
-    .not("calendar_uid", "is", null)
-    .is("merged_into", null)
-    .eq("record_date", todayIsraelDate);
-  const existingByUid = new Map(
-    (existingRows ?? []).map((r) => [r.calendar_uid as string, r as ExistingProductionRow])
+  const existingRows = mustRows<ExistingProductionRow>(
+    (await admin
+      .from("productions")
+      .select("id,calendar_uid,status,calendar_removed")
+      .not("calendar_uid", "is", null)
+      .is("merged_into", null)
+      .eq("record_date", todayIsraelDate)) as QueryResult<ExistingProductionRow[]>,
+    "טעינת ההפקות הקיימות של היום"
   );
-  const existingIds = (existingRows ?? []).map((r) => r.id);
+  const existingByUid = new Map(existingRows.map((r) => [r.calendar_uid, r]));
+  const existingIds = existingRows.map((r) => r.id);
 
   // Split siblings deliberately share one calendar_uid (screens-spec: a
   // technician-split production stays linked to the source calendar event),
@@ -222,8 +226,8 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
   // sibling buildSyncPlan happened to see.
   const siblingIdsByUid = new Map<string, string[]>();
   const uidByProductionId = new Map<string, string>();
-  for (const r of existingRows ?? []) {
-    const uid = r.calendar_uid as string;
+  for (const r of existingRows) {
+    const uid = r.calendar_uid;
     uidByProductionId.set(r.id, uid);
     const arr = siblingIdsByUid.get(uid) ?? [];
     arr.push(r.id);
@@ -238,13 +242,16 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
   // sync's own bookkeeping — exactly "אין events של שינוי ידני"
   let touchedIds = new Set<string>();
   if (existingIds.length) {
-    const { data: evRows } = await admin
-      .from("events")
-      .select("entity_id,event_type")
-      .eq("entity_type", "production")
-      .in("entity_id", existingIds);
+    const evRows = mustRows<{ entity_id: string; event_type: string }>(
+      (await admin
+        .from("events")
+        .select("entity_id,event_type")
+        .eq("entity_type", "production")
+        .in("entity_id", existingIds)) as QueryResult<{ entity_id: string; event_type: string }[]>,
+      "טעינת אירועי העריכה הידנית"
+    );
     touchedIds = new Set(
-      (evRows ?? []).filter((e) => !String(e.event_type).startsWith("calendar_")).map((e) => e.entity_id)
+      evRows.filter((e) => !e.event_type.startsWith("calendar_")).map((e) => e.entity_id)
     );
   }
 
@@ -367,7 +374,8 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
 
   const unflaggedIds = new Set(plan.toUnflagRemoved.flatMap((id) => expandToSiblings(id)));
   for (const id of Array.from(unflaggedIds)) {
-    await admin.from("productions").update({ calendar_removed: false }).eq("id", id);
+    const { error } = await admin.from("productions").update({ calendar_removed: false }).eq("id", id);
+    if (error) throw new Error(error.message);
     unflaggedRemoved++;
   }
 
