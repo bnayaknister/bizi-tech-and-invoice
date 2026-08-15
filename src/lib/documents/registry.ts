@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { searchDocuments } from "@/lib/morning/client";
 import { autoReconcile } from "@/lib/documents/reconcile";
 import { backfillDocumentClients } from "@/lib/documents/backfill";
+import { mustRows, type QueryResult } from "@/lib/supabase/unwrap";
 
 // The documents registry: one row per Morning document, written from two
 // directions (app issuance write-through, and the daily pull of documents
@@ -207,8 +208,14 @@ export async function runDocumentPull(admin: SupabaseClient, opts?: { full?: boo
   // don't downgrade an 'app' source or drop an already-resolved client
   const existing = new Map<string, { source: string; client_id: string | null }>();
   for (const ids of chunk(docs.map((d) => d.id), 200)) {
-    const { data } = await admin.from("documents").select("morning_doc_id,source,client_id").in("morning_doc_id", ids);
-    for (const r of data ?? []) existing.set(r.morning_doc_id as string, { source: r.source as string, client_id: (r.client_id as string | null) ?? null });
+    const rows = mustRows<{ morning_doc_id: string; source: string; client_id: string | null }>(
+      (await admin
+        .from("documents")
+        .select("morning_doc_id,source,client_id")
+        .in("morning_doc_id", ids)) as QueryResult<{ morning_doc_id: string; source: string; client_id: string | null }[]>,
+      "טעינת המסמכים הקיימים"
+    );
+    for (const r of rows) existing.set(r.morning_doc_id, { source: r.source, client_id: r.client_id ?? null });
   }
 
   let inserted = 0;
