@@ -306,9 +306,29 @@ export async function applyResponse(
       // for redemption — the deal invoice is not enqueued here. per_episode
       // enqueues immediately, same as the manual board path. The DB trigger
       // has already created the internal job either way.
-      const cadence = await getClientCadence(admin, prod.client_id);
-      if (cadence === "per_episode") {
-        await enqueueDocument(admin, "deal_invoice", prod as ProductionForBilling, { jobId: link2?.job_id ?? null });
+      // The client's approval is already recorded — a failed enqueue (or a
+      // failed cadence read, which throws) must not read as a failed approval
+      // on the public page. Leave a trace instead of throwing.
+      try {
+        const cadence = await getClientCadence(admin, prod.client_id);
+        if (cadence === "per_episode") {
+          const res = await enqueueDocument(admin, "deal_invoice", prod as ProductionForBilling, { jobId: link2?.job_id ?? null });
+          if (res.status === "error" || res.status === "blocked") {
+            await admin.from("events").insert({
+              entity_type: "production",
+              entity_id: production.id,
+              event_type: "deal_invoice_enqueue_failed",
+              payload: { status: res.status, detail: res.status === "error" ? res.error : res.reason },
+            });
+          }
+        }
+      } catch (e) {
+        await admin.from("events").insert({
+          entity_type: "production",
+          entity_id: production.id,
+          event_type: "deal_invoice_enqueue_failed",
+          payload: { status: "error", detail: e instanceof Error ? e.message : String(e) },
+        });
       }
     }
   }

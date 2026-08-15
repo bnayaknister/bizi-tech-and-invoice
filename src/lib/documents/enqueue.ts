@@ -7,6 +7,7 @@ import {
   type PendingDocType,
 } from "@/lib/morning/types";
 import { todayInIsrael } from "@/lib/dates";
+import { SupabaseReadError } from "@/lib/supabase/unwrap";
 
 // Enqueueing, not issuing. Nothing in this file talks to Morning — it
 // decides whether a document is OWED, builds the exact payload that would
@@ -81,7 +82,10 @@ export async function getClientCadence(
   clientId: string | null
 ): Promise<BillingCadence> {
   if (!clientId) return "per_episode";
-  const { data } = await admin.from("clients").select("billing_cadence").eq("id", clientId).maybeSingle();
+  const { data, error } = await admin.from("clients").select("billing_cadence").eq("id", clientId).maybeSingle();
+  // Throw, not per_episode: a failed read that defaults to per_episode issues
+  // immediately to a monthly client instead of accruing.
+  if (error) throw new SupabaseReadError("קריאת מקצב החיוב של הלקוח", error.message, error.code ?? null);
   const c = (data as { billing_cadence?: string } | null)?.billing_cadence;
   return c === "monthly" || c === "every_n" ? c : "per_episode";
 }
@@ -233,20 +237,22 @@ export async function enqueueDocument(
   production: ProductionForBilling,
   opts: { jobId?: string | null; amountOverride?: number | null; forcePending?: boolean } = {}
 ): Promise<EnqueueResult> {
-  const { data: show } = await admin
+  const { data: show, error: showErr } = await admin
     .from("shows")
     .select("id,client_id,billing_mode,default_rate")
     .eq("id", production.show_id ?? "")
     .maybeSingle();
+  if (showErr) return { status: "error", error: `קריאת התוכנית נכשלה: ${showErr.message}` };
 
   const clientId = (show as ShowForBilling | null)?.client_id ?? production.client_id;
-  const { data: client } = clientId
+  const { data: client, error: clientErr } = clientId
     ? await admin
         .from("clients")
         .select("id,name,morning_client_id,billing_cadence")
         .eq("id", clientId)
         .maybeSingle()
-    : { data: null };
+    : { data: null, error: null };
+  if (clientErr) return { status: "error", error: `קריאת הלקוח נכשלה: ${clientErr.message}` };
 
   // The contract is only ever needed for a contract-billed show, so this costs
   // one extra round trip on exactly the shows that need it and none otherwise.
@@ -303,11 +309,14 @@ export async function enqueueDocument(
   // work order (that's the base session only), so this is deal_invoice-only.
   let extraLines: ExtraLine[] = [];
   if (docType === "deal_invoice") {
-    const { data: addons } = await admin
+    const { data: addons, error: addonsErr } = await admin
       .from("production_addons")
       .select("title,quantity,unit_price,total")
       .eq("production_id", production.id)
       .eq("status", "approved");
+    // Do not swallow: a failed read here would build the invoice without the
+    // add-on lines — undercharging, silently.
+    if (addonsErr) return { status: "error", error: `קריאת התוספות נכשלה: ${addonsErr.message}` };
     extraLines = (addons ?? [])
       .filter((a) => a.unit_price != null && a.total != null)
       .map((a) => ({ description: a.title as string, quantity: a.quantity as number, price: a.unit_price as number }));

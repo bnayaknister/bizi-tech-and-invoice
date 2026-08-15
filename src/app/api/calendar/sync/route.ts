@@ -265,7 +265,7 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
   const plan = buildSyncPlan(events, showsForMatch, existingByUid, touchedIds);
 
   let created = 0, updated = 0, flaggedChanged = 0, flaggedRemoved = 0, unflaggedRemoved = 0;
-  let queuedWorkOrders = 0, blockedWorkOrders = 0, accruedWorkOrders = 0;
+  let queuedWorkOrders = 0, blockedWorkOrders = 0, accruedWorkOrders = 0, erroredWorkOrders = 0;
 
   for (const action of plan.toCreate) {
     const show = showById.get(action.show.id);
@@ -337,6 +337,7 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
     if (enq.status === "queued") queuedWorkOrders++;
     else if (enq.status === "accrued") accruedWorkOrders++;
     else if (enq.status === "blocked") blockedWorkOrders++;
+    else if (enq.status === "error") erroredWorkOrders++;
   }
 
   for (const action of plan.toUpdate) {
@@ -395,6 +396,7 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
     queuedWorkOrders,
     accruedWorkOrders,
     blockedWorkOrders,
+    erroredWorkOrders,
     skippedNoMatch: plan.skippedNoMatch,
   };
 }
