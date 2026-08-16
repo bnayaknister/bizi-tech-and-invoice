@@ -1,3 +1,5 @@
+import { cache } from "react";
+import type { Metadata } from "next";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { resolveLink } from "@/lib/review/links";
 import ReviewClient from "./ReviewClient";
@@ -6,6 +8,49 @@ import ReviewClient from "./ReviewClient";
 // shell and the auth wall (see middleware). It exposes ONLY the show name,
 // episode, and date — never money, never anything else about the system.
 export const dynamic = "force-dynamic";
+
+// generateMetadata and the page body run in the same request — React cache()
+// dedupes the token resolution so the DB is hit once, without touching
+// resolveLink itself.
+const getLinkState = cache(async (token: string) => resolveLink(createAdminClient(), token));
+
+// "2026-08-11" -> "11.08" — the share-preview date format
+function shortDate(recordDate: string | null): string | null {
+  const m = recordDate?.match(/^\d{4}-(\d{2})-(\d{2})$/);
+  return m ? `${m[2]}.${m[1]}` : null;
+}
+
+export async function generateMetadata({ params }: { params: { token: string } }): Promise<Metadata> {
+  const state = await getLinkState(params.token);
+
+  // any non-ok state gets the generic card — a dead link's preview must not
+  // leak the production name (same privacy rule as the page body: no money,
+  // and nothing at all through an invalid token)
+  if (state.status !== "ok") {
+    return {
+      title: "ביזי סטודיו — לינק צפייה",
+      openGraph: { siteName: "ביזי סטודיו", title: "ביזי סטודיו — לינק צפייה" },
+    };
+  }
+
+  const p = state.production;
+  const episodeIncluded = state.link.scope === "episode" || state.link.scope === "all";
+  const reelsIncluded = (state.link.scope === "reels" || state.link.scope === "all") && p.review_reels_required;
+  const reelCount = state.items.filter((i) => i.kind === "reel").length;
+
+  const parts: string[] = [];
+  if (episodeIncluded) parts.push("פרק מלא");
+  if (reelsIncluded) parts.push(reelCount === 1 ? "ריל אחד" : reelCount > 1 ? `${reelCount} רילז` : "רילז");
+  const date = shortDate(p.record_date);
+  const description = [parts.join(" + "), date].filter(Boolean).join(" · ") || "לצפייה ואישור";
+
+  const title = `${p.podcast_name ?? "הפקה"} — לאישור`;
+  return {
+    title,
+    description,
+    openGraph: { siteName: "ביזי סטודיו", title, description },
+  };
+}
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -54,8 +99,7 @@ function Notice({ title, sub }: { title: string; sub: string }) {
 }
 
 export default async function ReviewPage({ params }: { params: { token: string } }) {
-  const admin = createAdminClient();
-  const state = await resolveLink(admin, params.token);
+  const state = await getLinkState(params.token);
 
   if (state.status === "responded") {
     return <Notice title="התקבל, תודה!" sub="התשובה שלך נקלטה. אפשר לסגור את החלון." />;
