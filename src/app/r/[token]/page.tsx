@@ -67,7 +67,9 @@ function Shell({ children }: { children: React.ReactNode }) {
         fontFamily: "system-ui, -apple-system, 'Segoe UI', Arial, sans-serif",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 28, opacity: 0.9 }}>
+      {/* dir=ltr: the page is RTL, and an RTL flex row would render the Latin
+          wordmark reversed ("Podclub Bizi") */}
+      <div dir="ltr" style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 28, opacity: 0.9 }}>
         <span style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.02em" }}>Bizi</span>
         <span style={{ fontSize: 12, color: "#9a94b8" }}>Podclub</span>
       </div>
