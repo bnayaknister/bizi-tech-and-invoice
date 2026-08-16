@@ -54,6 +54,48 @@ export async function createReviewLink(
     await admin.from("productions").update({ review_reels_required: true }).eq("id", productionId);
   }
 
+  // Lazy seeding (0057, item-based review §2): a production meets the items
+  // model the first time a link is minted for it. Seeded from has_episode +
+  // reels_count — the composition truth — with approved initialised from the
+  // sticky per-track flags, and media inherited from what this mint carries.
+  // Items are seeded HERE only; an approved reels add-on that later raises
+  // reels_count must NOT retro-create items (spec §4 — the production may
+  // already be approved). 23505 = a concurrent mint seeded first; fine.
+  const { data: existingItems } = await admin
+    .from("client_review_items")
+    .select("id")
+    .eq("production_id", productionId)
+    .limit(1);
+  if (!existingItems || existingItems.length === 0) {
+    const { data: comp } = await admin
+      .from("productions")
+      .select("has_episode,reels_count,review_episode_approved,review_reels_approved")
+      .eq("id", productionId)
+      .maybeSingle();
+    if (comp) {
+      const rows: {
+        production_id: string; kind: string; reel_index: number | null; media_link: string | null; approved: boolean;
+      }[] = [];
+      if (comp.has_episode) {
+        rows.push({
+          production_id: productionId, kind: "episode", reel_index: null,
+          media_link: opts.episodeLink ?? null, approved: !!comp.review_episode_approved,
+        });
+      }
+      const reelCount = Number(comp.reels_count) || 0;
+      for (let i = 1; i <= reelCount; i++) {
+        rows.push({
+          production_id: productionId, kind: "reel", reel_index: i,
+          media_link: opts.reelsLink ?? null, approved: !!comp.review_reels_approved,
+        });
+      }
+      if (rows.length) {
+        const { error: seedErr } = await admin.from("client_review_items").insert(rows);
+        if (seedErr && seedErr.code !== "23505") throw new Error(seedErr.message);
+      }
+    }
+  }
+
   const token = generateToken();
   const expiresAt = new Date(Date.now() + LINK_TTL_DAYS * 24 * 3600_000).toISOString();
   const { error } = await admin.from("client_review_links").insert({
@@ -76,8 +118,19 @@ export async function createReviewLink(
 // to approve without a price.
 export type ReviewAddon = { id: string; title: string; quantity: number; unit_price: number; total: number };
 
+// One deliverable under review (0057). Display-only in stage 1a: the approval
+// logic still runs on the production's per-track flags; `approved` here is the
+// backfilled/seeded mirror, not yet consulted by applyResponse.
+export type ReviewItem = {
+  id: string;
+  kind: "episode" | "reel";
+  reel_index: number | null;
+  media_link: string | null;
+  approved: boolean;
+};
+
 export type LinkState =
-  | { status: "ok"; link: ReviewLinkRow; production: ReviewProductionRow; addons: ReviewAddon[]; baseAmount: number | null }
+  | { status: "ok"; link: ReviewLinkRow; production: ReviewProductionRow; addons: ReviewAddon[]; baseAmount: number | null; items: ReviewItem[] }
   | { status: "missing" }
   | { status: "expired" }
   | { status: "superseded" }
@@ -157,7 +210,23 @@ export async function resolveLink(admin: SupabaseClient, token: string): Promise
     total: a.total as number,
   }));
 
-  return { status: "ok", link: link as ReviewLinkRow, production: production as ReviewProductionRow, addons, baseAmount };
+  // review items (0057) — empty for a production minted before the items
+  // model; the public page falls back to the track-level rendering then
+  const { data: itemRows } = await admin
+    .from("client_review_items")
+    .select("id,kind,reel_index,media_link,approved")
+    .eq("production_id", link.production_id)
+    .order("kind") // 'episode' sorts before 'reel'
+    .order("reel_index", { ascending: true });
+  const items: ReviewItem[] = (itemRows ?? []).map((r) => ({
+    id: r.id as string,
+    kind: r.kind as "episode" | "reel",
+    reel_index: (r.reel_index as number | null) ?? null,
+    media_link: (r.media_link as string | null) ?? null,
+    approved: !!r.approved,
+  }));
+
+  return { status: "ok", link: link as ReviewLinkRow, production: production as ReviewProductionRow, addons, baseAmount, items };
 }
 
 export type TrackResponse = "approved" | "revisions" | undefined;

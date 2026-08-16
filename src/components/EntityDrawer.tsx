@@ -105,6 +105,9 @@ type DrawerData = {
     episode_approved: boolean; reels_approved: boolean; reels_required: boolean;
     episode_note: string | null; reels_note: string | null;
   } | null;
+  // per-deliverable media links (0057) — null/empty until the items model
+  // reaches this production (seeded at link mint or first drawer save)
+  reviewItems: { id: string; kind: string; reel_index: number | null; media_link: string | null; approved: boolean }[] | null;
   reelsSummary: { count: number } | null;
   log: LogEntry[] | null;
   diskOptions: string[] | null;
@@ -130,7 +133,7 @@ const STEP_ORDER: Record<string, number> = { record: 0, edit: 1, deliver: 2 };
 // without hunting. Stage steps advance on tap (record→edit→deliver→back).
 function ProductionTrackBlock({
   icon, title, stages, note, approved, canEdit, onAdvance, tally, onSend, saving, sending, sent,
-  mediaUrl, onMediaChange,
+  mediaUrl, onMediaChange, onMediaBlur, mediaFields,
 }: {
   icon: string;
   title: string;
@@ -148,6 +151,11 @@ function ProductionTrackBlock({
   // blocks' links at once without the tech re-entering them (owner 2026-07-24)
   mediaUrl: string;
   onMediaChange: (v: string) => void;
+  // persist-on-blur for the single input (0057 — saved to the review item)
+  onMediaBlur?: () => void;
+  // one labelled input per deliverable (reel 1..n, 0057); replaces the single
+  // input when provided — the reels block passes these
+  mediaFields?: { label: string; value: string; onChange: (v: string) => void; onBlur: () => void }[];
 }) {
   const ordered = [...stages].sort((a, b) => (STEP_ORDER[a.step] ?? 9) - (STEP_ORDER[b.step] ?? 9));
   // TWO different measurements live in this block, and until 2026-08-03 both
@@ -217,10 +225,28 @@ function ProductionTrackBlock({
       )}
       {onSend && canEdit && !approved && (
         <div className="space-y-1.5">
-          {!sent && (
+          {!sent && mediaFields && (
+            <div className="space-y-1">
+              {mediaFields.map((f) => (
+                <div key={f.label} className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-[var(--dim)] shrink-0 w-9 text-right">{f.label}</span>
+                  <input
+                    value={f.value}
+                    onChange={(e) => f.onChange(e.target.value)}
+                    onBlur={f.onBlur}
+                    placeholder="קישור דרייב לצפייה — אופציונלי"
+                    dir="ltr"
+                    className="w-full text-[11px] bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-2.5 py-1.5 text-right outline-none focus:border-[var(--violet-light)]"
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+          {!sent && !mediaFields && (
             <input
               value={mediaUrl}
               onChange={(e) => onMediaChange(e.target.value)}
+              onBlur={onMediaBlur}
               placeholder="קישור לצפייה (פרק/רילז) — אופציונלי"
               dir="ltr"
               className="w-full text-[11px] bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-2.5 py-1.5 text-right outline-none focus:border-[var(--violet-light)]"
@@ -424,7 +450,10 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   // media URLs lifted out of the two track blocks so the unified send can take
   // both at once (owner 2026-07-24)
   const [episodeMedia, setEpisodeMedia] = useState("");
-  const [reelsMedia, setReelsMedia] = useState("");
+  // one Drive link per reel, keyed by reel_index (0057). Initialised from the
+  // saved items once per opened production; typed edits persist on blur.
+  const [reelMedia, setReelMedia] = useState<Record<number, string>>({});
+  const mediaInitFor = useRef<string | null>(null);
   // a client-name edit that Morning must be told about, awaiting confirmation
   const [morningConfirm, setMorningConfirm] = useState<
     { key: string; value: unknown; prev: unknown; changes: Record<string, { from: unknown; to: unknown }> } | null
@@ -448,7 +477,8 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     setDiskModal(false);
     setNoteModal(null);
     setEpisodeMedia("");
-    setReelsMedia("");
+    setReelMedia({});
+    mediaInitFor.current = null;
     setRef(next);
   }, []);
 
@@ -477,6 +507,48 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (ref) void load(ref);
   }, [ref, load]);
+
+  // fill the media fields from the saved items ONCE per opened production —
+  // quiet reloads after actions must not clobber links mid-typing
+  useEffect(() => {
+    if (!ref || !data || data.type !== "production") return;
+    if (mediaInitFor.current === ref.id) return;
+    mediaInitFor.current = ref.id;
+    const items = data.reviewItems ?? [];
+    const ep = items.find((i) => i.kind === "episode");
+    if (ep?.media_link) setEpisodeMedia(ep.media_link);
+    const map: Record<number, string> = {};
+    for (const it of items) {
+      if (it.kind === "reel" && it.reel_index && it.media_link) map[it.reel_index] = it.media_link;
+    }
+    if (Object.keys(map).length) setReelMedia(map);
+  }, [ref, data]);
+
+  // persist one item's media link (0057) — display metadata only, so a
+  // failure surfaces as the drawer's regular error line and nothing else
+  async function saveItemLink(kind: "episode" | "reel", reelIndex: number | null, value: string) {
+    if (!ref) return;
+    const res = await fetch(`/api/productions/${ref.id}/review-items`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: [{ kind, reel_index: reelIndex, media_link: value.trim() || null }] }),
+    });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      setError(b.error ?? "שמירת קישור הצפייה נכשלה");
+    }
+  }
+
+  // the first filled reel link, by index — feeds the unified send and the
+  // per-track reels send exactly where the single reels field used to
+  function firstReelLink(): string | null {
+    const keys = Object.keys(reelMedia).map(Number).sort((a, b) => a - b);
+    for (const k of keys) {
+      const v = (reelMedia[k] ?? "").trim();
+      if (v) return v;
+    }
+    return null;
+  }
 
   function broadcast() {
     if (ref) window.dispatchEvent(new CustomEvent("bizi:entity-updated", { detail: ref }));
@@ -696,7 +768,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   async function sendUnifiedReviewLink() {
     if (!ref || reviewSending) return;
     const ep = episodeMedia.trim() || null;
-    const re = reelsMedia.trim() || null;
+    const re = firstReelLink();
     // pick scope from what's actually filled — a single filled block sends just
     // that one, exactly like its own button would
     const scope: "episode" | "reels" | "all" = ep && re ? "all" : ep ? "episode" : "reels";
@@ -1186,7 +1258,9 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                   // least one media link is filled, and both aren't already
                   // approved (nothing left to send)
                   const bothPresent = epStages.length > 0 && reelsShown;
-                  const anyMedia = !!(episodeMedia.trim() || reelsMedia.trim());
+                  const reelCount = data.reelsSummary?.count ?? 0;
+                  const reelFilled = firstReelLink();
+                  const anyMedia = !!(episodeMedia.trim() || reelFilled);
                   const bothApproved = !!data.review?.episode_approved && !!data.review?.reels_approved;
                   const showUnified = data.canEditStages && bothPresent && !bothApproved;
                   return (
@@ -1206,6 +1280,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           sent={reviewSent?.scope === "episode" ? reviewSent : null}
                           mediaUrl={episodeMedia}
                           onMediaChange={setEpisodeMedia}
+                          onMediaBlur={() => void saveItemLink("episode", null, episodeMedia)}
                         />
                       )}
                       {reelsShown && (
@@ -1222,8 +1297,21 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           onSend={(url) => void sendReviewLink("reels", url)}
                           sending={reviewSending === "reels"}
                           sent={reviewSent?.scope === "reels" ? reviewSent : null}
-                          mediaUrl={reelsMedia}
-                          onMediaChange={setReelsMedia}
+                          mediaUrl={reelFilled ?? ""}
+                          onMediaChange={() => {}}
+                          mediaFields={
+                            reelCount > 0
+                              ? Array.from({ length: reelCount }, (_, k) => {
+                                  const i = k + 1;
+                                  return {
+                                    label: `ריל ${i}`,
+                                    value: reelMedia[i] ?? "",
+                                    onChange: (v: string) => setReelMedia((prev) => ({ ...prev, [i]: v })),
+                                    onBlur: () => void saveItemLink("reel", i, reelMedia[i] ?? ""),
+                                  };
+                                })
+                              : undefined
+                          }
                         />
                       )}
                       {/* unified send — takes both blocks' links at once */}
@@ -1238,7 +1326,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                               ? "יוצר קישור…"
                               : !anyMedia
                                 ? "הדביקו קישור צפייה לפחות למסלול אחד"
-                                : episodeMedia.trim() && reelsMedia.trim()
+                                : episodeMedia.trim() && reelFilled
                                   ? "שלח לצפייה (פרק + רילז) →"
                                   : episodeMedia.trim()
                                     ? "שלח לצפייה (פרק בלבד — חסר קישור רילז) →"

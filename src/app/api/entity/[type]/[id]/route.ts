@@ -108,6 +108,9 @@ async function handleGet(
     episode_note: string | null; reels_note: string | null;
   } | null = null;
   let reelsSummary: { count: number } | null = null;
+  let reviewItems:
+    | { id: string; kind: string; reel_index: number | null; media_link: string | null; approved: boolean }[]
+    | null = null;
   if (type === "production" && profile.can_view_stages) {
     const { data } = await supabase
       .from("stages")
@@ -149,6 +152,24 @@ async function handleGet(
       // production_addons stays the money record, not the tally.
       reelsSummary = { count: Number(r.reels_count) || 0 };
     }
+
+    // per-item media links (0057) — read via the service role: the table has
+    // no user policies, and can_view_stages above is the real gate. Empty for
+    // a production the items model hasn't reached yet (seeded at link mint).
+    const itemsAdmin = createAdminClient();
+    const { data: itemRows } = await itemsAdmin
+      .from("client_review_items")
+      .select("id,kind,reel_index,media_link,approved")
+      .eq("production_id", params.id)
+      .order("kind")
+      .order("reel_index", { ascending: true });
+    reviewItems = (itemRows ?? []).map((r) => ({
+      id: r.id as string,
+      kind: r.kind as string,
+      reel_index: (r.reel_index as number | null) ?? null,
+      media_link: (r.media_link as string | null) ?? null,
+      approved: !!r.approved,
+    }));
   }
 
   // production journal (§3, owner 2026-07-24) + disk autocomplete (§2). Both
@@ -265,6 +286,7 @@ async function handleGet(
     // that replaces drag) — the DB trigger is the real enforcement
     canEditStages: !!profile.can_edit_stages,
     review,
+    reviewItems,
     reelsSummary,
     log,
     diskOptions,

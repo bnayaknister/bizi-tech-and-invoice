@@ -11,6 +11,15 @@ type Choice = "approved" | "revisions" | null;
 
 export type ReviewAddon = { id: string; title: string; quantity: number; unit_price: number; total: number };
 
+// mirrors ReviewItem from lib/review/links (redeclared locally like
+// ReviewAddon — this is a client component)
+export type ReviewItemView = {
+  id: string;
+  kind: "episode" | "reel";
+  reel_index: number | null;
+  media_link: string | null;
+};
+
 const NIS = new Intl.NumberFormat("he-IL");
 
 const card: React.CSSProperties = {
@@ -22,6 +31,72 @@ const card: React.CSSProperties = {
   background: "rgba(255,255,255,0.035)",
   marginBottom: 14,
 };
+
+// stage-0 media rendering, shared by the track blocks and the per-item boxes:
+// a Drive FILE link gets the embedded player (/preview), anything else keeps
+// the plain button
+function MediaView({ link }: { link: string }) {
+  const media = classifyDriveLink(link);
+  if (media.type !== "file") {
+    return (
+      <a
+        href={media.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{
+          display: "block",
+          textAlign: "center",
+          border: "1px solid rgba(255,255,255,0.14)",
+          borderRadius: 12,
+          padding: "10px",
+          fontSize: 14,
+          color: "#c9c3e8",
+          marginBottom: 12,
+          textDecoration: "none",
+        }}
+      >
+        ▶ צפייה
+      </a>
+    );
+  }
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <iframe
+        src={media.embedUrl}
+        allow="autoplay; fullscreen"
+        allowFullScreen
+        style={{
+          width: "100%",
+          aspectRatio: "16 / 9",
+          border: "1px solid rgba(255,255,255,0.14)",
+          borderRadius: 12,
+          background: "rgba(0,0,0,0.25)",
+        }}
+      />
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 8,
+          marginTop: 6,
+        }}
+      >
+        <span style={{ fontSize: 11, color: "#9a94b8" }}>
+          אם הסרטון לא מוצג — פתחו בטאב חדש
+        </span>
+        <a
+          href={media.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ fontSize: 12, color: "#c9c3e8", textDecoration: "none", whiteSpace: "nowrap" }}
+        >
+          פתח בטאב חדש ↗
+        </a>
+      </div>
+    </div>
+  );
+}
 
 export default function ReviewClient({
   token,
@@ -35,6 +110,7 @@ export default function ReviewClient({
   episodeLink,
   reelsLink,
   addons,
+  items = [],
 }: {
   token: string;
   showName: string;
@@ -47,6 +123,9 @@ export default function ReviewClient({
   episodeLink: string | null;
   reelsLink: string | null;
   addons: ReviewAddon[];
+  // per-deliverable items (0057). Empty → the production predates the items
+  // model and the page renders the original track-level layout unchanged.
+  items?: ReviewItemView[];
 }) {
   const [epChoice, setEpChoice] = useState<Choice>(null);
   const [epNote, setEpNote] = useState("");
@@ -154,71 +233,7 @@ export default function ReviewClient({
         <span style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>{title}</span>
         {approved && <span style={{ color: "#4ade80", fontSize: 13, fontWeight: 700 }}>✓ אושר</span>}
       </div>
-      {link &&
-        (() => {
-          const media = classifyDriveLink(link);
-          // only a Drive FILE link can host the embedded player; folders and
-          // unrecognised links keep the plain button
-          if (media.type !== "file") {
-            return (
-              <a
-                href={media.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{
-                  display: "block",
-                  textAlign: "center",
-                  border: "1px solid rgba(255,255,255,0.14)",
-                  borderRadius: 12,
-                  padding: "10px",
-                  fontSize: 14,
-                  color: "#c9c3e8",
-                  marginBottom: 12,
-                  textDecoration: "none",
-                }}
-              >
-                ▶ צפייה
-              </a>
-            );
-          }
-          return (
-            <div style={{ marginBottom: 12 }}>
-              <iframe
-                src={media.embedUrl}
-                allow="autoplay; fullscreen"
-                allowFullScreen
-                style={{
-                  width: "100%",
-                  aspectRatio: "16 / 9",
-                  border: "1px solid rgba(255,255,255,0.14)",
-                  borderRadius: 12,
-                  background: "rgba(0,0,0,0.25)",
-                }}
-              />
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: 8,
-                  marginTop: 6,
-                }}
-              >
-                <span style={{ fontSize: 11, color: "#9a94b8" }}>
-                  אם הסרטון לא מוצג — פתחו בטאב חדש
-                </span>
-                <a
-                  href={media.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ fontSize: 12, color: "#c9c3e8", textDecoration: "none", whiteSpace: "nowrap" }}
-                >
-                  פתח בטאב חדש ↗
-                </a>
-              </div>
-            </div>
-          );
-        })()}
+      {link && <MediaView link={link} />}
       {pending && (
         <>
           <div style={{ display: "flex", gap: 8 }}>
@@ -288,35 +303,113 @@ export default function ReviewClient({
         </p>
       </div>
 
-      {episodeIncluded && (
-        <Block
-          emoji="🎬"
-          title="הפרק המלא"
-          approved={episodeApproved}
-          pending={episodePending}
-          link={episodeLink}
-          choice={epChoice}
-          setChoice={setEpChoice}
-          note={epNote}
-          setNote={setEpNote}
-          notePlaceholder="מה לתקן בפרק?"
-        />
-      )}
+      {(() => {
+        // item-based layout (0057): a box per deliverable, each with its own
+        // player. The APPROVAL controls stay exactly as before — one decision
+        // for the episode (on its box), one decision covering all the reels
+        // (on a single controls box after them). A production without items
+        // renders the original track-level layout.
+        const episodeItem = items.find((i) => i.kind === "episode") ?? null;
+        const reelItems = items.filter((i) => i.kind === "reel");
+        const hasItems = items.length > 0;
 
-      {reelsIncluded && (
-        <Block
-          emoji="📱"
-          title="רילז"
-          approved={reelsApproved}
-          pending={reelsPending}
-          link={reelsLink}
-          choice={reChoice}
-          setChoice={setReChoice}
-          note={reNote}
-          setNote={setReNote}
-          notePlaceholder="מה לתקן ברילז?"
-        />
-      )}
+        if (!hasItems) {
+          return (
+            <>
+              {episodeIncluded && (
+                <Block
+                  emoji="🎬"
+                  title="הפרק המלא"
+                  approved={episodeApproved}
+                  pending={episodePending}
+                  link={episodeLink}
+                  choice={epChoice}
+                  setChoice={setEpChoice}
+                  note={epNote}
+                  setNote={setEpNote}
+                  notePlaceholder="מה לתקן בפרק?"
+                />
+              )}
+              {reelsIncluded && (
+                <Block
+                  emoji="📱"
+                  title="רילז"
+                  approved={reelsApproved}
+                  pending={reelsPending}
+                  link={reelsLink}
+                  choice={reChoice}
+                  setChoice={setReChoice}
+                  note={reNote}
+                  setNote={setReNote}
+                  notePlaceholder="מה לתקן ברילז?"
+                />
+              )}
+            </>
+          );
+        }
+
+        return (
+          <>
+            {episodeIncluded && (
+              <Block
+                emoji="🎬"
+                title="פרק מלא"
+                approved={episodeApproved}
+                pending={episodePending}
+                link={episodeItem?.media_link || episodeLink}
+                choice={epChoice}
+                setChoice={setEpChoice}
+                note={epNote}
+                setNote={setEpNote}
+                notePlaceholder="מה לתקן בפרק?"
+              />
+            )}
+            {reelsIncluded &&
+              reelItems.map((it) => {
+                // an item with no link of its own falls back to the round's
+                // shared reels link (legacy mints fill only that)
+                const mediaLink = it.media_link || reelsLink;
+                return (
+                  <div key={it.id} style={card}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                      <span style={{ fontSize: 22 }}>📱</span>
+                      <span style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>{`ריל ${it.reel_index}`}</span>
+                    </div>
+                    {mediaLink && <MediaView link={mediaLink} />}
+                  </div>
+                );
+              })}
+            {reelsIncluded && reelItems.length > 0 && (
+              <Block
+                emoji="📱"
+                title="רילז — אישור לכולם"
+                approved={reelsApproved}
+                pending={reelsPending}
+                link={null}
+                choice={reChoice}
+                setChoice={setReChoice}
+                note={reNote}
+                setNote={setReNote}
+                notePlaceholder="מה לתקן ברילז?"
+              />
+            )}
+            {reelsIncluded && reelItems.length === 0 && (
+              <Block
+                emoji="📱"
+                title="רילז"
+                approved={reelsApproved}
+                pending={reelsPending}
+                link={reelsLink}
+                choice={reChoice}
+                setChoice={setReChoice}
+                note={reNote}
+                setNote={setReNote}
+                notePlaceholder="מה לתקן ברילז?"
+              />
+            )}
+          </>
+        );
+      })()}
 
       {addons.length > 0 && (
         <div style={card}>

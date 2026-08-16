@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.5"
+    PostgrestVersion: "14.15"
   }
   public: {
     Tables: {
@@ -135,6 +135,50 @@ export type Database = {
             columns: ["actor_id"]
             isOneToOne: false
             referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      client_review_items: {
+        Row: {
+          approved: boolean
+          approved_at: string | null
+          created_at: string
+          id: string
+          kind: string
+          last_note: string | null
+          media_link: string | null
+          production_id: string
+          reel_index: number | null
+        }
+        Insert: {
+          approved?: boolean
+          approved_at?: string | null
+          created_at?: string
+          id?: string
+          kind: string
+          last_note?: string | null
+          media_link?: string | null
+          production_id: string
+          reel_index?: number | null
+        }
+        Update: {
+          approved?: boolean
+          approved_at?: string | null
+          created_at?: string
+          id?: string
+          kind?: string
+          last_note?: string | null
+          media_link?: string | null
+          production_id?: string
+          reel_index?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "client_review_items_production_id_fkey"
+            columns: ["production_id"]
+            isOneToOne: false
+            referencedRelation: "productions"
             referencedColumns: ["id"]
           },
         ]
