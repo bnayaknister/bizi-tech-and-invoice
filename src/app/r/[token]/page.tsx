@@ -60,6 +60,12 @@ export default async function ReviewPage({ params }: { params: { token: string }
   if (state.status === "responded") {
     return <Notice title="התקבל, תודה!" sub="התשובה שלך נקלטה. אפשר לסגור את החלון." />;
   }
+  if (state.status === "superseded") {
+    return <Notice title="הלינק אינו זמין" sub="נשלח קישור עדכני יותר להפקה זו. פנה לביזי סטודיו." />;
+  }
+  if (state.status === "expired") {
+    return <Notice title="הלינק אינו זמין" sub="תוקף הקישור פג. פנה לביזי סטודיו." />;
+  }
   if (state.status !== "ok") {
     return <Notice title="הלינק אינו זמין" sub="ייתכן שפג תוקפו או שנשלח קישור עדכני יותר. פנה לביזי סטודיו." />;
   }

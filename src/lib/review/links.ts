@@ -18,8 +18,13 @@ const LINK_TTL_DAYS = 14;
 export type CreateLinkResult = { token: string; url: string; expiresAt: string };
 
 /**
- * Mint a fresh review link, superseding any previous live one (a new round =
- * a new link; the old one dies). Per-track approval state on the production is
+ * Mint a fresh review link, superseding any previous live one whose scope
+ * OVERLAPS this one (a new round = a new link; the old one dies). Overlap,
+ * not equality: 'all' shares a track with both 'episode' and 'reels', so an
+ * episode link kills episode+all, a reels link kills reels+all, and 'all'
+ * kills everything — but an episode link and a reels link live side by side
+ * (B1: a global supersede killed the client's episode link the moment the
+ * reels link was minted). Per-track approval state on the production is
  * preserved, so an already-approved track stays locked across rounds.
  */
 export async function createReviewLink(
@@ -27,19 +32,27 @@ export async function createReviewLink(
   productionId: string,
   opts: { createdBy: string; baseUrl: string; scope: "episode" | "reels" | "all"; episodeLink?: string | null; reelsLink?: string | null }
 ): Promise<CreateLinkResult> {
+  const overlappingScopes = opts.scope === "all" ? ["episode", "reels", "all"] : [opts.scope, "all"];
   await admin
     .from("client_review_links")
     .update({ superseded: true })
     .eq("production_id", productionId)
+    .in("scope", overlappingScopes)
     .eq("superseded", false)
     .is("responded_at", null);
 
   // whether reels is part of this round is now carried by scope (0037);
   // reels_included is still written for back-compat until it's dropped. A
-  // reels-bearing scope ('reels'/'all') keeps review_reels_required true, an
-  // 'episode' scope clears it — the same thing the boolean did before.
+  // reels-bearing scope ('reels'/'all') marks the reels round open; an
+  // 'episode' scope leaves the field ALONE — episode and reels links now live
+  // side by side, and clearing it here blanked the reels block on a live
+  // reels link (B1 completion). Nothing else ever writes this field; approval
+  // through an episode link never consults it (reelsInScope is already false
+  // by scope), so a stuck-true value cannot block anything.
   const reelsIncluded = opts.scope !== "episode";
-  await admin.from("productions").update({ review_reels_required: reelsIncluded }).eq("id", productionId);
+  if (reelsIncluded) {
+    await admin.from("productions").update({ review_reels_required: true }).eq("id", productionId);
+  }
 
   const token = generateToken();
   const expiresAt = new Date(Date.now() + LINK_TTL_DAYS * 24 * 3600_000).toISOString();
