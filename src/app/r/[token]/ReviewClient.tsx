@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { classifyDriveLink } from "@/lib/review/drive";
 
 // The client-facing review UI. Mobile-first — it opens from WhatsApp. Two
 // blocks (episode / reels), each independently approved or sent back with a
@@ -153,26 +154,71 @@ export default function ReviewClient({
         <span style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>{title}</span>
         {approved && <span style={{ color: "#4ade80", fontSize: 13, fontWeight: 700 }}>✓ אושר</span>}
       </div>
-      {link && (
-        <a
-          href={link}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{
-            display: "block",
-            textAlign: "center",
-            border: "1px solid rgba(255,255,255,0.14)",
-            borderRadius: 12,
-            padding: "10px",
-            fontSize: 14,
-            color: "#c9c3e8",
-            marginBottom: 12,
-            textDecoration: "none",
-          }}
-        >
-          ▶ צפייה
-        </a>
-      )}
+      {link &&
+        (() => {
+          const media = classifyDriveLink(link);
+          // only a Drive FILE link can host the embedded player; folders and
+          // unrecognised links keep the plain button
+          if (media.type !== "file") {
+            return (
+              <a
+                href={media.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: "block",
+                  textAlign: "center",
+                  border: "1px solid rgba(255,255,255,0.14)",
+                  borderRadius: 12,
+                  padding: "10px",
+                  fontSize: 14,
+                  color: "#c9c3e8",
+                  marginBottom: 12,
+                  textDecoration: "none",
+                }}
+              >
+                ▶ צפייה
+              </a>
+            );
+          }
+          return (
+            <div style={{ marginBottom: 12 }}>
+              <iframe
+                src={media.embedUrl}
+                allow="autoplay; fullscreen"
+                allowFullScreen
+                style={{
+                  width: "100%",
+                  aspectRatio: "16 / 9",
+                  border: "1px solid rgba(255,255,255,0.14)",
+                  borderRadius: 12,
+                  background: "rgba(0,0,0,0.25)",
+                }}
+              />
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 8,
+                  marginTop: 6,
+                }}
+              >
+                <span style={{ fontSize: 11, color: "#9a94b8" }}>
+                  אם הסרטון לא מוצג — פתחו בטאב חדש
+                </span>
+                <a
+                  href={media.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ fontSize: 12, color: "#c9c3e8", textDecoration: "none", whiteSpace: "nowrap" }}
+                >
+                  פתח בטאב חדש ↗
+                </a>
+              </div>
+            </div>
+          );
+        })()}
       {pending && (
         <>
           <div style={{ display: "flex", gap: 8 }}>
