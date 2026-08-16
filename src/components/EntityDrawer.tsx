@@ -416,7 +416,11 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   const [savingStatus, setSavingStatus] = useState(false);
   const [excOpen, setExcOpen] = useState(false); // "exceptional actions" disclosure on the status cursor
   const [reviewSending, setReviewSending] = useState<string | null>(null); // scope currently being sent
-  const [reviewSent, setReviewSent] = useState<{ scope: string; url: string; whatsapp: string } | null>(null);
+  // scope — where the sent-box renders (per-track block, or "all" = under the
+  // unified button); sentScope — what the unified send ACTUALLY minted, for the
+  // success label (the unified button downgrades to a single track when only
+  // one media link is filled)
+  const [reviewSent, setReviewSent] = useState<{ scope: string; sentScope?: "episode" | "reels" | "all"; url: string; whatsapp: string } | null>(null);
   // media URLs lifted out of the two track blocks so the unified send can take
   // both at once (owner 2026-07-24)
   const [episodeMedia, setEpisodeMedia] = useState("");
@@ -709,7 +713,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
       setError(b.error ?? "יצירת הלינק נכשלה");
       return;
     }
-    setReviewSent({ scope: "all", url: b.url, whatsapp: b.share?.whatsapp ?? "" });
+    setReviewSent({ scope: "all", sentScope: scope, url: b.url, whatsapp: b.share?.whatsapp ?? "" });
     broadcast();
     void load(ref, true);
   }
@@ -1184,7 +1188,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                   const bothPresent = epStages.length > 0 && reelsShown;
                   const anyMedia = !!(episodeMedia.trim() || reelsMedia.trim());
                   const bothApproved = !!data.review?.episode_approved && !!data.review?.reels_approved;
-                  const showUnified = data.canEditStages && bothPresent && anyMedia && !bothApproved;
+                  const showUnified = data.canEditStages && bothPresent && !bothApproved;
                   return (
                     <div className="space-y-2">
                       {epStages.length > 0 && (
@@ -1227,17 +1231,28 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                         <div className="space-y-1.5">
                           <button
                             onClick={() => void sendUnifiedReviewLink()}
-                            disabled={reviewSending === "all"}
+                            disabled={reviewSending === "all" || !anyMedia}
                             className="w-full text-[11px] rounded-lg py-2 border border-[var(--violet-light)] text-[var(--violet-light)] hover:bg-[rgba(139,92,246,0.14)] disabled:opacity-50 transition-colors font-bold"
                           >
                             {reviewSending === "all"
                               ? "יוצר קישור…"
-                              : episodeMedia.trim() && reelsMedia.trim()
-                                ? "שלח לינק אישור מאוחד (פרק + רילז) →"
-                                : "שלח לינק אישור →"}
+                              : !anyMedia
+                                ? "הדביקו קישור צפייה לפחות למסלול אחד"
+                                : episodeMedia.trim() && reelsMedia.trim()
+                                  ? "שלח לצפייה (פרק + רילז) →"
+                                  : episodeMedia.trim()
+                                    ? "שלח לצפייה (פרק בלבד — חסר קישור רילז) →"
+                                    : "שלח לצפייה (רילז בלבד — חסר קישור פרק) →"}
                           </button>
                           {reviewSent?.scope === "all" && (
                             <div className="rounded-lg px-2.5 py-2 text-[11px]" style={{ background: "rgba(139,92,246,0.08)", border: "1px solid rgba(139,92,246,0.35)" }}>
+                              <div className="font-bold mb-1">
+                                {reviewSent.sentScope === "all"
+                                  ? "נשלח לינק מאוחד — פרק + רילז"
+                                  : reviewSent.sentScope === "episode"
+                                    ? "נשלח לינק לפרק בלבד"
+                                    : "נשלח לינק לרילז בלבד"}
+                              </div>
                               <div className="text-[var(--dim)] mb-1 break-all">{reviewSent.url}</div>
                               <div className="flex items-center gap-3">
                                 <button onClick={() => navigator.clipboard?.writeText(reviewSent.url)} className="text-[var(--violet-light)] hover:underline">העתק קישור</button>

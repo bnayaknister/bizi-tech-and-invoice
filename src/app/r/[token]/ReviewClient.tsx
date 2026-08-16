@@ -12,15 +12,6 @@ export type ReviewAddon = { id: string; title: string; quantity: number; unit_pr
 
 const NIS = new Intl.NumberFormat("he-IL");
 
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 14, marginBottom: 6 }}>
-      <span style={{ color: "#c9c3e8" }}>{label}</span>
-      <span style={{ fontWeight: 600 }}>{value}</span>
-    </div>
-  );
-}
-
 const card: React.CSSProperties = {
   width: "100%",
   maxWidth: 420,
@@ -43,7 +34,6 @@ export default function ReviewClient({
   episodeLink,
   reelsLink,
   addons,
-  baseAmount,
 }: {
   token: string;
   showName: string;
@@ -56,7 +46,6 @@ export default function ReviewClient({
   episodeLink: string | null;
   reelsLink: string | null;
   addons: ReviewAddon[];
-  baseAmount: number | null;
 }) {
   const [epChoice, setEpChoice] = useState<Choice>(null);
   const [epNote, setEpNote] = useState("");
@@ -73,9 +62,6 @@ export default function ReviewClient({
 
   const episodePending = episodeIncluded && !episodeApproved;
   const reelsPending = reelsIncluded && !reelsApproved;
-  const approvedAddonsTotal = addons
-    .filter((a) => addonOk[a.id])
-    .reduce((sum, a) => sum + a.total, 0);
   // the submit becomes the big "approve everything" action once every
   // pending track is set to approved and none to revisions
   const willApproveAll =
@@ -330,39 +316,9 @@ export default function ReviewClient({
         </div>
       )}
 
-      {/* full price summary — the client sees exactly what the invoice will
-          say (owner decision 2026-07-21: total transparency, no hidden base). */}
-      {(baseAmount != null || addons.length > 0) && (
-        <div style={card}>
-          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>סיכום מחיר</div>
-          {baseAmount != null && (
-            <Row label="עריכת הפרק המלא" value={`₪${NIS.format(baseAmount)}`} />
-          )}
-          {addons
-            .filter((a) => addonOk[a.id])
-            .map((a) => (
-              <Row key={a.id} label={`➕ ${a.title}`} value={`₪${NIS.format(a.total)}`} />
-            ))}
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "baseline",
-              marginTop: 12,
-              paddingTop: 12,
-              borderTop: "1px solid rgba(255,255,255,0.1)",
-              fontSize: 16,
-              fontWeight: 800,
-            }}
-          >
-            <span>סה״כ</span>
-            <span>
-              ₪{NIS.format((baseAmount ?? 0) + approvedAddonsTotal)}
-              <span style={{ fontSize: 12, fontWeight: 500, color: "#9a94b8" }}> + מע״מ</span>
-            </span>
-          </div>
-        </div>
-      )}
+      {/* the price summary card (base episode amount + total) is deliberately
+          gone — the client sees no episode price here (Q1, owner 2026-08-16).
+          Add-on prices above stay: the client is approving those quotes. */}
 
       {error && (
         <div style={{ color: "#fb7185", fontSize: 13, textAlign: "center", marginBottom: 10 }}>{error}</div>
