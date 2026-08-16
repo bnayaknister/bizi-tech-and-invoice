@@ -113,7 +113,7 @@ export default function WelcomePage() {
           <div className="flex flex-col items-center gap-3 mb-5">
             <SoundWaveLogo size={40} animated />
             <div className="text-center">
-              <h1 className="text-lg font-black">ברוך הבא ל-BiziPodclub Manage</h1>
+              <h1 className="text-lg font-black">ברוך הבא ל-Bizi Podclub Manage</h1>
               <p className="text-xs text-[var(--faint)] mt-1">
                 {name ? `${name}, ` : ""}קבע סיסמה כדי להיכנס
               </p>

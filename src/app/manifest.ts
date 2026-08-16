@@ -5,7 +5,7 @@ import type { MetadataRoute } from "next";
 // stores). Next serves this at /manifest.webmanifest and links it automatically.
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "BiziPodclub Manage",
+    name: "Bizi Podclub Manage",
     short_name: "Bizi",
     description: "מערכת ענן לניהול בית הפודקאסטים",
     start_url: "/",

@@ -59,7 +59,7 @@ export default function LoginPage() {
           <div className="flex flex-col items-center gap-3 mb-2">
             <SoundWaveLogo size={40} animated />
             <h1 className="text-lg font-bold font-mono" dir="ltr">
-              <span className="grad-text">BiziPodclub</span>{" "}
+              <span className="grad-text">Bizi Podclub</span>{" "}
               <span className="text-[var(--faint)] font-normal">Manage</span>
             </h1>
           </div>

@@ -96,7 +96,7 @@ h1, h2, h3 {
     text-shadow: 0 0 10px rgba(139, 92, 246, 0.20);
   }
 
-  /* violet→cyan gradient wordmark (logo "BiziPodclub", DESIGN.md §6) */
+  /* violet→cyan gradient wordmark (logo "Bizi Podclub", DESIGN.md §6) */
   .grad-text {
     background: linear-gradient(90deg, var(--violet-light), var(--cyan));
     -webkit-background-clip: text;

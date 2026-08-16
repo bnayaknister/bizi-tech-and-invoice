@@ -22,7 +22,7 @@ export default function AppHeader({
       <Link href="/" className="flex items-center gap-2 shrink-0">
         <SoundWaveLogo size={22} animated={animatedLogo} />
         <span className="font-mono font-bold text-sm" dir="ltr">
-          <span className="grad-text">BiziPodclub</span> <span className="text-[var(--faint)] font-normal">Manage</span>
+          <span className="grad-text">Bizi Podclub</span> <span className="text-[var(--faint)] font-normal">Manage</span>
         </span>
       </Link>
       <GlobalSearch />

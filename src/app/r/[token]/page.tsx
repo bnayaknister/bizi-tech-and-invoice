@@ -28,8 +28,8 @@ export async function generateMetadata({ params }: { params: { token: string } }
   // and nothing at all through an invalid token)
   if (state.status !== "ok") {
     return {
-      title: "ביזי סטודיו — לינק צפייה",
-      openGraph: { siteName: "ביזי סטודיו", title: "ביזי סטודיו — לינק צפייה" },
+      title: "Bizi Podclub — לינק צפייה",
+      openGraph: { siteName: "Bizi Podclub", title: "Bizi Podclub — לינק צפייה" },
     };
   }
 
@@ -48,7 +48,7 @@ export async function generateMetadata({ params }: { params: { token: string } }
   return {
     title,
     description,
-    openGraph: { siteName: "ביזי סטודיו", title, description },
+    openGraph: { siteName: "Bizi Podclub", title, description },
   };
 }
 
@@ -68,8 +68,8 @@ function Shell({ children }: { children: React.ReactNode }) {
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 28, opacity: 0.9 }}>
-        <span style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.02em" }}>ביזי</span>
-        <span style={{ fontSize: 12, color: "#9a94b8" }}>סטודיו</span>
+        <span style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.02em" }}>Bizi</span>
+        <span style={{ fontSize: 12, color: "#9a94b8" }}>Podclub</span>
       </div>
       {children}
     </div>
@@ -105,13 +105,13 @@ export default async function ReviewPage({ params }: { params: { token: string }
     return <Notice title="התקבל, תודה!" sub="התשובה שלך נקלטה. אפשר לסגור את החלון." />;
   }
   if (state.status === "superseded") {
-    return <Notice title="הלינק אינו זמין" sub="נשלח קישור עדכני יותר להפקה זו. פנה לביזי סטודיו." />;
+    return <Notice title="הלינק אינו זמין" sub="נשלח קישור עדכני יותר להפקה זו. פנו ל-Bizi Podclub." />;
   }
   if (state.status === "expired") {
-    return <Notice title="הלינק אינו זמין" sub="תוקף הקישור פג. פנה לביזי סטודיו." />;
+    return <Notice title="הלינק אינו זמין" sub="תוקף הקישור פג. פנו ל-Bizi Podclub." />;
   }
   if (state.status !== "ok") {
-    return <Notice title="הלינק אינו זמין" sub="ייתכן שפג תוקפו או שנשלח קישור עדכני יותר. פנה לביזי סטודיו." />;
+    return <Notice title="הלינק אינו זמין" sub="ייתכן שפג תוקפו או שנשלח קישור עדכני יותר. פנו ל-Bizi Podclub." />;
   }
 
   const p = state.production;

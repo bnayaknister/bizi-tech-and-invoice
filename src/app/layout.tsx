@@ -20,7 +20,7 @@ const spaceGrotesk = Space_Grotesk({
 });
 
 export const metadata: Metadata = {
-  title: "BiziPodclub Manage",
+  title: "Bizi Podclub Manage",
   description: "מערכת ענן לניהול בית הפודקאסטים",
   icons: {
     icon: [
@@ -30,7 +30,7 @@ export const metadata: Metadata = {
     apple: [{ url: "/icons/apple-touch-icon.png", sizes: "180x180" }],
   },
   // iOS standalone: full-screen chrome-less "app" when added to the home screen
-  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "BiziPodclub Manage" },
+  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Bizi Podclub Manage" },
 };
 
 // dark app → dark browser chrome; disable tap-zoom-out surprises but keep
