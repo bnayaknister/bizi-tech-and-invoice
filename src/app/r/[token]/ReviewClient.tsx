@@ -18,6 +18,7 @@ export type ReviewItemView = {
   kind: "episode" | "reel";
   reel_index: number | null;
   media_link: string | null;
+  approved: boolean;
 };
 
 const NIS = new Intl.NumberFormat("he-IL");
@@ -131,6 +132,9 @@ export default function ReviewClient({
   const [epNote, setEpNote] = useState("");
   const [reChoice, setReChoice] = useState<Choice>(null);
   const [reNote, setReNote] = useState("");
+  // stage 1b: one decision + note per item, keyed by item id
+  const [itemChoice, setItemChoice] = useState<Record<string, Choice>>({});
+  const [itemNote, setItemNote] = useState<Record<string, string>>({});
   // each quoted upsell starts checked — a quote the client accepts by default
   // and unchecks to decline (owner spec 2026-07-21)
   const [addonOk, setAddonOk] = useState<Record<string, boolean>>(
@@ -140,42 +144,75 @@ export default function ReviewClient({
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<null | "approved" | "revisions">(null);
 
+  const hasItems = items.length > 0;
+  // pending, in-scope items — each demands its own decision before submit
+  const pendingItems = items.filter(
+    (i) => !i.approved && (i.kind === "episode" ? episodeIncluded : reelsIncluded)
+  );
+
   const episodePending = episodeIncluded && !episodeApproved;
   const reelsPending = reelsIncluded && !reelsApproved;
   // the submit becomes the big "approve everything" action once every
-  // pending track is set to approved and none to revisions
-  const willApproveAll =
-    (!episodePending || epChoice === "approved") &&
-    (!reelsPending || reChoice === "approved") &&
-    epChoice !== "revisions" &&
-    reChoice !== "revisions";
+  // pending deliverable is set to approved and none to revisions
+  const willApproveAll = hasItems
+    ? pendingItems.every((i) => itemChoice[i.id] === "approved")
+    : (!episodePending || epChoice === "approved") &&
+      (!reelsPending || reChoice === "approved") &&
+      epChoice !== "revisions" &&
+      reChoice !== "revisions";
+
+  const itemLabel = (i: ReviewItemView) => (i.kind === "episode" ? "פרק מלא" : `ריל ${i.reel_index}`);
 
   async function submit() {
     setError(null);
-    if (episodePending && !epChoice && !(reelsPending && reChoice)) {
-      setError("בחר אישור או תיקונים");
-      return;
-    }
-    if (episodePending && epChoice === "revisions" && !epNote.trim()) {
-      setError("נא לפרט מה לתקן בפרק");
-      return;
-    }
-    if (reelsPending && reChoice === "revisions" && !reNote.trim()) {
-      setError("נא לפרט מה לתקן ברילז");
-      return;
+    let payload: Record<string, unknown>;
+    if (hasItems) {
+      // per-item validation: every pending box needs a decision, and a
+      // revisions decision needs its note
+      for (const it of pendingItems) {
+        const c = itemChoice[it.id];
+        if (!c) {
+          setError(`בחר אישור או תיקונים — ${itemLabel(it)}`);
+          return;
+        }
+        if (c === "revisions" && !(itemNote[it.id] ?? "").trim()) {
+          setError(`נא לפרט מה לתקן — ${itemLabel(it)}`);
+          return;
+        }
+      }
+      payload = {
+        items: Object.fromEntries(
+          pendingItems.map((it) => [it.id, { response: itemChoice[it.id], note: itemNote[it.id] ?? "" }])
+        ),
+        addons: Object.fromEntries(addons.map((a) => [a.id, addonOk[a.id] ? "approved" : "rejected"])),
+      };
+    } else {
+      if (episodePending && !epChoice && !(reelsPending && reChoice)) {
+        setError("בחר אישור או תיקונים");
+        return;
+      }
+      if (episodePending && epChoice === "revisions" && !epNote.trim()) {
+        setError("נא לפרט מה לתקן בפרק");
+        return;
+      }
+      if (reelsPending && reChoice === "revisions" && !reNote.trim()) {
+        setError("נא לפרט מה לתקן ברילז");
+        return;
+      }
+      payload = {
+        episode: episodePending ? epChoice ?? undefined : undefined,
+        episode_note: epNote,
+        reels: reelsPending ? reChoice ?? undefined : undefined,
+        reels_note: reNote,
+        addons: Object.fromEntries(addons.map((a) => [a.id, addonOk[a.id] ? "approved" : "rejected"])),
+      };
     }
     setBusy(true);
     try {
       const res = await fetch(`/api/r/${token}/respond`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          episode: episodePending ? epChoice ?? undefined : undefined,
-          episode_note: epNote,
-          reels: reelsPending ? reChoice ?? undefined : undefined,
-          reels_note: reNote,
-          addons: Object.fromEntries(addons.map((a) => [a.id, addonOk[a.id] ? "approved" : "rejected"])),
-        }),
+        body: JSON.stringify(payload),
       });
       const body = await res.json();
       if (!res.ok) {
@@ -304,14 +341,13 @@ export default function ReviewClient({
       </div>
 
       {(() => {
-        // item-based layout (0057): a box per deliverable, each with its own
-        // player. The APPROVAL controls stay exactly as before — one decision
-        // for the episode (on its box), one decision covering all the reels
-        // (on a single controls box after them). A production without items
-        // renders the original track-level layout.
+        // item-based layout (stage 1b): a box per deliverable, each with its
+        // OWN approve/revisions buttons and note — the client can approve reel
+        // 1 and ask for fixes on reel 2 in the same submit. An item approved
+        // in an earlier round renders locked (✓) and can't be reopened. A
+        // production without items renders the original track-level layout.
         const episodeItem = items.find((i) => i.kind === "episode") ?? null;
         const reelItems = items.filter((i) => i.kind === "reel");
-        const hasItems = items.length > 0;
 
         if (!hasItems) {
           return (
@@ -348,65 +384,32 @@ export default function ReviewClient({
           );
         }
 
+        const itemBlock = (it: ReviewItemView, emoji: string, title: string, fallbackLink: string | null, notePlaceholder: string) => (
+          <Block
+            key={it.id}
+            emoji={emoji}
+            title={title}
+            approved={it.approved}
+            pending={!it.approved}
+            link={it.media_link || fallbackLink}
+            choice={itemChoice[it.id] ?? null}
+            setChoice={(c) => setItemChoice((prev) => ({ ...prev, [it.id]: c }))}
+            note={itemNote[it.id] ?? ""}
+            setNote={(s) => setItemNote((prev) => ({ ...prev, [it.id]: s }))}
+            notePlaceholder={notePlaceholder}
+          />
+        );
+
         return (
           <>
-            {episodeIncluded && (
-              <Block
-                emoji="🎬"
-                title="פרק מלא"
-                approved={episodeApproved}
-                pending={episodePending}
-                link={episodeItem?.media_link || episodeLink}
-                choice={epChoice}
-                setChoice={setEpChoice}
-                note={epNote}
-                setNote={setEpNote}
-                notePlaceholder="מה לתקן בפרק?"
-              />
-            )}
+            {episodeIncluded && episodeItem &&
+              itemBlock(episodeItem, "🎬", "פרק מלא", episodeLink, "מה לתקן בפרק?")}
             {reelsIncluded &&
-              reelItems.map((it) => {
+              reelItems.map((it) =>
                 // an item with no link of its own falls back to the round's
                 // shared reels link (legacy mints fill only that)
-                const mediaLink = it.media_link || reelsLink;
-                return (
-                  <div key={it.id} style={card}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                      <span style={{ fontSize: 22 }}>📱</span>
-                      <span style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>{`ריל ${it.reel_index}`}</span>
-                    </div>
-                    {mediaLink && <MediaView link={mediaLink} />}
-                  </div>
-                );
-              })}
-            {reelsIncluded && reelItems.length > 0 && (
-              <Block
-                emoji="📱"
-                title="רילז — אישור לכולם"
-                approved={reelsApproved}
-                pending={reelsPending}
-                link={null}
-                choice={reChoice}
-                setChoice={setReChoice}
-                note={reNote}
-                setNote={setReNote}
-                notePlaceholder="מה לתקן ברילז?"
-              />
-            )}
-            {reelsIncluded && reelItems.length === 0 && (
-              <Block
-                emoji="📱"
-                title="רילז"
-                approved={reelsApproved}
-                pending={reelsPending}
-                link={reelsLink}
-                choice={reChoice}
-                setChoice={setReChoice}
-                note={reNote}
-                setNote={setReNote}
-                notePlaceholder="מה לתקן ברילז?"
-              />
-            )}
+                itemBlock(it, "📱", `ריל ${it.reel_index}`, reelsLink, `מה לתקן בריל ${it.reel_index}?`)
+              )}
           </>
         );
       })()}

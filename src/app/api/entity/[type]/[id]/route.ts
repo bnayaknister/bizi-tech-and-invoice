@@ -109,7 +109,7 @@ async function handleGet(
   } | null = null;
   let reelsSummary: { count: number } | null = null;
   let reviewItems:
-    | { id: string; kind: string; reel_index: number | null; media_link: string | null; approved: boolean }[]
+    | { id: string; kind: string; reel_index: number | null; media_link: string | null; approved: boolean; last_note: string | null }[]
     | null = null;
   if (type === "production" && profile.can_view_stages) {
     const { data } = await supabase
@@ -159,7 +159,7 @@ async function handleGet(
     const itemsAdmin = createAdminClient();
     const { data: itemRows } = await itemsAdmin
       .from("client_review_items")
-      .select("id,kind,reel_index,media_link,approved")
+      .select("id,kind,reel_index,media_link,approved,last_note")
       .eq("production_id", params.id)
       .order("kind")
       .order("reel_index", { ascending: true });
@@ -169,6 +169,7 @@ async function handleGet(
       reel_index: (r.reel_index as number | null) ?? null,
       media_link: (r.media_link as string | null) ?? null,
       approved: !!r.approved,
+      last_note: (r.last_note as string | null) ?? null,
     }));
   }
 

@@ -105,9 +105,10 @@ type DrawerData = {
     episode_approved: boolean; reels_approved: boolean; reels_required: boolean;
     episode_note: string | null; reels_note: string | null;
   } | null;
-  // per-deliverable media links (0057) — null/empty until the items model
-  // reaches this production (seeded at link mint or first drawer save)
-  reviewItems: { id: string; kind: string; reel_index: number | null; media_link: string | null; approved: boolean }[] | null;
+  // per-deliverable media links + review state (0057 / stage 1b) — null/empty
+  // until the items model reaches this production (seeded at link mint or
+  // first drawer save)
+  reviewItems: { id: string; kind: string; reel_index: number | null; media_link: string | null; approved: boolean; last_note: string | null }[] | null;
   reelsSummary: { count: number } | null;
   log: LogEntry[] | null;
   diskOptions: string[] | null;
@@ -154,8 +155,16 @@ function ProductionTrackBlock({
   // persist-on-blur for the single input (0057 — saved to the review item)
   onMediaBlur?: () => void;
   // one labelled input per deliverable (reel 1..n, 0057); replaces the single
-  // input when provided — the reels block passes these
-  mediaFields?: { label: string; value: string; onChange: (v: string) => void; onBlur: () => void }[];
+  // input when provided — the reels block passes these. `status` (stage 1b)
+  // shows what the client said about THIS deliverable: approved / pending /
+  // its last correction note.
+  mediaFields?: {
+    label: string;
+    value: string;
+    onChange: (v: string) => void;
+    onBlur: () => void;
+    status?: { approved: boolean; note: string | null } | null;
+  }[];
 }) {
   const ordered = [...stages].sort((a, b) => (STEP_ORDER[a.step] ?? 9) - (STEP_ORDER[b.step] ?? 9));
   // TWO different measurements live in this block, and until 2026-08-03 both
@@ -228,16 +237,28 @@ function ProductionTrackBlock({
           {!sent && mediaFields && (
             <div className="space-y-1">
               {mediaFields.map((f) => (
-                <div key={f.label} className="flex items-center gap-1.5">
-                  <span className="text-[10px] text-[var(--dim)] shrink-0 w-9 text-right">{f.label}</span>
-                  <input
-                    value={f.value}
-                    onChange={(e) => f.onChange(e.target.value)}
-                    onBlur={f.onBlur}
-                    placeholder="קישור דרייב לצפייה — אופציונלי"
-                    dir="ltr"
-                    className="w-full text-[11px] bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-2.5 py-1.5 text-right outline-none focus:border-[var(--violet-light)]"
-                  />
+                <div key={f.label}>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-[var(--dim)] shrink-0 w-9 text-right">{f.label}</span>
+                    <input
+                      value={f.value}
+                      onChange={(e) => f.onChange(e.target.value)}
+                      onBlur={f.onBlur}
+                      placeholder="קישור דרייב לצפייה — אופציונלי"
+                      dir="ltr"
+                      className="w-full text-[11px] bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-2.5 py-1.5 text-right outline-none focus:border-[var(--violet-light)]"
+                    />
+                    {f.status && (
+                      <span
+                        className={`text-[10px] shrink-0 ${f.status.approved ? "text-emerald-400" : f.status.note ? "text-rose-400" : "text-[var(--faint)]"}`}
+                      >
+                        {f.status.approved ? "✓ אושר" : f.status.note ? "✎ תיקונים" : "ממתין"}
+                      </span>
+                    )}
+                  </div>
+                  {f.status && !f.status.approved && f.status.note && (
+                    <div className="mr-10 mt-0.5 text-[10px] text-rose-400">💬 {f.status.note}</div>
+                  )}
                 </div>
               ))}
             </div>
@@ -1303,11 +1324,15 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                             reelCount > 0
                               ? Array.from({ length: reelCount }, (_, k) => {
                                   const i = k + 1;
+                                  const item = (data.reviewItems ?? []).find(
+                                    (it) => it.kind === "reel" && it.reel_index === i
+                                  );
                                   return {
                                     label: `ריל ${i}`,
                                     value: reelMedia[i] ?? "",
                                     onChange: (v: string) => setReelMedia((prev) => ({ ...prev, [i]: v })),
                                     onBlur: () => void saveItemLink("reel", i, reelMedia[i] ?? ""),
+                                    status: item ? { approved: item.approved, note: item.last_note } : null,
                                   };
                                 })
                               : undefined

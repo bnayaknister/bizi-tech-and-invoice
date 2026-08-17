@@ -118,15 +118,17 @@ export async function createReviewLink(
 // to approve without a price.
 export type ReviewAddon = { id: string; title: string; quantity: number; unit_price: number; total: number };
 
-// One deliverable under review (0057). Display-only in stage 1a: the approval
-// logic still runs on the production's per-track flags; `approved` here is the
-// backfilled/seeded mirror, not yet consulted by applyResponse.
+// One deliverable under review (0057). Since stage 1b the items are the
+// approval source for item-mode links: applyResponse writes them first and
+// derives the production's per-track flags from them, so the flags stay a
+// consistent cache for every legacy consumer.
 export type ReviewItem = {
   id: string;
   kind: "episode" | "reel";
   reel_index: number | null;
   media_link: string | null;
   approved: boolean;
+  last_note: string | null;
 };
 
 export type LinkState =
@@ -214,7 +216,7 @@ export async function resolveLink(admin: SupabaseClient, token: string): Promise
   // model; the public page falls back to the track-level rendering then
   const { data: itemRows } = await admin
     .from("client_review_items")
-    .select("id,kind,reel_index,media_link,approved")
+    .select("id,kind,reel_index,media_link,approved,last_note")
     .eq("production_id", link.production_id)
     .order("kind") // 'episode' sorts before 'reel'
     .order("reel_index", { ascending: true });
@@ -224,6 +226,7 @@ export async function resolveLink(admin: SupabaseClient, token: string): Promise
     reel_index: (r.reel_index as number | null) ?? null,
     media_link: (r.media_link as string | null) ?? null,
     approved: !!r.approved,
+    last_note: (r.last_note as string | null) ?? null,
   }));
 
   return { status: "ok", link: link as ReviewLinkRow, production: production as ReviewProductionRow, addons, baseAmount, items };
@@ -231,12 +234,25 @@ export async function resolveLink(admin: SupabaseClient, token: string): Promise
 
 export type TrackResponse = "approved" | "revisions" | undefined;
 
+// one client decision on one review item (stage 1b)
+export type ItemResponse = { response: "approved" | "revisions"; note?: string };
+
 /**
- * Apply a client's response. Only PENDING, in-scope tracks are affected — an
- * already-approved track can't be reopened by a later link. When every
- * in-scope track is approved the production is marked client-approved (which
- * fires the job trigger) and a deal invoice is queued; otherwise it goes back
- * to editing, flagged for attention, with the correction notes attached.
+ * Apply a client's response. Only PENDING, in-scope items/tracks are affected
+ * — an already-approved deliverable can't be reopened by a later link. When
+ * every in-scope deliverable is approved the production is marked
+ * client-approved (which fires the job trigger) and a deal invoice is queued;
+ * otherwise it goes back to editing, flagged for attention, with the
+ * correction notes attached.
+ *
+ * Two response shapes share this function:
+ *   • item mode (stage 1b) — resp.items carries a per-item decision, the
+ *     items are written FIRST (a failure there throws before anything is
+ *     recorded), and the per-track flags/decisions are DERIVED from the item
+ *     set so everything downstream (approvedAll, the status flip, the
+ *     trigger, cadence, enqueue) runs exactly as before.
+ *   • track mode (legacy fallback) — a production the items model hasn't
+ *     reached, or an old client payload; byte-identical to the pre-1b path.
  */
 export async function applyResponse(
   admin: SupabaseClient,
@@ -247,10 +263,15 @@ export async function applyResponse(
     episodeNote?: string;
     reels?: TrackResponse;
     reelsNote?: string;
+    // per-item decisions keyed by client_review_items.id (stage 1b)
+    items?: Record<string, ItemResponse>;
     // per-add-on client decision, keyed by add-on id (owner spec 2026-07-21).
     // Only consulted when the whole production is being approved this round.
     addons?: Record<string, "approved" | "rejected">;
-  }
+  },
+  // the production's review items as resolved server-side (trusted, not from
+  // the client); empty for a pre-items production
+  currentItems: ReviewItem[] = []
 ): Promise<{ approvedAll: boolean }> {
   const patch: Record<string, unknown> = {};
 
@@ -262,30 +283,116 @@ export async function applyResponse(
   const episodeInScope = link.scope === "episode" || link.scope === "all";
   const reelsInScope = (link.scope === "reels" || link.scope === "all") && production.review_reels_required;
 
+  const itemMode = currentItems.length > 0 && !!resp.items;
+
+  // ── item mode: write the items FIRST, then derive the track decisions ──
+  // Item writes happen BEFORE the status update on purpose: a failure here
+  // throws while nothing has been recorded yet, so the client can simply
+  // retry — there is no half-recorded approval to reconcile.
+  let respEpisode: TrackResponse = resp.episode;
+  let respEpisodeNote: string | undefined = resp.episodeNote;
+  let respReels: TrackResponse = resp.reels;
+  let respReelsNote: string | undefined = resp.reelsNote;
+  const itemDetail: { id: string; kind: string; reel_index: number | null; response: string; note: string | null }[] = [];
+
+  if (itemMode) {
+    const inScope = (i: ReviewItem) => (i.kind === "episode" ? episodeInScope : reelsInScope);
+    const nowIso = new Date().toISOString();
+    const reelRevisionNotes: string[] = [];
+    let episodeAnswer: ItemResponse | null = null;
+    let anyReelAnswered = false;
+
+    for (const it of currentItems) {
+      if (!inScope(it) || it.approved) continue; // sticky: an approved item is immutable from a link
+      const d = resp.items![it.id];
+      if (!d || (d.response !== "approved" && d.response !== "revisions")) continue;
+      const note = d.note?.trim() || null;
+      if (d.response === "approved") {
+        // approval clears the correction note — the reset rule (B3)
+        const { error } = await admin
+          .from("client_review_items")
+          .update({ approved: true, approved_at: nowIso, last_note: null })
+          .eq("id", it.id)
+          .eq("production_id", production.id)
+          .eq("approved", false);
+        if (error) throw new Error(error.message);
+        it.approved = true;
+        it.last_note = null;
+      } else {
+        const { error } = await admin
+          .from("client_review_items")
+          .update({ last_note: note ?? "תיקונים התבקשו" })
+          .eq("id", it.id)
+          .eq("production_id", production.id)
+          .eq("approved", false);
+        if (error) throw new Error(error.message);
+        it.last_note = note ?? "תיקונים התבקשו";
+      }
+      itemDetail.push({ id: it.id, kind: it.kind, reel_index: it.reel_index, response: d.response, note });
+      if (it.kind === "episode") episodeAnswer = d;
+      else {
+        anyReelAnswered = true;
+        if (d.response === "revisions") reelRevisionNotes.push(`ריל ${it.reel_index}: ${note ?? "תיקונים התבקשו"}`);
+      }
+    }
+
+    // derive the track-level decisions the existing machinery consumes; the
+    // per-track flags stay a consistent cache of the item set
+    if (episodeAnswer) {
+      respEpisode = episodeAnswer.response;
+      respEpisodeNote = episodeAnswer.note;
+    } else {
+      respEpisode = undefined;
+      respEpisodeNote = undefined;
+    }
+    const reelItems = currentItems.filter((i) => i.kind === "reel");
+    if (reelRevisionNotes.length) {
+      respReels = "revisions";
+      respReelsNote = reelRevisionNotes.join("\n");
+    } else if (anyReelAnswered && reelItems.every((i) => i.approved)) {
+      respReels = "approved";
+      respReelsNote = undefined;
+    } else {
+      respReels = undefined;
+      respReelsNote = undefined;
+    }
+  }
+
   // episode (only if this review includes it)
   let episodeApproved = production.review_episode_approved;
-  if (episodeInScope && !production.review_episode_approved && resp.episode) {
-    if (resp.episode === "approved") {
+  if (episodeInScope && !production.review_episode_approved && respEpisode) {
+    if (respEpisode === "approved") {
       episodeApproved = true;
       patch.review_episode_approved = true;
       patch.review_episode_note = null;
     } else {
       episodeApproved = false;
-      patch.review_episode_note = resp.episodeNote?.trim() || "תיקונים התבקשו";
+      patch.review_episode_note = respEpisodeNote?.trim() || "תיקונים התבקשו";
     }
   }
 
   // reels (only if this review includes them)
   let reelsApproved = production.review_reels_approved;
-  if (reelsInScope && !production.review_reels_approved && resp.reels) {
-    if (resp.reels === "approved") {
+  if (reelsInScope && !production.review_reels_approved && respReels) {
+    if (respReels === "approved") {
       reelsApproved = true;
       patch.review_reels_approved = true;
       patch.review_reels_note = null;
     } else {
       reelsApproved = false;
-      patch.review_reels_note = resp.reelsNote?.trim() || "תיקונים התבקשו";
+      patch.review_reels_note = respReelsNote?.trim() || "תיקונים התבקשו";
     }
+  }
+
+  // item mode refines the two "is this deliverable set approved" answers from
+  // the items themselves — including the vacuous cases the flags get wrong
+  // (a production with no episode item, or none of its reels in play). The
+  // formula below is unchanged, so the flip moment does not move.
+  if (itemMode) {
+    const episodeItem = currentItems.find((i) => i.kind === "episode") ?? null;
+    const reelItems = currentItems.filter((i) => i.kind === "reel");
+    episodeApproved = episodeItem ? episodeItem.approved : true;
+    reelsApproved = reelItems.length ? reelItems.every((i) => i.approved) : true;
   }
 
   const approvedAll = episodeApproved && (!reelsInScope || reelsApproved);
@@ -329,45 +436,84 @@ export async function applyResponse(
     await bumpReelsCountForAddons(admin, production.id, justApproved);
   }
 
+  // ══ the recording moment. This update (status + derived flags, one atomic
+  // patch, exactly as before) is the last write allowed to throw. ══
   const { error: prodErr } = await admin.from("productions").update(patch).eq("id", production.id);
   if (prodErr) throw new Error(prodErr.message);
 
+  // From here on the approval IS recorded — a failed follow-up write must not
+  // fail the public page (rule 38, owner 2026-08-17). Each one is checked and,
+  // on failure, leaves a trace event instead of throwing; the trace write
+  // itself is best-effort.
+  const recordFailure = async (what: string, message: string) => {
+    try {
+      await admin.from("events").insert({
+        entity_type: "production",
+        entity_id: production.id,
+        event_type: "review_followup_write_failed",
+        payload: { link_id: link.id, what, message },
+      });
+    } catch {
+      // nothing left to do — the approval itself is safe
+    }
+  };
+
   // record the response on the link (history) and lock it
-  await admin
+  const { error: histErr } = await admin
     .from("client_review_links")
     .update({
       responded_at: new Date().toISOString(),
-      episode_response: resp.episode ?? null,
-      reels_response: reelsInScope ? resp.reels ?? null : null,
-      episode_note: resp.episodeNote?.trim() || null,
-      reels_note: resp.reelsNote?.trim() || null,
+      episode_response: respEpisode ?? null,
+      reels_response: reelsInScope ? respReels ?? null : null,
+      episode_note: respEpisodeNote?.trim() || null,
+      reels_note: respReelsNote?.trim() || null,
     })
     .eq("id", link.id);
+  if (histErr) await recordFailure("link_history", histErr.message);
 
-  await admin.from("events").insert({
+  const { error: evErr } = await admin.from("events").insert({
     entity_type: "production",
     entity_id: production.id,
     event_type: approvedAll ? "client_review_approved" : "client_review_revisions",
     payload: {
       link_id: link.id,
-      episode: resp.episode ?? null,
-      reels: reelsInScope ? resp.reels ?? null : null,
-      episode_note: resp.episodeNote?.trim() || null,
-      reels_note: resp.reelsNote?.trim() || null,
+      episode: respEpisode ?? null,
+      reels: reelsInScope ? respReels ?? null : null,
+      episode_note: respEpisodeNote?.trim() || null,
+      reels_note: respReelsNote?.trim() || null,
+      // per-item detail (stage 1b) — empty for a track-mode response
+      items: itemDetail.length ? itemDetail : undefined,
     },
   });
+  if (evErr) await recordFailure("response_event", evErr.message);
 
   // the client's correction notes join the production journal (§3, owner
   // 2026-07-24) — one full story. kind='client', author null (the client),
   // tagged to the track they were about. Only real notes on a revisions round.
+  // In item mode each reel note is its own entry, prefixed with its reel.
   const clientLog: {
     production_id: string; kind: string; track: "episode" | "reels"; note: string;
   }[] = [];
-  if (episodeInScope && resp.episode === "revisions" && resp.episodeNote?.trim())
-    clientLog.push({ production_id: production.id, kind: "client", track: "episode", note: resp.episodeNote.trim() });
-  if (reelsInScope && resp.reels === "revisions" && resp.reelsNote?.trim())
-    clientLog.push({ production_id: production.id, kind: "client", track: "reels", note: resp.reelsNote.trim() });
-  if (clientLog.length) await admin.from("production_log").insert(clientLog);
+  if (itemMode) {
+    for (const d of itemDetail) {
+      if (d.response !== "revisions" || !d.note) continue;
+      clientLog.push({
+        production_id: production.id,
+        kind: "client",
+        track: d.kind === "episode" ? "episode" : "reels",
+        note: d.kind === "reel" ? `ריל ${d.reel_index}: ${d.note}` : d.note,
+      });
+    }
+  } else {
+    if (episodeInScope && respEpisode === "revisions" && respEpisodeNote?.trim())
+      clientLog.push({ production_id: production.id, kind: "client", track: "episode", note: respEpisodeNote.trim() });
+    if (reelsInScope && respReels === "revisions" && respReelsNote?.trim())
+      clientLog.push({ production_id: production.id, kind: "client", track: "reels", note: respReelsNote.trim() });
+  }
+  if (clientLog.length) {
+    const { error: logErr } = await admin.from("production_log").insert(clientLog);
+    if (logErr) await recordFailure("client_log", logErr.message);
+  }
 
   // full approval → deal invoice into the queue (same as the manual path).
   // The add-ons were already resolved above, before the status flip.
