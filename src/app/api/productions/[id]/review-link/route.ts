@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createReviewLink } from "@/lib/review/links";
+import { getAppBaseUrl } from "@/lib/appUrl";
 
 // "צור לינק אישור" — an operational action (can_edit_stages) taken when a
 // production is ready for the client. Supersedes any live link and mints a
@@ -33,8 +34,10 @@ export async function POST(request: Request, { params }: { params: { id: string 
     .maybeSingle();
   if (!prod) return NextResponse.json({ error: "ההפקה לא נמצאה" }, { status: 404 });
 
-  // derive the public base URL from the request (works in prod + preview)
-  const origin = new URL(request.url).origin;
+  // the public base URL a CLIENT will open — NEXT_PUBLIC_APP_URL when set,
+  // never blindly the request host (a branch alias is Deployment-Protected
+  // and would send the client to Vercel's login screen)
+  const origin = getAppBaseUrl(request);
 
   const result = await createReviewLink(admin, params.id, {
     createdBy: user.id,

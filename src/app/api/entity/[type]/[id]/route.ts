@@ -12,6 +12,7 @@ import {
   type EntityType,
 } from "@/lib/entities";
 import { must, SupabaseReadError, type QueryResult } from "@/lib/supabase/unwrap";
+import { getAppBaseUrl } from "@/lib/appUrl";
 
 // EntityDrawer backend. Everything flows through the user's own client so
 // RLS and the 0010 column-guard triggers are the real gates; the field
@@ -188,8 +189,8 @@ async function handleGet(
       .is("responded_at", null)
       .gt("expires_at", new Date().toISOString())
       .order("created_at", { ascending: false });
-    // same origin the mint route stamps into the link it hands out
-    const origin = new URL(request.url).origin;
+    // same base URL the mint route stamps into the link it hands out
+    const origin = getAppBaseUrl(request);
     reviewLinks = (linkRows ?? []).map((r) => ({
       id: r.id as string,
       url: `${origin}/r/${r.token as string}`,

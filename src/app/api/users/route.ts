@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getAppBaseUrl } from "@/lib/appUrl";
 
 // Add a user — user-manager only. Two modes:
 //   invite : sends a Supabase invite email (they set their own password)
@@ -32,10 +33,12 @@ export async function POST(request: Request) {
     // Land the invited user straight on the set-password screen. The email
     // link hits Supabase's verify endpoint, which redirects to redirectTo
     // with a code; /auth/callback exchanges it for a session, then forwards
-    // to /welcome. Derived from the request origin so it's the deployment
-    // that sent the invite (prod, not localhost) — this URL must also be in
+    // to /welcome. NEXT_PUBLIC_APP_URL when set, request origin otherwise —
+    // never blindly the request host: an invite sent while the admin had a
+    // branch alias open would point the new user at a Deployment-Protected
+    // domain and land them on Vercel's SSO screen. This URL must also be in
     // Supabase Auth → Redirect URLs.
-    const origin = new URL(request.url).origin;
+    const origin = getAppBaseUrl(request);
     const { data, error } = await admin.auth.admin.inviteUserByEmail(email, {
       data: { name },
       redirectTo: `${origin}/auth/callback?next=/welcome`,
