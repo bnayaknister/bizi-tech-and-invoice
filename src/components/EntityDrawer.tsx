@@ -109,6 +109,10 @@ type DrawerData = {
   // until the items model reaches this production (seeded at link mint or
   // first drawer save)
   reviewItems: { id: string; kind: string; reel_index: number | null; media_link: string | null; approved: boolean; last_note: string | null }[] | null;
+  // links still live for this production (Q7) — not superseded, unanswered,
+  // unexpired. Scope-aware supersession means there can be two (episode +
+  // reels), so pressing send may burn one, both, or none.
+  reviewLinks: { id: string; url: string; scope: string; created_at: string }[] | null;
   reelsSummary: { count: number } | null;
   log: LogEntry[] | null;
   diskOptions: string[] | null;
@@ -134,7 +138,7 @@ const STEP_ORDER: Record<string, number> = { record: 0, edit: 1, deliver: 2 };
 // without hunting. Stage steps advance on tap (record→edit→deliver→back).
 function ProductionTrackBlock({
   icon, title, stages, note, approved, canEdit, onAdvance, tally, onSend, saving, sending, sent,
-  mediaUrl, onMediaChange, onMediaBlur, mediaFields,
+  mediaUrl, onMediaChange, onMediaBlur, mediaFields, liveLinks = [],
 }: {
   icon: string;
   title: string;
@@ -165,6 +169,8 @@ function ProductionTrackBlock({
     onBlur: () => void;
     status?: { approved: boolean; note: string | null } | null;
   }[];
+  // live links this block's send button would supersede (Q7) — display only
+  liveLinks?: { id: string; url: string; scope: string; created_at: string }[];
 }) {
   const ordered = [...stages].sort((a, b) => (STEP_ORDER[a.step] ?? 9) - (STEP_ORDER[b.step] ?? 9));
   // TWO different measurements live in this block, and until 2026-08-03 both
@@ -273,12 +279,18 @@ function ProductionTrackBlock({
               className="w-full text-[11px] bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-2.5 py-1.5 text-right outline-none focus:border-[var(--violet-light)]"
             />
           )}
+          {!sent && <LiveLinksBox links={liveLinks} />}
           <button
             onClick={() => onSend(mediaUrl.trim() || null)}
             disabled={!!sending}
             className="w-full text-[11px] rounded-lg py-1.5 border border-[var(--rule)] text-[var(--dim)] enabled:hover:border-[var(--violet-light)] enabled:hover:text-[var(--violet-light)] disabled:opacity-50 transition-colors"
           >
-            {sending ? "יוצר קישור…" : "שלח לאישור לקוח →"}
+            <span className="block">
+              {sending ? "יוצר קישור…" : liveLinks.length ? "צור לינק חדש →" : "שלח לאישור לקוח →"}
+            </span>
+            {!sending && liveLinks.length > 0 && (
+              <span className="block text-[9px] text-rose-400/70">ידרוס את הלינק החי</span>
+            )}
           </button>
           {sent && (
             <div className="rounded-lg px-2.5 py-2 text-[11px]" style={{ background: "rgba(139,92,246,0.08)", border: "1px solid rgba(139,92,246,0.35)" }}>
@@ -298,6 +310,60 @@ function ProductionTrackBlock({
 }
 
 const TRACK_LABEL: Record<string, string> = { episode: "פרק", reels: "רילז" };
+
+// ── live review links (Q7) ──
+const SCOPE_LABEL: Record<string, string> = { episode: "פרק", reels: "רילז", all: "פרק + רילז" };
+
+/** does a link with this scope cover the track a send button is about? */
+function scopeCovers(linkScope: string, track: "episode" | "reels" | "all"): boolean {
+  if (track === "all") return true; // a unified send supersedes every live link
+  return linkScope === "all" || linkScope === track;
+}
+
+/** "לפני 3 שעות" — the tech needs recency at a glance, not a timestamp */
+function relativeTime(iso: string): string {
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "עכשיו";
+  if (mins < 60) return `לפני ${mins} דק׳`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `לפני ${hours} שע׳`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? "אתמול" : `לפני ${days} ימים`;
+}
+
+function fullTime(iso: string): string {
+  return new Date(iso).toLocaleString("he-IL", { dateStyle: "short", timeStyle: "short" });
+}
+
+/** the existing live links, with copy — so nobody re-sends just to get the URL */
+function LiveLinksBox({ links }: { links: { id: string; url: string; scope: string; created_at: string }[] }) {
+  const [copied, setCopied] = useState<string | null>(null);
+  if (!links.length) return null;
+  return (
+    <div className="rounded-lg px-2.5 py-2 space-y-2" style={{ background: "rgba(74,222,128,0.07)", border: "1px solid rgba(74,222,128,0.3)" }}>
+      <div className="text-[10px] font-bold text-emerald-400">🔗 לינק חי אצל הלקוח</div>
+      {links.map((l) => (
+        <div key={l.id} className="space-y-0.5">
+          <div className="flex items-center gap-2 text-[10px]">
+            <span className="text-[var(--dim)]">{SCOPE_LABEL[l.scope] ?? l.scope}</span>
+            <span className="text-[var(--faint)]" title={fullTime(l.created_at)}>· נוצר {relativeTime(l.created_at)}</span>
+          </div>
+          <div className="text-[10px] text-[var(--dim)] break-all" dir="ltr">{l.url}</div>
+          <button
+            onClick={() => {
+              navigator.clipboard?.writeText(l.url);
+              setCopied(l.id);
+              setTimeout(() => setCopied(null), 1500);
+            }}
+            className="text-[10px] text-emerald-400 hover:underline"
+          >
+            {copied === l.id ? "הועתק ✓" : "העתק קישור קיים"}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // icon per log kind. Unknown kind → a neutral default, never a crash (owner
 // 2026-07-24: kinds will grow — price decision, approved add-on, issued doc).
@@ -1284,6 +1350,13 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                   const anyMedia = !!(episodeMedia.trim() || reelFilled);
                   const bothApproved = !!data.review?.episode_approved && !!data.review?.reels_approved;
                   const showUnified = data.canEditStages && bothPresent && !bothApproved;
+                  // which live links each send button would burn (Q7).
+                  // Scope-aware supersession (B1 fix) means episode and reels
+                  // links coexist, so each button warns about its own overlap;
+                  // the unified send supersedes every live link.
+                  const allLive = data.reviewLinks ?? [];
+                  const liveForEpisode = allLive.filter((l) => scopeCovers(l.scope, "episode"));
+                  const liveForReels = allLive.filter((l) => scopeCovers(l.scope, "reels"));
                   return (
                     <div className="space-y-2">
                       {epStages.length > 0 && (
@@ -1302,6 +1375,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           mediaUrl={episodeMedia}
                           onMediaChange={setEpisodeMedia}
                           onMediaBlur={() => void saveItemLink("episode", null, episodeMedia)}
+                          liveLinks={liveForEpisode}
                         />
                       )}
                       {reelsShown && (
@@ -1337,25 +1411,38 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                                 })
                               : undefined
                           }
+                          liveLinks={liveForReels}
                         />
                       )}
                       {/* unified send — takes both blocks' links at once */}
                       {showUnified && (
                         <div className="space-y-1.5">
+                          {/* a unified send supersedes EVERY live link, so it
+                              shows them all and warns unconditionally */}
+                          {reviewSent?.scope !== "all" && <LiveLinksBox links={allLive} />}
                           <button
                             onClick={() => void sendUnifiedReviewLink()}
                             disabled={reviewSending === "all" || !anyMedia}
                             className="w-full text-[11px] rounded-lg py-2 border border-[var(--violet-light)] text-[var(--violet-light)] hover:bg-[rgba(139,92,246,0.14)] disabled:opacity-50 transition-colors font-bold"
                           >
-                            {reviewSending === "all"
-                              ? "יוצר קישור…"
-                              : !anyMedia
-                                ? "הדביקו קישור צפייה לפחות למסלול אחד"
-                                : episodeMedia.trim() && reelFilled
-                                  ? "שלח לצפייה (פרק + רילז) →"
-                                  : episodeMedia.trim()
-                                    ? "שלח לצפייה (פרק בלבד — חסר קישור רילז) →"
-                                    : "שלח לצפייה (רילז בלבד — חסר קישור פרק) →"}
+                            {/* line 1 keeps B2's scope-reflecting label — what
+                                WILL be sent; line 2 says what it destroys */}
+                            <span className="block">
+                              {reviewSending === "all"
+                                ? "יוצר קישור…"
+                                : !anyMedia
+                                  ? "הדביקו קישור צפייה לפחות למסלול אחד"
+                                  : episodeMedia.trim() && reelFilled
+                                    ? "שלח לצפייה (פרק + רילז) →"
+                                    : episodeMedia.trim()
+                                      ? "שלח לצפייה (פרק בלבד — חסר קישור רילז) →"
+                                      : "שלח לצפייה (רילז בלבד — חסר קישור פרק) →"}
+                            </span>
+                            {reviewSending !== "all" && anyMedia && allLive.length > 0 && (
+                              <span className="block text-[9px] font-normal text-rose-400/70">
+                                {allLive.length > 1 ? "ידרוס את שני הלינקים החיים" : "ידרוס את הלינק החי"}
+                              </span>
+                            )}
                           </button>
                           {reviewSent?.scope === "all" && (
                             <div className="rounded-lg px-2.5 py-2 text-[11px]" style={{ background: "rgba(139,92,246,0.08)", border: "1px solid rgba(139,92,246,0.35)" }}>

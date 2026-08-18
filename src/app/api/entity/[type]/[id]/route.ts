@@ -61,7 +61,7 @@ export async function GET(
 }
 
 async function handleGet(
-  _request: Request,
+  request: Request,
   { params }: { params: { type: string; id: string } }
 ) {
   const type = parseType(params.type);
@@ -111,6 +111,7 @@ async function handleGet(
   let reviewItems:
     | { id: string; kind: string; reel_index: number | null; media_link: string | null; approved: boolean; last_note: string | null }[]
     | null = null;
+  let reviewLinks: { id: string; url: string; scope: string; created_at: string }[] | null = null;
   if (type === "production" && profile.can_view_stages) {
     const { data } = await supabase
       .from("stages")
@@ -170,6 +171,30 @@ async function handleGet(
       media_link: (r.media_link as string | null) ?? null,
       approved: !!r.approved,
       last_note: (r.last_note as string | null) ?? null,
+    }));
+
+    // LIVE review links (Q7) — the drawer had no way to retrieve a link it had
+    // already sent, so the tech pressed send again and superseded the one the
+    // client was holding (20 links on one production in two days). Read
+    // through the user's own client: the table's select policy is
+    // can_view_stages(), the same gate this block already sits behind.
+    // Supersession is scope-aware since the B1 fix, so an episode link and a
+    // reels link can BOTH be live — this is a list, not a single row.
+    const { data: linkRows } = await supabase
+      .from("client_review_links")
+      .select("id,token,scope,created_at,expires_at,superseded,responded_at")
+      .eq("production_id", params.id)
+      .eq("superseded", false)
+      .is("responded_at", null)
+      .gt("expires_at", new Date().toISOString())
+      .order("created_at", { ascending: false });
+    // same origin the mint route stamps into the link it hands out
+    const origin = new URL(request.url).origin;
+    reviewLinks = (linkRows ?? []).map((r) => ({
+      id: r.id as string,
+      url: `${origin}/r/${r.token as string}`,
+      scope: (r.scope as string) ?? "all",
+      created_at: r.created_at as string,
     }));
   }
 
@@ -288,6 +313,7 @@ async function handleGet(
     canEditStages: !!profile.can_edit_stages,
     review,
     reviewItems,
+    reviewLinks,
     reelsSummary,
     log,
     diskOptions,
