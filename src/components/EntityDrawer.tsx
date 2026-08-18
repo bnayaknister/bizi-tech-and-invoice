@@ -169,7 +169,8 @@ function ProductionTrackBlock({
     onBlur: () => void;
     status?: { approved: boolean; note: string | null } | null;
   }[];
-  // live links this block's send button would supersede (Q7) — display only
+  // live links THIS button would supersede (Q7) — drives the warning line
+  // only; the links themselves are listed once, above the whole send area
   liveLinks?: { id: string; url: string; scope: string; created_at: string }[];
 }) {
   const ordered = [...stages].sort((a, b) => (STEP_ORDER[a.step] ?? 9) - (STEP_ORDER[b.step] ?? 9));
@@ -279,7 +280,6 @@ function ProductionTrackBlock({
               className="w-full text-[11px] bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-2.5 py-1.5 text-right outline-none focus:border-[var(--violet-light)]"
             />
           )}
-          {!sent && <LiveLinksBox links={liveLinks} />}
           <button
             onClick={() => onSend(mediaUrl.trim() || null)}
             disabled={!!sending}
@@ -1359,6 +1359,12 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                   const liveForReels = allLive.filter((l) => scopeCovers(l.scope, "reels"));
                   return (
                     <div className="space-y-2">
+                      {/* what the client is holding right now — ONE box for the
+                          whole production. Per-block rendering showed the same
+                          scope='all' link in every block. The per-scope
+                          overwrite warning stays on each button, where it is
+                          genuinely different per track. */}
+                      {data.canEditStages && <LiveLinksBox links={allLive} />}
                       {epStages.length > 0 && (
                         <ProductionTrackBlock
                           icon="🎬"
@@ -1417,9 +1423,6 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                       {/* unified send — takes both blocks' links at once */}
                       {showUnified && (
                         <div className="space-y-1.5">
-                          {/* a unified send supersedes EVERY live link, so it
-                              shows them all and warns unconditionally */}
-                          {reviewSent?.scope !== "all" && <LiveLinksBox links={allLive} />}
                           <button
                             onClick={() => void sendUnifiedReviewLink()}
                             disabled={reviewSending === "all" || !anyMedia}
