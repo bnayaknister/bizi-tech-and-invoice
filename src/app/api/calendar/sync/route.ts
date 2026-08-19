@@ -3,7 +3,8 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { fetchAndParseIcs, parseIcsText, type CalendarEvent } from "@/lib/calendar/parse";
 import { buildSyncPlan, type ExistingProductionRow } from "@/lib/calendar/sync";
-import { extractGuestFromTitle, type ShowForMatch } from "@/lib/calendar/match";
+import { extractStudioAndGuest, type ShowForMatch } from "@/lib/calendar/match";
+import { STUDIOS } from "@/lib/calendar/studios";
 import { enqueueDocument } from "@/lib/documents/enqueue";
 import { must, mustRows, type QueryResult } from "@/lib/supabase/unwrap";
 
@@ -272,6 +273,7 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
     if (!show) continue;
     const kind = show.billing_mode === "contract" ? "contract" : show.billing_mode === "per_episode" && show.client_id ? "client" : "internal";
     const recordDate = action.event.start ? action.event.start.toISOString().slice(0, 10) : todayIsraelDate;
+    const titleParts = extractStudioAndGuest(action.event.title, STUDIOS);
     const { data: inserted, error } = await admin
       .from("productions")
       .insert({
@@ -289,10 +291,14 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
         contract_id: contractByShow.get(show.id) ?? null,
         record_date: recordDate,
         record_time: action.event.start ? israelTimeHHMM(action.event.start) : null,
-        guest: extractGuestFromTitle(action.event.title, action.alias),
-        // LOCATION on the calendar event overrides the show's default —
-        // camera_count has no such override, it's a straight copy
-        studio: action.event.location || show.default_studio || null,
+        guest: titleParts.guest,
+        // The TITLE names the studio, and it overrides the show's default
+        // (owner spec 2026-08-19). event.location does NOT: it is a street
+        // address ("החשמונאים 105, תל אביב-יפו, ישראל"), present on 11% of the
+        // feed, and reading it as a studio name put a raw address in this
+        // column on 20% of calendar-created productions. camera_count still
+        // has no override at all, it's a straight copy.
+        studio: titleParts.studio ?? show.default_studio ?? null,
         camera_count: show.camera_count,
         // deliverables composition, copied show -> production (0055). Same
         // template semantics as camera_count and default_rate (0032): editing
@@ -341,8 +347,13 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
   }
 
   for (const action of plan.toUpdate) {
+    // Only the sync stamp. The old line here overwrote `studio` with
+    // event.location — a street address — on every re-sync of an untouched
+    // production, which is how addresses kept landing in the studio column
+    // even after creation. Re-deriving studio/guest from the title on update
+    // is deliberately NOT done here: that is V1c, and it needs its own
+    // decision about clobbering a hand-edited field.
     const patch: Record<string, unknown> = { calendar_synced_at: new Date().toISOString() };
-    if (action.event.location) patch.studio = action.event.location;
     const { error } = await admin.from("productions").update(patch).eq("id", action.productionId);
     if (error) throw new Error(error.message);
     updated++;
