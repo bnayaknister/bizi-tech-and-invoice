@@ -257,7 +257,17 @@ async function main() {
     console.error("   ולכן הקוד עובר tsc ונופל ב-42703 ב-runtime.");
   }
   console.error("");
-  console.error("   תיקון:  npx supabase gen types typescript --project-id <ref> > src/lib/supabase/database.types.ts");
+  // The project id is SPELLED OUT, never "<ref>". This line is copy-pasted at
+  // the worst possible moment — the build just failed — and a placeholder there
+  // invites either a guess or an omission. Omitting --project-id makes the CLI
+  // fall back on supabase/.temp/linked-project.json, which is gitignored and
+  // per-machine: on 2026-08-20 it still pointed at the retired Singapore
+  // project, months after the move to Frankfurt. That would regenerate the
+  // types file from a FOREIGN schema and "fix" the drift silently, with a zero
+  // exit code. Frankfurt, explicitly, is the whole point.
+  console.error(
+    "   תיקון:  npx supabase gen types typescript --project-id teobjwdszasavvmvukfb > src/lib/supabase/database.types.ts"
+  );
   console.error("   עקיפה: SKIP_SCHEMA_DRIFT_CHECK=1\n");
   process.exit(DRIFT);
 }
