@@ -40,6 +40,35 @@ import type { MorningDocumentRequest } from "@/lib/morning/types";
 // description fields and client, nothing else, so a hand-edit can't reshape
 // the request into something unexpected. income is never touched by a
 // recipient change — the amounts are frozen, only who receives them moves.
+//
+// ---------------------------------------------------------------------------
+// MULTI-LINE EDITING (`lines`) — added 2026-08-20
+// ---------------------------------------------------------------------------
+// A bundled deal invoice carries one income line per episode. Everything above
+// this point addresses income[0] and only income[0], so on a 4-episode bundle
+// three of the four lines were unreachable — the bookkeeper's only recourse was
+// to fix them by hand in Morning, outside the queue and outside the audit trail.
+// That is the same failure the recipient rule above was written to end.
+//
+// `lines` is a SEPARATE branch, not a generalisation of the one above. The old
+// path is not modified, not wrapped, and not re-entered: a request without
+// `lines` runs the exact code it ran yesterday. Three rules make the new branch
+// safe to stand beside it:
+//
+//   1. MONEY IS LOCKED. A line edit changes text only. `amount` alongside
+//      `lines` is refused rather than ignored — the column is Σ of the source
+//      jobs, and per-line prices that no longer sum to it would be a silent
+//      discrepancy between our books and Morning's.
+//   2. THE TITLE IS INDEPENDENT. The single-line path writes one string to both
+//      payload.description and income[0].description, which is right when there
+//      is one line: the title IS the line. With N lines there is no line the
+//      title could mirror, so it is left alone entirely.
+//   3. ONE LINE MEANS THE OLD PATH. `lines` on a document with income.length<=1
+//      is refused (see rule 2 — that document's title must keep moving with its
+//      line, and only `description` does that).
+//
+// Validation is complete before anything is written: a bad index in the middle
+// of the array leaves the row untouched rather than half-edited.
 
 export async function POST(request: Request) {
   const supabase = createClient();
@@ -58,8 +87,18 @@ export async function POST(request: Request) {
     // sent for the caller's own bookkeeping only — the authoritative name comes
     // from the live list below, never from the request
     morningClientName?: string;
+    // multi-line mode — see the block comment above
+    lines?: { index?: number; description?: string }[];
   };
   if (!body.id) return NextResponse.json({ error: "חסר מזהה מסמך" }, { status: 400 });
+
+  const hasLines = Array.isArray(body.lines);
+  if (hasLines && typeof body.amount === "number") {
+    return NextResponse.json(
+      { error: "לא ניתן לערוך סכום בעריכה רב-שורתית — הסכום נגזר מהעבודות שאוגדו" },
+      { status: 400 }
+    );
+  }
 
   const hasAmount = typeof body.amount === "number";
   const newDescription = typeof body.description === "string" ? body.description.trim() : undefined;
@@ -67,7 +106,15 @@ export async function POST(request: Request) {
     typeof body.morningClientId === "string" && body.morningClientId.trim() !== ""
       ? body.morningClientId.trim()
       : undefined;
-  if (!hasAmount && newDescription === undefined && newMorningClientId === undefined) {
+  if (hasLines && newDescription !== undefined) {
+    // both write income[0]; letting them race inside one request would make the
+    // winner an accident of statement order
+    return NextResponse.json(
+      { error: "לא ניתן לשלוח גם תיאור מסמך וגם עריכת שורות באותה בקשה" },
+      { status: 400 }
+    );
+  }
+  if (!hasAmount && !hasLines && newDescription === undefined && newMorningClientId === undefined) {
     return NextResponse.json({ error: "אין שינוי" }, { status: 400 });
   }
   if (hasAmount && (!(body.amount! > 0) || !Number.isFinite(body.amount))) {
@@ -106,6 +153,56 @@ export async function POST(request: Request) {
 
   const payload = { ...(row.payload as MorningDocumentRequest) };
 
+  // ---- multi-line validation: everything, before anything is written --------
+  // Resolved here rather than at parse time because every rule needs the row:
+  // how many lines it has, and what each one currently says.
+  type LineEdit = { index: number; description: string; before: string | null };
+  let lineEdits: LineEdit[] = [];
+  if (hasLines) {
+    const existing = Array.isArray(payload.income) ? payload.income : [];
+    if (existing.length === 0) {
+      // a receipt (400) carries no income lines at all — 0 of 61 in the account
+      return NextResponse.json({ error: "מסמך זה אינו נושא שורות פירוט" }, { status: 400 });
+    }
+    if (existing.length === 1) {
+      // rule 3: one line means the title and the line are the same thing, and
+      // only `description` keeps them together
+      return NextResponse.json(
+        { error: "למסמך יש שורת פירוט אחת — ערוך אותה דרך שדה התיאור, כדי שכותרת המסמך תתעדכן איתה" },
+        { status: 400 }
+      );
+    }
+    if (body.lines!.length === 0) {
+      return NextResponse.json({ error: "לא נשלחו שורות לעריכה" }, { status: 400 });
+    }
+
+    const seen = new Set<number>();
+    for (const raw of body.lines!) {
+      const index = raw?.index;
+      if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= existing.length) {
+        return NextResponse.json(
+          { error: `שורה ${String(index)} אינה קיימת במסמך (יש ${existing.length} שורות)` },
+          { status: 400 }
+        );
+      }
+      if (seen.has(index)) {
+        return NextResponse.json({ error: `שורה ${index + 1} נשלחה פעמיים` }, { status: 400 });
+      }
+      seen.add(index);
+      const description = typeof raw?.description === "string" ? raw.description.trim() : "";
+      if (description.length === 0) {
+        return NextResponse.json({ error: `תיאור שורה ${index + 1} לא יכול להיות ריק` }, { status: 400 });
+      }
+      lineEdits.push({ index, description, before: existing[index]?.description ?? null });
+    }
+    // a save that changes nothing is not an error worth blocking, but it must
+    // not leave an audit entry claiming an edit happened
+    lineEdits = lineEdits.filter((l) => l.description !== l.before);
+    if (lineEdits.length === 0 && newMorningClientId === undefined) {
+      return NextResponse.json({ error: "אין שינוי" }, { status: 400 });
+    }
+  }
+
   // Resolve the recipient against Morning's live list before writing anything.
   // Read-only, so it runs for real even in DRY_RUN — a picker validated against
   // stale data is worse than no validation.
@@ -141,6 +238,16 @@ export async function POST(request: Request) {
     payload.income = (payload.income ?? []).map((r, i) => (i === 0 ? { ...r, description: newDescription } : r));
   }
 
+  // Multi-line: TEXT only, on the named lines only. price/quantity/currency/
+  // vatType ride through untouched, payload.description is not referenced, and
+  // the amount column is never patched — see rules 1 and 2 above.
+  if (lineEdits.length) {
+    const byIndex = new Map(lineEdits.map((l) => [l.index, l.description]));
+    payload.income = (payload.income ?? []).map((r, i) =>
+      byIndex.has(i) ? { ...r, description: byIndex.get(i)! } : r
+    );
+  }
+
   const patch: Record<string, unknown> = { payload };
   if (hasAmount) patch.amount = body.amount;
 
@@ -163,6 +270,15 @@ export async function POST(request: Request) {
       // the FK deliberately does not move with the recipient — recorded so the
       // gap is legible later as a decision, not as a bug
       owes_client_id: row.client_id,
+      // present only on the multi-line branch. `before`/`after` above stay the
+      // shape they have always been, so nothing that reads this event has to
+      // learn a second one to keep working.
+      ...(hasLines
+        ? {
+            mode: "lines",
+            lines: lineEdits.map((l) => ({ index: l.index, before: l.before, after: l.description })),
+          }
+        : {}),
     },
   });
 

@@ -309,6 +309,11 @@ export default function DocumentsClient({
   const [editing, setEditing] = useState<string | null>(null);
   const [editAmount, setEditAmount] = useState<string>("");
   const [editDesc, setEditDesc] = useState<string>("");
+  // A bundled invoice carries one income line per episode. With more than one,
+  // the form edits the LINES and locks the money (the amount is the sum of the
+  // bundled jobs); with one, it stays the amount+description form it has always
+  // been, because there the title and the line are the same string.
+  const [editLines, setEditLines] = useState<string[]>([]);
   // The recipient the document will be MADE OUT TO. Separate from the client
   // who owes — a document ordered by one entity and invoiced to another is
   // normal here (owner 2026-08-02), so this picker lists all of Morning's
@@ -478,18 +483,41 @@ export default function DocumentsClient({
     }
   }
 
+  // The income lines of a queued row, as the form needs them. One place, so the
+  // opener, the renderer and the save all agree on how many lines there are.
+  function incomeLines(r: PendingDocRow): { description?: string; quantity?: number; price?: number }[] {
+    const income = (r.payload as { income?: unknown })?.income;
+    return Array.isArray(income) ? (income as { description?: string; quantity?: number; price?: number }[]) : [];
+  }
+
   function openEdit(r: PendingDocRow) {
     setEditing(r.id);
     setEditAmount(r.amount === null ? "" : String(r.amount));
     const desc = (r.payload as { description?: string })?.description ?? "";
     setEditDesc(desc);
+    setEditLines(incomeLines(r).map((l) => l.description ?? ""));
     setEditClient((r.payload as { client?: { id?: string } })?.client?.id ?? null);
     void loadMorningClients();
   }
 
   async function saveEdit(r: PendingDocRow) {
+    const lines = incomeLines(r);
+    const multi = lines.length > 1;
+
+    // Only the changed lines are sent. An untouched line must not appear in the
+    // audit trail as an edit, and the server refuses a no-op save outright.
+    const changedLines = multi
+      ? editLines
+          .map((description, index) => ({ index, description: description.trim() }))
+          .filter((l) => l.description !== (lines[l.index]?.description ?? ""))
+      : [];
+    if (multi && changedLines.some((l) => l.description.length === 0)) {
+      setError("תיאור שורה לא יכול להיות ריק");
+      return;
+    }
+
     const amountNum = editAmount.trim() === "" ? undefined : Number(editAmount);
-    if (amountNum !== undefined && !(amountNum > 0)) {
+    if (!multi && amountNum !== undefined && !(amountNum > 0)) {
       setError("סכום חייב להיות מספר חיובי");
       return;
     }
@@ -497,6 +525,10 @@ export default function DocumentsClient({
     // not cost a live Morning lookup on every save
     const originalClient = (r.payload as { client?: { id?: string } })?.client?.id ?? null;
     const clientChanged = editClient !== null && editClient !== originalClient;
+    if (multi && changedLines.length === 0 && !clientChanged) {
+      setError("אין שינוי");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -505,8 +537,12 @@ export default function DocumentsClient({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id: r.id,
-          amount: amountNum,
-          description: editDesc.trim() || undefined,
+          // The two modes are mutually exclusive on the wire, exactly as the
+          // server requires: a multi-line row sends neither amount nor
+          // description, a single-line row sends no lines.
+          ...(multi
+            ? { ...(changedLines.length ? { lines: changedLines } : {}) }
+            : { amount: amountNum, description: editDesc.trim() || undefined }),
           ...(clientChanged
             ? {
                 morningClientId: editClient,
@@ -658,23 +694,59 @@ export default function DocumentsClient({
                               {r.client_name}.
                             </div>
                           </div>
-                          <label className="text-[11px]">
-                            <span className="text-[var(--faint)]">סכום (₪)</span>
-                            <input
-                              type="number"
-                              value={editAmount}
-                              onChange={(e) => setEditAmount(e.target.value)}
-                              className="w-full mt-0.5 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1"
-                            />
-                          </label>
-                          <label className="text-[11px]">
-                            <span className="text-[var(--faint)]">תיאור</span>
-                            <input
-                              value={editDesc}
-                              onChange={(e) => setEditDesc(e.target.value)}
-                              className="w-full mt-0.5 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1"
-                            />
-                          </label>
+                          {incomeLines(r).length > 1 ? (
+                            <>
+                              <div className="text-[11px]">
+                                <span className="text-[var(--faint)]">
+                                  שורות פירוט ({incomeLines(r).length})
+                                </span>
+                                <div className="mt-0.5 flex flex-col gap-1">
+                                  {incomeLines(r).map((l, i) => (
+                                    <div key={i} className="flex items-center gap-2">
+                                      <input
+                                        value={editLines[i] ?? ""}
+                                        onChange={(e) =>
+                                          setEditLines((prev) => {
+                                            const next = [...prev];
+                                            next[i] = e.target.value;
+                                            return next;
+                                          })
+                                        }
+                                        className="flex-1 min-w-0 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1"
+                                      />
+                                      <span className="shrink-0 font-mono text-[10px] text-[var(--faint)]">
+                                        {l.quantity ?? 1} × {l.price ?? 0}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                              <div className="text-[10px] text-[var(--faint)]">
+                                הסכום ({r.amount ?? 0} ₪) וכותרת המסמך נגזרים מהעבודות שאוגדו ואינם נערכים כאן —
+                                עריכה כאן משנה את הטקסט של השורות בלבד.
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <label className="text-[11px]">
+                                <span className="text-[var(--faint)]">סכום (₪)</span>
+                                <input
+                                  type="number"
+                                  value={editAmount}
+                                  onChange={(e) => setEditAmount(e.target.value)}
+                                  className="w-full mt-0.5 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1"
+                                />
+                              </label>
+                              <label className="text-[11px]">
+                                <span className="text-[var(--faint)]">תיאור</span>
+                                <input
+                                  value={editDesc}
+                                  onChange={(e) => setEditDesc(e.target.value)}
+                                  className="w-full mt-0.5 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1"
+                                />
+                              </label>
+                            </>
+                          )}
                           <div className="flex gap-2">
                             <button
                               disabled={busy}

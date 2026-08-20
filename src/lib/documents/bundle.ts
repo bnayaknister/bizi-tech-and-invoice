@@ -33,6 +33,28 @@ const LIVE_STATUSES = ["pending", "approved", "issued"];
  * covering one item is not "מאוגד" (bundled) at all, so that word drops with
  * it. Two or more keep both the number and the bundling.
  */
+/**
+ * The text of ONE line of a bundled deal invoice — one job, one episode.
+ *
+ * Exported, and deliberately so: the bundle modal on the finance screen shows
+ * the bookkeeper what she is about to create, and until now it composed its own
+ * approximation (`campaign ?? show_name ?? date`) while this file built
+ * `campaign + date`. A preview that disagrees with the builder is worse than no
+ * preview — she approves what the screen said, and Morning receives something
+ * else. One function, both callers, no way for them to drift.
+ *
+ * Kept dependency-free on purpose: it is imported by a client component, so it
+ * must stay a pure function of its argument. Anything this file gains later
+ * that a browser cannot run belongs BELOW it, never inside it.
+ *
+ * Takes the loosest shape both callers satisfy rather than a job row type —
+ * the finance screen's FinanceJob and the DB row here are different types that
+ * happen to agree on these two fields.
+ */
+export function bundleLineDesc(job: { campaign?: string | null; date?: string | null }): string {
+  return `${job.campaign ?? ""} ${job.date ?? ""}`.trim() || "פרק";
+}
+
 function bundleTitle(kind: string, clientName: string, n: number, one: string, many: string, bundled: string) {
   return n === 1
     ? `${kind} — ${clientName} (${one})`.trim()
@@ -128,8 +150,6 @@ export async function createDealInvoiceBundle(
   }
 
   const ordered = ids.map((id) => jobs.find((j) => j.id === id)!);
-  const lineDesc = (j: (typeof jobs)[number]) =>
-    `${(j.campaign as string | null) ?? ""} ${(j.date as string | null) ?? ""}`.trim() || "פרק";
   const total = ordered.reduce((s, j) => s + Number(j.amount), 0);
 
   const payload: MorningDocumentRequest = {
@@ -141,7 +161,7 @@ export async function createDealInvoiceBundle(
     description: bundleTitle("חשבון עסקה", primaryClient.name ?? "", ordered.length, "עבודה אחת", "עבודות", "מאוגד"),
     client: { id: morningClientId, name: (primaryClient.name as string | null) ?? undefined, add: false },
     income: ordered.map((j) => ({
-      description: lineDesc(j),
+      description: bundleLineDesc(j),
       quantity: 1,
       price: Number(j.amount),
       currency: "ILS",

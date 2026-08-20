@@ -86,6 +86,44 @@ def make_row(status="pending"):
     return r["id"]
 
 
+def make_bundle_row(n=3, status="pending"):
+    """A bundled deal invoice: one income line per episode.
+
+    Built directly rather than through createDealInvoiceBundle because no
+    multi-job bundle exists in the account (verified 2026-08-20: all five rows
+    carrying bundle_job_ids hold exactly one job), and the endpoint under test
+    only ever reads the payload — it does not care how the row got there.
+    Touches Morning never: nothing here is approved or issued.
+    """
+    income = [
+        {"description": f"{MARK} line {i}", "quantity": 1, "price": 100 + i,
+         "currency": "ILS", "vatType": 0}
+        for i in range(n)
+    ]
+    payload = {"type": 300, "lang": "he", "currency": "ILS", "vatType": 0,
+               "description": f"{MARK} bundle title",
+               "client": {"id": "x", "add": False},
+               "income": income}
+    total = sum(l["price"] for l in income)
+    row = {"doc_type": "deal_invoice", "client_id": client_id, "amount": total,
+           "payload": payload, "status": status}
+    if status == "issued":
+        row["morning_doc_id"] = f"dry-{uuid.uuid4()}"
+    r = requests.post(rest("pending_documents"), headers={**ADMIN, **REPR}, json=row).json()[0]
+    pending_ids.append(r["id"])
+    return r["id"]
+
+
+def edit(cookies, **body):
+    return requests.post(f"{APP_URL}/api/documents/pending/edit", cookies=cookies,
+                         headers={"Content-Type": "application/json"}, json=body)
+
+
+def payload_of(pid):
+    return requests.get(rest(f"pending_documents?id=eq.{pid}&select=amount,payload"),
+                        headers=ADMIN).json()[0]
+
+
 for _ in range(60):
     try:
         if requests.get(APP_URL, timeout=2).status_code < 500:
@@ -138,6 +176,87 @@ try:
                       json={"id": iid, "amount": 900})
     check("3. issued row can't be edited (409)", r.status_code == 409, str(r.status_code))
 
+    # ---- multi-line editing (2026-08-20) ---------------------------------
+    bid = make_bundle_row(3)
+    before = payload_of(bid)["payload"]
+
+    # 5. the headline case: edit the SECOND line of a three-line bundle
+    r = edit(money, id=bid, lines=[{"index": 1, "description": "פרק שני מתוקן"}])
+    check("5a. multi-line edit accepted", r.status_code == 200 and r.json().get("ok"), r.text[:150])
+    after = payload_of(bid)
+    inc = after["payload"]["income"]
+    check("5b. line 1 updated", inc[1]["description"] == "פרק שני מתוקן", inc[1]["description"])
+    check("5c. lines 0 and 2 untouched",
+          inc[0] == before["income"][0] and inc[2] == before["income"][2],
+          json.dumps([inc[0], inc[2]], ensure_ascii=False)[:160])
+    check("5d. edited line kept its price/quantity",
+          inc[1]["price"] == before["income"][1]["price"] and inc[1]["quantity"] == before["income"][1]["quantity"],
+          json.dumps(inc[1], ensure_ascii=False))
+
+    # 6. the document title does NOT move with a line edit
+    check("6. document description unchanged",
+          after["payload"]["description"] == before["description"],
+          f'{before["description"]!r} -> {after["payload"]["description"]!r}')
+
+    # 7. the amount column is not touched by a line edit
+    check("7. amount column unchanged", float(after["amount"]) == float(303),
+          str(after["amount"]))
+
+    # 8. money is locked in multi-line mode
+    r = edit(money, id=bid, amount=999, lines=[{"index": 0, "description": "x"}])
+    check("8. lines + amount refused (400)", r.status_code == 400, r.text[:120])
+
+    # 9. lines + description refused (both write income[0])
+    r = edit(money, id=bid, description="y", lines=[{"index": 0, "description": "x"}])
+    check("9. lines + description refused (400)", r.status_code == 400, r.text[:120])
+
+    # 10. index validation
+    r = edit(money, id=bid, lines=[{"index": 7, "description": "x"}])
+    check("10a. index out of range refused (400)", r.status_code == 400, r.text[:120])
+    r = edit(money, id=bid, lines=[{"index": 0, "description": "   "}])
+    check("10b. empty line description refused (400)", r.status_code == 400, r.text[:120])
+    r = edit(money, id=bid, lines=[{"index": 0, "description": "a"}, {"index": 0, "description": "b"}])
+    check("10c. duplicate index refused (400)", r.status_code == 400, r.text[:120])
+
+    # 10d. a rejected batch must leave the row EXACTLY as it was — the whole
+    # point of validating everything before writing anything
+    check("10d. refused batches wrote nothing", payload_of(bid)["payload"] == after["payload"],
+          "payload moved after a refused request")
+
+    # 11. one line means the old path — the title must keep moving with it
+    r = edit(money, id=pid, lines=[{"index": 0, "description": "x"}])
+    check("11. lines on a single-line document refused (400)", r.status_code == 400, r.text[:120])
+
+    # 12. the freeze and the permission gate hold on the new branch too
+    bfrozen = make_bundle_row(2, "issued")
+    r = edit(money, id=bfrozen, lines=[{"index": 1, "description": "x"}])
+    check("12a. issued row can't be line-edited (409)", r.status_code == 409, str(r.status_code))
+    r = edit(tech, id=bid, lines=[{"index": 1, "description": "x"}])
+    check("12b. stages-only user can't line-edit (403)", r.status_code == 403, str(r.status_code))
+
+    # 13. REGRESSION: the single-line path is byte-for-byte what it was
+    sid = make_row("pending")
+    r = edit(money, id=sid, amount=555, description="רגרסיה")
+    check("13a. single-line edit still accepted", r.status_code == 200, r.text[:120])
+    srow = payload_of(sid)
+    check("13b. single-line still updates amount + income[0].price + BOTH descriptions",
+          float(srow["amount"]) == 555.0
+          and srow["payload"]["income"][0]["price"] == 555
+          and srow["payload"]["description"] == "רגרסיה"
+          and srow["payload"]["income"][0]["description"] == "רגרסיה",
+          json.dumps(srow["payload"], ensure_ascii=False)[:200])
+
+    # 14. the audit trail records the line edit, per line
+    evs = requests.get(
+        rest(f"events?entity_id=eq.{bid}&event_type=eq.document_edited&select=payload"),
+        headers=ADMIN).json()
+    line_evs = [e for e in evs if (e["payload"] or {}).get("mode") == "lines"]
+    check("14. document_edited event carries per-line before/after",
+          len(line_evs) == 1
+          and line_evs[0]["payload"]["lines"] == [
+              {"index": 1, "before": f"{MARK} line 1", "after": "פרק שני מתוקן"}],
+          json.dumps(line_evs, ensure_ascii=False)[:220])
+
 finally:
     print("\n--- cleanup ---")
     for pd in pending_ids:
@@ -148,8 +267,17 @@ finally:
     for uid in users:
         requests.delete(rest(f"events?actor_id=eq.{uid}"), headers=ADMIN)
         requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{uid}", headers=ADMIN)
-    left = requests.get(rest("pending_documents?select=id"), headers=ADMIN).json()
-    check("cleanup: pending_documents empty", left == [], json.dumps(left)[:120])
+    # Only the rows THIS script created. The original assertion demanded the
+    # whole table be empty, which was true when it was written and is not now
+    # (35 real rows on 2026-08-20) — it would report a false failure on every
+    # run and teach the reader to ignore the cleanup line, which is the one
+    # line that must never be ignored.
+    left = []
+    if pending_ids:
+        left = requests.get(
+            rest("pending_documents?select=id&id=in.(" + ",".join(pending_ids) + ")"),
+            headers=ADMIN).json()
+    check("cleanup: every row this script created is gone", left == [], json.dumps(left)[:120])
 
     print()
     if failures:

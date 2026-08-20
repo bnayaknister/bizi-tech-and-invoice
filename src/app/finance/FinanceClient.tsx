@@ -7,6 +7,7 @@ import IconTile from "@/components/IconTile";
 import AssignDocModal from "@/components/AssignDocModal";
 import ShowLinkModal from "./ShowLinkModal";
 import { deriveState, TAB_META, ALL_TABS, type FinanceState } from "@/lib/finance/state";
+import { bundleLineDesc } from "@/lib/documents/bundle";
 
 type DocSlot = { number: string | null; pdf: string | null; manual: boolean | null };
 export type FinanceJob = {
@@ -719,7 +720,9 @@ function BundleModal({
         <div className="border border-[var(--rule)] rounded-xl divide-y divide-[var(--rule)] mb-3 max-h-64 overflow-y-auto">
           {jobs.map((j) => (
             <div key={j.id} className="flex items-center justify-between px-3 py-2 text-xs">
-              <span className="min-w-0 truncate">{j.campaign ?? j.show_name ?? j.date ?? "פרק"}</span>
+              {/* the builder's own function, not an approximation of it — she
+                  approves this screen, so it must be what Morning receives */}
+              <span className="min-w-0 truncate">{bundleLineDesc(j)}</span>
               <span className="font-mono shrink-0">{money(j.amount)}</span>
             </div>
           ))}
