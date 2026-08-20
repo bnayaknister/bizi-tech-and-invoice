@@ -17,3 +17,23 @@ export function todayInIsrael(): string {
     day: "2-digit",
   }).format(new Date());
 }
+
+// A stored calendar date, "YYYY-MM-DD", as the short form a client reads on a
+// document line: "2028-07-31" -> "31.07.28".
+//
+// STRING MANIPULATION, DELIBERATELY. Not `new Date(s)` and not Intl. Those
+// parse "2028-07-31" as UTC midnight and then render it in the runtime's zone,
+// which west of Greenwich prints the PREVIOUS DAY — a recording date silently
+// off by one on an invoice the client keeps. That is the same class of bug as
+// the one above; the difference is that this value is a plain `date` column,
+// carries no time and no zone, and therefore must never be given one.
+//
+// Returns null rather than throwing or half-formatting: null, empty, or
+// anything that is not exactly YYYY-MM-DD yields no date at all. A line with a
+// missing date reads fine; a line with a mangled one does not.
+export function shortDate(iso: string | null | undefined): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((iso ?? "").trim());
+  if (!m) return null;
+  const [, year, month, day] = m;
+  return `${day}.${month}.${year.slice(2)}`;
+}

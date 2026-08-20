@@ -339,6 +339,9 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
       show_id: show.id,
       podcast_name: show.name,
       record_date: recordDate,
+      // the same value just written to the production — the guest belongs on
+      // the printed line, not only in the drawer
+      guest: titleParts.guest,
     });
     if (enq.status === "queued") queuedWorkOrders++;
     else if (enq.status === "accrued") accruedWorkOrders++;

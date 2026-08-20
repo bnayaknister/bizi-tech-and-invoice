@@ -98,7 +98,10 @@ export async function POST(request: Request, { params }: { params: { id: string 
   if (body.status === 'אושר_ע"י_לקוח') {
     const { data: prod } = await admin
       .from("productions")
-      .select("id,kind,legacy,client_id,show_id,podcast_name,record_date,price_override")
+      // `guest` is read, not merely typed: it reaches the printed line via
+      // buildLineItemText, and an omitted column would silently produce the
+      // guestless form on a session that had one.
+      .select("id,kind,legacy,client_id,show_id,podcast_name,record_date,guest,price_override")
       .eq("id", id)
       .maybeSingle();
     if (prod) {

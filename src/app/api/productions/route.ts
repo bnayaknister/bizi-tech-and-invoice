@@ -148,6 +148,9 @@ export async function POST(request: Request) {
     show_id: show.id,
     podcast_name: show.name,
     record_date: recordDate,
+    // identical expression to the insert above, so a hand-made production's
+    // line reads the same as a synced one's
+    guest: body.guest?.trim() || null,
   });
 
   return NextResponse.json({ ok: true, id: inserted.id, work_order: enq.status });

@@ -520,7 +520,9 @@ export async function applyResponse(
   if (approvedAll) {
     const { data: prod } = await admin
       .from("productions")
-      .select("id,kind,legacy,client_id,show_id,podcast_name,record_date,price_override")
+      // `guest` feeds the printed line (buildLineItemText) — omitting the
+      // column would quietly bill a guest session as a guestless one
+      .select("id,kind,legacy,client_id,show_id,podcast_name,record_date,guest,price_override")
       .eq("id", production.id)
       .maybeSingle();
     const { data: link2 } = await admin

@@ -6,7 +6,7 @@ import {
   type MorningDocumentRequest,
   type PendingDocType,
 } from "@/lib/morning/types";
-import { todayInIsrael } from "@/lib/dates";
+import { shortDate, todayInIsrael } from "@/lib/dates";
 import { SupabaseReadError } from "@/lib/supabase/unwrap";
 
 // Enqueueing, not issuing. Nothing in this file talks to Morning — it
@@ -35,6 +35,11 @@ export type ProductionForBilling = {
   show_id: string | null;
   podcast_name: string | null;
   record_date: string | null;
+  // The guest, when the session had one — it reaches the printed line via
+  // buildLineItemText below (owner spec 2026-08-20). Optional: a caller that
+  // omits it produces exactly the guestless line, which is the common case
+  // today, so no call site is obliged to supply it.
+  guest?: string | null;
   // a per-production price that wins over the show's default_rate when set
   // (owner spec 2026-07-21). Optional: callers minted before this column
   // existed (e.g. calendar sync at creation, when no override can exist yet)
@@ -154,6 +159,43 @@ export function checkEligibility(
     // effective price: the production's override wins over the show default
     amount: production.price_override ?? show.default_rate ?? null,
   };
+}
+
+/**
+ * What the client actually reads on the line: the show, the guest when there
+ * was one, and the recording date (owner spec 2026-08-20).
+ *
+ *     דעה לא פופולרית · חיים ילדין · 31.07.28      with a guest
+ *     אסתטיטוקס 11.08.26                            without
+ *
+ * TWO SEPARATORS, ON PURPOSE. With a guest the parts are joined by " · ";
+ * without one the show and the date stay space-separated, the shape they have
+ * always had. The owner chose this — a lone "·" between two fields reads as a
+ * list with something missing from it.
+ *
+ * WHY "·" (U+00B7) AND NOT AN EM DASH. `DESCRIPTION_SEPARATOR` in
+ * @/lib/morning/types is " — " (U+2014, bytes 20 e2 80 94 20) and
+ * relabelDocDescription keys off it to swap a document's printed label. "·" is
+ * 20 c2 b7 20 — no byte overlap, and not dash-shaped, so it cannot be misread
+ * by a person either. (It is safe twice over: that normalizer only ever runs on
+ * tax variants, and only inspects the head of the string. But the line below is
+ * the one a human reads, and unambiguous beats merely-unreachable.)
+ *
+ * filter(Boolean) is what makes an absent field impossible to see: a missing
+ * part is never added, so no separator is ever emitted for it. There is no
+ * input that yields " · · ", a trailing "·", or the word "undefined".
+ */
+export function buildLineItemText(p: {
+  podcast_name?: string | null;
+  guest?: string | null;
+  record_date?: string | null;
+}): string {
+  const show = (p.podcast_name ?? "").replace(/\s+/g, " ").trim();
+  const guest = (p.guest ?? "").replace(/\s+/g, " ").trim();
+  const date = shortDate(p.record_date) ?? "";
+  return guest
+    ? [show, guest, date].filter(Boolean).join(" · ")
+    : [show, date].filter(Boolean).join(" ");
 }
 
 /**
@@ -324,7 +366,18 @@ export async function enqueueDocument(
   const addonsTotal = extraLines.reduce((sum, l) => sum + l.price * l.quantity, 0);
   const amount = baseAmount + addonsTotal;
 
-  const description = `${DOC_TYPE_LABEL[docType]} — ${production.podcast_name ?? ""} ${production.record_date ?? ""}`.trim();
+  // One string, two destinations: buildDocumentPayload writes it to the
+  // document's own description AND to the income line. Kept unified on purpose
+  // (owner 2026-08-20) — it is what the owner does by hand in Morning (see
+  // work order 10306), and with a single line there is nothing for a separate
+  // title to say that the line does not.
+  //
+  // The " — " is DESCRIPTION_SEPARATOR's shape and stays: it divides the
+  // document's printed LABEL from everything else. It is dropped along with
+  // the label's tail when there is nothing to put after it — a document with
+  // no show and no date used to read "הזמנת עבודה —", trailing dash included.
+  const lineText = buildLineItemText(production);
+  const description = lineText ? `${DOC_TYPE_LABEL[docType]} — ${lineText}` : DOC_TYPE_LABEL[docType];
   const payload = buildDocumentPayload({
     docType,
     morningClientId: elig.morningClientId,
