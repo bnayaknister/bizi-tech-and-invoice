@@ -72,10 +72,44 @@ export default async function RegistryPage() {
     pendingIdByMorningId.set(p.morning_doc_id, p.id);
   }
 
+  // Parents that already have a tax child WAITING IN THE QUEUE — the screen's
+  // mirror of the builder's idempotency gate (taxFromParent, "כבר קיים מסמך מס
+  // על סמכו"). Found 2026-08-22 during the manual pass on the ceiling
+  // override: the map above only knows ISSUED rows, so between building a tax
+  // document from a pulled parent and approving it, the screen kept offering
+  // the button. The server refused every time — but a button that asks an
+  // admin to justify a 295,000 ₪ override and then 409s is exactly the
+  // "promises what the server would refuse" this screen exists not to do.
+  // Pre-dates the override and applies to every raw-path build.
+  const taxedParentMorningIds = new Set<string>();
+  {
+    const { data: liveTax } = await admin
+      .from("pending_documents")
+      .select("payload")
+      .in("doc_type", ["tax_invoice", "tax_receipt"])
+      .in("status", ["pending", "approved", "issued"]);
+    for (const r of (liveTax ?? []) as { payload: { linkedDocumentIds?: string[] } | null }[]) {
+      for (const id of r.payload?.linkedDocumentIds ?? []) taxedParentMorningIds.add(id);
+    }
+  }
+
   // judge every candidate in exactly the server's order, so the screen's
   // verdict IS the server's: a 300 through the real tax mapper + job
   // pre-checks, a 305 through the real receipt mapper
-  type RawState = { state: "raw"; net: number | null } | { state: "blocked"; reason: string };
+  // 'over-ceiling' is a THIRD state, not a flavour of blocked: the document is
+  // fully valid — identity proven, all three arithmetic layers passed — and the
+  // only thing standing in front of it is a policy threshold that an admin may
+  // deliberately step over. A flat "blocked" would tell shiri to go do it by
+  // hand in Morning, which is exactly what the override exists to avoid.
+  //
+  // The mapper is called WITHOUT the override flag on purpose: we want to see
+  // what a normal request would do, then decide whether THIS viewer is allowed
+  // to offer stepping over it. Passing the flag here would hide the signal.
+  type RawState =
+    | { state: "raw"; net: number | null }
+    | { state: "over-ceiling"; reason: string; net: number; ceiling: number }
+    | { state: "blocked"; reason: string };
+  const canOverrideCeiling = profile.can_manage_users === true;
   const rawStateByDocId = new Map<string, RawState>();
   const cands = (candRows ?? []) as unknown as PullDocRow[];
   // jobs matter only to the tax rung — a receipt has no jobs gate (it stamps
@@ -105,11 +139,22 @@ export default async function RegistryPage() {
       );
       continue;
     }
+    // already has a tax child in flight — same verdict the builder gives
+    if (c.morning_doc_id && taxedParentMorningIds.has(c.morning_doc_id)) {
+      rawStateByDocId.set(c.id, {
+        state: "blocked",
+        reason: "כבר קיים מסמך מס על סמך מסמך זה — בתור האישורים או מונפק",
+      });
+      continue;
+    }
     const res = mapPullDocToSource(c);
-    if (!res.ok) {
+    if (!res.ok && !(res.overCeiling && canOverrideCeiling)) {
       rawStateByDocId.set(c.id, { state: "blocked", reason: res.error });
       continue;
     }
+    // From here the row is either fully buildable, or buildable-with-override.
+    // The job gates below apply to BOTH — offering an override on a row that
+    // the builder would refuse two gates later is a worse lie than no button.
     if (!c.job_id) {
       // guidance, not a description of the lack — the assign button sits in
       // the same cell (owner rule 2026-08-11)
@@ -127,7 +172,16 @@ export default async function RegistryPage() {
       });
       continue;
     }
-    rawStateByDocId.set(c.id, { state: "raw", net: res.source.amount });
+    if (!res.ok && res.overCeiling) {
+      rawStateByDocId.set(c.id, {
+        state: "over-ceiling",
+        reason: res.error,
+        net: res.overCeiling.net,
+        ceiling: res.overCeiling.ceiling,
+      });
+      continue;
+    }
+    if (res.ok) rawStateByDocId.set(c.id, { state: "raw", net: res.source.amount });
   }
   const candidatesCapped = cands.length === RAW_CANDIDATE_LIMIT;
 
@@ -148,7 +202,7 @@ export default async function RegistryPage() {
   // the three action-cell states, resolved per row: 'pending' (queue row —
   // the original door), 'raw' (pulled, judged buildable by the mapper), or
   // null with build_block carrying the exact reason the button is dark
-  const buildState = (d: Record<string, unknown>): Pick<DocRow, "buildable" | "build_block" | "net_amount"> => {
+  const buildState = (d: Record<string, unknown>): Pick<DocRow, "buildable" | "build_block" | "net_amount" | "over_ceiling"> => {
     // a 320 is invoice AND receipt in one — the payment is inside it, so a
     // further receipt is never raised on it. Said in words, never null/null:
     // the silent action cell is exactly the hole this screen exists to close.
@@ -157,14 +211,25 @@ export default async function RegistryPage() {
         buildable: null,
         build_block: "חשבונית מס קבלה כוללת את התקבול — לא מונפקת עליה קבלה נוספת",
         net_amount: null,
+        over_ceiling: null,
       };
     }
     if (pendingIdByMorningId.has(d.morning_doc_id as string)) {
-      return { buildable: "pending", build_block: null, net_amount: null };
+      return { buildable: "pending", build_block: null, net_amount: null, over_ceiling: null };
     }
     const rs = rawStateByDocId.get(d.id as string);
-    if (rs?.state === "raw") return { buildable: "raw", build_block: null, net_amount: rs.net };
-    if (rs?.state === "blocked") return { buildable: null, build_block: rs.reason, net_amount: null };
+    if (rs?.state === "raw") return { buildable: "raw", build_block: null, net_amount: rs.net, over_ceiling: null };
+    if (rs?.state === "over-ceiling") {
+      // buildable, but the modal must collect a reason and go through the
+      // two-call ticket handshake before the server will accept it
+      return {
+        buildable: "raw",
+        build_block: null,
+        net_amount: rs.net,
+        over_ceiling: { net: rs.net, ceiling: rs.ceiling },
+      };
+    }
+    if (rs?.state === "blocked") return { buildable: null, build_block: rs.reason, net_amount: null, over_ceiling: null };
     // an open pulled candidate (300 or 305) that is not in the candidate map
     // at all can only mean the LIMIT capped it out — say so rather than go
     // quietly dark
@@ -175,9 +240,10 @@ export default async function RegistryPage() {
         buildable: null,
         build_block: `יותר מ-${RAW_CANDIDATE_LIMIT} מסמכים פתוחים ממורנינג — המסך ממפה את החדשים תחילה; טפלי בהם ורענני`,
         net_amount: null,
+        over_ceiling: null,
       };
     }
-    return { buildable: null, build_block: null, net_amount: null };
+    return { buildable: null, build_block: null, net_amount: null, over_ceiling: null };
   };
 
   const rows: DocRow[] = ((data ?? []) as unknown as Array<Record<string, unknown>>).map((d) => ({

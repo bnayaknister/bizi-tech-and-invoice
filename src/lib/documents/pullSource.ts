@@ -101,7 +101,20 @@ export type MappedPullSource = {
   job_id: string | null;
 };
 
-export type PullMapResult = { ok: true; source: MappedPullSource } | { ok: false; error: string };
+/**
+ * A refusal that an admin may deliberately override — today only the net
+ * ceiling. Distinct from a plain `ok:false` so the registry screen can tell
+ * "blocked" from "blocked, but you specifically may open it": a flat refusal
+ * gets a message, this gets the override dialog. Everything else on this
+ * file's refusal list stays a plain refusal, because nothing else here is a
+ * POLICY judgement — the rest are identity and arithmetic, and those are not
+ * anybody's to wave through.
+ */
+export type OverCeilingInfo = { net: number; ceiling: number; gross: number | null };
+
+export type PullMapResult =
+  | { ok: true; source: MappedPullSource }
+  | { ok: false; error: string; overCeiling?: OverCeilingInfo };
 
 type IncomeResult = { ok: true; income: MorningIncomeRow[]; net: number } | { ok: false; error: string };
 
@@ -267,7 +280,12 @@ export function mapPullIncome(raw: unknown, docAmount: number | null): IncomeRes
  */
 export function mapPullDocToSource(
   doc: PullDocRow,
-  childCode: number = MORNING_DOC_CODE.tax_invoice
+  childCode: number = MORNING_DOC_CODE.tax_invoice,
+  // Admin override for the net ceiling, and for NOTHING else (owner decision
+  // 2026-08-22). Default false, so every existing caller behaves exactly as it
+  // did. It is threaded rather than global on purpose: an override is one
+  // deliberate act on one document, never a mode the process is in.
+  opts: { allowOverCeiling?: boolean } = {}
 ): PullMapResult {
   // Only pulled documents. An app-issued document has a real pending row with
   // the payload we actually sent — that path must win, never this
@@ -334,12 +352,22 @@ export function mapPullDocToSource(
   const mapped = mapPullIncome(doc.raw, num(doc.amount));
   if (!mapped.ok) return { ok: false, error: `${nameOf(doc)}: ${mapped.error}` };
 
-  // the ceiling — policy, see PULL_NET_CEILING
+  // The ceiling — policy, see PULL_NET_CEILING. THE ONLY GATE AN OVERRIDE MAY
+  // SKIP, and it sits last on purpose: by the time execution reaches this line
+  // the identity gates above and all three arithmetic layers of mapPullIncome
+  // have already passed, so an override lets through a document whose amount is
+  // just as proven as any other — it lets through a BIG one, nothing more.
+  //
+  // `overCeiling` rides on the refusal so the caller can tell this apart from
+  // the gates above it without re-deriving the threshold.
   if (mapped.net > PULL_NET_CEILING) {
-    return {
-      ok: false,
-      error: `${nameOf(doc)}: סכום חריג למסלול זה (${mapped.net.toLocaleString("he-IL")} ₪ נטו, מעל תקרת ${PULL_NET_CEILING.toLocaleString("he-IL")} ₪) — יש להנפיק ידנית במורנינג`,
-    };
+    if (!opts.allowOverCeiling) {
+      return {
+        ok: false,
+        error: `${nameOf(doc)}: סכום חריג למסלול זה (${mapped.net.toLocaleString("he-IL")} ₪ נטו, מעל תקרת ${PULL_NET_CEILING.toLocaleString("he-IL")} ₪) — יש להנפיק ידנית במורנינג`,
+        overCeiling: { net: mapped.net, ceiling: PULL_NET_CEILING, gross: num(doc.amount) },
+      };
+    }
   }
 
   return {
@@ -397,8 +425,12 @@ export type PullSourceRow = {
 export async function fetchPullSources(
   admin: SupabaseClient,
   documentIds: string[],
-  childCode: number = MORNING_DOC_CODE.tax_invoice
-): Promise<{ ok: true; sources: PullSourceRow[] } | { ok: false; status: number; error: string }> {
+  childCode: number = MORNING_DOC_CODE.tax_invoice,
+  opts: { allowOverCeiling?: boolean } = {}
+): Promise<
+  | { ok: true; sources: PullSourceRow[]; overCeiling?: OverCeilingInfo }
+  | { ok: false; status: number; error: string; overCeiling?: OverCeilingInfo }
+> {
   const ids = Array.from(new Set((documentIds ?? []).filter(Boolean)));
   if (!ids.length) return { ok: true, sources: [] };
 
@@ -419,9 +451,21 @@ export async function fetchPullSources(
   }
 
   const sources: PullSourceRow[] = [];
+  // What an override actually let through, reported back so the route can
+  // audit the real numbers rather than the ones the caller claimed. Undefined
+  // when nothing was over the ceiling — an override that changed no outcome
+  // must not leave an audit trail saying it did.
+  let overCeiling: OverCeilingInfo | undefined;
   for (const d of rows) {
-    const res = mapPullDocToSource(d, childCode);
-    if (!res.ok) return { ok: false, status: 400, error: res.error };
+    const res = mapPullDocToSource(d, childCode, opts);
+    if (!res.ok) return { ok: false, status: 400, error: res.error, overCeiling: res.overCeiling };
+    if (opts.allowOverCeiling) {
+      // re-derive from the mapped source, not from the caller: `amount` here IS
+      // the proven net (see PullSourceRow.amount)
+      if (res.source.amount > PULL_NET_CEILING) {
+        overCeiling = { net: res.source.amount, ceiling: PULL_NET_CEILING, gross: num(d.amount) };
+      }
+    }
     const s = res.source;
     sources.push({
       id: s.id,
@@ -442,7 +486,7 @@ export async function fetchPullSources(
       job_id: s.job_id,
     });
   }
-  return { ok: true, sources };
+  return { ok: true, sources, overCeiling };
 }
 
 // ============================================================================

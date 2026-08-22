@@ -53,6 +53,12 @@ export type DocRow = {
   // rows — showing it in the modal against a net child bred distrust, so the
   // modal shows both, labelled.
   net_amount: number | null;
+  // Set only when this row is over PULL_NET_CEILING **and** the viewer may
+  // override it (can_manage_users). Non-null means: buildable, but only after
+  // the two-call ticket handshake with a stated reason. null on every other
+  // row — including an over-ceiling row seen by someone who cannot override,
+  // which stays a plain block.
+  over_ceiling: { net: number; ceiling: number } | null;
 };
 
 const CHILD_ACTION_LABEL: Record<"tax" | "receipt", string> = {
@@ -636,6 +642,8 @@ function TaxFromParentModal({
   const isReceipt = action === "receipt";
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // mandatory when doc.over_ceiling is set; ignored otherwise
+  const [overrideReason, setOverrideReason] = useState("");
   const [built, setBuilt] = useState<{
     id: string;
     amount: number | null;
@@ -644,19 +652,44 @@ function TaxFromParentModal({
   } | null>(null);
 
   async function submit() {
+    if (doc.over_ceiling && !overrideReason.trim()) {
+      setErr("חובה לציין סיבה לעקיפת התקרה");
+      return;
+    }
     setBusy(true);
     setErr(null);
     try {
       // which door: the queue row when there is one, the pulled document
       // otherwise — mirrors the server's pending-wins rule exactly
-      const res = await fetch(CHILD_ACTION_ENDPOINT[action], {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          doc.buildable === "raw" ? { documentIds: [doc.id] } : { sourceIds: [doc.pending_id] }
-        ),
-      });
-      const body = await res.json();
+      const base =
+        doc.buildable === "raw" ? { documentIds: [doc.id] } : { sourceIds: [doc.pending_id] };
+
+      // The ceiling handshake, and note what is NOT here: no `confirm: true`
+      // this code could hard-code. The first request carries no ticket and is
+      // REFUSED; the server mints one bound to the document, the net, this
+      // user and a 10-minute window, and only the echo of that ticket is
+      // accepted. There is nothing to set in advance.
+      const send = (extra: Record<string, unknown> = {}) =>
+        fetch(CHILD_ACTION_ENDPOINT[action], {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...base, ...extra }),
+        });
+
+      let res = await send(
+        doc.over_ceiling ? { overCeiling: true, overCeilingReason: overrideReason.trim() } : {}
+      );
+      let body = await res.json();
+
+      if (!res.ok && body?.needs_confirmation && body?.over_ceiling?.ticket) {
+        res = await send({
+          overCeiling: true,
+          overCeilingReason: overrideReason.trim(),
+          overCeilingTicket: body.over_ceiling.ticket,
+        });
+        body = await res.json();
+      }
+
       if (!res.ok) {
         setErr(body.error ?? "היצירה נכשלה");
         return;
@@ -736,6 +769,29 @@ function TaxFromParentModal({
                 </div>
               )}
             </div>
+            {/* The override. Shown only when the server already judged this row
+                over the ceiling AND this viewer may step over it — the field
+                cannot appear on a row that does not need it. */}
+            {doc.over_ceiling && (
+              <div className="text-[11px] border border-[var(--warn)] rounded-xl p-3 mb-3 leading-relaxed">
+                <div className="font-bold text-[var(--warn)] mb-1">עקיפת תקרת סכום</div>
+                <div className="mb-2">
+                  הנטו של המסמך הזה ({money(doc.over_ceiling.net, doc.currency)}) גבוה מתקרת המסלול (
+                  {money(doc.over_ceiling.ceiling, doc.currency)}). המסלול הזה צעיר, ולכן סכומים בסדר
+                  גודל כזה מונפקים בדרך כלל ידנית במורנינג. הסכום עצמו כבר אומת מול המסמך המקורי
+                  ואינו ניתן לשינוי כאן — העקיפה מתירה את הגודל בלבד.
+                </div>
+                <label className="block">
+                  <span className="text-[var(--faint)]">סיבה (חובה, נשמרת ביומן)</span>
+                  <input
+                    value={overrideReason}
+                    onChange={(e) => setOverrideReason(e.target.value)}
+                    className="w-full mt-0.5 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1"
+                    placeholder="למשל: אבן דרך ב׳ בחוזה ידיעות — סוכם מול הלקוח"
+                  />
+                </label>
+              </div>
+            )}
             {err && <div className="text-[11px] text-[var(--red)] mb-2">{err}</div>}
             <div className="flex items-center justify-end gap-2">
               <button onClick={onClose} className="text-xs rounded-xl px-4 py-1.5 border border-[var(--rule)]">
@@ -743,10 +799,10 @@ function TaxFromParentModal({
               </button>
               <button
                 onClick={submit}
-                disabled={busy}
+                disabled={busy || (!!doc.over_ceiling && !overrideReason.trim())}
                 className="text-xs font-bold rounded-xl px-4 py-1.5 bg-[var(--signal)] text-white disabled:opacity-40"
               >
-                {busy ? "יוצר…" : "צור והוסף לתור"}
+                {busy ? "יוצר…" : doc.over_ceiling ? "אשר עקיפה וצור" : "צור והוסף לתור"}
               </button>
             </div>
           </>

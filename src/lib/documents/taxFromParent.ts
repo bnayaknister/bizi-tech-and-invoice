@@ -11,7 +11,7 @@ import {
   type PendingDocType,
 } from "@/lib/morning/types";
 import { todayInIsrael } from "@/lib/dates";
-import { fetchPullSources } from "@/lib/documents/pullSource";
+import { fetchPullSources, type OverCeilingInfo } from "@/lib/documents/pullSource";
 
 // The generic parent -> tax-child builder (owner spec 2026-08-06). Creates ONE
 // pending tax document on the basis of N already-issued parents, linked to them
@@ -116,8 +116,23 @@ export type TaxBuildResult =
        * this until the next daily pull overwrites its raw.
        */
       parentOpennessUnknown: boolean;
+      /**
+       * Set only when an admin override actually let a source past the net
+       * ceiling. The numbers are the mapper's, not the caller's — the route
+       * audits from here.
+       */
+      overCeiling?: OverCeilingInfo;
     }
-  | { ok: false; status: number; error: string };
+  | {
+      ok: false;
+      status: number;
+      error: string;
+      /**
+       * Present only on the ceiling refusal. Its presence is how the route
+       * knows to offer an override ticket instead of just relaying the error.
+       */
+      overCeiling?: OverCeilingInfo;
+    };
 
 type SourceRow = {
   id: string;
@@ -186,7 +201,12 @@ export async function createTaxFromParents(
   sourceIds: string[],
   actorId: string | null,
   variant: PendingDocType = DEFAULT_TAX_VARIANT,
-  opts?: { documentIds?: string[] }
+  // `allowOverCeiling` reaches exactly one line — the net-ceiling gate in
+  // mapPullDocToSource. Every other gate in this function, including both
+  // duplicate guards below, runs unchanged and unconditionally. The route is
+  // responsible for proving the operator earned it (permission + signed
+  // ticket) before setting it.
+  opts?: { documentIds?: string[]; allowOverCeiling?: boolean }
 ): Promise<TaxBuildResult> {
   const ids = Array.from(new Set((sourceIds ?? []).filter(Boolean)));
   const docIds = Array.from(new Set((opts?.documentIds ?? []).filter(Boolean)));
@@ -224,9 +244,21 @@ export async function createTaxFromParents(
   // actually sent). From here down every gate runs on the merged list
   // unchanged — including the one-Morning-doc-per-request gate below, which
   // was written for exactly this merge and is reachable for the first time.
+  // What an admin override actually let through, if anything — reported up so
+  // the route audits the mapper's proven numbers rather than the caller's.
+  // Stays undefined when no source was over the ceiling, so an override that
+  // changed nothing leaves no trail claiming it did.
+  let overCeilingApplied: OverCeilingInfo | undefined;
   if (docIds.length) {
-    const pulled = await fetchPullSources(admin, docIds, childCode);
-    if (!pulled.ok) return { ok: false, status: pulled.status, error: pulled.error };
+    const pulled = await fetchPullSources(admin, docIds, childCode, {
+      allowOverCeiling: opts?.allowOverCeiling,
+    });
+    if (!pulled.ok) {
+      // `overCeiling` rides along so the route can tell "too big, but you may
+      // override" from every other refusal without re-deriving the threshold
+      return { ok: false, status: pulled.status, error: pulled.error, overCeiling: pulled.overCeiling };
+    }
+    overCeilingApplied = pulled.overCeiling;
     rows.push(...pulled.sources);
   }
 
@@ -559,6 +591,9 @@ export async function createTaxFromParents(
       lines: income.length,
       job_ids: Array.from(jobIds),
       parent_openness_unknown: parentOpennessUnknown,
+      // so the document's own log says this was not a routine issuance —
+      // readable without cross-referencing the tax_ceiling_overridden event
+      ...(overCeilingApplied ? { over_ceiling: overCeilingApplied } : {}),
     },
   });
 
@@ -570,5 +605,6 @@ export async function createTaxFromParents(
     lines: income.length,
     sourceNumbers,
     parentOpennessUnknown,
+    ...(overCeilingApplied ? { overCeiling: overCeilingApplied } : {}),
   };
 }
