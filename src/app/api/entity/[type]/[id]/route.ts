@@ -11,6 +11,7 @@ import {
   selectColumns,
   type EntityType,
 } from "@/lib/entities";
+import { deriveMilestoneState } from "@/lib/finance/milestone";
 import { must, SupabaseReadError, type QueryResult } from "@/lib/supabase/unwrap";
 import { getAppBaseUrl } from "@/lib/appUrl";
 
@@ -265,10 +266,27 @@ async function handleGet(
   if (type === "contract" && profile.can_view_money) {
     const { data } = await supabase
       .from("contract_milestones")
-      .select("id,name,amount,expected_date,status")
+      .select("id,name,amount,expected_date,is_estimated,status,job_id")
       .eq("contract_id", params.id)
       .order("expected_date");
-    milestones = data;
+    // The drawer used to print the raw status column ("invoiced", in English,
+    // on a Hebrew screen). It now carries the same derived state /contracts
+    // shows — which needs is_estimated and the linked job's paid, or a
+    // milestone whose job is paid would read "חויב" here and "שולם" there.
+    const jobIds = (data ?? []).map((m) => m.job_id).filter(Boolean) as string[];
+    const { data: msJobs } = jobIds.length
+      ? await supabase.from("jobs").select("id,paid").in("id", jobIds)
+      : { data: [] };
+    const paidByJob = new Map((msJobs ?? []).map((j) => [j.id as string, j.paid as string | null]));
+    milestones = (data ?? []).map((m) => ({
+      ...m,
+      state: deriveMilestoneState({
+        status: m.status,
+        expected_date: m.expected_date,
+        is_estimated: m.is_estimated,
+        jobPaid: m.job_id ? paidByJob.get(m.job_id) ?? null : null,
+      }),
+    }));
   }
 
   // change history — events RLS is owner-only; mirror that here

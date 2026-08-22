@@ -9,8 +9,17 @@ export const contractsModule: ModuleDef = {
   href: "/contracts",
   hasAccess: (profile) => profile.approved && profile.can_view_money,
   getMetric: async (supabase) => {
-    const { data } = await supabase.from("contract_milestones").select("amount").eq("status", "pending");
-    const total = (data ?? []).reduce((sum, r) => sum + (r.amount ?? 0), 0);
+    // Closed contracts are out of the number, same rule as the radar's open
+    // commitment (alerts.ts, owner spec 2026-08-22) — the hub tile and the
+    // radar must never quote two different open commitments.
+    const [{ data }, { data: contracts }] = await Promise.all([
+      supabase.from("contract_milestones").select("amount,contract_id").eq("status", "pending"),
+      supabase.from("contracts").select("id").eq("status", "active"),
+    ]);
+    const active = new Set((contracts ?? []).map((c) => c.id));
+    const total = (data ?? [])
+      .filter((r) => active.has(r.contract_id))
+      .reduce((sum, r) => sum + (r.amount ?? 0), 0);
     return {
       label: "התחייבות פתוחה",
       value: money(total),

@@ -108,15 +108,17 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const today = new Date();
   const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
 
-  const [jobs, milestones, invoices, productions, stageRollup, jobProds, shows, clients, pendingDocs, clientEvents, paymentEvents] = await Promise.all([
+  const [jobs, allMilestones, contracts, invoices, productions, stageRollup, jobProds, shows, clients, pendingDocs, clientEvents, paymentEvents] = await Promise.all([
     // dismissed (soft-removed) jobs are out of every money surface (0041) — a
     // hidden record must not inflate debt or the VU meter
     fetchAll<{ id: string; amount: number | null; paid: string; invoice_tax: string | null; due_date: string | null; client_id: string | null }>(
       supabase, "jobs", "id,amount,paid,invoice_tax,due_date,client_id", (q) => q.eq("dismissed", false)
     ),
-    fetchAll<{ id: string; amount: number; status: string; expected_date: string | null; is_estimated: boolean }>(
-      supabase, "contract_milestones", "id,amount,status,expected_date,is_estimated"
+    fetchAll<{ id: string; contract_id: string; amount: number; status: string; expected_date: string | null; is_estimated: boolean }>(
+      supabase, "contract_milestones", "id,contract_id,amount,status,expected_date,is_estimated"
     ),
+    // only to decide which milestones count — see the filter below
+    fetchAll<{ id: string; status: string }>(supabase, "contracts", "id,status"),
     fetchAll<{ id: string; date_is_estimated: boolean }>(supabase, "invoices", "id,date_is_estimated"),
     fetchAll<{
       id: string;
@@ -172,6 +174,22 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
 
   const num = (v: number | null | undefined) => (v == null ? 0 : Number(v));
   const overdueDays = (due: string) => Math.floor((todayMid - new Date(due).getTime()) / DAY);
+
+  // A closed contract stops feeding the radar (owner spec 2026-08-22). Closing
+  // one is exactly how the owner says "this is done, stop counting it" — and
+  // until now it silenced nothing: the three milestone alerts and the open-
+  // commitment headline all read contract_milestones with no idea the contract
+  // above them was closed.
+  //
+  // Filtered HERE, once, at the source rather than inside each derivation:
+  // `milestones` feeds four of them (openCommitment, milestoneOverdue,
+  // openMilestones, milestoneApproaching) and patching four call sites is four
+  // chances to miss one — including the next one somebody adds.
+  //
+  // An orphan milestone (contract_id matching no row — the FK makes this
+  // impossible, this is belt-and-braces) falls to silence, not to noise.
+  const activeContracts = new Set(contracts.filter((c) => c.status === "active").map((c) => c.id));
+  const milestones = allMilestones.filter((m) => activeContracts.has(m.contract_id));
 
   // ---- two numbers (never summed) ----
   const debtJobs = jobs.filter((j) => j.paid === "לא" && j.amount != null);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import IconTile from "@/components/IconTile";
 import ClientCombobox from "@/components/ClientCombobox";
@@ -12,18 +12,26 @@ export type MilestoneCard = {
   amount: number;
   expected_date: string | null;
   is_estimated: boolean;
-  state: MilestoneState;
+  status: string; // the raw column — what the status menu edits
+  state: MilestoneState; // the derived display state (status OR the job's paid)
+  job_id: string | null;
+  job_number: string | null;
   invoice_number: string | null;
   invoice_date: string | null;
 };
 export type ContractCard = {
   id: string;
   name: string;
+  client_id: string | null;
   client_name: string | null;
   total_amount: number;
   paid_sum: number;
+  status: string; // 'active' | 'closed'
+  all_paid: boolean;
   milestones: MilestoneCard[];
 };
+
+const MS_STATUS_LABEL: Record<string, string> = { pending: "ממתין", invoiced: "חויב", paid: "שולם" };
 
 const NIS = new Intl.NumberFormat("he-IL");
 const money = (n: number | null | undefined) => (n == null ? "—" : `${NIS.format(Math.round(n))} ₪`);
@@ -47,7 +55,50 @@ export default function ContractsClient({
   const [issueFor, setIssueFor] = useState<MilestoneCard | null>(null);
   const [editDateFor, setEditDateFor] = useState<MilestoneCard | null>(null);
   const [addMsFor, setAddMsFor] = useState<ContractCard | null>(null);
+  const [linkJobFor, setLinkJobFor] = useState<{ milestone: MilestoneCard; contract: ContractCard } | null>(null);
+  const [closeFor, setCloseFor] = useState<ContractCard | null>(null);
+  const [showClosed, setShowClosed] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const closedCount = contracts.filter((c) => c.status !== "active").length;
+  const visible = showClosed ? contracts : contracts.filter((c) => c.status === "active");
+
+  // status is not a money-guarded column (0010/0056 guard total_amount,
+  // client_id, show_id) — the can_edit_money gate here and in the entity route
+  // is the whole protection, same as the milestone edits on this screen.
+  async function setContractStatus(c: ContractCard, status: "active" | "closed") {
+    setBusyId(c.id);
+    const res = await fetch(`/api/entity/contract/${c.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patch: { status } }),
+    });
+    setBusyId(null);
+    setCloseFor(null);
+    if (!res.ok) {
+      setError((await res.json().catch(() => ({}))).error ?? "העדכון נכשל");
+      return;
+    }
+    setError(null);
+    router.refresh();
+  }
+
+  async function setMilestoneStatus(m: MilestoneCard, status: string) {
+    setBusyId(m.id);
+    const res = await fetch(`/api/contracts/milestones/${m.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patch: { status } }),
+    });
+    setBusyId(null);
+    if (!res.ok) {
+      setError((await res.json().catch(() => ({}))).error ?? "העדכון נכשל");
+      return;
+    }
+    setError(null);
+    router.refresh();
+  }
 
   return (
     <div className="max-w-3xl mx-auto p-6">
@@ -57,6 +108,18 @@ export default function ContractsClient({
           חוזים
         </h1>
         <div className="flex-1" />
+        {closedCount > 0 && (
+          <button
+            onClick={() => setShowClosed((v) => !v)}
+            className={`text-[11px] border rounded-lg px-2.5 py-1 transition-colors ${
+              showClosed
+                ? "border-[var(--violet-light)] text-[var(--violet-light)]"
+                : "border-[var(--rule)] text-[var(--dim)] hover:bg-[var(--panel3)]"
+            }`}
+          >
+            {showClosed ? "הסתר סגורים" : `הצג סגורים (${closedCount})`}
+          </button>
+        )}
         {canEditMoney && (
           <button
             onClick={() => setAddOpen(true)}
@@ -70,25 +133,36 @@ export default function ContractsClient({
 
       {error && <div className="mb-3 text-xs text-[var(--peak)] border border-[var(--peak)] rounded-xl px-3 py-2">{error}</div>}
 
-      {contracts.length === 0 && (
+      {visible.length === 0 && (
         <div className="text-center text-sm text-[var(--faint)] py-16 border border-dashed border-[var(--rule)] rounded-2xl">
-          עדיין אין חוזים. הוסף את הראשון.
+          {contracts.length === 0
+            ? "עדיין אין חוזים. הוסף את הראשון."
+            : "אין חוזים פעילים. כל החוזים סגורים."}
         </div>
       )}
 
       <div className="space-y-5">
-        {contracts.map((c) => {
+        {visible.map((c) => {
+          const closed = c.status !== "active";
           const pct = c.total_amount > 0 ? Math.min(100, Math.round((c.paid_sum / c.total_amount) * 100)) : 0;
           const openSum = c.milestones
             .filter((m) => m.state === "open" || m.state === "overdue" || m.state === "invoiced")
             .reduce((t, m) => t + m.amount, 0);
           return (
-            <div key={c.id} className="glass-card">
-              <span className="corner-glow" style={{ ["--glow-color" as string]: "rgba(192,132,252,0.24)" }} />
+            <div key={c.id} className="glass-card" style={closed ? { opacity: 0.62 } : undefined}>
+              <span className="corner-glow" style={{ ["--glow-color" as string]: closed ? "rgba(148,163,184,0.16)" : "rgba(192,132,252,0.24)" }} />
               <div className="glass-content">
                 <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-3">
                   <h2 className="font-bold text-base">{c.name}</h2>
                   <span className="text-xs text-[var(--dim)]">{c.client_name ?? "—"}</span>
+                  {closed && (
+                    <span className="text-[11px] border border-[var(--rule)] text-[var(--faint)] rounded-lg px-2 py-0.5">סגור</span>
+                  )}
+                  {!closed && c.all_paid && (
+                    <span className="text-[11px] border rounded-lg px-2 py-0.5" style={{ borderColor: "var(--green)", color: "var(--green)" }}>
+                      כל אבני הדרך שולמו ✓
+                    </span>
+                  )}
                   <div className="flex-1" />
                   <span className="font-mono text-sm">{money(c.total_amount)}</span>
                 </div>
@@ -131,29 +205,66 @@ export default function ContractsClient({
                             {m.invoice_date ? ` · ${heDate(m.invoice_date)}` : ""}
                           </span>
                         )}
+                        {/* a linked job on an open milestone had no trace on
+                            this screen before — only paid/invoiced rows showed
+                            their invoice number */}
+                        {(m.state === "open" || m.state === "overdue") && m.job_id && (
+                          <span className="text-[11px] text-[var(--dim)] font-mono">
+                            {m.job_number ? `חשבונית ${m.job_number}` : "job מקושר"}
+                          </span>
+                        )}
                         {(m.state === "open" || m.state === "overdue") && (
                           <span className="text-[11px] flex items-center gap-1" style={{ color: meta.color }}>
                             {m.is_estimated && <span title="מועד משוער">⚠</span>}
                             צפי {heDate(m.expected_date)}
                           </span>
                         )}
-                        {canEditMoney && (m.state === "open" || m.state === "overdue") && (
+                        {canEditMoney && !closed && (
                           <div className="flex items-center gap-1.5" style={{ direction: "rtl" }}>
-                            <button
-                              onClick={() => setIssueFor(m)}
-                              className={`text-[11px] border rounded-lg px-2.5 py-1 transition-colors ${
-                                m.state === "overdue"
-                                  ? "border-[var(--red)] text-[var(--red)] hover:bg-[rgba(251,113,133,0.08)]"
-                                  : "border-[var(--rule)] text-[var(--dim)] hover:bg-[var(--panel3)]"
-                              }`}
+                            {(m.state === "open" || m.state === "overdue") && (
+                              <>
+                                <button
+                                  onClick={() => setIssueFor(m)}
+                                  className={`text-[11px] border rounded-lg px-2.5 py-1 transition-colors ${
+                                    m.state === "overdue"
+                                      ? "border-[var(--red)] text-[var(--red)] hover:bg-[rgba(251,113,133,0.08)]"
+                                      : "border-[var(--rule)] text-[var(--dim)] hover:bg-[var(--panel3)]"
+                                  }`}
+                                >
+                                  הנפק חשבונית
+                                </button>
+                                <button
+                                  onClick={() => setEditDateFor(m)}
+                                  className="text-[11px] border border-[var(--rule)] rounded-lg px-2.5 py-1 text-[var(--dim)] hover:bg-[var(--panel3)] transition-colors"
+                                >
+                                  ערוך מועד
+                                </button>
+                              </>
+                            )}
+                            {/* available on EVERY state: an invoiced or paid
+                                milestone had no action at all until now */}
+                            <select
+                              value={m.status}
+                              disabled={busyId === m.id}
+                              onChange={(e) => setMilestoneStatus(m, e.target.value)}
+                              title={
+                                m.job_id
+                                  ? "לאבן דרך זו יש job מקושר — אם ה-job מסומן כשולם, השורה תישאר ירוקה גם אם תחזיר את הסטטוס לאחור"
+                                  : undefined
+                              }
+                              className="text-[11px] border border-[var(--rule)] rounded-lg px-2 py-1 text-[var(--dim)] bg-transparent hover:bg-[var(--panel3)] transition-colors disabled:opacity-40"
                             >
-                              הנפק חשבונית
-                            </button>
+                              {Object.entries(MS_STATUS_LABEL).map(([v, l]) => (
+                                <option key={v} value={v} style={{ background: "var(--panel3)" }}>
+                                  {l}
+                                </option>
+                              ))}
+                            </select>
                             <button
-                              onClick={() => setEditDateFor(m)}
+                              onClick={() => setLinkJobFor({ milestone: m, contract: c })}
                               className="text-[11px] border border-[var(--rule)] rounded-lg px-2.5 py-1 text-[var(--dim)] hover:bg-[var(--panel3)] transition-colors"
                             >
-                              ערוך מועד
+                              {m.job_id ? "שנה job" : "קשר job"}
                             </button>
                           </div>
                         )}
@@ -164,12 +275,27 @@ export default function ContractsClient({
                 </div>
 
                 {canEditMoney && (
-                  <button
-                    onClick={() => setAddMsFor(c)}
-                    className="mt-3 text-[11px] text-[var(--dim)] border border-dashed border-[var(--rule)] rounded-lg px-3 py-1.5 hover:bg-[var(--panel3)] transition-colors"
-                  >
-                    + אבן דרך
-                  </button>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {!closed && (
+                      <button
+                        onClick={() => setAddMsFor(c)}
+                        className="text-[11px] text-[var(--dim)] border border-dashed border-[var(--rule)] rounded-lg px-3 py-1.5 hover:bg-[var(--panel3)] transition-colors"
+                      >
+                        + אבן דרך
+                      </button>
+                    )}
+                    <div className="flex-1" />
+                    {/* closing is reversible from this same card — there is no
+                        other UI that can reopen a contract (the entity drawer
+                        isn't reachable from anywhere yet) */}
+                    <button
+                      disabled={busyId === c.id}
+                      onClick={() => (closed ? setContractStatus(c, "active") : setCloseFor(c))}
+                      className="text-[11px] border border-[var(--rule)] rounded-lg px-2.5 py-1 text-[var(--dim)] hover:bg-[var(--panel3)] transition-colors disabled:opacity-40"
+                    >
+                      {closed ? "החזר לפעיל" : "סגור חוזה"}
+                    </button>
+                  </div>
                 )}
               </div>
             </div>
@@ -221,6 +347,70 @@ export default function ContractsClient({
           onError={setError}
         />
       )}
+      {linkJobFor && (
+        <LinkJobModal
+          milestone={linkJobFor.milestone}
+          contract={linkJobFor.contract}
+          onClose={() => setLinkJobFor(null)}
+          onDone={() => {
+            setLinkJobFor(null);
+            router.refresh();
+          }}
+          onError={setError}
+        />
+      )}
+      {closeFor && (
+        <CloseContractModal
+          contract={closeFor}
+          busy={busyId === closeFor.id}
+          onClose={() => setCloseFor(null)}
+          onConfirm={() => setContractStatus(closeFor, "closed")}
+        />
+      )}
+    </div>
+  );
+}
+
+// Closing is what silences the radar (alerts.ts filters milestones by their
+// contract's status), so the count of milestones that are about to go quiet is
+// the whole content of this confirmation — not a generic "are you sure".
+function CloseContractModal({
+  contract,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  contract: ContractCard;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const openCount = contract.milestones.filter((m) => m.state !== "paid").length;
+  return (
+    <div className="fixed inset-0 flex items-center justify-center p-4 z-50" style={OVERLAY} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl" style={PANEL}>
+        <h3 className="font-bold mb-3">סגירת חוזה — {contract.name}</h3>
+        {openCount > 0 ? (
+          <p className="text-xs text-[var(--dim)] mb-4 leading-relaxed">
+            בחוזה {openCount} אבני דרך שטרם שולמו. סגירה תשתיק אותן ברדאר — הן ייצאו מ&quot;התחייבות פתוחה&quot;
+            ומהתראות אבני הדרך.
+          </p>
+        ) : (
+          <p className="text-xs text-[var(--dim)] mb-4 leading-relaxed">כל אבני הדרך שולמו. החוזה ייצא מהתצוגה הפעילה.</p>
+        )}
+        <p className="text-[11px] text-[var(--faint)] mb-4">אפשר להחזיר לפעיל בכל רגע מאותו כרטיס.</p>
+        <div className="flex gap-2">
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className="text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-40"
+            style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}
+          >
+            סגור חוזה
+          </button>
+          <button onClick={onClose} className="text-[var(--dim)] text-sm px-3">ביטול</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -401,6 +591,184 @@ function EditDateModal({ milestone, onClose, onDone, onError }: { milestone: Mil
           </button>
           <button onClick={onClose} className="text-[var(--dim)] text-sm px-3">ביטול</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Attach a milestone to a job that already exists — the counterpart to the
+// issue route, which only ever CREATES one. Reuses /api/finance/jobs-search
+// (the same free-text picker the document registry uses). The server re-checks
+// everything shown here; the client-side filtering below is a courtesy, not
+// the enforcement.
+type SearchJob = {
+  id: string;
+  client_id: string | null;
+  client_name: string | null;
+  show_name: string | null;
+  campaign: string | null;
+  amount: number | null;
+  date: string | null;
+  status: string;
+};
+
+function LinkJobModal({
+  milestone,
+  contract,
+  onClose,
+  onDone,
+  onError,
+}: {
+  milestone: MilestoneCard;
+  contract: ContractCard;
+  onClose: () => void;
+  onDone: () => void;
+  onError: (m: string) => void;
+}) {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<SearchJob[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  // second gate before any write: re-pointing a milestone at a different job
+  // moves which invoice this money is tracked against, and the display state
+  // reads the job's `paid` — so a mis-click silently changes whether the
+  // milestone reads as paid. `null` here = an unlink.
+  const [confirm, setConfirm] = useState<{ job: SearchJob | null } | null>(null);
+
+  useEffect(() => {
+    if (q.trim().length < 2) {
+      setResults([]);
+      return;
+    }
+    setSearching(true);
+    const t = setTimeout(() => {
+      fetch(`/api/finance/jobs-search?q=${encodeURIComponent(q.trim())}`)
+        .then((r) => r.json())
+        .then((b) => setResults(b.jobs ?? []))
+        .catch(() => setErr("שגיאת רשת"))
+        .finally(() => setSearching(false));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  async function link(jobId: string | null) {
+    setBusy(true);
+    setErr(null);
+    setConfirm(null);
+    const res = await fetch(`/api/contracts/milestones/${milestone.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patch: { job_id: jobId } }),
+    });
+    setBusy(false);
+    if (!res.ok) {
+      // stays open on rejection — the three validations are the point of this
+      // screen, and the bookkeeper needs to read which one fired and retry
+      setErr((await res.json().catch(() => ({}))).error ?? "הקישור נכשל");
+      return;
+    }
+    onError("");
+    onDone();
+  }
+
+  return (
+    <div className="fixed inset-0 flex items-center justify-center p-4 z-50" style={OVERLAY} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-lg border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl max-h-[88vh] overflow-y-auto" style={PANEL}>
+        <h3 className="font-bold mb-1">קישור job — {milestone.name}</h3>
+        <p className="text-[11px] text-[var(--dim)] mb-4">
+          רק job של {contract.client_name ?? "לקוח החוזה"}, שאינו מקושר כבר לאבן דרך אחרת.
+        </p>
+
+        {milestone.job_id && (
+          <div className="flex items-center gap-2 mb-3 text-xs border border-[var(--rule)] rounded-xl px-3 py-2">
+            <span className="text-[var(--dim)]">מקושר כעת:</span>
+            <span className="font-mono">{milestone.job_number ?? milestone.job_id.slice(0, 8)}</span>
+            <div className="flex-1" />
+            <button onClick={() => setConfirm({ job: null })} disabled={busy} className="text-[11px] text-[var(--red)] hover:underline disabled:opacity-40">
+              נתק
+            </button>
+          </div>
+        )}
+
+        {err && <div className="mb-3 text-xs text-[var(--peak)] border border-[var(--peak)] rounded-xl px-3 py-2">{err}</div>}
+
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="חיפוש job — לקוח, תוכנית, אורח, סכום, תאריך"
+          className={`${INPUT} mb-3`}
+          style={inputBg}
+          autoFocus
+        />
+
+        {searching && <div className="text-xs text-[var(--faint)] mb-2">מחפש…</div>}
+        {!searching && q.trim().length >= 2 && results.length === 0 && (
+          <div className="text-xs text-[var(--faint)] mb-2">לא נמצאו תוצאות.</div>
+        )}
+
+        <div className="space-y-1.5">
+          {results.map((j) => {
+            const otherClient = j.client_id !== contract.client_id;
+            return (
+              <button
+                key={j.id}
+                onClick={() => setConfirm({ job: j })}
+                disabled={busy || otherClient}
+                className="w-full text-right border border-[var(--rule)] rounded-xl px-3 py-2 hover:bg-[var(--panel3)] transition-colors disabled:opacity-35 disabled:hover:bg-transparent"
+              >
+                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
+                  <span className="font-medium">{j.campaign ?? "—"}</span>
+                  <span className="text-[var(--dim)]">{j.client_name ?? "—"}</span>
+                  {j.show_name && <span className="text-[var(--faint)]">{j.show_name}</span>}
+                  <div className="flex-1" />
+                  <span className="font-mono">{money(j.amount)}</span>
+                  <span className="text-[var(--faint)] font-mono">{j.date ? heDate(j.date) : "—"}</span>
+                </div>
+                {otherClient && <div className="text-[10px] text-[var(--red)] mt-1">לקוח אחר — לא ניתן לקישור</div>}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex gap-2 mt-4">
+          <button onClick={onClose} className="text-[var(--dim)] text-sm px-3">סגור</button>
+        </div>
+
+        {confirm && (
+          <div className="fixed inset-0 flex items-center justify-center p-4 z-[60]" style={OVERLAY} onClick={() => setConfirm(null)}>
+            <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl" style={PANEL}>
+              <h3 className="font-bold mb-3">{confirm.job ? "שינוי קישור" : "ניתוק קישור"}</h3>
+              <p className="text-xs text-[var(--dim)] mb-3 leading-relaxed">
+                {confirm.job ? (
+                  <>
+                    משנה קישור של &quot;{milestone.name}&quot; מחשבונית{" "}
+                    <span className="font-mono">{milestone.job_number ?? (milestone.job_id ? milestone.job_id.slice(0, 8) : "ללא")}</span> ל־
+                    <span className="font-mono">{confirm.job.campaign ?? confirm.job.id.slice(0, 8)}</span>
+                    {confirm.job.amount != null ? ` (${money(confirm.job.amount)})` : ""}.
+                  </>
+                ) : (
+                  <>
+                    מנתק את &quot;{milestone.name}&quot; מחשבונית{" "}
+                    <span className="font-mono">{milestone.job_number ?? (milestone.job_id ? milestone.job_id.slice(0, 8) : "ללא")}</span>.
+                  </>
+                )}
+              </p>
+              <p className="text-[11px] text-[var(--peak)] mb-4">פעולה זו משנה את מעקב התשלום.</p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => link(confirm.job ? confirm.job.id : null)}
+                  disabled={busy}
+                  className="text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-40"
+                  style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}
+                >
+                  {confirm.job ? "שנה קישור" : "נתק"}
+                </button>
+                <button onClick={() => setConfirm(null)} className="text-[var(--dim)] text-sm px-3">ביטול</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

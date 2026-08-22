@@ -28,6 +28,7 @@ import {
 } from "@/lib/productions/status";
 import ClientCombobox from "@/components/ClientCombobox";
 import IconTile, { type IconAccent } from "@/components/IconTile";
+import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
 
 // entity type -> line icon + tile accent (no emoji, DESIGN.md §12)
 const ENTITY_ICON: Record<string, string> = {
@@ -1527,7 +1528,11 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                             {m.amount != null ? `${NIS.format(m.amount as number)} ₪` : "—"}
                           </span>
                           <span className="text-[var(--faint)]">{(m.expected_date as string) ?? ""}</span>
-                          <span className="text-[var(--faint)]">{m.status as string}</span>
+                          {/* the derived state, same source as /contracts —
+                              not the raw English status column */}
+                          <span style={{ color: MILESTONE_META[m.state as MilestoneState]?.color ?? "var(--faint)" }}>
+                            {MILESTONE_META[m.state as MilestoneState]?.label ?? (m.status as string)}
+                          </span>
                         </div>
                       ))}
                     </div>

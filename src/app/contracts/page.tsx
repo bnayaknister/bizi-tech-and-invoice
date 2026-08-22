@@ -45,7 +45,12 @@ export default async function ContractsPage() {
         amount: m.amount as number,
         expected_date: m.expected_date,
         is_estimated: m.is_estimated,
+        status: m.status,
         state,
+        job_id: m.job_id,
+        // the linked job's number, shown whatever the state — an 'open'
+        // milestone with a job attached was invisible before (owner 2026-08-22)
+        job_number: job ? job.invoice_tax ?? job.invoice_biz ?? null : null,
         invoice_number: invoiceNumber,
         invoice_date: state === "paid" || state === "invoiced" ? job?.date ?? null : null,
       };
@@ -54,9 +59,16 @@ export default async function ContractsPage() {
     return {
       id: c.id,
       name: c.name,
+      client_id: c.client_id,
       client_name: c.client_id ? clientName.get(c.client_id) ?? null : null,
       total_amount: c.total_amount as number,
       paid_sum: paidSum,
+      status: c.status,
+      // derived from the DISPLAY state, never the raw status column: a
+      // milestone whose linked job is paid reads 'paid' here while its status
+      // column still says 'invoiced' (milestone.ts). A badge only — nothing
+      // closes the contract on its own.
+      all_paid: milestoneCards.length > 0 && milestoneCards.every((m) => m.state === "paid"),
       milestones: milestoneCards,
     };
   });

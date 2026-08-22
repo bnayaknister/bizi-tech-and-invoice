@@ -3,10 +3,13 @@
 Acceptance test for the contracts screen (migration reuse; 0002 tables).
 
   A. Real data — the "מכירת ביפו" contract: 400,000 total, 150,000 paid
-     (חלק א, status=paid + linked job paid), 250,000 open commitment (חלק ב,
-     pending + estimated 15.9.26). Progress = 150k/400k. The radar's open
-     commitment (sum of pending milestones) = 250,000, and its milestone
-     alerts point at /contracts.
+     (חלק א, status=paid + linked job paid) and 250,000 invoiced (חלק ב, job
+     linked, 15.9.26). The two always add up to total_amount. The radar's open
+     commitment equals the pending milestones of ACTIVE contracts, and its
+     milestone alerts point at /contracts.
+     (A4/A5/A6 used to pin חלק ב as pending and the commitment as a literal
+     250,000. The business invoiced it and the test broke while nothing was
+     wrong — rewritten 2026-08-22 to assert rules, not a snapshot.)
   B. Throwaway contract — create a contract + milestone via the API, issue an
      invoice for the milestone (Morning dry-run): a linked job + invoices row
      are created and the milestone flips to 'invoiced' + job_id set.
@@ -14,7 +17,7 @@ Acceptance test for the contracts screen (migration reuse; 0002 tables).
 
 Cleans up every throwaway row + user in finally (events first).
 """
-import base64, json, os, sys, time, uuid, requests
+import base64, json, os, re, sys, time, uuid, requests
 
 ENV_PATH = os.path.join(os.path.dirname(__file__), "..", ".env.local")
 if os.path.exists(ENV_PATH):
@@ -70,13 +73,29 @@ try:
         paid = [m for m in ms if m["status"] == "paid"]
         pending = [m for m in ms if m["status"] == "pending"]
         check("A3. paid milestone sum = 150,000", sum(m["amount"] for m in paid) == 150000, str(paid))
-        check("A4. open commitment sum = 250,000", sum(m["amount"] for m in pending) == 250000, str(pending))
-        cheleq_b = next((m for m in pending if m["name"] == "חלק ב"), None)
-        check("A5. חלק ב estimated + future date", cheleq_b and cheleq_b["is_estimated"] and cheleq_b["expected_date"] == "2026-09-15", str(cheleq_b))
+        # A4/A5 pinned חלק ב as `pending` + a 250,000 open commitment. That was
+        # a snapshot of 2026-07 and the business moved on: חלק ב was invoiced
+        # for real (250,000, job linked), so the assertions failed on live data
+        # while nothing was broken. Rewritten 2026-08-22 against the invariant
+        # that does NOT drift — the two milestones must always add up to the
+        # contract total (0056: 150,000 + 250,000 = 400,000 = total_amount,
+        # net of VAT) — plus the current, factual state of חלק ב.
+        check("A4. milestones add up to the contract total (400,000)",
+              sum(m["amount"] for m in ms) == c[0]["total_amount"], str(ms))
+        cheleq_b = next((m for m in ms if m["name"] == "חלק ב"), None)
+        check("A5. חלק ב invoiced, 250,000, job linked",
+              bool(cheleq_b) and cheleq_b["status"] == "invoiced" and cheleq_b["amount"] == 250000
+              and bool(cheleq_b["job_id"]) and cheleq_b["expected_date"] == "2026-09-15",
+              str(cheleq_b))
 
-    # radar open-commitment total = pending milestones sum = 250,000
-    all_pending = requests.get(rest("contract_milestones?status=eq.pending&select=amount"), headers=ADMIN).json()
-    check("A6. radar open commitment = 250,000", sum(m["amount"] for m in all_pending) == 250000, str(sum(m["amount"] for m in all_pending)))
+    # A6 was a hardcoded 250,000 for the same reason. It now asserts the RULE
+    # instead of the number, which also covers the 2026-08-22 change: the radar
+    # counts pending milestones of ACTIVE contracts only, so a closed contract
+    # contributes nothing.
+    active_ids = {c["id"] for c in requests.get(rest("contracts?select=id&status=eq.active"), headers=ADMIN).json()}
+    all_ms = requests.get(rest("contract_milestones?select=amount,status,contract_id"), headers=ADMIN).json()
+    expected_open = sum(m["amount"] for m in all_ms if m["status"] == "pending" and m["contract_id"] in active_ids)
+    closed_pending = sum(m["amount"] for m in all_ms if m["status"] == "pending" and m["contract_id"] not in active_ids)
 
     # contracts page renders for a money user + shows the contract
     money = mkuser({"role": "bookkeeper", "can_view_money": True, "can_edit_money": True, "can_view_stages": True})
@@ -86,6 +105,20 @@ try:
     # radar shows the open-commitment alert linking to /contracts
     r = requests.get(f"{APP}/radar", cookies=money)
     check("A8. radar links open commitment -> /contracts", 'href="/contracts"' in r.text and "התחייבות פתוחה" in r.text, "")
+
+    m = re.search(r"התחייבות פתוחה.*?([\d,]+)\s*₪", r.text, re.S)
+    rendered_open = int(m.group(1).replace(",", "")) if m else None
+    check("A6. radar open commitment = pending milestones of ACTIVE contracts",
+          rendered_open == expected_open, f"rendered {rendered_open} vs expected {expected_open}")
+    # Only meaningful while some closed contract actually holds pending
+    # milestones. Today none does, so this is stated rather than asserted —
+    # test_contracts_panel.py proves the exclusion on data it builds itself.
+    if closed_pending:
+        check("A6b. pending milestones under closed contracts are excluded",
+              rendered_open == expected_open, f"closed-contract pending = {closed_pending}")
+    else:
+        print(f"NOTE  A6b. no closed contract holds pending milestones right now "
+              f"(exclusion covered by test_contracts_panel.py)")
 
     # ---------- C. technician blocked ----------
     r = requests.post(f"{APP}/api/contracts", cookies=tech, headers={"Content-Type": "application/json"}, json={"name": "x", "client_id": None, "total_amount": 1})
