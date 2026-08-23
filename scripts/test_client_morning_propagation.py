@@ -6,8 +6,15 @@ so the confirmed edit hits PUT /clients/{fake} -> Morning 404, mutating
 NOTHING real. It proves the two safety-critical guarantees:
 
   - double confirmation is required (no silent propagation)
-  - Morning-first rollback: a failed Morning write leaves local UNCHANGED
-    ("כשלון → לא מעודכן באף אחד")
+  - a failed Morning write is REPORTED, not obeyed: local is saved and the
+    caller gets 502 + partial:true (owner 2026-08-23, reversing the earlier
+    Morning-first rule "כשלון → לא מעודכן באף אחד")
+
+REQUIRES MORNING_DRY_RUN=false. The whole point of section 3 is a Morning call
+that FAILS, and in dry-run updateClient returns success without making one
+(morning/client.ts) — so the failure branch becomes unreachable and 3a/3b/3c
+report a failure that is really just the wrong environment. The check below
+refuses to run rather than lie about it.
 
 plus permission gating and that a NON-mapped client edits locally with no
 Morning involvement. The happy path (both updated) is the same code minus the
@@ -66,12 +73,26 @@ def edit_name(cookie, cid, name, confirm=False):
 
 
 for _ in range(60):
+    # ReadTimeout too: a cold dev server accepts the connection and then spends
+    # seconds compiling, which a ConnectionError-only loop reads as a crash
     try:
-        if requests.get(APP, timeout=2).status_code < 500: break
-    except requests.exceptions.ConnectionError: pass
+        if requests.get(APP, timeout=10).status_code < 500: break
+    except (requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout): pass
     time.sleep(1)
 else:
     print("FAIL dev server never came up"); sys.exit(1)
+
+# The environment gate. Section 3 needs a Morning call that FAILS; in dry-run
+# updateClient returns success without calling anything, so the branch under
+# test cannot be reached and the run would report three failures that say
+# nothing about the code. Mirrors test_tax_variant_flip.py, which refuses the
+# opposite way (it demands dry-run because it issues documents).
+if os.environ.get("MORNING_DRY_RUN", "true") != "false":
+    print("SKIP  this test drives a REAL failing Morning call and needs the dev "
+          "server started with MORNING_DRY_RUN=false.")
+    print("      (safe: the client is mapped to a fake morning id, so the PUT "
+          "404s and mutates nothing real)")
+    sys.exit(2)
 
 try:
     money = mkuser({"role": "bookkeeper", "can_view_money": True, "can_edit_money": True})
@@ -96,13 +117,32 @@ try:
     nm = requests.get(rest(f"clients?id=eq.{mapped_id}&select=name"), headers=ADMIN).json()[0]["name"]
     check("2c. nothing changed locally yet", nm == f"{MARK} mapped", nm)
 
-    # 3. Morning-first rollback: confirm -> PUT to a fake id -> Morning fails
-    #    -> 502 and local STILL unchanged
+    # 3. A failed Morning write is REPORTED, not obeyed (policy reversed by the
+    #    owner 2026-08-23). This section used to assert the opposite — "local
+    #    UNCHANGED after Morning failure (rollback)" — because the rule until
+    #    then was Morning-first, both-or-neither. Local is now the source of
+    #    truth and Morning a sync target, so the edit is saved and the caller is
+    #    told the two are out of step: 502 + partial:true.
     r = edit_name(money, mapped_id, f"{MARK} newname", confirm=True)
-    check("3a. failed Morning write -> 502", r.status_code == 502, f"{r.status_code} {r.text[:120]}")
+    # The env check at the top reads THIS process's environment; the server may
+    # have been started with a different flag. A 200 here is that mismatch's
+    # signature — in dry-run updateClient succeeds without calling Morning, so
+    # the failure branch never runs. Say so instead of logging three failures
+    # that would each be blamed on the code.
+    if r.status_code == 200 and not (r.json() or {}).get("partial"):
+        print("SKIP  the dev server is in DRY_RUN — the Morning call succeeded without "
+              "being made, so the failure branch under test is unreachable.")
+        print("      restart it with MORNING_DRY_RUN=false and re-run.")
+        raise SystemExit(2)
+    check("3a. a real Morning failure -> 502", r.status_code == 502, f"{r.status_code} {r.text[:120]}")
+    body = r.json() if r.status_code == 502 else {}
+    check("3a2. the response is marked partial (saved here, not in Morning)",
+          body.get("partial") is True and body.get("ok") is False, r.text[:160])
+    check("3a3. it returns the SAVED row so the screen can show the new value",
+          (body.get("entity") or {}).get("name") == f"{MARK} newname", r.text[:160])
     nm = requests.get(rest(f"clients?id=eq.{mapped_id}&select=name"), headers=ADMIN).json()[0]["name"]
-    check("3b. local UNCHANGED after Morning failure (rollback)", nm == f"{MARK} mapped", nm)
-    ev = requests.get(rest(f"clients?id=eq.{mapped_id}&select=name"), headers=ADMIN).json()
+    check("3b. local IS saved despite the Morning failure (no rollback)",
+          nm == f"{MARK} newname", nm)
     fev = requests.get(rest(f"events?entity_id=eq.{mapped_id}&event_type=eq.client_morning_update_failed&select=id"), headers=ADMIN).json()
     check("3c. the failure is evented", len(fev) >= 1, json.dumps(fev)[:80])
 

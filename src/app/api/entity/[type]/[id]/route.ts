@@ -405,15 +405,31 @@ export async function POST(
   if (beforeErr || !before)
     return NextResponse.json({ error: "לא נמצא או שאין הרשאה" }, { status: 404 });
 
-  // Addition 2 (owner spec 2026-07-21): editing a MAPPED client's details
-  // propagates to Morning. Morning-first + double confirmation so the two
-  // never diverge: a failed Morning write leaves local untouched ("כשלון →
-  // לא מעודכן באף אחד"); a success updates both. We only propagate the
-  // fields Morning actually holds — today that's the client name.
+  // Editing a MAPPED client's details propagates to Morning. We only propagate
+  // the fields Morning actually holds — today that's the client name.
   //
   // (Documents are deliberately absent here: an issued Morning document has
   // NO update endpoint — it's immutable by design — so it can never be edited
   // from the app. That boundary is enforced by there being no code path.)
+  //
+  // ---- POLICY CHANGE, owner 2026-08-23 -------------------------------------
+  // This was Morning-first: a failed Morning write aborted the whole edit and
+  // nothing was saved locally ("כשלון → לא מעודכן באף אחד", 2026-07-21). The
+  // owner reversed it — local is the source of truth, Morning is a sync target.
+  // So the local write ALWAYS happens; a Morning failure is reported, not
+  // obeyed. The caller gets 502 with partial:true, meaning "your change is
+  // saved, Morning is out of step, try the sync again".
+  //
+  // Consequence, stated rather than discovered later: a client can now be named
+  // one thing here and another thing in Morning. Morning is what prints on the
+  // client's invoice, so a partial edit that nobody retries is a real
+  // divergence — which is exactly why it returns 502 and writes an event
+  // instead of a quiet 200.
+  //
+  // The double-confirmation gate below is KEPT. Its old job was "you are about
+  // to touch two systems, both or neither"; its job now is "you are about to
+  // touch two systems, and one of them may not follow" — still worth a click.
+  let morningPartial: { error: string; morning_client_id: string } | null = null;
   if (type === "client" && "name" in patch) {
     const { data: mc } = await admin
       .from("clients")
@@ -436,16 +452,35 @@ export async function POST(
         const { updateClient } = await import("@/lib/morning/client");
         await updateClient(morningId, { name: patch.name });
       } catch (e) {
+        const { MorningError } = await import("@/lib/morning/client");
+        const err = e instanceof MorningError ? e : null;
         const message = e instanceof Error ? e.message : "עדכון מורנינג נכשל";
+
+        // "Nothing to push" and "the push failed" are separated ABOVE this
+        // catch, not inside it: a client with no morning_client_id never enters
+        // the block at all (`if (morningId && nameChanged)`), so it returns a
+        // quiet 200 and no event. That is the only benign case.
+        //
+        // Everything that reaches here is Morning answering with an error, and
+        // all of it counts — 404 included. A 404 means the id we hold does not
+        // exist there, so the name we just saved will never match the one on
+        // the client's invoice; that is a divergence to surface, not to hide.
+        // The status rides along in the event so a dead mapping can be told
+        // apart from an outage without changing what the caller is told.
         await admin.from("events").insert({
           entity_type: "client",
           entity_id: params.id,
           event_type: "client_morning_update_failed",
           actor_id: user.id,
-          payload: { attempted: { name: patch.name }, error: message },
+          payload: {
+            attempted: { name: patch.name },
+            error: message,
+            morning_status: err?.status ?? null,
+            morning_client_id: morningId,
+          },
         });
-        // nothing local changed — the update below never runs
-        return NextResponse.json({ error: `עדכון מורנינג נכשל, לא בוצע שינוי: ${message}` }, { status: 502 });
+
+        morningPartial = { error: message, morning_client_id: morningId };
       }
     }
   }
@@ -475,6 +510,24 @@ export async function POST(
       ...(body.undoOf ? { undo_of: body.undoOf } : {}),
     },
   });
+
+  // The local write above already happened and is kept. A Morning failure is
+  // reported on top of it, never instead of it (owner 2026-08-23): 502 says
+  // "not fully done", partial:true says "the half that matters locally IS
+  // done", and entity carries the saved row so the screen can render the new
+  // value while still showing the warning.
+  if (morningPartial) {
+    return NextResponse.json(
+      {
+        ok: false,
+        partial: true,
+        entity: updated[0],
+        error: `השינוי נשמר אצלנו, אך עדכון מורנינג נכשל: ${morningPartial.error}. הלקוח אינו מסונכרן — נסי לעדכן שוב.`,
+        morning_client_id: morningPartial.morning_client_id,
+      },
+      { status: 502 }
+    );
+  }
 
   return NextResponse.json({ ok: true, entity: updated[0] });
 }
