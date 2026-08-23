@@ -163,5 +163,6 @@ finally:
     patch("events", f"actor_id=eq.{uid}", {"actor_id": None})
     requests.delete(f"{U}/auth/v1/admin/users/{uid}", headers=A)
     left = get("profiles?name=like.ZTESTRCP*&select=id")
-    print(f"\n{passed} passed, {fail} failed · cleanup:", "ok" if left == [] else f"LEFT {left}")
-    sys.exit(1 if fail else 0)
+
+print(f"\n{passed} passed, {fail} failed · cleanup:", "ok" if left == [] else f"LEFT {left}")
+sys.exit(1 if fail else 0)

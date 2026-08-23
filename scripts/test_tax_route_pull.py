@@ -212,5 +212,6 @@ finally:
     else:
         print("  clean — every test row deleted and verified")
 
-    print(("\nALL CHECKS PASSED" if not fails else f"\n{len(fails)} FAILURE(S): " + ", ".join(fails)))
-    sys.exit(0 if not fails else 1)
+
+print(("\nALL CHECKS PASSED" if not fails else f"\n{len(fails)} FAILURE(S): " + ", ".join(fails)))
+sys.exit(0 if not fails else 1)

@@ -370,8 +370,9 @@ finally:
     check("cleanup: no test clients left", leftover_c == [], json.dumps(leftover_c)[:120])
     check("cleanup: pending_documents is empty", leftover_d == [], json.dumps(leftover_d)[:120])
 
-    print()
-    if failures:
-        print(f"{len(failures)} FAILED: " + " · ".join(failures))
-        sys.exit(1)
-    print("all checks passed")
+
+print()
+if failures:
+    print(f"{len(failures)} FAILED: " + " · ".join(failures))
+    sys.exit(1)
+print("all checks passed")

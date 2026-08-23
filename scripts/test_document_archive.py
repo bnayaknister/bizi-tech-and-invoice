@@ -90,5 +90,6 @@ finally:
         patch("documents", f"archived_by=eq.{uid}", {"archived_by": None})
         requests.delete(f"{U}/auth/v1/admin/users/{uid}", headers=A)
     left = requests.get(rest("profiles?name=like.ZTESTARCH*&select=id"), headers=A).json()
-    print(f"\n{passed} passed, {fail} failed · cleanup:", "ok" if left == [] else f"LEFT {left}")
-    sys.exit(1 if fail else 0)
+
+print(f"\n{passed} passed, {fail} failed · cleanup:", "ok" if left == [] else f"LEFT {left}")
+sys.exit(1 if fail else 0)

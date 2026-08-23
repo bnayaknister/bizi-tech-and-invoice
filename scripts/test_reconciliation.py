@@ -187,8 +187,9 @@ finally:
     check("cleanup: client removed", left_c == [], json.dumps(left_c)[:120])
     check("cleanup: document removed", left_d == [], json.dumps(left_d)[:120])
 
-    print()
-    if failures:
-        print(f"{len(failures)} FAILED: " + " · ".join(failures))
-        sys.exit(1)
-    print("all checks passed")
+
+print()
+if failures:
+    print(f"{len(failures)} FAILED: " + " · ".join(failures))
+    sys.exit(1)
+print("all checks passed")

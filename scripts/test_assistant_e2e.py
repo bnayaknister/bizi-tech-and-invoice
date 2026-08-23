@@ -155,7 +155,8 @@ finally:
         requests.delete(f"{SUP}/auth/v1/admin/users/{uid}", headers=ADMIN)
     left = requests.get(rest(f"profiles?name=eq.{MARK}&select=id"), headers=ADMIN).json()
     check("cleanup: no test profiles left", left == [], json.dumps(left)[:80])
-    print()
-    if failures:
-        print(f"{len(failures)} FAILED: " + " · ".join(failures)); sys.exit(1)
-    print("all checks passed")
+
+print()
+if failures:
+    print(f"{len(failures)} FAILED: " + " · ".join(failures)); sys.exit(1)
+print("all checks passed")

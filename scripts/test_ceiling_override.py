@@ -279,8 +279,9 @@ finally:
     total = requests.get(rest("pending_documents?select=id"), headers=ADMIN).json()
     check("cleanup: pending_documents back to 35", len(total) == 35, str(len(total)))
 
-    print()
-    if failures:
-        print(f"{len(failures)} FAILED: " + " · ".join(failures))
-        sys.exit(1)
-    print("all checks passed")
+
+print()
+if failures:
+    print(f"{len(failures)} FAILED: " + " · ".join(failures))
+    sys.exit(1)
+print("all checks passed")

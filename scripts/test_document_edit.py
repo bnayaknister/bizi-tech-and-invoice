@@ -279,8 +279,9 @@ finally:
             headers=ADMIN).json()
     check("cleanup: every row this script created is gone", left == [], json.dumps(left)[:120])
 
-    print()
-    if failures:
-        print(f"{len(failures)} FAILED: " + " · ".join(failures))
-        sys.exit(1)
-    print("all checks passed")
+
+print()
+if failures:
+    print(f"{len(failures)} FAILED: " + " · ".join(failures))
+    sys.exit(1)
+print("all checks passed")

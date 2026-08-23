@@ -142,8 +142,9 @@ finally:
     left = requests.get(rest("profiles?name=like.*ZTESTPULL*&select=id"), headers=ADMIN).json()
     check("cleanup: temp user removed", left == [], json.dumps(left)[:120])
 
-    print()
-    if failures:
-        print(f"{len(failures)} FAILED: " + " · ".join(failures))
-        sys.exit(1)
-    print("all checks passed")
+
+print()
+if failures:
+    print(f"{len(failures)} FAILED: " + " · ".join(failures))
+    sys.exit(1)
+print("all checks passed")

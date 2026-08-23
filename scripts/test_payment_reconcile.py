@@ -129,7 +129,8 @@ finally:
         requests.delete(f"{U}/auth/v1/admin/users/{uid}", headers=A)
     left = requests.get(rest("clients?normalized_name=like.ztestpay*&select=id"), headers=A).json()
     check("cleanup: test clients removed", left == [], json.dumps(left)[:120])
-    print()
-    if failures:
-        print(f"{len(failures)} FAILED: " + " · ".join(failures)); sys.exit(1)
-    print("all checks passed")
+
+print()
+if failures:
+    print(f"{len(failures)} FAILED: " + " · ".join(failures)); sys.exit(1)
+print("all checks passed")

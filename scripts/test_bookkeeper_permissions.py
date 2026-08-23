@@ -166,7 +166,8 @@ finally:
         requests.delete(f"{SUP}/auth/v1/admin/users/{u}", headers=ADMIN)
     left = requests.get(rest(f"productions?podcast_name=like.*{MARK}*&select=id"), headers=ADMIN).json()
     check("cleanup: no test productions left", left == [], json.dumps(left)[:80])
-    print()
-    if failures:
-        print(f"{len(failures)} FAILED: " + " · ".join(failures)); sys.exit(1)
-    print("all checks passed")
+
+print()
+if failures:
+    print(f"{len(failures)} FAILED: " + " · ".join(failures)); sys.exit(1)
+print("all checks passed")

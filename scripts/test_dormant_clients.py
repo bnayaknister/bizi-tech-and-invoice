@@ -147,7 +147,8 @@ finally:
         requests.delete(rest(f"clients?id=eq.{cid}"), headers=ADMIN)
     left = requests.get(rest(f"clients?name=like.*{MARK}*&select=id"), headers=ADMIN).json()
     check("cleanup: no test clients left", left == [], json.dumps(left)[:80])
-    print()
-    if failures:
-        print(f"{len(failures)} FAILED: " + " · ".join(failures)); sys.exit(1)
-    print("all checks passed")
+
+print()
+if failures:
+    print(f"{len(failures)} FAILED: " + " · ".join(failures)); sys.exit(1)
+print("all checks passed")

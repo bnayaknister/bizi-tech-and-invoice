@@ -201,8 +201,9 @@ finally:
     check("cleanup: no test productions left", left_p == [], json.dumps(left_p)[:120])
     check("cleanup: pending_documents empty", left_pd == [], json.dumps(left_pd)[:120])
 
-    print()
-    if failures:
-        print(f"{len(failures)} FAILED: " + " · ".join(failures))
-        sys.exit(1)
-    print("all checks passed")
+
+print()
+if failures:
+    print(f"{len(failures)} FAILED: " + " · ".join(failures))
+    sys.exit(1)
+print("all checks passed")

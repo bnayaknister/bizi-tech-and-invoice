@@ -445,8 +445,9 @@ finally:
         check(f"counts: {t} back to baseline ({baseline.get(t)})", after[t] == baseline.get(t),
               f"before={baseline.get(t)} after={after[t]}")
 
-    print()
-    if failures:
-        print(f"{len(failures)} FAILED: " + " · ".join(failures))
-        sys.exit(1)
-    print("all checks passed")
+
+print()
+if failures:
+    print(f"{len(failures)} FAILED: " + " · ".join(failures))
+    sys.exit(1)
+print("all checks passed")
