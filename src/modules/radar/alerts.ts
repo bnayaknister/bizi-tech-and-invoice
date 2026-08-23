@@ -500,6 +500,19 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   // 🟡 every_n that will plainly never fill (a show that ended at 2/6): still
   // worth a nudge, but as its own signal. Explicitly NOT full, so it can never
   // double-report with the card above.
+  //
+  // Measured from the NEWEST accrued episode, not the oldest (owner 2026-08-23).
+  // `rows.some(age >= 30)` reads as "any episode is old", which a bundle that is
+  // filling normally always satisfies — it keeps its early episodes by design.
+  // חתונמיות at 4/6 was flagged "will never fill" off a 31-day-old row while
+  // receiving an episode every ~8 days; the card claimed something the data
+  // contradicted. What "stalled" actually means is that nothing NEW has arrived,
+  // which is exactly min(age).
+  //
+  // The trade is deliberate: a bundle that truly dies is now caught up to a
+  // month later than before. An alert that lights on a correct state is trained
+  // away, and then it fails when it is right.
+  const STALL_DAYS = 30;
   let bundleStalled = 0;
   // 🟡 monthly: a month CLOSED with episodes still accrued in it.
   let monthClosedUnredeemed = 0;
@@ -507,8 +520,10 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     const c = cadenceById.get(clientId);
     if (!c) continue;
     if (c.cadence === "every_n" && c.everyN != null && c.everyN > 0) {
+      // rows is never empty — it only exists because something was pushed into it
+      const daysSinceNewest = Math.min(...rows.map((r) => agedHours(r))) / 24;
       if (rows.length >= c.everyN) bundleFull++;
-      else if (rows.some((r) => agedHours(r) >= 30 * 24)) bundleStalled++;
+      else if (daysSinceNewest >= STALL_DAYS) bundleStalled++;
     } else if (c.cadence === "monthly") {
       const late = rows.some((r) => {
         const rd = r.production_id ? recordDateByProd.get(r.production_id) : null;
