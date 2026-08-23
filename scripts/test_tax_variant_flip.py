@@ -288,8 +288,11 @@ try:
     # This is the scenario that FAILS on the pre-9c131d4 code: the flip's old
     # lookup searched pending_documents for this parent and found nothing.
     print("\n--- P: pull parent — exists ONLY in documents ---")
+    # paid='לא' explicitly: the column DEFAULTS to 'לא ידוע', which the 320
+    # automation deliberately never flips — so a default-valued job would make
+    # the dry-run assertion below pass for the wrong reason.
     job_p = insert("jobs", {"client_id": client_id, "campaign": f"{MARK} P", "amount": NET,
-                            "date": israel_today()})
+                            "date": israel_today(), "paid": "לא"})
     job_ids.append(job_p)
     p_mid = str(uuid.uuid4())
     p_num = f"99{uuid.uuid4().int % 10000:04d}"
@@ -334,8 +337,24 @@ try:
         check("P6. response re-confirms dry_run", body.get("dry_run") is True, json.dumps(body)[:150])
         issued_row = verify_flip("P7", child_p, p_num)
         child_morning_ids.append(issued_row["morning_doc_id"])
-        job = requests.get(rest(f"jobs?id=eq.{job_p}&select=invoice_tax"), headers=ADMIN).json()[0]
-        check("P8. the job was stamped with the issued 320", bool(job["invoice_tax"]), str(job))
+        # The flip itself is the subject here, and it is proven by P7 (the queue
+        # row issued as a 320 with the rebuilt remark). The job is deliberately
+        # NOT stamped in a dry run since 2026-08-22 — the synthetic number has no
+        # `dry-` marker on it and a job column cannot carry one, so writing it
+        # would put an unidentifiable fake number on a real job. What this asserts
+        # is that boundary, not the absence of the flip.
+        job = requests.get(rest(f"jobs?id=eq.{job_p}&select=invoice_tax,paid"), headers=ADMIN).json()[0]
+        check("P8. dry run did NOT stamp the job with the synthetic 320 number",
+              job["invoice_tax"] in (None, ""), str(job))
+        # The 320 automation (2026-08-22) flips paid on a REAL issuance. The
+        # dry-run boundary from the same day has to hold for that column too —
+        # a fake receipt must not record money as received. The job was seeded
+        # 'לא', so this would flip if the boundary leaked.
+        check("P8b. dry run did NOT flip paid either (the 320 automation respects the boundary)",
+              job["paid"] == "לא", str(job))
+        ev = requests.get(rest(f"events?entity_id=eq.{job_p}&event_type=eq.job_marked_paid&select=id"),
+                          headers=ADMIN).json()
+        check("P8c. and wrote no job_marked_paid event", len(ev) == 0, str(ev))
 
     # ================= scenario Q: PENDING parent (both tables) ===============
     # The proven path — must keep working IDENTICALLY. The parent sits in both

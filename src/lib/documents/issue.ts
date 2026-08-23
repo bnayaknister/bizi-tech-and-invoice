@@ -44,6 +44,119 @@ function registryType(docType: PendingDocType): "עסקה" | "מס" | null {
 
 const present = (v: unknown): boolean => v != null && String(v).trim() !== "";
 
+/** The job columns a document moves. Enough of a job to decide; nothing more. */
+export type JobFinanceFacts = {
+  invoice_biz: unknown;
+  invoice_tax: unknown;
+  paid: unknown;
+};
+
+/**
+ * What ONE issued document does to ONE linked job — the whole decision, pure.
+ *
+ * Extracted (owner spec 2026-08-22) rather than left inline because it is now
+ * the only testable surface for it: a dry run no longer reaches the jobs write
+ * at all (see the block that calls this), and there is no Morning sandbox, so
+ * an end-to-end check of these rules is impossible by construction. The rules
+ * are the risk; the UPDATE around them is not.
+ *
+ * The rules:
+ *
+ *   deal_invoice (300)   → invoice_biz, if the job has none
+ *   tax_invoice  (305)   → invoice_tax, if the job has none
+ *   tax_receipt  (320)   → invoice_tax, AND paid — a 320 is an invoice AND a
+ *                          receipt, and the review route's payment gate refuses
+ *                          to issue one without a payment block summing to the
+ *                          parent's gross. So by the time we are here, "the
+ *                          money came in" is already declared to the tax
+ *                          authority. Recording it locally is not a guess.
+ *   receipt      (400)   → paid, and ONLY paid. A receipt carries no tax-invoice
+ *                          number, so writing one into invoice_tax would be a
+ *                          lie; the number belongs to the 305 above it. Its
+ *                          jobs are not on the row (job_id null, no
+ *                          bundle_job_ids — receiptFromTaxInvoice) and are
+ *                          resolved through the parents instead; see the
+ *                          receipt branch in issuePendingDocument.
+ *
+ * paid flips ONLY from the exact string 'לא'. Not `!present()`: 'ללא חיוב' is a
+ * deliberate decision that no money is coming, and 'לא ידוע' is an admission
+ * that nobody knows — overwriting either with 'כן' would be inventing a fact.
+ * Same test as linkDocumentToJob (reconcile.ts), so the two paths can never
+ * disagree about what counts as an unpaid job.
+ *
+ * Returns an EMPTY object when there is nothing to do — an already-paid job, a
+ * job that already carries the number, a work order. The caller writes nothing
+ * in that case, so a re-issue is silent.
+ */
+export function jobPatchForDocument(opts: {
+  docType: PendingDocType;
+  docNumber: string;
+  job: JobFinanceFacts;
+}): { invoice_biz?: string; invoice_tax?: string; paid?: string } {
+  const { docType, docNumber, job } = opts;
+  const patch: { invoice_biz?: string; invoice_tax?: string; paid?: string } = {};
+
+  if (docType === "deal_invoice" && !present(job.invoice_biz)) patch.invoice_biz = docNumber;
+  if ((docType === "tax_invoice" || docType === "tax_receipt") && !present(job.invoice_tax)) {
+    patch.invoice_tax = docNumber;
+  }
+  // 320 only. A 305 declares a debt and says nothing about money arriving.
+  if (docType === "tax_receipt" && job.paid === "לא") patch.paid = "כן";
+  // 400: money and nothing else — deliberately no invoice_tax.
+  if (docType === "receipt" && job.paid === "לא") patch.paid = "כן";
+
+  return patch;
+}
+
+/**
+ * The jobs a RECEIPT (400) settles — reached through the tax invoices it was
+ * raised on, because the receipt row itself points at none.
+ *
+ * `payload.linkedDocumentIds` holds the parents' Morning ids, and a parent can
+ * sit in either table: `pending_documents` when the app issued it,
+ * `documents` when the pull brought it in — and in BOTH when the app issued it,
+ * since issue.ts writes through to the registry under the same morning_doc_id.
+ * So both are read and the results unioned.
+ *
+ * Deduped by job id before the caller writes: one receipt can be raised on
+ * several invoices ("קבלה מאוגדת"), and the same job can legitimately appear
+ * under two of them. Writing twice would be harmless; eventing twice would not
+ * — the radar counts job_marked_paid rows as its payment-timing signal.
+ *
+ * An empty result is an ordinary outcome, not a failure: a 305 pulled from
+ * Morning and never matched to a job has no job to offer.
+ */
+export async function jobsBehindReceipt(
+  admin: SupabaseClient,
+  linkedDocumentIds: string[]
+): Promise<string[]> {
+  if (!linkedDocumentIds.length) return [];
+
+  const out = new Set<string>();
+  const collect = (rows: { job_id?: unknown; bundle_job_ids?: unknown }[] | null) => {
+    for (const r of rows ?? []) {
+      if (typeof r.job_id === "string" && r.job_id) out.add(r.job_id);
+      if (Array.isArray(r.bundle_job_ids)) {
+        for (const id of r.bundle_job_ids) if (typeof id === "string" && id) out.add(id);
+      }
+    }
+  };
+
+  const { data: pending } = await admin
+    .from("pending_documents")
+    .select("job_id,bundle_job_ids")
+    .in("morning_doc_id", linkedDocumentIds);
+  collect(pending);
+
+  const { data: registry } = await admin
+    .from("documents")
+    .select("job_id,bundle_job_ids")
+    .in("morning_doc_id", linkedDocumentIds);
+  collect(registry);
+
+  return Array.from(out);
+}
+
 export async function issuePendingDocument(
   admin: SupabaseClient,
   row: PendingRow,
@@ -262,14 +375,147 @@ export async function issuePendingDocument(
   // Mirrors linkDocumentToJob; set only when not already present, so a re-issue
   // or a later reconcile never clobbers a real number. (A work order touches
   // nothing here.)
-  if (regType && bundleJobs.length) {
-    const { data: jobsData } = await admin.from("jobs").select("id,invoice_biz,invoice_tax").in("id", bundleJobs);
+  //
+  // ---- NOT IN DRY RUN (owner decision 2026-08-22) --------------------------
+  // A dry run must not leave a mark on a job. The `dry-` prefix that makes a
+  // synthetic issuance recognisable rides on morning_doc_id ONLY — the number
+  // is `Math.floor(Date.now()/1000) % 1_000_000` (morning/client.ts), a bare
+  // six-digit figure indistinguishable from a real Morning one, and jobs do not
+  // store morning_doc_id. So `jobs.invoice_tax = '847213'` on a real job was a
+  // fake number with nothing to identify it as fake.
+  //
+  // This is the same mistake that was already removed from the neighbouring
+  // contract-milestone route on 2026-07-30 ("minted a fake DRY-nnnnnn number,
+  // wrote it into a job's invoice_biz ... all without calling Morning") — it
+  // simply survived here.
+  //
+  // documents and invoices are DELIBERATELY still written in a dry run: both
+  // are keyed by the `dry-` morning_doc_id, so they are self-identifying and
+  // four call sites already filter on that prefix — and the 305→320 variant
+  // flip resolves its parent's type and number out of `documents` and nowhere
+  // else (review/route.ts), so blocking that write would make the flip
+  // impossible in any dry-run environment. The leak is the jobs stamp; these
+  // are a tagged shadow ledger.
+  if (dryRun && regType && bundleJobs.length) {
+    await admin.from("events").insert({
+      entity_type: "pending_document",
+      entity_id: row.id,
+      event_type: "dry_run_jobs_stamp_skipped",
+      actor_id: actorId,
+      payload: { doc_type: row.doc_type, doc_number: docNumber, job_ids: bundleJobs },
+    });
+  }
+  if (!dryRun && regType && bundleJobs.length) {
+    const { data: jobsData } = await admin.from("jobs").select("id,invoice_biz,invoice_tax,paid").in("id", bundleJobs);
     for (const job of jobsData ?? []) {
-      const jobPatch: Record<string, unknown> = {};
-      if (row.doc_type === "deal_invoice" && !present(job.invoice_biz)) jobPatch.invoice_biz = docNumber;
-      if ((row.doc_type === "tax_invoice" || row.doc_type === "tax_receipt") && !present(job.invoice_tax))
-        jobPatch.invoice_tax = docNumber;
-      if (Object.keys(jobPatch).length) await admin.from("jobs").update(jobPatch).eq("id", job.id as string);
+      const jobPatch = jobPatchForDocument({ docType: row.doc_type, docNumber, job });
+      if (!Object.keys(jobPatch).length) continue;
+      await admin.from("jobs").update(jobPatch).eq("id", job.id as string);
+
+      // A 320 flipping paid is a money-state change, and jobs.paid has NO
+      // timestamp column of its own (0001) — the job_marked_paid event is the
+      // only record of WHEN the money came in. The radar's dormant-client
+      // detection reads exactly this event as its payment signal (alerts.ts),
+      // so skipping it here would make an actively-paying client look silent.
+      // `via` says the marking was automatic, next to the existing
+      // 'reconcile' / 'bundle_cascade' values.
+      if (jobPatch.paid) {
+        await admin.from("events").insert({
+          entity_type: "job",
+          entity_id: job.id,
+          event_type: "job_marked_paid",
+          actor_id: actorId,
+          payload: {
+            via: "auto_tax_receipt",
+            doc_type: row.doc_type,
+            morning_doc_number: docNumber,
+            morning_doc_id: morningDocId,
+            pending_document_id: row.id,
+          },
+        });
+      }
+    }
+  }
+
+  // ---- a RECEIPT (400) settles the jobs of the invoices it was raised on ----
+  // Its own branch, not an extension of the block above: registryType returns
+  // null for a receipt (it is not an invoice and gets no invoices row), so
+  // `regType` gates that block shut, and bundleJobs is empty anyway — the queue
+  // row is built with job_id null and no bundle_job_ids. The jobs are reached
+  // through payload.linkedDocumentIds instead (jobsBehindReceipt).
+  //
+  // Same dry-run boundary and the same exact-'לא' rule as everything above.
+  if (row.doc_type === "receipt") {
+    const linkedIds = Array.isArray(row.payload?.linkedDocumentIds)
+      ? (row.payload.linkedDocumentIds as string[])
+      : [];
+    const receiptJobs = dryRun ? [] : await jobsBehindReceipt(admin, linkedIds);
+
+    if (dryRun) {
+      await admin.from("events").insert({
+        entity_type: "pending_document",
+        entity_id: row.id,
+        event_type: "dry_run_jobs_stamp_skipped",
+        actor_id: actorId,
+        payload: { doc_type: row.doc_type, doc_number: docNumber, linked_document_ids: linkedIds },
+      });
+    } else if (!receiptJobs.length) {
+      // An ordinary outcome, not a failure — a 305 pulled from Morning and
+      // never matched to a job has no job to offer. Evented all the same: the
+      // silence is exactly what would otherwise have to be guessed at when
+      // somebody asks why a receipt did not mark anything paid.
+      await admin.from("events").insert({
+        entity_type: "pending_document",
+        entity_id: row.id,
+        event_type: "auto_receipt_no_jobs",
+        actor_id: actorId,
+        payload: { doc_number: docNumber, linked_document_ids: linkedIds },
+      });
+    } else {
+      const { data: jobsData } = await admin
+        .from("jobs")
+        .select("id,invoice_biz,invoice_tax,paid")
+        .in("id", receiptJobs);
+      for (const job of jobsData ?? []) {
+        const jobPatch = jobPatchForDocument({ docType: row.doc_type, docNumber, job });
+        if (!jobPatch.paid) continue;
+        await admin.from("jobs").update({ paid: jobPatch.paid }).eq("id", job.id as string);
+
+        await admin.from("events").insert({
+          entity_type: "job",
+          entity_id: job.id,
+          event_type: "job_marked_paid",
+          actor_id: actorId,
+          payload: {
+            via: "auto_receipt",
+            doc_type: row.doc_type,
+            morning_doc_number: docNumber,
+            morning_doc_id: morningDocId,
+            pending_document_id: row.id,
+            linked_document_ids: linkedIds,
+          },
+        });
+
+        // Money in, no tax invoice = a RED job, and that is the correct state:
+        // it is a real exposure and the radar's red alert exists to show it.
+        // Normally unreachable — the parent 305 stamps invoice_tax on the same
+        // jobs, and the receipt builder refuses a `dry-` parent — so if it does
+        // happen (a number cleared by hand after issuance) it is an anomaly and
+        // is recorded as one rather than left to look like ordinary noise.
+        if (!present(job.invoice_tax)) {
+          await admin.from("events").insert({
+            entity_type: "job",
+            entity_id: job.id,
+            event_type: "auto_receipt_paid_without_tax",
+            actor_id: actorId,
+            payload: {
+              doc_number: docNumber,
+              pending_document_id: row.id,
+              linked_document_ids: linkedIds,
+            },
+          });
+        }
+      }
     }
   }
 

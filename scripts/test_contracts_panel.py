@@ -252,6 +252,31 @@ try:
     check("5f. unlink (null) passes without the checks", r.status_code == 200 and after is None,
           f"{r.status_code} {after}")
 
+    # ---------- 5g. what the 320 automation looks like on this screen ----------
+    # The automation itself lives in issue.ts and cannot be driven end-to-end
+    # (no Morning sandbox; a dry run deliberately does not touch jobs). Its
+    # RESULT is what the owner sees here, so that is what is asserted: the two
+    # columns a 320 writes — invoice_tax + paid='כן' — must turn the milestone
+    # green through deriveMilestoneState's or-gate, WITHOUT the milestone's own
+    # status column moving. (Rules of the flip itself: test_auto_paid.ts.)
+    requests.post(f"{APP}/api/contracts/milestones/{ms_id}", cookies=money,
+                  headers={"Content-Type": "application/json"},
+                  json={"patch": {"status": "pending", "job_id": job_ok}})
+    requests.patch(rest(f"jobs?id=eq.{job_ok}"), headers=ADMIN,
+                   json={"paid": "כן", "invoice_tax": "ZTEST-320"})
+    html = requests.get(f"{APP}/contracts", cookies=money).text
+    i = html.find(f"{MARK} contract")
+    seg = html[i:i + 4000] if i >= 0 else ""
+    check("5g. a job marked paid+320 turns the milestone green on /contracts",
+          "שולם" in seg, f"found_contract={i >= 0}")
+    still = requests.get(rest(f"contract_milestones?id=eq.{ms_id}&select=status"), headers=ADMIN).json()[0]
+    check("5h. and the milestone's own status column did NOT move (the job is the source)",
+          still["status"] == "pending", str(still))
+    # put it back so the drawer check below sees the ordinary shape
+    requests.patch(rest(f"jobs?id=eq.{job_ok}"), headers=ADMIN, json={"paid": "לא", "invoice_tax": None})
+    requests.post(f"{APP}/api/contracts/milestones/{ms_id}", cookies=money,
+                  headers={"Content-Type": "application/json"}, json={"patch": {"job_id": None}})
+
     # ---------- 6. the derived state reaches the drawer ----------
     r = requests.get(f"{APP}/api/entity/contract/{contract_id}", cookies=money)
     body = r.json() if r.status_code == 200 else {}

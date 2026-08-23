@@ -177,8 +177,12 @@ try:
         md = get(f"pending_documents?id=eq.{di_id}&select=morning_doc_id")
         if md and md[0]["morning_doc_id"]: mdids.append(md[0]["morning_doc_id"])
         jrows = get(f"jobs?client_id=eq.{cliMon['id']}&select=id,invoice_biz")
-        bizset = set(j["invoice_biz"] for j in jrows)
-        check("7 both jobs share one invoice_biz", len(bizset) == 1 and None not in bizset)
+        # a dry run no longer stamps jobs (2026-08-22, issue.ts) — the shared
+        # invoice_biz the cascade needs is declared here instead of inherited
+        # from a synthetic issuance
+        check("7 dry run did not stamp the jobs", all(j["invoice_biz"] in (None, "") for j in jrows))
+        patch("jobs", f"client_id=eq.{cliMon['id']}", {"invoice_biz": f"ZTESTCAD-{di_id[-8:]}"})
+        jrows = get(f"jobs?client_id=eq.{cliMon['id']}&select=id,invoice_biz")
         rp = requests.post(f"{APP}/api/finance/mark-paid", cookies=money_ck, headers={"Content-Type": "application/json"}, json={"job_id": jrows[0]["id"]})
         check("7 mark-paid cascaded to the other job", rp.status_code == 200 and rp.json().get("cascaded") == 1)
         paid = get(f"jobs?client_id=eq.{cliMon['id']}&select=paid")

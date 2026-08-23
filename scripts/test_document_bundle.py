@@ -12,7 +12,7 @@ Proves:
   3. bundle 3 same-client jobs → one pending deal invoice: job_id null,
      bundle_job_ids = the 3, amount = sum, payload has 3 income lines
   4. re-bundle same jobs → 409 (already claimed by a live pending)
-  5. approve in DRY_RUN → all 3 jobs share the SAME invoice_biz; documents row
+  5. approve in DRY_RUN → the jobs are NOT stamped (2026-08-22); documents row
      carries bundle_job_ids (job_id null); one invoices row (עסקה)
   6. mark one bundled job paid → all 3 paid (cascade via shared invoice_biz)
 Self-cleaning in FK order.
@@ -100,10 +100,12 @@ try:
                       json={"ids": [pid], "action": "approve"})
     body = r.json()
     check("approve 200 dry_run", r.status_code == 200 and body.get("dry_run") is True and body["results"][0]["ok"])
+    # A dry run no longer stamps jobs (2026-08-22) — see test_registry_issue.py.
+    # The bundle's SHAPE is still proven below from the documents/invoices rows,
+    # which a dry run does write.
     jrows = requests.get(rest(f"jobs?id=in.({','.join(trio)})&select=id,invoice_biz,paid"), headers=A).json()
-    bizset = set(j["invoice_biz"] for j in jrows)
-    check("all 3 jobs share one invoice_biz", len(bizset) == 1 and None not in bizset)
-    biz = jrows[0]["invoice_biz"]
+    check("dry run did NOT stamp the bundled jobs",
+          all(j["invoice_biz"] in (None, "") for j in jrows))
     pend = requests.get(rest(f"pending_documents?id=eq.{pid}&select=morning_doc_id"), headers=A).json()[0]
     mdid = pend["morning_doc_id"]
     doc = requests.get(rest(f"documents?morning_doc_id=eq.{mdid}&select=job_id,bundle_job_ids,type"), headers=A).json()[0]
@@ -112,7 +114,13 @@ try:
     inv = requests.get(rest(f"invoices?morning_doc_id=eq.{mdid}&select=type,job_id"), headers=A).json()
     check("one invoices row (עסקה, job_id null)", len(inv) == 1 and inv[0]["type"] == "עסקה" and inv[0]["job_id"] is None)
 
-    # mark ONE paid → cascade to all
+    # mark ONE paid → cascade to all.
+    # The cascade keys off a SHARED invoice_biz, which real issuance writes and a
+    # dry run deliberately does not. So the precondition is stated here rather
+    # than inherited from a synthetic issuance — the subject under test is the
+    # cascade, and it should not depend on what dry-run mode happens to stamp.
+    biz = f"ZTESTBUNDLE-{mdid[-8:]}"
+    patch("jobs", f"id=in.({','.join(trio)})", {"invoice_biz": biz})
     r = requests.post(f"{APP}/api/finance/mark-paid", cookies=money_ck, headers={"Content-Type": "application/json"},
                       json={"job_id": j1["id"]})
     check("mark-paid cascaded=2", r.status_code == 200 and r.json().get("cascaded") == 2)

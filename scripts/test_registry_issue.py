@@ -111,8 +111,17 @@ try:
           len(doc) == 1 and doc[0]["type"] == 300 and doc[0]["job_id"] == job["id"] and doc[0]["source"] == "app")
     inv = requests.get(rest(f"invoices?morning_doc_id=eq.{mdid}&select=type,job_id"), headers=A).json()
     check("invoices row written (עסקה)", len(inv) == 1 and inv[0]["type"] == "עסקה")
+    # A DRY RUN LEAVES THE JOB ALONE (2026-08-22). It used to stamp invoice_biz
+    # with the synthetic number — a bare six-digit figure with no `dry-` marker
+    # on it, written onto a real job. documents/invoices still get their rows
+    # because those carry the dry- morning_doc_id and are recognisable; a job
+    # column is not. Real issuance (DRY_RUN=false) stamps as it always did.
     j2 = requests.get(rest(f"jobs?id=eq.{job['id']}&select=invoice_biz"), headers=A).json()[0]
-    check("job.invoice_biz set (finance moved)", j2["invoice_biz"] not in (None, ""))
+    check("dry run did NOT stamp job.invoice_biz", j2["invoice_biz"] in (None, ""))
+    ev = requests.get(rest(f"events?entity_id=eq.{pid}&event_type=eq.dry_run_jobs_stamp_skipped&select=payload"),
+                      headers=A).json()
+    check("the skip is evented (auditable, not silent)",
+          len(ev) == 1 and job["id"] in (ev[0]["payload"].get("job_ids") or []))
 finally:
     for pid in pending_ids:
         dele("events", f"entity_id=eq.{pid}")
