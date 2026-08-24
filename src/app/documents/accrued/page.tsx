@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getSessionAndProfile } from "@/lib/profile";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { todayInIsrael } from "@/lib/dates";
+import { hasBeenPerformed } from "@/lib/productions/status";
 import AppHeader from "@/components/AppHeader";
 import AccruedClient, { type AccruedGroup, type AccruedMonth, type IssuedOrder } from "./AccruedClient";
 
@@ -40,7 +41,7 @@ export default async function AccruedPage() {
     .select(
       "id,amount,created_at,client_id,production_id," +
         "clients(name,billing_cadence,billing_every_n)," +
-        "productions(podcast_name,record_date,guest)"
+        "productions(podcast_name,record_date,guest,status,cancelled_at)"
     )
     .eq("doc_type", "work_order")
     .eq("status", "accrued")
@@ -62,7 +63,22 @@ export default async function AccruedPage() {
   for (const r of (data ?? []) as unknown as Array<Record<string, unknown>>) {
     const clientId = (r.client_id as string) ?? "—";
     const client = r.clients as { name?: string; billing_cadence?: string; billing_every_n?: number } | null;
-    const prod = r.productions as { podcast_name?: string; record_date?: string; guest?: string } | null;
+    const prod = r.productions as {
+      podcast_name?: string;
+      record_date?: string;
+      guest?: string;
+      status?: string;
+      cancelled_at?: string | null;
+    } | null;
+
+    // Only work that has actually happened is accrued (owner 2026-08-24). An
+    // episode merely scheduled in the calendar already gets its accrued queue
+    // row at creation — enqueueDocument decides on billing_cadence alone and
+    // never looks at status — so before this filter a future episode sat in
+    // the redemption pile as if it were owed. The SAME predicate runs in
+    // redeem/route.ts: filtering only here would show four episodes while the
+    // redemption folded five.
+    if (!hasBeenPerformed(prod?.status ?? null, prod?.cancelled_at ?? null)) continue;
     const created = new Date(r.created_at as string).getTime();
     const ageDays = Math.floor((now - created) / 86_400_000);
     let g = byClient.get(clientId);
