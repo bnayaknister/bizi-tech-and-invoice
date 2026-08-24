@@ -105,11 +105,21 @@ async function main() {
   }
 
   console.log("\n=== 2. NOT A REGRESSION: a source with no job at all is still refused ===");
-  // 10315 (מלי) — production exists, never client-approved, so no job anywhere.
-  // The new lookup must find nothing and the gate must still refuse.
-  const p10315 = await pendingIdOf("10315");
-  const resNone = await createTaxFromParents(admin, [p10315!], null);
-  check("10315 still refused", !resNone.ok, resNone.ok ? "unexpectedly built" : "");
+  // Was 10315 until the 0060 backfill gave its episode a job — proof the
+  // backfill worked, and the reason this assertion had to move. #10311 (SFI)
+  // is now the case: work order issued, episode past הוקלט, but deliberately
+  // held back from the backfill because an unlinked job of the same client
+  // matches its amount. So it still has no job, and the gate must still refuse.
+  const pNoJob = await pendingIdOf("10311");
+  const resNone = await createTaxFromParents(admin, [pNoJob!], null);
+  // REGISTER FOR CLEANUP FIRST, before asserting. A refusal is what we expect,
+  // but on 2026-08-24 this assertion failed the other way — the episode had
+  // just been given a job by the 0060 backfill, the build SUCCEEDED, and
+  // because only the refusal branch was handled the row was never cleaned up.
+  // A live 305 for a real client sat in the approval queue until a sweep found
+  // it. An unexpected success is exactly when cleanup matters most.
+  if (resNone.ok) createdPending.push(resNone.id);
+  check("a still-jobless source is refused", !resNone.ok, resNone.ok ? "unexpectedly built" : "");
   if (!resNone.ok) {
     check("refusal is the jobs gate (409)", resNone.status === 409, String(resNone.status));
     check(
