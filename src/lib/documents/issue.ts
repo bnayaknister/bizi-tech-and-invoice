@@ -406,7 +406,77 @@ export async function issuePendingDocument(
     });
   }
   if (!dryRun && regType && bundleJobs.length) {
-    const { data: jobsData } = await admin.from("jobs").select("id,invoice_biz,invoice_tax,paid").in("id", bundleJobs);
+    const { data: jobsData } = await admin
+      .from("jobs")
+      .select("id,campaign,amount,invoice_biz,invoice_tax,paid")
+      .in("id", bundleJobs);
+
+    // ---- the job's amount follows the document that bills it --------------
+    // A deal invoice DEFINES the debt: it is the number the client owes and
+    // the number a payment will be matched against. jobs.amount was set long
+    // before, at הוקלט, from the show's default rate — and /finance and the
+    // radar sum THAT column, never the document's. So when Shiri closes an
+    // 800 work order and issues a corrected 400 (the discount case this whole
+    // chain exists for), the job kept saying 800: 400 of debt that nobody
+    // owes, and an incoming 400 payment that reconcile.ts could not match,
+    // because amountBasis tolerates max(2, 1%) and the gap is 400.
+    //
+    // Only a deal invoice, and only while the job carries NO invoice_biz yet.
+    // A 305/320 inherits its total from the 300 that came before it and must
+    // not re-open a settled number; a job that already names an invoice has a
+    // committed debt, and silently moving it would rewrite history.
+    //
+    // A BUNDLE IS DELIBERATELY LEFT ALONE. With N jobs behind one document
+    // there is no trustworthy way to say which line discounted which episode:
+    // the income lines are positional (bundle.ts flatMaps the folded rows in
+    // order) while bundle_job_ids is a Set with no guaranteed order, and a
+    // line edit can move a single price. Guessing would hand the discount to
+    // the wrong job in silence. It is recorded and skipped instead — census
+    // 2026-08-25: 8 issued documents map to exactly one job, 0 to several, so
+    // this costs nothing today and refuses to invent a mapping tomorrow.
+    if (row.doc_type === "deal_invoice" && typeof row.amount === "number") {
+      const targets = (jobsData ?? []) as { id: string; campaign: string | null; amount: number | null; invoice_biz: string | null }[];
+      if (targets.length === 1) {
+        const job = targets[0];
+        const before = job.amount === null ? null : Number(job.amount);
+        const after = Number(row.amount);
+        const alreadyBilled = present(job.invoice_biz);
+        // a hair's difference is rounding, not a discount
+        const differs = before === null || Math.abs(before - after) > 0.01;
+        if (!alreadyBilled && differs) {
+          const { error: alignErr } = await admin.from("jobs").update({ amount: after }).eq("id", job.id);
+          await admin.from("events").insert({
+            entity_type: "job",
+            entity_id: job.id,
+            event_type: alignErr ? "job_amount_alignment_failed" : "job_amount_aligned",
+            actor_id: actorId,
+            payload: {
+              from: before,
+              to: after,
+              campaign: job.campaign,
+              morning_doc_number: docNumber,
+              pending_document_id: row.id,
+              ...(alignErr ? { error: alignErr.message } : {}),
+            },
+          });
+        }
+      } else if (targets.length > 1) {
+        await admin.from("events").insert({
+          entity_type: "pending_document",
+          entity_id: row.id,
+          event_type: "job_amount_alignment_skipped",
+          actor_id: actorId,
+          payload: {
+            reason: "bundled document — no reliable line-to-job mapping, amounts left untouched",
+            morning_doc_number: docNumber,
+            document_amount: row.amount,
+            job_ids: targets.map((j) => j.id),
+            job_amounts: targets.map((j) => j.amount),
+          },
+        });
+      }
+    }
+
     for (const job of jobsData ?? []) {
       const jobPatch = jobPatchForDocument({ docType: row.doc_type, docNumber, job });
       if (!Object.keys(jobPatch).length) continue;

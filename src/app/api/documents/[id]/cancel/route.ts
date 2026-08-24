@@ -34,7 +34,20 @@ export async function POST(request: Request, { params }: { params: { id: string 
     .eq("id", params.id)
     .maybeSingle();
   if (!doc) return NextResponse.json({ error: "המסמך לא נמצא" }, { status: 404 });
-  if (doc.type !== 300) return NextResponse.json({ error: "ניתן לבטל רק חשבון עסקה" }, { status: 400 });
+  // 100 joined 300 on 2026-08-25. The discount case is the reason: Shiri
+  // closes an issued 800 work order in Morning and needs to issue a corrected
+  // 400 — and until now nothing in the app could move that work order out of
+  // 'issued', so pending_documents_one_live_per_production refused the
+  // replacement with a raw 23505.
+  //
+  // Nothing else about this route changes for a work order. The invoice_biz
+  // clearing below is already guarded by `job.invoice_biz === docNumber`,
+  // which a work order can never satisfy — it stamps no invoice number — so
+  // that branch simply does not run. Left as-is rather than wrapped in a type
+  // check, because the guard already states the real condition.
+  if (doc.type !== 300 && doc.type !== 100) {
+    return NextResponse.json({ error: "ניתן לבטל רק חשבון עסקה או הזמנת עבודה" }, { status: 400 });
+  }
   if (doc.cancelled_at) return NextResponse.json({ error: "המסמך כבר מבוטל" }, { status: 409 });
 
   const docNumber = (doc.morning_doc_number as string | null) ?? null;
@@ -65,6 +78,38 @@ export async function POST(request: Request, { params }: { params: { id: string 
     .update({ cancelled_at: now, cancelled_by: user.id, cancel_reason: reason, updated_at: now })
     .eq("id", params.id);
 
+  // ---- release the queue row -------------------------------------------
+  // The registry row is only half the record: the queue row that produced it
+  // is still 'issued', and pending_documents_one_live_per_production counts
+  // it. Leaving it there is what made a corrective document impossible —
+  // verified by simulation, the replacement was refused with 23505 while the
+  // old row sat at 'issued', and 0063 alone did not help because nothing ever
+  // moved it to 'cancelled'.
+  //
+  // Keyed on morning_doc_id, which is UNIQUE (0025), so exactly the document
+  // being cancelled is released — never a sibling on the same production.
+  // The status filter makes a repeated call a no-op rather than a second
+  // event, and refuses to disturb a row that has since moved on.
+  let queueRowReleased = false;
+  if (doc.morning_doc_id) {
+    const { data: released } = await admin
+      .from("pending_documents")
+      .update({ status: "cancelled" })
+      .eq("morning_doc_id", doc.morning_doc_id as string)
+      .eq("status", "issued")
+      .select("id");
+    queueRowReleased = (released?.length ?? 0) > 0;
+    for (const r of released ?? []) {
+      await admin.from("events").insert({
+        entity_type: "pending_document",
+        entity_id: r.id,
+        event_type: "document_cancelled_in_queue",
+        actor_id: user.id,
+        payload: { morning_doc_number: docNumber, doc_type: doc.type, reason, previous_status: "issued" },
+      });
+    }
+  }
+
   // event on the document
   await admin.from("events").insert({
     entity_type: "document",
@@ -77,7 +122,11 @@ export async function POST(request: Request, { params }: { params: { id: string 
       amount: doc.amount,
       reason,
       job_id: jobId,
-      reverted: { invoice_biz_cleared: invoiceBizCleared, invoice_row_deleted: invoiceRowDeleted },
+      reverted: {
+        invoice_biz_cleared: invoiceBizCleared,
+        invoice_row_deleted: invoiceRowDeleted,
+        queue_row_released: queueRowReleased,
+      },
     },
   });
   // and on the job, since its money-state moved back
@@ -91,5 +140,5 @@ export async function POST(request: Request, { params }: { params: { id: string 
     });
   }
 
-  return NextResponse.json({ ok: true, reverted: { invoiceBizCleared, invoiceRowDeleted } });
+  return NextResponse.json({ ok: true, reverted: { invoiceBizCleared, invoiceRowDeleted, queueRowReleased } });
 }

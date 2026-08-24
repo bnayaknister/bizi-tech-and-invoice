@@ -87,7 +87,13 @@ function parseDate(s: string | null): number | null {
 
 // which amount basis matches, if any: the document total may be the job's base
 // amount (pre-VAT) or that amount grossed up by VAT (a tax-document total)
-function amountBasis(jobAmount: number | null, docAmount: number | null): AmountBasis | null {
+/**
+ * Exported for tests only (2026-08-25) — the discount e2e asserts that a
+ * realigned job really is matchable by a payment of the new amount, and
+ * copying the tolerance into the test would let the two drift apart exactly
+ * where drift is the bug being guarded against. Behaviour unchanged.
+ */
+export function amountBasis(jobAmount: number | null, docAmount: number | null): AmountBasis | null {
   if (jobAmount == null || docAmount == null) return null;
   const ja = Number(jobAmount);
   const da = Number(docAmount);
