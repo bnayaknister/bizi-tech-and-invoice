@@ -320,6 +320,92 @@ export async function createDealInvoiceFromWorkOrder(
     };
   }
 
+  // ---- gate: every resolved job must still be billable --------------------
+  // Deliberately AFTER the "none found" refusal above: "no job at all" and
+  // "jobs found, but not billable" are different diagnoses and must not
+  // collapse into one message.
+  //
+  // createDealInvoiceBundle has refused an already-billed job since it was
+  // written (:116-119). This path never did — it resolves jobs structurally,
+  // through job_productions of the folded episodes, and trusted that anything
+  // it reached that way was fair game. Migration 0060 is what makes that
+  // trust unsafe: a job is now born at הוקלט rather than at client approval,
+  // so a job can exist for an episode that was later cancelled, and the old
+  // paid jobs sitting unlinked in this account (חתונמיות, ברק) become a real
+  // hazard the moment anyone links one to a production by hand — which is an
+  // open decision on the owner's desk right now.
+  //
+  // REFUSE, NEVER SKIP. A non-billable job attached to an episode being
+  // redeemed is a sign the data is confused, not noise to route around.
+  // Silently dropping it would issue a document on a wrong understanding of
+  // what it closes, and there is no PUT on documents in Morning. Same
+  // reasoning as the bundle-vs-fold refusal in taxFromParent.ts.
+  {
+    const { data: gateJobs, error: gateErr } = await admin
+      .from("jobs")
+      .select("id,campaign,invoice_biz,paid")
+      .in("id", jobIds);
+    // an unreadable table is not evidence that everything is fine
+    if (gateErr) {
+      return { ok: false, status: 409, error: `קריאת העבודות נכשלה — ${gateErr.message}` };
+    }
+    const found = (gateJobs ?? []) as { id: string; campaign: string | null; invoice_biz: string | null; paid: string | null }[];
+    if (found.length !== jobIds.length) {
+      // a job_productions row pointing at a job that no longer exists
+      return {
+        ok: false,
+        status: 409,
+        error: `נמצאו ${found.length} עבודות מתוך ${jobIds.length} המקושרות — רענני את המסך ונסי שוב`,
+      };
+    }
+
+    // a job whose episode was cancelled after it was created (only reachable
+    // since 0060 — before it, a cancelled episode never got that far)
+    const { data: jobProds, error: jpErr2 } = await admin
+      .from("job_productions")
+      .select("job_id,production_id")
+      .in("job_id", jobIds);
+    if (jpErr2) {
+      return { ok: false, status: 409, error: `קריאת קישורי העבודות נכשלה — ${jpErr2.message}` };
+    }
+    const prodIds = Array.from(new Set((jobProds ?? []).map((r) => r.production_id).filter(Boolean))) as string[];
+    const deadProds = new Set<string>();
+    if (prodIds.length) {
+      const { data: prodRows, error: prodErr } = await admin
+        .from("productions")
+        .select("id,status,cancelled_at")
+        .in("id", prodIds);
+      if (prodErr) {
+        return { ok: false, status: 409, error: `קריאת ההפקות נכשלה — ${prodErr.message}` };
+      }
+      for (const p of (prodRows ?? []) as { id: string; status: string | null; cancelled_at: string | null }[]) {
+        if (p.cancelled_at || p.status === "בוטל") deadProds.add(p.id);
+      }
+    }
+    const jobOfDeadProd = new Set(
+      (jobProds ?? []).filter((r) => deadProds.has(r.production_id as string)).map((r) => r.job_id as string)
+    );
+
+    // Collect EVERY offender, not just the first: a redemption folds N
+    // episodes, and reporting them one per run would be N runs.
+    const blocked: string[] = [];
+    for (const j of found) {
+      const name = present(j.campaign) ? `"${j.campaign}"` : j.id;
+      if (present(j.invoice_biz)) blocked.push(`${name} — כבר נושאת חשבון עסקה ${j.invoice_biz}`);
+      else if (j.paid === "כן") blocked.push(`${name} — כבר שולמה`);
+      else if (jobOfDeadProd.has(j.id)) blocked.push(`${name} — ההפקה שלה בוטלה`);
+    }
+    if (blocked.length) {
+      return {
+        ok: false,
+        status: 409,
+        error:
+          `${blocked.length} מהעבודות המקושרות אינן ניתנות לחיוב: ${blocked.join("; ")}. ` +
+          "בדקי אותן ברישום לפני הנפקת חשבון עסקה.",
+      };
+    }
+  }
+
   const { data: clientRow } = wo.client_id
     ? await admin.from("clients").select("name").eq("id", wo.client_id as string).maybeSingle()
     : { data: null };
