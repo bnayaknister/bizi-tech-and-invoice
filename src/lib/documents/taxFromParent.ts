@@ -144,6 +144,12 @@ type SourceRow = {
   morning_doc_id: string | null;
   morning_doc_number: string | null;
   job_id: string | null;
+  /**
+   * Optional on purpose: a PULL-sourced row (PullSourceRow) has no production
+   * of its own and never sets this, so the two shapes stay assignable without
+   * touching pullSource.ts. Only the pending door reads it.
+   */
+  production_id?: string | null;
 };
 
 /** How a source is named in an error message — always the most human id we hold. */
@@ -221,7 +227,7 @@ export async function createTaxFromParents(
   if (ids.length) {
     const { data, error } = await admin
       .from("pending_documents")
-      .select("id,doc_type,status,client_id,amount,payload,morning_doc_id,morning_doc_number,job_id")
+      .select("id,doc_type,status,client_id,amount,payload,morning_doc_id,morning_doc_number,job_id,production_id")
       .in("id", ids);
     if (error) return { ok: false, status: 400, error: error.message };
     rows = (data ?? []) as unknown as SourceRow[];
@@ -458,17 +464,78 @@ export async function createTaxFromParents(
     // is pending-only and skips them by construction
     if (r.job_id) jobIds.add(r.job_id);
   }
+
+  // THE PRODUCTION -> JOB LINK (owner approved 2026-08-24). The two sources
+  // above are the only ones this builder had, and both are direct columns on
+  // the queue row. A work order raised by the calendar sync carries NEITHER:
+  // enqueueDocument is called without a jobId there, so job_id stays null and
+  // bundle_job_ids is only ever set on a consolidated order. What it DOES
+  // carry is production_id — and the job that episode created hangs off
+  // job_productions, the canonical link the DB trigger writes.
+  //
+  // bundle.ts:292-314 has walked exactly this path for 100 -> 300 since it was
+  // written. Not reading it here is why the two sibling builders disagreed on
+  // the same parent: the deal-invoice button found the job and the tax button
+  // refused, on one work order, in one row of the registry.
+  //
+  // Census 2026-08-24: 13 issued work orders could raise no tax document. 3
+  // have a job reachable only through this link (10293, 10302, 10307); the
+  // other 10 have no job at all because their episode was never client-
+  // approved, and this lookup correctly still finds nothing for them.
+  //
+  // UNION, not a preference order (the one deliberate difference from
+  // bundle.ts, which picks children over the row's own production): this
+  // builder takes N parents at once, and a consolidated order carries no
+  // production_id of its own anyway — so the union returns exactly what
+  // bundle.ts would, and never less.
+  if (ids.length) {
+    const ownProdIds = rows.map((r) => r.production_id).filter(Boolean) as string[];
+    // a consolidated order's episodes hang off it via consolidated_into —
+    // the third of the three shapes bundle.ts documents
+    const { data: folded, error: foldErr } = await admin
+      .from("pending_documents")
+      .select("production_id")
+      .in("consolidated_into", ids);
+    if (foldErr) return { ok: false, status: 400, error: foldErr.message };
+    const prodIds = Array.from(
+      new Set([
+        ...ownProdIds,
+        ...((folded ?? []) as { production_id: string | null }[])
+          .map((f) => f.production_id)
+          .filter(Boolean) as string[],
+      ])
+    );
+    if (prodIds.length) {
+      const { data: jp, error: jpErr } = await admin
+        .from("job_productions")
+        .select("job_id")
+        .in("production_id", prodIds);
+      // an unreadable link table must not become a silent pass on an
+      // irreversible action — same rule as the taxedJobs gate below
+      if (jpErr) return { ok: false, status: 400, error: jpErr.message };
+      for (const row of (jp ?? []) as { job_id: string }[]) jobIds.add(row.job_id);
+    }
+  }
+
   if (jobIds.size === 0) {
-    // Reworded 2026-08-11 (owner): once the screen disables the button up
-    // front, this message is met only through direct API use or a race — the
-    // assignment was removed between page load and click. So it must say what
-    // to DO, not just what is missing.
+    // Reworded 2026-08-24 (owner). The previous text sent the bookkeeper to a
+    // "שייך ל-job" button that does not exist on a work order — the registry
+    // gates it on BILLING_TYPES = [300,305,320,400], and reconcile.ts refuses
+    // type 100 server-side too. Worse, it named the wrong cause: with the
+    // production link above now read, a missing job almost always means the
+    // episode was never client-approved, because that approval is the only
+    // thing in the whole system that creates a job.
+    //
+    // So the message names the real cause first and the real remedy — approve
+    // the episode — and keeps the second, rarer case rather than guessing
+    // between them.
     return {
       ok: false,
       status: 409,
       error:
         "לא נמצאו עבודות מקושרות למסמכי המקור — מסמך מס חייב לסמן את העבודות שהוא סוגר. " +
-        "שייכי את המסמך לעבודה (כפתור \"שייך ל-job\" ברישום) ונסי שוב",
+        "עבודה נוצרת כשהלקוח מאשר את הפרק, ולכן ברוב המקרים הפרק עדיין ממתין לאישור הלקוח — " +
+        "יש לאשר אותו ואז לנסות שוב. אם הפרק כבר אושר, המסמך אינו משויך לפרק ויש לבדוק אותו ברישום.",
     };
   }
 
