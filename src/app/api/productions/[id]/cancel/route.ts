@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { DOC_TYPE_LABEL, type PendingDocType } from "@/lib/morning/types";
+import { hasBeenPerformed } from "@/lib/productions/status";
 
 // Cancel a production (owner spec 2026-07-21). Operational, not destructive:
 // can_edit_stages (a technician may cancel — the cancellation happened in the
@@ -38,11 +39,37 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const admin = createAdminClient();
   const { data: prod } = await admin
     .from("productions")
-    .select("id,status,podcast_name,record_date")
+    .select("id,status,podcast_name,record_date,cancelled_at")
     .eq("id", id)
     .maybeSingle();
   if (!prod) return NextResponse.json({ error: "ההפקה לא נמצאה" }, { status: 404 });
   if (prod.status === "בוטל") return NextResponse.json({ error: "ההפקה כבר בוטלה" }, { status: 409 });
+
+  // Two cancellations look the same and are not (owner 2026-08-25). Before the
+  // recording nothing was produced and — since 0061 — no job exists: a
+  // scheduling change, and the technician is the person who knows. After it,
+  // the work was done and a job exists, so cancelling writes off a debt. That
+  // is a money decision.
+  //
+  // The DATABASE is the real wall (0062, guard_production_cancellation) —
+  // productions_update lets a can_edit_stages holder write any column, so a
+  // check that lived only here would be bypassed by every other writer. This
+  // exists so the operator gets a sentence instead of a raw postgres
+  // exception, and so the refusal happens before any of the work below.
+  const performed = hasBeenPerformed(prod.status as string, prod.cancelled_at as string | null);
+  if (performed) {
+    const { data: perms } = await supabase
+      .from("profiles")
+      .select("can_manage_users")
+      .eq("id", user.id)
+      .single();
+    if (!perms?.can_manage_users) {
+      return NextResponse.json(
+        { error: "ביטול פרק שהוקלט הוא החלטה כספית — נדרשת הרשאת אדמין" },
+        { status: 403 }
+      );
+    }
+  }
 
   const { data: docs } = await admin
     .from("pending_documents")
@@ -105,6 +132,85 @@ export async function POST(request: Request, { params }: { params: { id: string 
     });
   }
 
+  // ---- the job the episode created (only reachable since 0060) ------------
+  // Before 0060 a job was born at client approval, so a cancelled episode
+  // could never own one and this route had nothing to say about jobs. Now a
+  // job is born at הוקלט, and cancelling afterwards leaves it behind: still
+  // paid='לא', still counted as open debt on /finance and the radar, pointing
+  // at work that will never be billed.
+  //
+  // Dismissal, not deletion — 0041 built the soft-hide precisely so a money
+  // record is never destroyed, and it is reversible from the finance screen.
+  // The write goes through the service role, so guard_job_dismissal (which
+  // demands can_manage_users) passes; that is not a policy bypass here,
+  // because the gate above already proved this caller is an admin whenever the
+  // episode was recorded.
+  //
+  // A BILLED OR PAID JOB IS NEVER TOUCHED. If it carries invoice_biz or
+  // invoice_tax, or the money already arrived, then the cancellation came
+  // AFTER the work was charged — hiding it would erase a real debt or a real
+  // payment from the books. That case gets the same treatment an
+  // already-issued document gets a few lines above: left visible, flagged with
+  // its own event, handled by a human.
+  const { data: jobLinks } = await admin
+    .from("job_productions")
+    .select("job_id")
+    .eq("production_id", id);
+  const jobIds = (jobLinks ?? []).map((r) => r.job_id as string);
+  let dismissedJobs = 0;
+  let orphanedJobs = 0;
+  if (jobIds.length) {
+    const { data: jobRows } = await admin
+      .from("jobs")
+      .select("id,campaign,amount,invoice_biz,invoice_tax,paid,dismissed")
+      .in("id", jobIds);
+    for (const j of (jobRows ?? []) as {
+      id: string; campaign: string | null; amount: number | null;
+      invoice_biz: string | null; invoice_tax: string | null; paid: string | null; dismissed: boolean;
+    }[]) {
+      const billed = !!(j.invoice_biz ?? "").trim() || !!(j.invoice_tax ?? "").trim();
+      if (billed || j.paid === "כן") {
+        orphanedJobs++;
+        await admin.from("events").insert({
+          entity_type: "job",
+          entity_id: j.id,
+          event_type: "job_orphaned_by_cancel",
+          actor_id: user.id,
+          payload: {
+            production_id: id,
+            campaign: j.campaign,
+            amount: j.amount,
+            invoice_biz: j.invoice_biz,
+            invoice_tax: j.invoice_tax,
+            paid: j.paid,
+            reason,
+          },
+        });
+        continue;
+      }
+      if (j.dismissed) continue; // already hidden — nothing to do, nothing to log
+      await admin
+        .from("jobs")
+        .update({
+          dismissed: true,
+          dismiss_reason: `ההפקה בוטלה: ${reason}`,
+          dismissed_by: user.id,
+          dismissed_at: new Date().toISOString(),
+        })
+        .eq("id", j.id);
+      dismissedJobs++;
+      // the same event the finance screen writes, so the job's own history
+      // reads identically however it was hidden
+      await admin.from("events").insert({
+        entity_type: "job",
+        entity_id: j.id,
+        event_type: "job_dismissed",
+        actor_id: user.id,
+        payload: { reason: `ההפקה בוטלה: ${reason}`, amount: j.amount, via: "production_cancel", production_id: id },
+      });
+    }
+  }
+
   await admin.from("events").insert({
     entity_type: "production",
     entity_id: id,
@@ -115,6 +221,8 @@ export async function POST(request: Request, { params }: { params: { id: string 
       cancelled_pending_documents: pendingItems.length,
       cancelled_accrued_documents: accruedItems.length,
       orphaned_issued_documents: issuedItems.length,
+      dismissed_jobs: dismissedJobs,
+      orphaned_jobs: orphanedJobs,
     },
   });
 
@@ -123,5 +231,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     cancelled_pending_documents: pendingItems.length,
     cancelled_accrued_documents: accruedItems.length,
     orphaned_issued_documents: issuedItems.length,
+    dismissed_jobs: dismissedJobs,
+    orphaned_jobs: orphanedJobs,
   });
 }

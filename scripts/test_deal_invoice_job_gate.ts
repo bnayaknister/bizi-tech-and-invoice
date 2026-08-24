@@ -54,7 +54,7 @@ let BASE_PAYLOAD: unknown = null;
 /** one synthetic episode: production + job + job_productions, optionally spoiled */
 async function makeEpisode(
   label: string,
-  opts: { invoice_biz?: string; paid?: string; cancelled?: boolean } = {}
+  opts: { invoice_biz?: string; paid?: string; cancelled?: boolean; dismissed?: boolean } = {}
 ): Promise<{ prodId: string; jobId: string }> {
   const { data: prod } = await admin
     .from("productions")
@@ -79,6 +79,7 @@ async function makeEpisode(
       date: "2026-08-24",
       ...(opts.invoice_biz ? { invoice_biz: opts.invoice_biz } : {}),
       ...(opts.paid ? { paid: opts.paid } : {}),
+      ...(opts.dismissed ? { dismissed: true, dismiss_reason: "TESTGATE dismissed" } : {}),
     })
     .select("id")
     .single();
@@ -277,6 +278,46 @@ async function main() {
   check("refused", !rDead.ok, rDead.ok ? "built unexpectedly" : "");
   if (!rDead.ok) {
     check("says the episode was cancelled", rDead.error.includes("ההפקה שלה בוטלה"), rDead.error);
+  }
+
+  console.log("\n=== 4b. a DISMISSED job is EXCLUDED, not blocking ===");
+  // the distinction the gate exists to draw: dismissed = an admin decided this
+  // work will not be billed, so it drops out of the bundle. invoice_biz / paid
+  // / cancelled = the data is confused, so the whole redemption stops.
+  const mixed = [
+    await makeEpisode("dismissed-one", { dismissed: true }),
+    await makeEpisode("still-billable-a"),
+    await makeEpisode("still-billable-b"),
+  ];
+  const mixedOrder = await makeConsolidatedOrder(mixed.map((m) => m.prodId));
+  const rMixed = await createDealInvoiceFromWorkOrder(admin, mixedOrder, null);
+  if (rMixed.ok) createdPending.push(rMixed.id);
+  check("builds despite a dismissed job in the set", rMixed.ok, rMixed.ok ? "" : rMixed.error);
+  if (rMixed.ok) {
+    const { data: built } = await admin
+      .from("pending_documents")
+      .select("bundle_job_ids")
+      .eq("id", rMixed.id)
+      .single();
+    const got = ((built!.bundle_job_ids as string[]) ?? []).slice().sort();
+    const want = [mixed[1].jobId, mixed[2].jobId].sort();
+    check("the dismissed job is left OUT of bundle_job_ids",
+      JSON.stringify(got) === JSON.stringify(want), JSON.stringify(got));
+    check("it did not block the other two", got.length === 2, String(got.length));
+  }
+
+  console.log("\n=== 4c. ALL jobs dismissed -> its own refusal, not a silent empty stamp ===");
+  const allGone = [
+    await makeEpisode("all-dismissed-1", { dismissed: true }),
+    await makeEpisode("all-dismissed-2", { dismissed: true }),
+  ];
+  const goneOrder = await makeConsolidatedOrder(allGone.map((g) => g.prodId));
+  const rGone = await createDealInvoiceFromWorkOrder(admin, goneOrder, null);
+  if (rGone.ok) createdPending.push(rGone.id);
+  check("refused", !rGone.ok, rGone.ok ? "built unexpectedly" : "");
+  if (!rGone.ok) {
+    check("says every linked job was hidden",
+      rGone.error.includes("הוסתרו") && rGone.error.includes("2"), rGone.error);
   }
 
   console.log("\n=== 5. several offenders -> ONE message listing them all ===");

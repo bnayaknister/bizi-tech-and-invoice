@@ -343,13 +343,13 @@ export async function createDealInvoiceFromWorkOrder(
   {
     const { data: gateJobs, error: gateErr } = await admin
       .from("jobs")
-      .select("id,campaign,invoice_biz,paid")
+      .select("id,campaign,invoice_biz,paid,dismissed")
       .in("id", jobIds);
     // an unreadable table is not evidence that everything is fine
     if (gateErr) {
       return { ok: false, status: 409, error: `קריאת העבודות נכשלה — ${gateErr.message}` };
     }
-    const found = (gateJobs ?? []) as { id: string; campaign: string | null; invoice_biz: string | null; paid: string | null }[];
+    const found = (gateJobs ?? []) as { id: string; campaign: string | null; invoice_biz: string | null; paid: string | null; dismissed: boolean }[];
     if (found.length !== jobIds.length) {
       // a job_productions row pointing at a job that no longer exists
       return {
@@ -386,10 +386,24 @@ export async function createDealInvoiceFromWorkOrder(
       (jobProds ?? []).filter((r) => deadProds.has(r.production_id as string)).map((r) => r.job_id as string)
     );
 
+    // DISMISSED IS EXCLUDED, NOT BLOCKING — and the distinction is the whole
+    // point of this branch. A dismissed job is a deliberate admin decision
+    // that the work will not be billed (0041, and since 2026-08-25 also what
+    // cancelling a recorded episode does to its job). Refusing the whole
+    // redemption over it would let one written-off episode hold an entire
+    // client's bundle hostage. invoice_biz / paid / a cancelled production
+    // stay BLOCKING, because those mean the data is confused rather than
+    // decided, and a human has to look.
+    const dismissed = found.filter((j) => j.dismissed);
+    const billable = found.filter((j) => !j.dismissed);
+    if (dismissed.length) {
+      jobIds = billable.map((j) => j.id);
+    }
+
     // Collect EVERY offender, not just the first: a redemption folds N
     // episodes, and reporting them one per run would be N runs.
     const blocked: string[] = [];
-    for (const j of found) {
+    for (const j of billable) {
       const name = present(j.campaign) ? `"${j.campaign}"` : j.id;
       if (present(j.invoice_biz)) blocked.push(`${name} — כבר נושאת חשבון עסקה ${j.invoice_biz}`);
       else if (j.paid === "כן") blocked.push(`${name} — כבר שולמה`);
@@ -402,6 +416,16 @@ export async function createDealInvoiceFromWorkOrder(
         error:
           `${blocked.length} מהעבודות המקושרות אינן ניתנות לחיוב: ${blocked.join("; ")}. ` +
           "בדקי אותן ברישום לפני הנפקת חשבון עסקה.",
+      };
+    }
+
+    // every job was written off — there is nothing left to bill, and saying so
+    // is clearer than falling through to a document with an empty stamp list
+    if (jobIds.length === 0) {
+      return {
+        ok: false,
+        status: 409,
+        error: `כל העבודות המקושרות הוסתרו (${dismissed.length}) — אין מה לחייב בחשבון עסקה`,
       };
     }
   }
