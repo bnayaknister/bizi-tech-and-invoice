@@ -3,6 +3,8 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import ClientCombobox, { type ComboboxClient } from "@/components/ClientCombobox";
+import { STUDIOS } from "@/lib/calendar/studios";
+import { missingGuestLines } from "@/lib/documents/guestFlag";
 import {
   DOC_TYPE_TO_MORNING_CODE,
   MORNING_DOC_CODE,
@@ -28,6 +30,12 @@ export type PendingDocRow = {
   show_name: string;
   record_date: string | null;
   guest: string | null;
+  /**
+   * The guest behind each printed line, index-aligned to payload.income —
+   * built server-side (see page.tsx), because a bundle's lines belong to
+   * productions this row does not point at. Feeds missingGuestLines.
+   */
+  guests_by_line: (string | null)[];
   payload: Record<string, unknown>;
   last_error: string | null;
   attempts: number;
@@ -490,6 +498,21 @@ export default function DocumentsClient({
     return Array.isArray(income) ? (income as { description?: string; quantity?: number; price?: number }[]) : [];
   }
 
+  // Which printed lines were supposed to name a guest and do not (owner spec
+  // 2026-08-25). Derived on every render from the row we already hold — no
+  // state, so it cannot go stale against an edit that just saved.
+  //
+  // STUDIOS is imported here and passed down, rather than reached for inside
+  // missingGuestLines, so the studio list has exactly one home in the codebase
+  // (@/lib/calendar/studios — the same list the calendar parser is handed).
+  function missingGuest(r: PendingDocRow): number[] {
+    return missingGuestLines(
+      r.guests_by_line ?? [],
+      incomeLines(r).map((l) => l.description),
+      STUDIOS
+    );
+  }
+
   function openEdit(r: PendingDocRow) {
     setEditing(r.id);
     setEditAmount(r.amount === null ? "" : String(r.amount));
@@ -658,6 +681,26 @@ export default function DocumentsClient({
                         )}
                       </div>
                       {r.last_error && <div className="mt-1 text-xs text-[var(--peak)]">{r.last_error}</div>}
+                      {/* The guest flag, and it IS the way in to the edit form
+                          (owner spec 2026-08-25). "ערוך לפני אישור" below has
+                          always been here, but nothing on this screen ever told
+                          the bookkeeper she had a reason to press it — the
+                          printed line is not on the row at all, and the only way
+                          to read it is the raw JSON behind "מה יישלח למורנינג".
+                          So the warning is the button: one click from "something
+                          is wrong" to the field that fixes it.
+
+                          Rendered only when a real guest is really missing, so a
+                          clean queue looks exactly as it did yesterday. */}
+                      {canApprove && editing !== r.id && missingGuest(r).length > 0 && (
+                        <button
+                          onClick={() => openEdit(r)}
+                          className="mt-1 flex items-center gap-1.5 text-[11px] text-[var(--warn)] border border-[var(--warn)] rounded-lg px-2 py-1"
+                        >
+                          <span>⚠️</span>
+                          <span>אורח חסר בפירוט — בדקי לפני אישור</span>
+                        </button>
+                      )}
                       <div className="mt-1 flex items-center gap-3">
                         <button
                           onClick={() => setExpanded(expanded === r.id ? null : r.id)}
@@ -701,24 +744,40 @@ export default function DocumentsClient({
                                   שורות פירוט ({incomeLines(r).length})
                                 </span>
                                 <div className="mt-0.5 flex flex-col gap-1">
-                                  {incomeLines(r).map((l, i) => (
-                                    <div key={i} className="flex items-center gap-2">
-                                      <input
-                                        value={editLines[i] ?? ""}
-                                        onChange={(e) =>
-                                          setEditLines((prev) => {
-                                            const next = [...prev];
-                                            next[i] = e.target.value;
-                                            return next;
-                                          })
-                                        }
-                                        className="flex-1 min-w-0 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1"
-                                      />
-                                      <span className="shrink-0 font-mono text-[10px] text-[var(--faint)]">
-                                        {l.quantity ?? 1} × {l.price ?? 0}
-                                      </span>
-                                    </div>
-                                  ))}
+                                  {incomeLines(r).map((l, i) => {
+                                    // which line to fix, not merely that one of
+                                    // them needs fixing — on a 4-episode bundle
+                                    // the difference is the whole point
+                                    const flagged = missingGuest(r).includes(i);
+                                    return (
+                                      <div key={i} className="flex items-center gap-2">
+                                        {flagged && (
+                                          <span
+                                            className="shrink-0 text-[var(--warn)]"
+                                            title={`אורח ההפקה (${r.guests_by_line?.[i] ?? ""}) לא מופיע בשורה הזאת`}
+                                          >
+                                            ⚠
+                                          </span>
+                                        )}
+                                        <input
+                                          value={editLines[i] ?? ""}
+                                          onChange={(e) =>
+                                            setEditLines((prev) => {
+                                              const next = [...prev];
+                                              next[i] = e.target.value;
+                                              return next;
+                                            })
+                                          }
+                                          className={`flex-1 min-w-0 bg-transparent border rounded-lg px-2 py-1 ${
+                                            flagged ? "border-[var(--warn)]" : "border-[var(--rule)]"
+                                          }`}
+                                        />
+                                        <span className="shrink-0 font-mono text-[10px] text-[var(--faint)]">
+                                          {l.quantity ?? 1} × {l.price ?? 0}
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
                                 </div>
                               </div>
                               <div className="text-[10px] text-[var(--faint)]">
@@ -739,10 +798,15 @@ export default function DocumentsClient({
                               </label>
                               <label className="text-[11px]">
                                 <span className="text-[var(--faint)]">תיאור</span>
+                                {missingGuest(r).includes(0) && (
+                                  <span className="text-[var(--warn)]"> ⚠ אורח ההפקה: {r.guest}</span>
+                                )}
                                 <input
                                   value={editDesc}
                                   onChange={(e) => setEditDesc(e.target.value)}
-                                  className="w-full mt-0.5 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1"
+                                  className={`w-full mt-0.5 bg-transparent border rounded-lg px-2 py-1 ${
+                                    missingGuest(r).includes(0) ? "border-[var(--warn)]" : "border-[var(--rule)]"
+                                  }`}
                                 />
                               </label>
                             </>

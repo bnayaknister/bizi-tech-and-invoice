@@ -59,6 +59,53 @@ export default async function DocumentsPage() {
     grossByRow.set(r.id as string, res.ok ? { gross: res.gross, error: null } : { gross: null, error: res.error });
   }
 
+  // The guest behind each printed line, index-aligned to payload.income, for
+  // the guest-missing flag (owner spec 2026-08-25). See @/lib/documents/guestFlag.
+  //
+  // A production-anchored row answers this from the join it already does, and
+  // that is the whole no-migration story: the guest is NOT on the payload —
+  // buildDocumentPayload never took one, so the only guest a payload carries is
+  // the substring inside the line, which is the thing under test. The
+  // productions join is the source of truth, and this page was already reading
+  // it.
+  //
+  // A BUNDLE has no production of its own (createWorkOrderBundle writes
+  // production_id: null), so its lines are resolved from the rows it folded.
+  // Matched by the line's own TEXT, never by array position: the bundle copies
+  // `rows.flatMap(r => r.payload.income)` verbatim, but the redeem route reads
+  // those rows with no ORDER BY, so the order that built the bundle is not one
+  // this page can reproduce. The text is copied byte for byte and is the only
+  // stable key between the two.
+  const guestsByLine = new Map<string, (string | null)[]>();
+  const bundleRows = ((data ?? []) as unknown as Array<Record<string, unknown>>).filter(
+    (r) => r.production_id === null && r.doc_type === "work_order"
+  );
+  for (const r of bundleRows) {
+    const lines = (((r.payload as { income?: { description?: string }[] })?.income ?? []) as {
+      description?: string;
+    }[]);
+    if (!lines.length) continue;
+    const { data: sources } = await admin
+      .from("pending_documents")
+      .select("payload,productions(guest)")
+      .eq("consolidated_into", r.id as string);
+    // one line's text -> the guest of the production that contributed it
+    const guestByText = new Map<string, string | null>();
+    for (const s of (sources ?? []) as unknown as Array<Record<string, unknown>>) {
+      const text = ((s.payload as { income?: { description?: string }[] })?.income ?? [])[0]?.description;
+      if (typeof text !== "string") continue;
+      const g = (s.productions as { guest?: string } | null)?.guest ?? null;
+      // first writer wins: two episodes of one show on one day produce the same
+      // line text, and there is no way to tell which is which from the bundle.
+      // Flagging the first is honest; flagging both off a coin flip is not.
+      if (!guestByText.has(text)) guestByText.set(text, g);
+    }
+    guestsByLine.set(
+      r.id as string,
+      lines.map((l) => (typeof l.description === "string" ? guestByText.get(l.description) ?? null : null))
+    );
+  }
+
   const now = Date.now();
   const rows: PendingDocRow[] = (
     (data ?? []) as unknown as Array<Record<string, unknown>>
@@ -78,6 +125,11 @@ export default async function DocumentsPage() {
       show_name: prod?.podcast_name ?? "—",
       record_date: prod?.record_date ?? null,
       guest: prod?.guest ?? null,
+      // `[guest]` on a production-anchored row is not a shortcut: index 0 is
+      // the session line and every add-on sits after it, so a one-element
+      // array is exactly the claim "the guest belongs on the base line and
+      // nowhere else". See missingGuestLines.
+      guests_by_line: guestsByLine.get(r.id as string) ?? [prod?.guest ?? null],
       payload: r.payload as Record<string, unknown>,
       last_error: (r.last_error as string | null) ?? null,
       attempts: (r.attempts as number | null) ?? 0,

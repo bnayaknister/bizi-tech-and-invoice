@@ -3,6 +3,8 @@ import { getSessionAndProfile } from "@/lib/profile";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { todayInIsrael } from "@/lib/dates";
 import { hasBeenPerformed } from "@/lib/productions/status";
+import { STUDIOS } from "@/lib/calendar/studios";
+import { missingGuestLines } from "@/lib/documents/guestFlag";
 import AppHeader from "@/components/AppHeader";
 import AccruedClient, { type AccruedGroup, type AccruedMonth, type IssuedOrder } from "./AccruedClient";
 
@@ -39,7 +41,14 @@ export default async function AccruedPage() {
   const { data } = await admin
     .from("pending_documents")
     .select(
-      "id,amount,created_at,client_id,production_id," +
+      // `payload` is read for the guest flag (owner spec 2026-08-25) and for
+      // nothing else. Until now this screen showed productions.guest beside
+      // every row while holding no copy of the document at all — so a row whose
+      // frozen line does NOT name that guest looked identical to one that does,
+      // and the screen actively reassured about the exact rows it should have
+      // warned on. These are the rows a redemption folds VERBATIM, which makes
+      // this the last screen where the text can still be fixed cheaply.
+      "id,amount,created_at,client_id,production_id,payload," +
         "clients(name,billing_cadence,billing_every_n)," +
         "productions(podcast_name,record_date,guest,status,cancelled_at)"
     )
@@ -114,6 +123,18 @@ export default async function AccruedPage() {
       show_name: prod?.podcast_name ?? "—",
       record_date: prod?.record_date ?? null,
       guest: prod?.guest ?? null,
+      // An accrued work order is always one production and one income line, so
+      // `[guest]` against income[0] is the whole check here — the bundle's
+      // per-line resolution belongs to the approvals screen, where a bundle can
+      // actually appear.
+      guest_missing:
+        missingGuestLines(
+          [prod?.guest ?? null],
+          (((r.payload as { income?: { description?: string }[] } | null)?.income ?? []) as {
+            description?: string;
+          }[]).map((l) => l.description),
+          STUDIOS
+        ).length > 0,
       age_days: ageDays,
     });
   }

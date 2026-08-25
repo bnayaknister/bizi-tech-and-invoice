@@ -9,6 +9,13 @@ export type AccruedRow = {
   show_name: string;
   record_date: string | null;
   guest: string | null;
+  /**
+   * The production names a real guest and the frozen line does not (computed
+   * server-side by missingGuestLines — a studio in the guest slot, or no guest
+   * at all, is not this). These lines are copied verbatim into the consolidated
+   * work order at redemption, so this screen is the last cheap place to notice.
+   */
+  guest_missing: boolean;
   age_days: number;
 };
 
@@ -323,6 +330,17 @@ export default function AccruedClient({
                       {r.record_date ? ` · ${r.record_date}` : ""}
                       {r.guest ? ` · ${r.guest}` : ""}
                     </span>
+                    {/* The guest above is read from the PRODUCTION. When the
+                        frozen document does not carry it, showing the two as one
+                        line is the reassurance this flag exists to withdraw. */}
+                    {r.guest_missing && (
+                      <div
+                        className="mt-0.5 text-[11px] text-amber-300"
+                        title="האורח רשום בהפקה אבל לא בפירוט של הזמנת העבודה. הפדיון יאגד את השורה כמו שהיא."
+                      >
+                        ⚠️ אורח חסר בפירוט — בדקי לפני אישור
+                      </div>
+                    )}
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="font-mono opacity-80">{money(r.amount)}</span>
