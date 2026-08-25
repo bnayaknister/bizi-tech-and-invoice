@@ -53,6 +53,40 @@ import { sumParentGross } from "@/lib/documents/parentGross";
 const REQUIRES_CONFIRMATION: PendingDocType[] = ["tax_invoice", "tax_receipt", "receipt"];
 
 /**
+ * Declared, not inherited (owner 2026-08-25).
+ *
+ * Nothing in this repo set maxDuration, so every function ran on whatever
+ * Vercel's default happens to be — short, and free to change under us. That
+ * default is load-bearing here: `MORNING_TIMEOUT_MS` (15s) is only useful if WE
+ * abort before the platform kills the function, because the platform's kill
+ * skips the catch in issue.ts and strands the row in 'approved'. Stating the
+ * number here makes that ordering a property of the code instead of a fact
+ * about a dashboard.
+ *
+ * 60 is room for a bulk approval of several documents at ~1.4s each, with slack
+ * for one that times out. It is NOT a guarantee for a large batch of hanging
+ * calls — N × 15s can still exceed it. That residue is exactly what the
+ * 'approved' row on the queue screen is there to catch; the two fixes are
+ * complementary and neither is claimed to close the hole alone.
+ */
+export const maxDuration = 60;
+
+/**
+ * The statuses a queued row may still be acted on from.
+ *
+ * Shared by approve AND reject, and that sharing is the point. Approve has
+ * checked this since it was written; reject never did, which was invisible only
+ * because the queue screen showed pending/failed and nothing else. Making
+ * 'approved' visible (same owner decision) would have handed the bookkeeper a
+ * "דחה" button on a row whose document may already exist in Morning — and
+ * rejecting it would bury a real document behind a local status, with no trace
+ * in Morning and nothing left on any screen to find it by. The guard goes in
+ * the same change that makes the row visible, on the SERVER, because the UI
+ * hiding a button is a decision the next caller does not inherit.
+ */
+const ACTIONABLE_STATUSES = ["pending", "failed"];
+
+/**
  * The two types that are the SAME document in two forms, and the only pair the
  * approval modal's selector switches between.
  *
@@ -117,6 +151,18 @@ export async function POST(request: Request) {
   if (body.action === "reject") {
     const reason = (body.reason ?? "").trim();
     if (!reason) return NextResponse.json({ error: "חובה לציין סיבת דחייה" }, { status: 400 });
+    // See ACTIONABLE_STATUSES. Refuse the whole request rather than reject the
+    // eligible rows and skip the rest: a partial rejection reported as success
+    // is how the one row that mattered gets lost.
+    const blocked = rows.filter((r) => !ACTIONABLE_STATUSES.includes(r.status as string));
+    if (blocked.length) {
+      return NextResponse.json(
+        {
+          error: `לא ניתן לדחות מסמך בסטטוס ${blocked.map((r) => r.status).join(", ")} — ייתכן שהמסמך כבר נוצר במורנינג. בדקי שם לפני כל פעולה`,
+        },
+        { status: 409 }
+      );
+    }
     for (const r of rows) {
       await admin
         .from("pending_documents")
@@ -165,7 +211,7 @@ export async function POST(request: Request) {
 
   const results: Array<{ id: string; ok: boolean; detail: string }> = [];
   for (const r of rows) {
-    if (r.status !== "pending" && r.status !== "failed") {
+    if (!ACTIONABLE_STATUSES.includes(r.status as string)) {
       results.push({ id: r.id, ok: false, detail: `סטטוס ${r.status} — לא ניתן לאשר` });
       continue;
     }

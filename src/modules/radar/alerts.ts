@@ -461,6 +461,19 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const pending72 = pendingNow.filter((d) => agedHours(d) >= 72);
   const pending24 = pendingNow.filter((d) => agedHours(d) >= 24 && agedHours(d) < 72);
 
+  // ---- approved but never issued (owner 2026-08-25). The review route stamps
+  // 'approved' immediately before calling Morning; issue.ts then moves the row
+  // to 'issued' or, on any error, to 'failed'. A row left in 'approved' means
+  // the process died inside that window, and the document may or may not exist
+  // in Morning.
+  //
+  // NOT folded into the 24h/72h aging above, and the distinction is the whole
+  // point of a separate card: aging measures a queue nobody is emptying, where
+  // the row is in a correct state and merely waiting. This is a row in a state
+  // that is never correct — one second in it is already the anomaly, so it
+  // carries no threshold at all. Red from the first row.
+  const approvedNotIssued = pendingDocs.filter((d) => d.status === "approved");
+
   // ---- the accrued queue (owner spec 2026-07-28, reworked 2026-08-02).
   // A monthly / every_n client's work orders sit 'accrued' — owed but
   // deliberately frozen — so they are NOT part of the 24h/72h "nobody
@@ -636,6 +649,7 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const sum = (arr: { amount: number | null }[]) => arr.reduce((s, x) => s + num(x.amount), 0);
 
   const allAlerts: RadarAlert[] = [
+    { key: "docs_approved_not_issued", severity: "red", title: "מסמך אושר ולא הונפק — ייתכן שנוצר במורנינג", count: approvedNotIssued.length, amount: null, href: "/documents" },
     { key: "pending_docs_72h", severity: "red", title: "מסמכים ממתינים לאישור מעל 72 שעות", count: pending72.length, amount: null, href: "/documents" },
     { key: "paid_no_tax", severity: "red", title: "שולם — ואין חשבונית מס", count: paidNoTax.length, amount: sum(paidNoTax), href: "/finance?filter=paid_no_tax" },
     { key: "amount_missing", severity: "red", title: "חיוב ללא סכום", count: amountMissing.length, amount: null, href: "/finance?filter=amount_missing" },

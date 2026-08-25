@@ -22,7 +22,16 @@ export default async function DocumentsPage() {
       "id,doc_type,status,amount,created_at,payload,reject_reason,last_error,attempts," +
         "client_id,production_id,job_id,clients(name),productions(podcast_name,record_date,guest,studio)"
     )
-    .in("status", ["pending", "failed"])
+    // 'approved' is here because it is a status nothing should ever rest in
+    // (owner 2026-08-25). The review route writes it immediately before calling
+    // Morning; issue.ts then moves the row to 'issued' or 'failed'. A row still
+    // sitting in 'approved' means the process died in that window — a Vercel
+    // kill on a hung call, a deploy mid-request — and the document may or may
+    // not exist in Morning. Until now such a row appeared on NO screen: the
+    // queue read pending/failed, and the radar's aging alert counts 'pending'
+    // only. It is surfaced rather than auto-retried on purpose, because a retry
+    // would issue a second document if the first one landed.
+    .in("status", ["pending", "failed", "approved"])
     .order("created_at", { ascending: true });
 
   // A 320 or a 400 declares money that moved, and the payment block it carries

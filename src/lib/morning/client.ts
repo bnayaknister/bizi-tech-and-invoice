@@ -47,6 +47,62 @@ export class MorningError extends Error {
   }
 }
 
+/**
+ * How long any single Morning call may hang before WE cut it (owner 2026-08-25).
+ *
+ * MEASURED, not guessed. 28 real issuance round-trips are in the event log
+ * (morning_call_started -> morning_document_issued/failed): min 0.56s, median
+ * 1.36s, p90 2.22s, max 2.48s. Fifteen seconds is six times the slowest call
+ * this account has ever made, so it cannot cut a real one, and it is far below
+ * the platform's own kill — which is the entire point.
+ *
+ * WHY IT MATTERS THAT WE CUT FIRST. `fetch` has no default timeout, so a hung
+ * connection used to hang until Vercel killed the whole function. That kill
+ * lands nowhere: the queue row was already set to 'approved' by the review
+ * route before the call, and the catch in issue.ts — which exists, and correctly
+ * writes status='failed' with the error — never runs. The row is stranded in a
+ * status neither the queue screen nor the radar reads. Aborting ourselves turns
+ * that silent stranding into the ordinary failure path that was always there.
+ *
+ * The review route declares maxDuration so this stays true by construction
+ * rather than by inheriting an undeclared platform default.
+ */
+export const MORNING_TIMEOUT_MS = 15_000;
+
+/**
+ * A timeout is NOT a failure — it is an UNKNOWN, and the difference is a second
+ * document.
+ *
+ * When Morning does not answer we cannot tell whether it created the document
+ * and lost the reply, or never created it at all. This text is what lands in
+ * `pending_documents.last_error` and is what the bookkeeper reads on the queue
+ * row, so it has to say so plainly. A message that merely said "failed" would
+ * invite the retry that issues the duplicate — and a duplicate tax document
+ * cannot be deleted, only credited.
+ */
+const TIMEOUT_MESSAGE =
+  "מורנינג לא הגיב תוך 15 שניות — לא ידוע אם המסמך נוצר. בדקי במורנינג לפני ניסיון חוזר";
+
+/**
+ * Run a fetch under our own deadline and translate an abort into a MorningError.
+ *
+ * `AbortSignal.timeout` raises a TimeoutError DOMException, which is an Error
+ * and would otherwise reach the caller as the browser's own English text. 504
+ * is the status because that is what it is: an upstream that did not answer in
+ * time.
+ */
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(MORNING_TIMEOUT_MS) });
+  } catch (e) {
+    const name = e instanceof Error ? e.name : "";
+    if (name === "TimeoutError" || name === "AbortError") {
+      throw new MorningError(TIMEOUT_MESSAGE, 504, null);
+    }
+    throw e;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // auth: OAuth2 client_credentials -> POST /idp/v1/oauth/token
 // Response: { accessToken, tokenType: "Bearer", expiresAt: <unix seconds> }
@@ -70,7 +126,10 @@ export async function getAccessToken(): Promise<string> {
     throw new MorningError("MORNING_CLIENT_ID / MORNING_CLIENT_SECRET לא מוגדרים", 0, null);
   }
 
-  const res = await fetch(`${IDP_HOST}/idp/v1/oauth/token`, {
+  // The token call gets the same deadline as the resource calls: it runs first,
+  // on the same request, so a hung token fetch strands a row exactly as a hung
+  // document fetch would.
+  const res = await fetchWithTimeout(`${IDP_HOST}/idp/v1/oauth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -99,7 +158,9 @@ export function clearTokenCache() {
 
 async function request<T>(path: string, init: RequestInit): Promise<T> {
   const token = await getAccessToken();
-  const res = await fetch(`${RESOURCE_BASE}${path}`, {
+  // One place, every Morning resource call — documents, clients, emails. A
+  // deadline added per-call-site is a deadline the next call site forgets.
+  const res = await fetchWithTimeout(`${RESOURCE_BASE}${path}`, {
     ...init,
     headers: {
       ...(init.headers ?? {}),

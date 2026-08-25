@@ -679,6 +679,17 @@ export default function DocumentsClient({
                             נכשל ×{r.attempts}
                           </span>
                         )}
+                        {/* Distinct from "נכשל" on purpose: a failed row is a
+                            known non-event and may simply be retried, while this
+                            one is an UNKNOWN — the document may exist in Morning
+                            under a number we never recorded. Same colour, because
+                            both need attention; different words, because the
+                            correct next action is not the same. */}
+                        {r.status === "approved" && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--peak)] text-[var(--peak)]">
+                            אושר ולא הונפק
+                          </span>
+                        )}
                       </div>
                       {r.last_error && <div className="mt-1 text-xs text-[var(--peak)]">{r.last_error}</div>}
                       {/* The guest flag, and it IS the way in to the edit form
@@ -835,7 +846,20 @@ export default function DocumentsClient({
                       )}
                     </div>
 
-                    {canApprove && (
+                    {/* A stranded row gets NO actions. The server refuses both
+                        approve and reject on it (ACTIONABLE_STATUSES), so any
+                        button here could only produce an error — and offering
+                        "דחה" on a document that may already exist in Morning is
+                        the one click that would do real damage. What she needs
+                        is not a button but the next step, so that is what is
+                        rendered. */}
+                    {canApprove && r.status === "approved" && (
+                      <div className="shrink-0 max-w-[13rem] text-[11px] text-[var(--peak)] leading-snug">
+                        ייתכן שהמסמך נוצר במורנינג — בדקי שם לפני כל פעולה
+                      </div>
+                    )}
+
+                    {canApprove && r.status !== "approved" && (
                       <div className="flex flex-col gap-2 shrink-0">
                         <button
                           disabled={busy}
