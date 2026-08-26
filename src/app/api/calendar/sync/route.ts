@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { fetchAndParseIcs, parseIcsText, type CalendarEvent } from "@/lib/calendar/parse";
 import { buildSyncPlan, type ExistingProductionRow } from "@/lib/calendar/sync";
 import { extractStudioAndGuest, type ShowForMatch } from "@/lib/calendar/match";
+import { findUnsyncedRecurring } from "@/lib/calendar/recurring";
 import { STUDIOS } from "@/lib/calendar/studios";
 import { enqueueDocument } from "@/lib/documents/enqueue";
 import { must, mustRows, type QueryResult } from "@/lib/supabase/unwrap";
@@ -139,7 +140,13 @@ type ShowRow = {
   reels_count: number;
 };
 
-async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
+// `allEvents` is the WHOLE parsed feed, not the day slice. It exists for the
+// recurring-series warning alone (see lib/calendar/recurring.ts): a series'
+// master carries the DTSTART of its FIRST occurrence, so it survives the
+// day-window filter on exactly one day per series. Detecting from `events`
+// would make the warning fire one day a year. Defaults to `events` so a
+// caller that has nothing wider is still correct, just narrower.
+async function runSync(events: CalendarEvent[], todayIsraelDate: string, allEvents?: CalendarEvent[]) {
   const admin = createAdminClient();
 
   // A cancelled production keeps its calendar_uid on purpose (0028): if the
@@ -264,6 +271,14 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
   }
 
   const plan = buildSyncPlan(events, showsForMatch, existingByUid, touchedIds);
+
+  // Recurring series the sync structurally cannot see (owner decision
+  // 2026-08-26). Read-only and derived: the list is written into THIS run's
+  // completed-sync event and the radar reads it from there, so the warning
+  // needs no table, no row per morning, and no "resolved" state — the day the
+  // owner replaces the series with single events, the next run simply omits
+  // it and the alert disappears on its own.
+  const recurringUnsynced = findUnsyncedRecurring(allEvents ?? events, showsForMatch, new Date());
 
   let created = 0, updated = 0, flaggedChanged = 0, flaggedRemoved = 0, unflaggedRemoved = 0;
   let queuedWorkOrders = 0, blockedWorkOrders = 0, accruedWorkOrders = 0, erroredWorkOrders = 0;
@@ -412,6 +427,10 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string) {
     blockedWorkOrders,
     erroredWorkOrders,
     skippedNoMatch: plan.skippedNoMatch,
+    // the count rides the existing daily summary line, next to skippedNoMatch;
+    // the list is what the radar renders
+    recurringUnsyncedCount: recurringUnsynced.length,
+    recurringUnsynced,
   };
 }
 
@@ -472,7 +491,7 @@ export async function GET(request: Request) {
     const { start, end } = israelDayWindow(new Date());
     const allEvents = await fetchAndParseIcs(url);
     const events = allEvents.filter((e) => e.start && e.start >= start && e.start < end);
-    const summary = await runSync(events, date);
+    const summary = await runSync(events, date, allEvents);
     await logCron(admin, "cron_sync_completed", { date, schedule, ...summary });
     return NextResponse.json({ ok: true, ...summary });
   } catch (e) {
@@ -504,15 +523,20 @@ export async function POST(request: Request) {
   try {
     const { date, start, end } = israelDayWindow(new Date());
     let events: CalendarEvent[];
+    // kept alongside `events` so the recurring-series warning sees the whole
+    // feed — including masters whose DTSTART falls outside today's window,
+    // which is nearly all of them
+    let allEvents: CalendarEvent[];
     if (testIcsText) {
-      events = parseIcsText(testIcsText).filter((e) => !e.start || (e.start >= start && e.start < end));
+      allEvents = parseIcsText(testIcsText);
+      events = allEvents.filter((e) => !e.start || (e.start >= start && e.start < end));
     } else {
       const url = process.env.STUDIO_ICS_URL;
       if (!url) return NextResponse.json({ error: "STUDIO_ICS_URL לא מוגדר" }, { status: 500 });
-      const allEvents = await fetchAndParseIcs(url);
+      allEvents = await fetchAndParseIcs(url);
       events = allEvents.filter((e) => e.start && e.start >= start && e.start < end);
     }
-    const summary = await runSync(events, date);
+    const summary = await runSync(events, date, allEvents);
     // a real (non-test) manual run — logged separately from cron_sync_completed
     // (which alreadySyncedToday() keys off) so the settings screen can show
     // "last sync run" across both trigger sources without touching that gate

@@ -646,6 +646,29 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     return new Date(o.updated_at).getTime() > new Date(p.issuedAt).getTime();
   });
 
+  // Recurring calendar series the sync structurally cannot ingest. Derived
+  // from the LAST completed sync run rather than from a table of its own: the
+  // sync writes the current offender list into the event it already logs each
+  // morning, so there is no row per day and nothing to mark resolved — when
+  // the owner replaces the series with single events, the next run omits it
+  // and this alert stops on its own. Both trigger sources are read, because a
+  // manual "sync now" logs under a different event_type than the cron.
+  const { data: lastSync } = await supabase
+    .from("events")
+    .select("event_type,payload,created_at")
+    .eq("entity_type", "calendar_cron")
+    .in("event_type", ["cron_sync_completed", "manual_sync_completed"])
+    .order("created_at", { ascending: false })
+    .limit(1);
+  const recurringUnsynced =
+    ((lastSync?.[0]?.payload as { recurringUnsynced?: { showName?: string }[] } | null)?.recurringUnsynced ?? []);
+  // The show names ride in the title: RadarAlert has nowhere else to carry
+  // detail, and this count is 1 in practice. Capped at two names so a bad day
+  // cannot produce an unreadable line.
+  const recurringNames = recurringUnsynced.map((r) => r.showName).filter(Boolean);
+  const recurringLabel =
+    recurringNames.length <= 2 ? recurringNames.join(", ") : `${recurringNames.slice(0, 2).join(", ")} ועוד ${recurringNames.length - 2}`;
+
   const sum = (arr: { amount: number | null }[]) => arr.reduce((s, x) => s + num(x.amount), 0);
 
   const allAlerts: RadarAlert[] = [
@@ -672,6 +695,7 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     { key: "duplicate_clients", severity: "yellow", title: "אותו לקוח בשמות שונים", count: duplicateClientNames, amount: null, href: "/finance" },
     { key: "stuck_stage", severity: "yellow", title: "שלב תקוע מעל 14 יום", count: stuckStageCount, amount: null, href: "/productions" },
     { key: "on_hold_long", severity: "yellow", title: "מוקפא מעל 14 יום", count: onHoldLong.length, amount: null, href: "/productions" },
+    { key: "calendar_recurring_unsynced", severity: "yellow", title: `אירוע חוזר ביומן שהמערכת לא קולטת — ${recurringLabel}. צור אירועים בודדים`, count: recurringUnsynced.length, amount: null, href: "/settings" },
   ];
   const alerts = allAlerts.filter((a) => a.count > 0);
 
