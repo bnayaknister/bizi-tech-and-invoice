@@ -63,6 +63,9 @@ const MODULE_THEME: Record<string, { card: CardAccent; tile: IconAccent }> = {
   shows: { card: "cyan", tile: "cyan" },
   productions: { card: "violet", tile: "violet" },
   finance: { card: "debt", tile: "rose" },
+  // same waveform glyph as productions, cyan instead of violet — the money
+  // reading of the same list, not a different object
+  projects: { card: "cyan", tile: "cyan" },
   docregistry: { card: "cyan", tile: "cyan" },
   contracts: { card: "cyan", tile: "violet-light" },
   users: { card: "violet", tile: "violet" },

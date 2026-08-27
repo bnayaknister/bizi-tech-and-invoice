@@ -1,0 +1,9 @@
+{
+  "//": "For `npx tsx scripts/test_projects_render.tsx` only. The root tsconfig sets jsx: preserve because Next does its own JSX transform; running a component outside Next needs a real one, and react-jsx (the automatic runtime) is what Next itself compiles to. Nothing in the app build reads this file.",
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "module": "esnext",
+    "moduleResolution": "bundler"
+  }
+}

@@ -18,6 +18,35 @@ export function todayInIsrael(): string {
   }).format(new Date());
 }
 
+// Which month a production belongs to, "YYYY-MM".
+//
+// record_date is the business truth — the day the work happened — and
+// created_at only stands in when the production carries no date yet. This is
+// the same anchor the accrued queue uses to decide whether a monthly client's
+// month has closed; it was written inline there (documents/accrued/page.tsx)
+// and is lifted here verbatim so the projects screen and the accrued queue can
+// never drift into bucketing the same episode into two different months.
+//
+// BOTH sides are read in Israel time, and that is the whole point of the
+// Intl formatter: a row created at 01:00 on the 1st is still LAST month in
+// UTC, and for a monthly client that one hour decides which month it lands in.
+// record_date is a plain `date` column — no time, no zone — so it is sliced as
+// a string and never passed through a Date (see shortDate below for why).
+const ISRAEL_DAY = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Jerusalem",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+export function israelMonthKey(
+  recordDate: string | null | undefined,
+  createdAt: string
+): string {
+  if (recordDate) return recordDate.slice(0, 7);
+  return ISRAEL_DAY.format(new Date(createdAt)).slice(0, 7);
+}
+
 // A stored calendar date, "YYYY-MM-DD", as the short form a client reads on a
 // document line: "2028-07-31" -> "31.07.28".
 //

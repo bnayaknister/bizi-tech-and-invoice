@@ -3,6 +3,7 @@ import { radarModule } from "@/modules/radar";
 import { showsModule } from "@/modules/shows";
 import { productionsModule } from "@/modules/productions";
 import { financeModule } from "@/modules/finance";
+import { projectsModule } from "@/modules/projects";
 import { contractsModule } from "@/modules/contracts";
 import { usersModule } from "@/modules/users";
 import { archiveModule } from "@/modules/archive";
@@ -23,6 +24,7 @@ export const MODULES: ModuleDef[] = [
   usersModule,
   productionsModule,
   financeModule,
+  projectsModule,
   docRegistryModule,
   documentsModule,
   contractsModule,
