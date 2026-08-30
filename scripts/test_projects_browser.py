@@ -74,6 +74,17 @@ try:
         sel = page.locator("select#month")
         opts = sel.locator("option").all_text_contents()
         print(f"month options: {opts}")
+        # Expected counts are DERIVED from the option labels, never hardcoded:
+        # the data moves every day (a merge removes a row, a sync adds two), and
+        # a check pinned to yesterday's totals fails for the wrong reason and
+        # trains everyone to ignore it. What must hold is the invariant — the
+        # label and the table agree.
+        import re as _re
+        def count_in(label):
+            m = _re.search(r"\((\d+) ", label)
+            return int(m.group(1)) if m else None
+        expected = {o.split(" (")[0]: count_in(o) for o in opts}
+        print(f"counts claimed by the picker: {expected}")
 
         # drive the client-side month switch — this is where a re-render crash lives
         sel.select_option("2026-07")
@@ -106,9 +117,14 @@ try:
 
     if rows_aug == 0: problems.append("August rendered 0 rows")
     if rows_jul == 0: problems.append("July rendered 0 rows")
-    if rows_aug != 28: problems.append(f"August rendered {rows_aug} rows, expected 28")
-    if rows_jul != 34: problems.append(f"July rendered {rows_jul} rows, expected 34")
-    if rows_back != 28: problems.append(f"switching back gave {rows_back} rows, expected 28")
+    exp_aug = expected.get("אוגוסט 2026")
+    exp_jul = expected.get("יולי 2026")
+    if exp_aug is not None and rows_aug != exp_aug:
+        problems.append(f"August: picker says {exp_aug} but {rows_aug} rows rendered")
+    if exp_jul is not None and rows_jul != exp_jul:
+        problems.append(f"July: picker says {exp_jul} but {rows_jul} rows rendered")
+    if rows_back != rows_aug:
+        problems.append(f"switching back gave {rows_back}, first load gave {rows_aug}")
     if "עבודת חוזה" not in summary_jul and "עבודת פרויקטים" not in summary_jul:
         problems.append("July summary did not render")
 
