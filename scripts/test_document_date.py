@@ -79,8 +79,26 @@ try:
     wo = get(f"pending_documents?production_id=eq.{prod_id}&doc_type=eq.work_order&select=id,payload,status")[0]
     check("1 enqueued work order date = TODAY, not record_date",
           wo["payload"].get("date") == TODAY_IL and wo["payload"].get("date") != "2026-06-15")
-    check("1 record_date still in the line description",
-          "2026-06-15" in (wo["payload"].get("description") or ""))
+    # The work date is still on the line — but feature B (381601f, 20.8) changed
+    # HOW it is written. buildLineItemText now composes `{podcast} · {guest} ·
+    # {date}` with shortDate(), i.e. DD.MM.YY, so the ISO string this assertion
+    # grepped for stopped appearing on 20.8 and the check has failed since.
+    # The claim under test never changed: the ISSUANCE date is today, and the
+    # WORK date survives in the text. Only the spelling of the work date moved.
+    #
+    # Asserted against income[0].description, which is the line buildLineItemText
+    # actually writes and the line the customer reads on the PDF; the document
+    # header is checked too, since feature B unified them. Both values print on
+    # failure so the next format change is diagnosable from the output instead of
+    # from a re-read of the source.
+    SHORT = "15.06.26"          # shortDate("2026-06-15")
+    header = wo["payload"].get("description") or ""
+    income = (wo["payload"].get("income") or [{}])
+    line = (income[0].get("description") if income else "") or ""
+    check(f"1 record_date still in the line, as {SHORT} (feature B format)",
+          SHORT in line or SHORT in header)
+    print(f"      header: {header!r}")
+    print(f"      line  : {line!r}")
 
     # 2. approve (DRY_RUN → no real Morning call) → sent.date + registry date = TODAY
     ap = requests.post(f"{APP}/api/documents/pending/review", cookies=ck, headers={"Content-Type": "application/json"},

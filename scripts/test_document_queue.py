@@ -63,6 +63,21 @@ job_ids = []
 
 MARK = "ZTESTDOC"
 
+# Baseline for the leak check at the end.
+#
+# The old assertion was `pending_documents?select=id` -> must equal [], i.e.
+# "the entire queue table is empty". Against a live database holding 47 real
+# rows that is false by construction and can never pass — it asserted a property
+# of the account, not a property of this script, so it said nothing about the
+# cleanup it was named after. (The identical bug was already found and fixed in
+# test_document_edit.py:151-152; see BACKLOG-V1b.md.)
+#
+# Replaced by two checks that are STRICTLY STRONGER than the old one, not
+# weaker: the table must return to exactly the count it had before this run
+# (catches a leak anywhere, including rows this script never tracked), and none
+# of this script's own rows may survive (names the leak when there is one).
+BASELINE_PENDING = None
+
 
 def check(label, ok, detail=""):
     print(("PASS  " if ok else "FAIL  ") + label + (f"  [{detail}]" if detail and not ok else ""))
@@ -127,6 +142,9 @@ try:
     # ---------- 1. schema ----------
     r = requests.get(rest("pending_documents?select=id&limit=1"), headers=ADMIN)
     check("1a. pending_documents exists", r.status_code == 200, r.text[:120])
+    # taken here, before this script writes anything
+    BASELINE_PENDING = len(requests.get(rest("pending_documents?select=id"), headers=ADMIN).json())
+    print(f"      baseline: {BASELINE_PENDING} queue rows before this run")
     r = requests.get(rest("clients?select=morning_client_id&limit=1"), headers=ADMIN)
     check("1b. clients.morning_client_id exists", r.status_code == 200, r.text[:120])
     r = requests.get(rest("productions?select=billing_block_reason&limit=1"), headers=ADMIN)
@@ -329,6 +347,30 @@ try:
 
 finally:
     print("\n--- cleanup ---")
+    # THE REGISTRY ROWS THE OLD CLEANUP NEVER TOUCHED (found 2026-08-30).
+    #
+    # A dry run still writes `documents` and `invoices` — that is deliberate
+    # (issue.ts: both are keyed by the `dry-` morning_doc_id, so they are
+    # self-identifying, and the 305/320 variant flip resolves its parent out of
+    # `documents` and nowhere else). This block deleted `invoices` and never
+    # `documents`, so test 5's approved work order left a registry row behind.
+    #
+    # It did not fail loudly. It failed on the LAST line of the cleanup, as
+    # "cleanup: no test clients left", because `documents.client_id` is an FK
+    # with no cascade: the client DELETE came back 23503 and the row stayed.
+    # Verified directly — `Key (id)=(...) is still referenced from table
+    # "documents"`. The sibling test_document_date.py already deletes documents;
+    # this file simply never did.
+    #
+    # Collected BEFORE the queue rows are deleted, because morning_doc_id lives
+    # on the queue row and is the only link back to the registry.
+    doc_ids = []
+    if client_id:
+        for row in (requests.get(rest(f"pending_documents?client_id=eq.{client_id}&select=morning_doc_id"),
+                                 headers=ADMIN).json() or []):
+            if isinstance(row, dict) and row.get("morning_doc_id"):
+                doc_ids.append(row["morning_doc_id"])
+
     # order matters: children before parents, events last-referenced first
     for pid in production_ids:
         requests.delete(rest(f"pending_documents?production_id=eq.{pid}"), headers=ADMIN)
@@ -338,8 +380,19 @@ finally:
         requests.delete(rest(f"pending_documents?id=eq.{pd}"), headers=ADMIN)
     for iid in invoice_ids:
         requests.delete(rest(f"invoices?id=eq.{iid}"), headers=ADMIN)
+    # invoices first: it also carries morning_doc_id, and documents is the row
+    # the client FK points at.
+    for md in doc_ids:
+        requests.delete(rest(f"invoices?morning_doc_id=eq.{md}"), headers=ADMIN)
+        requests.delete(rest(f"documents?morning_doc_id=eq.{md}"), headers=ADMIN)
     if client_id:
         requests.delete(rest(f"invoices?client_id=eq.{client_id}"), headers=ADMIN)
+        # Sweep by client too, not only by the ids gathered above: a run that
+        # crashes between issuing and recording (this file crashed at line 254
+        # for 27 days) can leave a registry row whose queue row is already gone,
+        # and then doc_ids never sees it. The client is this script's own
+        # throwaway row, so the sweep cannot reach real data.
+        requests.delete(rest(f"documents?client_id=eq.{client_id}"), headers=ADMIN)
         jobs = requests.get(rest(f"jobs?client_id=eq.{client_id}&select=id"), headers=ADMIN).json()
         for j in jobs if isinstance(jobs, list) else []:
             requests.delete(rest(f"job_productions?job_id=eq.{j['id']}"), headers=ADMIN)
@@ -364,11 +417,19 @@ finally:
     leftover_p = requests.get(rest(f"productions?podcast_name=like.*{MARK}*&select=id"), headers=ADMIN).json()
     leftover_s = requests.get(rest(f"shows?name=like.*{MARK}*&select=id"), headers=ADMIN).json()
     leftover_c = requests.get(rest(f"clients?name=like.*{MARK}*&select=id"), headers=ADMIN).json()
-    leftover_d = requests.get(rest("pending_documents?select=id"), headers=ADMIN).json()
+    leftover_d = (requests.get(rest(f"pending_documents?client_id=eq.{client_id}&select=id,doc_type,status"),
+                               headers=ADMIN).json() if client_id else [])
+    leftover_reg = (requests.get(rest(f"documents?client_id=eq.{client_id}&select=id,morning_doc_id,type"),
+                                 headers=ADMIN).json() if client_id else [])
+    total_now = len(requests.get(rest("pending_documents?select=id"), headers=ADMIN).json())
     check("cleanup: no test productions left", leftover_p == [], json.dumps(leftover_p)[:120])
     check("cleanup: no test shows left", leftover_s == [], json.dumps(leftover_s)[:120])
     check("cleanup: no test clients left", leftover_c == [], json.dumps(leftover_c)[:120])
-    check("cleanup: pending_documents is empty", leftover_d == [], json.dumps(leftover_d)[:120])
+    check("cleanup: no test queue rows left", leftover_d == [], json.dumps(leftover_d)[:200])
+    check("cleanup: no test registry rows left", leftover_reg == [], json.dumps(leftover_reg)[:200])
+    check("cleanup: queue table back to its baseline count",
+          BASELINE_PENDING is not None and total_now == BASELINE_PENDING,
+          f"baseline={BASELINE_PENDING} now={total_now}")
 
 
 print()
