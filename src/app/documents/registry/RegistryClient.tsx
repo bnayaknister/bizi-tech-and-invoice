@@ -39,7 +39,10 @@ export type DocRow = {
   // Which child this row may raise, resolved server-side from the allow-list in
   // taxFromParent.ts. null = a leaf (320, 400) or a type we never build on.
   // Not a list of codes kept here: the rungs are declared in one place.
-  child_action: "tax" | "receipt" | null;
+  /** Every child this document may father, in the order they are offered.
+   *  A list, not one value: a work order can produce BOTH a deal invoice and a
+   *  tax document, and collapsing that to one hid the deal invoice entirely. */
+  child_actions: ChildAction[];
   // The action-cell verdict, resolved SERVER-SIDE by the same mapper the route
   // runs — the button never promises what the server would refuse.
   //   'pending' — build from the queue row (sourceIds, the original door)
@@ -61,7 +64,10 @@ export type DocRow = {
   over_ceiling: { net: number; ceiling: number } | null;
 };
 
-const CHILD_ACTION_LABEL: Record<"tax" | "receipt", string> = {
+export type ChildAction = "deal_invoice" | "tax" | "receipt";
+
+const CHILD_ACTION_LABEL: Record<ChildAction, string> = {
+  deal_invoice: "צור חשבון עסקה",
   tax: "צור חשבונית מס",
   receipt: "צור קבלה",
 };
@@ -157,6 +163,44 @@ export default function RegistryClient({
   // in "לא משויך", quotes/orders/credits are noise for the bookkeeper — show
   // only real billing docs by default (owner spec 2026-07-27), the rest behind a toggle
   const [showNonBilling, setShowNonBilling] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  /**
+   * "צור חשבון עסקה" — the same route the accrued screen calls, reached from
+   * the row the bookkeeper is actually looking at.
+   *
+   * A direct POST rather than the child-document modal: that modal exists to
+   * collect a payment method and a date for a tax document, and this builder
+   * takes neither — it inherits the order's lines verbatim. Nothing goes to
+   * Morning here either way; the invoice lands in the approval queue.
+   *
+   * The server's refusal is shown as-is. It is written for this reader and
+   * names the fix ("כבר קיים חשבון עסקה על סמך ההזמנה הזו", "N מהעבודות
+   * המקושרות אינן ניתנות לחיוב: …"), and paraphrasing it here would only make
+   * the screen and the server disagree about why something did not happen.
+   */
+  async function convertToDealInvoice(r: DocRow) {
+    if (busy || !r.pending_id) return;
+    setBusy(r.id);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/documents/convert", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workOrderPendingId: r.pending_id }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error ?? "היצירה נכשלה");
+      setMsg(
+        `חשבון עסקה על סמך הזמנה ${r.number ?? ""} (${j.deal_invoice?.lines ?? "?"} שורות) — נכנס לתור לאישור`
+      );
+      router.refresh();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "שגיאה");
+    } finally {
+      setBusy(null);
+    }
+  }
 
   const counts = useMemo(() => {
     const c: Record<string, { n: number; total: number }> = {};
@@ -469,9 +513,12 @@ export default function RegistryClient({
                             why the button is or isn't there. Shown only on
                             100/300, the rows where "can I still build on this?"
                             is a real question — on a 320 or a 400 it is noise. */}
-                        {r.child_action && (() => {
+                        {r.child_actions.length > 0 && (() => {
                           const o = parentOpenness(r.status);
-                          const action = r.child_action!;
+                          const action = r.child_actions.find((a) => a !== "deal_invoice") as
+                            | "tax"
+                            | "receipt"
+                            | undefined;
                           // mirrors the "שייך ל-job" button's condition above:
                           // when that button is in the cell, the visible block
                           // sentence would say the same thing twice — the
@@ -491,7 +538,44 @@ export default function RegistryClient({
                               >
                                 {o.label}
                               </span>
-                              {canPull && r.buildable && o.open && (
+                              {/* The deal invoice: its own gate, because its
+                                  builder has its own rules. `buildable` is the
+                                  tax path's verdict (net ceiling, mapper state)
+                                  and says nothing about this one. What this one
+                                  needs is a queue row — createDealInvoiceFromWorkOrder
+                                  is keyed on pending_documents.id, so an order
+                                  issued straight into Morning cannot be converted
+                                  by us at all. Open-only, like its sibling: 237
+                                  of the 249 work orders here are closed, and a
+                                  button on those is an invitation to a 409. */}
+                              {canPull && r.child_actions.includes("deal_invoice") && o.open && r.pending_id && (
+                                <button
+                                  onClick={() => convertToDealInvoice(r)}
+                                  disabled={busy === r.id}
+                                  className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--signal)] disabled:opacity-40"
+                                  title="נכנס לתור האישורים, לא מונפק מיד"
+                                >
+                                  {CHILD_ACTION_LABEL.deal_invoice}
+                                </button>
+                              )}
+                              {/* open, but never went through our queue — say so
+                                  rather than leave an empty cell (the 40258
+                                  lesson: a reason only in a tooltip reads as no
+                                  reason at all) */}
+                              {canPull && r.child_actions.includes("deal_invoice") && o.open && !r.pending_id && (
+                                <span title="ההזמנה הונפקה ישירות במורנינג ואין לה שורת תור — לא ניתן להמיר אותה מכאן">
+                                  <button
+                                    disabled
+                                    className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule)] text-[var(--faint)] opacity-50 cursor-not-allowed"
+                                  >
+                                    {CHILD_ACTION_LABEL.deal_invoice}
+                                  </button>
+                                  <span className="text-[10px] text-[var(--faint)] inline-block max-w-[200px] truncate align-middle mr-1.5">
+                                    הונפקה ישירות במורנינג
+                                  </span>
+                                </span>
+                              )}
+                              {action && canPull && r.buildable && o.open && (
                                 <button
                                   onClick={() => setChildDoc({ row: r, action })}
                                   className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--signal)]"
@@ -512,7 +596,7 @@ export default function RegistryClient({
                                   when the visible copy truncates; it also
                                   works around disabled elements not reliably
                                   showing tooltips. */}
-                              {canPull && !r.buildable && r.build_block && o.open && (
+                              {action && canPull && !r.buildable && r.build_block && o.open && (
                                 <span title={r.build_block}>
                                   <button
                                     disabled
@@ -534,7 +618,7 @@ export default function RegistryClient({
                             reason — today only the 320 case — shows the reason
                             instead of an empty cell. No dark button: this is a
                             permanent "never", not a fixable block. */}
-                        {canPull && !r.child_action && r.build_block && (
+                        {canPull && r.child_actions.length === 0 && r.build_block && (
                           <span className="text-[10px] text-[var(--faint)]" title={r.build_block}>
                             {r.build_block}
                           </span>

@@ -191,12 +191,30 @@ export default async function RegistryPage() {
   //
   // Resolved here rather than in the client so the builders themselves never
   // reach the browser bundle.
-  const childActionFor = (type: number): DocRow["child_action"] => {
+  // ALL the children this type may father, not the first one that matched.
+  //
+  // This used to collapse to a single value, and the collapse hid a whole
+  // action: ALLOWED_CHILDREN has listed deal_invoice under work_order, with
+  // implemented: true, since the builder was written — but the two `if`s below
+  // only knew "receipt" and "tax", so a work order always answered "tax" and
+  // the deal-invoice rule was unreachable from this screen. The one button that
+  // called /api/documents/convert lived on /documents/accrued, which is not a
+  // screen anyone opens looking for an order they already issued.
+  //
+  // Returning the list rather than adding a third `if` is the fix that cannot
+  // rot the same way: the table is a list, and the next `via` added to it shows
+  // up here without touching this function.
+  //
+  // Order is the order they are offered in — for a work order the deal invoice
+  // is the ordinary next step, so it leads.
+  const childActionsFor = (type: number): DocRow["child_actions"] => {
     const parent = registryTabForType(type) as PendingDocType;
     const rules = (ALLOWED_CHILDREN[parent] ?? []).filter((r) => r.implemented);
-    if (rules.some((r) => r.via === "receipt_from_tax_invoice")) return "receipt";
-    if (rules.some((r) => r.via === "tax_from_parent")) return "tax";
-    return null;
+    const out: DocRow["child_actions"] = [];
+    if (rules.some((r) => r.via === "create_deal_invoice_from_work_order")) out.push("deal_invoice");
+    if (rules.some((r) => r.via === "tax_from_parent")) out.push("tax");
+    if (rules.some((r) => r.via === "receipt_from_tax_invoice")) out.push("receipt");
+    return out;
   };
 
   // the three action-cell states, resolved per row: 'pending' (queue row —
@@ -272,7 +290,7 @@ export default async function RegistryPage() {
     archived_at: (d.archived_at as string | null) ?? null,
     archive_reason: (d.archive_reason as string | null) ?? null,
     pending_id: pendingIdByMorningId.get(d.morning_doc_id as string) ?? null,
-    child_action: childActionFor(d.type as number),
+    child_actions: childActionsFor(d.type as number),
     ...buildState(d),
   }));
 
