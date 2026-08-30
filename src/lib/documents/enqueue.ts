@@ -255,6 +255,170 @@ async function setBlockReason(admin: SupabaseClient, productionId: string, reaso
   await admin.from("productions").update({ billing_block_reason: reason }).eq("id", productionId);
 }
 
+
+// Same one-liner issue.ts:45, bundle.ts:25 and reconcile.ts:80 each keep their
+// own copy of. Local again rather than imported: bundle.ts already imports from
+// this file, and reaching back for a three-token predicate would buy a cycle
+// risk with no gain.
+const present = (v: unknown) => v != null && String(v).trim() !== "";
+
+/** What already proves this production's work has been billed. */
+export type BilledEvidence = {
+  rule: "a" | "b" | "c";
+  jobId: string;
+  evidence: string;
+};
+
+/**
+ * Has this production's work ALREADY been billed?
+ *
+ * ═══ THE HOLE THIS CLOSES ═══
+ * The only duplicate protection a deal invoice ever had is the partial unique
+ * index `(doc_type, production_id) where production_id is not null` (0025 →
+ * 0047 → 0063). Every document raised FROM a work order sidesteps it, because
+ * those are written with production_id NULL:
+ *     createDealInvoiceFromWorkOrder  bundle.ts:468
+ *     taxFromParent                   taxFromParent.ts:631
+ * So the sequence the owner asked for — issue the deal invoice early, straight
+ * off the work order, then let the episode reach client approval — inserted a
+ * SECOND 300 with no collision, no refusal and no event. checkEligibility never
+ * looked: it reads legacy/kind/billing_mode/show/contract and nothing about
+ * money that already moved.
+ *
+ * ═══ WHY THESE THREE SIGNALS ═══
+ * All three are LOCAL and IMMEDIATE. "The order is closed in Morning" would be
+ * the natural test and is the wrong one: closure reaches us only on the daily
+ * pull, and the window between issuing and pulling is exactly when someone
+ * advances the episode.
+ *
+ *   a  the job carries a document number — invoice_biz OR invoice_tax. Both,
+ *      because the 305-direct path writes only invoice_tax: production
+ *      25198c70 (נדל״ן, 23.8) sits in the table right now with tax=50069 and
+ *      biz=null, and a check on invoice_biz alone would have missed it.
+ *   b  a LIVE queue row of a billing type already covers the job
+ *   c  the same, in the registry
+ *
+ * b and c read job_id ∪ bundle_job_ids, not bundle_job_ids alone. Of the eight
+ * live billing queue rows today, five carry bundle_job_ids and THREE carry
+ * production_id + job_id with no bundle at all (40293, 40305, 40306). Those
+ * three happen to be covered by the index — but leaning on the index inside the
+ * guard that exists to cover the index's holes is the assumption that produced
+ * this bug in the first place.
+ *
+ * b is the rule that matters most and matches nothing today: invoice_biz is
+ * stamped at ISSUE time, so between "converted" and "issued" rule a is silent
+ * and only the queue row knows. That window is precisely the owner's scenario.
+ *
+ * ═══ dismissed ═══
+ * Not special-cased, and deliberately. A dismissed job with no document
+ * produces no evidence and blocks nothing — which is right: dismissed means
+ * "decided not to bill", and a new episode must still bill. A dismissed job
+ * that DOES carry an invoice still blocks, because the money is real whatever
+ * the job's visibility. The rules describe evidence of billing; hiding a row
+ * does not unbill it.
+ */
+export async function findBilledEvidence(
+  admin: SupabaseClient,
+  productionId: string
+): Promise<BilledEvidence | null> {
+  const { data: links } = await admin
+    .from("job_productions")
+    .select("job_id")
+    .eq("production_id", productionId);
+  const jobIds = (links ?? []).map((l) => l.job_id as string).filter(Boolean);
+  if (!jobIds.length) return null;
+
+  // ---- a: the job already carries a document number ----------------------
+  const { data: jobs } = await admin
+    .from("jobs")
+    .select("id,invoice_biz,invoice_tax,dismissed")
+    .in("id", jobIds);
+  for (const j of (jobs ?? []) as { id: string; invoice_biz: string | null; invoice_tax: string | null; dismissed: boolean }[]) {
+    const num = present(j.invoice_biz) ? j.invoice_biz : present(j.invoice_tax) ? j.invoice_tax : null;
+    if (num) {
+      return {
+        rule: "a",
+        jobId: j.id,
+        evidence: `${present(j.invoice_biz) ? "invoice_biz" : "invoice_tax"}=${num}${j.dismissed ? " (job מוסתר)" : ""}`,
+      };
+    }
+  }
+
+  // ---- b: a live queue row already covers the job ------------------------
+  // Two narrow queries rather than one hand-built .or(): `in` and `overlaps`
+  // compose badly as a filter string over a uuid array, and a quoting slip here
+  // would read as "not billed" — the silent direction.
+  const LIVE = ["pending", "approved", "issued", "accrued"];
+  const BILLING: PendingDocType[] = ["deal_invoice", "tax_invoice", "tax_receipt"];
+  const [byJob, byBundle] = await Promise.all([
+    admin
+      .from("pending_documents")
+      .select("id,doc_type,morning_doc_number,job_id")
+      .in("doc_type", BILLING)
+      .in("status", LIVE)
+      .in("job_id", jobIds),
+    admin
+      .from("pending_documents")
+      .select("id,doc_type,morning_doc_number,bundle_job_ids")
+      .in("doc_type", BILLING)
+      .in("status", LIVE)
+      .overlaps("bundle_job_ids", jobIds),
+  ]);
+  for (const r of [...(byJob.data ?? []), ...(byBundle.data ?? [])] as {
+    id: string;
+    doc_type: string;
+    morning_doc_number: string | null;
+    job_id?: string | null;
+    bundle_job_ids?: string[] | null;
+  }[]) {
+    const hit = r.job_id && jobIds.includes(r.job_id)
+      ? r.job_id
+      : (r.bundle_job_ids ?? []).find((j) => jobIds.includes(j)) ?? jobIds[0];
+    return {
+      rule: "b",
+      jobId: hit,
+      evidence: `${r.doc_type} בתור (${r.morning_doc_number ?? r.id.slice(0, 8)})`,
+    };
+  }
+
+  // ---- c: the registry already holds one ---------------------------------
+  const BILLING_CODES = [300, 305, 320];
+  const [docByJob, docByBundle] = await Promise.all([
+    admin
+      .from("documents")
+      .select("id,type,morning_doc_number,job_id")
+      .in("type", BILLING_CODES)
+      .is("cancelled_at", null)
+      .is("archived_at", null)
+      .in("job_id", jobIds),
+    admin
+      .from("documents")
+      .select("id,type,morning_doc_number,bundle_job_ids")
+      .in("type", BILLING_CODES)
+      .is("cancelled_at", null)
+      .is("archived_at", null)
+      .overlaps("bundle_job_ids", jobIds),
+  ]);
+  for (const d of [...(docByJob.data ?? []), ...(docByBundle.data ?? [])] as {
+    id: string;
+    type: number;
+    morning_doc_number: string | null;
+    job_id?: string | null;
+    bundle_job_ids?: string[] | null;
+  }[]) {
+    const hit = d.job_id && jobIds.includes(d.job_id)
+      ? d.job_id
+      : (d.bundle_job_ids ?? []).find((j) => jobIds.includes(j)) ?? jobIds[0];
+    return {
+      rule: "c",
+      jobId: hit,
+      evidence: `מסמך ${d.type} במרשם (${d.morning_doc_number ?? d.id.slice(0, 8)})`,
+    };
+  }
+
+  return null;
+}
+
 export type EnqueueResult =
   | { status: "queued"; id: string }
   | { status: "accrued"; id: string }
@@ -337,6 +501,34 @@ export async function enqueueDocument(
       await setBlockReason(admin, production.id, null);
     }
     return { status: "blocked", reason: elig.reason };
+  }
+
+  // Already billed? Then this approval must not raise a second document.
+  // deal_invoice ONLY: a work order is queued at creation, long before any
+  // invoice exists, and the same test there would block an ordinary re-sync.
+  // Verified against every call site — work_order comes from the calendar sync
+  // and manual creation, deal_invoice only from the two approval paths.
+  if (docType === "deal_invoice") {
+    const billed = await findBilledEvidence(admin, production.id);
+    if (billed) {
+      // Loud, unlike the 23505 branch below. That one is silent because it means
+      // "this exact row is already queued"; this one means money moved through a
+      // different door, and "why was no 300 created?" has to be answerable from
+      // the log rather than reconstructed (0024: silence must be documented).
+      await admin.from("events").insert({
+        entity_type: "production",
+        entity_id: production.id,
+        event_type: "deal_invoice_skipped_already_billed",
+        payload: {
+          rule: billed.rule,
+          job_id: billed.jobId,
+          evidence: billed.evidence,
+          doc_type: docType,
+        },
+      });
+      await setBlockReason(admin, production.id, null);
+      return { status: "exists" };
+    }
   }
 
   const baseAmount = opts.amountOverride ?? elig.amount;
