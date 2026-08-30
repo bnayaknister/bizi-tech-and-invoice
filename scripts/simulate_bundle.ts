@@ -232,7 +232,68 @@ check(
 const rDistinct = Array.from(distinctDocuments(twoEp).values()).filter((r) => r.type === 400);
 check("counted once, at 6,000", rDistinct.length === 1 && rDistinct[0].amount === 6000);
 
-console.log("\n=== 7. archived and cancelled ===");
+console.log("\n=== 7. the CONSOLIDATED WORK ORDER — the shape I did not anticipate ===");
+// This is what the first real redemption produced (ברק, 10317, 2026-08-30) and
+// what this suite missed: I proved the deal-invoice bundle in section 1 and
+// concluded bundles were covered. They were not. createWorkOrderBundle writes
+//   production_id NULL · job_id NULL · bundle_job_ids NULL
+// so sections 1-3 above prove nothing about it — every route they exercise is
+// dead here. Only consolidated_into on the CHILDREN reaches it.
+const foldedOrder = doc({
+  id: "d-folded-wo",
+  type: 100,
+  morning_doc_number: "10317",
+  morning_doc_id: "m-10317",
+  amount: 3000,
+  document_date: "2026-09-01",
+  production_id: null, // bundle.ts:548
+  job_id: null, // bundle.ts:549
+  bundle_job_ids: null, // NOT set for a work order — bundle.ts:544-556
+});
+const folded = resolveProductionDocuments({
+  productionIds: prodIds,
+  jobLinks,
+  jobs: jobs.map((j) => ({ ...j, invoice_biz: null })), // no number route either
+  documents: [foldedOrder],
+  consolidationLinks: prodIds.map((p) => ({ production_id: p, morning_doc_id: "m-10317" })),
+});
+const fHolders = prodIds.filter((p) => (folded.get(p) ?? []).some((r) => r.id === "d-folded-wo"));
+check("all 5 episodes show the consolidated work order", fHolders.length === 5, `${fHolders.length}/5`);
+const fPaths = new Set(prodIds.flatMap((p) => (folded.get(p) ?? []).map((r) => r.path)));
+check('reached via the "consolidated" route', fPaths.size === 1 && fPaths.has("consolidated"), Array.from(fPaths).join(","));
+check(
+  'tagged "מאוגד" on every row',
+  prodIds.every((p) => (folded.get(p) ?? []).find((r) => r.id === "d-folded-wo")?.shared === true)
+);
+const fDistinct = Array.from(distinctDocuments(folded).values());
+check("counted once, at 3,000", fDistinct.length === 1 && fDistinct[0].amount === 3000,
+  `${fDistinct.length} doc(s), ${fDistinct[0]?.amount}`);
+
+// the regression guard: without the link it must be invisible, which is exactly
+// the live bug — proving this suite would have failed before the fix
+const unlinked = resolveProductionDocuments({
+  productionIds: prodIds,
+  jobLinks,
+  jobs: jobs.map((j) => ({ ...j, invoice_biz: null })),
+  documents: [foldedOrder],
+});
+check(
+  "without consolidated_into it is invisible (the live bug, reproduced)",
+  prodIds.every((p) => (unlinked.get(p) ?? []).length === 0)
+);
+
+// a folded row whose parent was never issued has no morning_doc_id -> no link
+const notIssued = resolveProductionDocuments({
+  productionIds: prodIds,
+  jobLinks,
+  jobs,
+  documents: [],
+  consolidationLinks: prodIds.map((p) => ({ production_id: p, morning_doc_id: "m-does-not-exist" })),
+});
+check("a parent with no document yet resolves to nothing, quietly",
+  prodIds.every((p) => (notIssued.get(p) ?? []).length === 0));
+
+console.log("\n=== 8. archived and cancelled ===");
 const arch = resolveProductionDocuments({
   productionIds: ["p1"],
   jobLinks: [{ job_id: "j1", production_id: "p1" }],

@@ -2,49 +2,73 @@
  * Which Morning documents came out of a given production.
  *
  * There is no single column that answers this, and that is not an oversight —
- * it is the shape of the system. A document reaches a production by one of five
+ * it is the shape of the system. A document reaches a production by one of six
  * routes, each created by a different path through the app, and the only honest
  * answer is their union:
  *
- *   1. production  documents.production_id — set by issue.ts when WE issued the
- *                  document against one episode. The strongest link there is.
- *   2. job         documents.job_id — the document is anchored to a job, and
- *                  job_productions ties that job to the episode.
- *   3. bundle      documents.bundle_job_ids @> [job] — ONE document covering
- *                  N episodes (0044). Load-bearing, see the note below.
- *   4. number      jobs.invoice_biz / invoice_tax carry a document NUMBER as
- *                  text; documents.morning_doc_number is that number. Redundant
- *                  with 2 and 3 by design — it survives a document whose job_id
- *                  was never stamped, and it is how a bundle's members are
- *                  reachable even if bundle_job_ids is missing.
- *   5. receipt     a RECEIPT (400) points at no job of its own — by design, see
- *                  issue.ts:510-522. It is reached backwards, through the tax
- *                  invoices it was raised on:
+ *   1. production    documents.production_id — set by issue.ts when WE issued
+ *                    the document against one episode. The strongest link there
+ *                    is.
+ *   2. job           documents.job_id — the document is anchored to a job, and
+ *                    job_productions ties that job to the episode.
+ *   3. bundle        documents.bundle_job_ids @> [job] — ONE document covering
+ *                    N episodes (0044). See the note below.
+ *   4. consolidated  a REDEEMED work order, reached through its CHILDREN.
+ *                    See the note below; this one cost a live bug to find.
+ *   5. number        jobs.invoice_biz / invoice_tax carry a document NUMBER as
+ *                    text; documents.morning_doc_number is that number.
+ *                    Redundant with 2 and 3 by design — it survives a document
+ *                    whose job_id was never stamped, and it is how a bundle's
+ *                    members stay reachable if bundle_job_ids is missing.
+ *   6. receipt       a RECEIPT (400) points at no job of its own — by design,
+ *                    see issue.ts:510-522. It is reached backwards, through the
+ *                    tax invoices it was raised on:
  *                      400 → linkedDocumentIds → parent 305 → its jobs → episode
- *                  This is exactly the walk the 400→paid automation performs
- *                  (jobsBehindReceipt, issue.ts:129), reused here rather than
- *                  reinvented.
+ *                    This is exactly the walk the 400→paid automation performs
+ *                    (jobsBehindReceipt, issue.ts:129), reused rather than
+ *                    reinvented.
  *
  * PRECEDENCE, when a document arrives by more than one route: production > job
- * > bundle > number > receipt — strongest evidence first, longest inference
- * last. The winning route is kept on the row (`path`) because "why does this
- * number appear here" is precisely the question someone will ask the first time
- * one looks wrong, and a resolver that cannot answer it is a resolver nobody
- * can debug.
+ * > bundle > consolidated > number > receipt — strongest evidence first,
+ * longest inference last. `consolidated` sits beside `bundle` because both are
+ * explicit pointers somebody wrote rather than guesses; it is placed after it
+ * only because a row carrying both is describing the same membership twice.
+ * The winning route is kept on the row (`path`) because "why does this number
+ * appear here" is precisely the question someone will ask the first time one
+ * looks wrong, and a resolver that cannot answer it is a resolver nobody can
+ * debug.
  *
- * ═══ WHY ROUTE 3 IS THE IMPORTANT ONE, DESPITE MATCHING NOTHING TODAY ═══
- * Measured on live data 2026-08-27: in the visible range (July 2026 onward),
- * every single link comes from route 1 or route 2. Routes 3 and 4 match zero
- * rows. It would be easy to read that as dead code — it is the opposite.
- * A redeemed bundle has NOT HAPPENED YET. When it does, issue.ts:302 computes
+ * ═══ ROUTE 4 — WHY IT EXISTS, AND WHY IT WAS MISSING ═══
+ * On 2026-08-30 the first redemption in the system's life ran: five ברק
+ * episodes folded into work order 10317. All five rows on this screen showed an
+ * empty work-order cell, because the folded document is written as
+ *     production_id NULL · job_id NULL · bundle_job_ids NULL
+ * createWorkOrderBundle (bundle.ts:544) omits bundle_job_ids deliberately — a
+ * work order stamps nothing onto a job, so there is nothing for that array to
+ * carry; only the deal invoice built afterwards gets one (bundle.ts:176/468).
+ * Routes 1-3 are therefore all dead for it and routes 5-6 do not apply.
+ *
+ * The bridge lives on the CHILDREN, not the parent: every source queue row
+ * keeps consolidated_into pointing at the folded row (bundle.ts:562). So:
+ *     production → its pending_documents → consolidated_into
+ *                → that row's morning_doc_id → the document
+ * The morning_doc_id is the join, and it is exact — issue.ts writes the same id
+ * to both tables.
+ *
+ * THE LESSON, worth more than the fix: I asserted this screen handled bundles
+ * because simulate_bundle.ts proved the DEAL INVOICE case. It did — and the
+ * consolidated WORK ORDER is a third shape neither the simulation nor I
+ * anticipated. A passing test for one shape said nothing about the other.
+ *
+ * ═══ ROUTE 3 — LOAD-BEARING, AND STILL UNPROVEN ON LIVE DATA ═══
+ * When the deal invoice for that redemption is issued, issue.ts:302 computes
  *     primaryJobId = bundleJobs.length === 1 ? bundleJobs[0] : null
- * so a 5-episode bundle is written with job_id NULL and production_id NULL
- * (bundle.ts:176/468/549 build the consolidated row with production_id: null).
- * Route 1 is null, route 2 is null, and route 3 is the ONLY thing that will
- * connect that invoice to its five episodes. Route 4 backs it up via the shared
- * invoice_biz that issue.ts stamps on all five jobs.
- * Both routes are exercised by scripts/simulate_bundle.ts against the exact
- * row shape those two files write, because live data cannot exercise them yet.
+ * so a 5-job bundle is written with job_id NULL and production_id NULL, and
+ * bundle_job_ids becomes the only thing holding it to its episodes (route 5
+ * backs it up through the shared invoice_biz). That has not happened yet — as
+ * of 2026-08-30 the redemption has produced the work order and no deal invoice.
+ * scripts/simulate_bundle.ts exercises both shapes against the exact rows those
+ * files write, because live data still cannot.
  *
  * ═══ WHAT THIS DELIBERATELY DOES NOT DO ═══
  * It does not guess. 60 of the 61 pulled receipts name a document number in
@@ -55,7 +79,7 @@
  * for a document nobody linked.
  */
 
-export type DocPath = "production" | "job" | "bundle" | "number" | "receipt";
+export type DocPath = "production" | "job" | "bundle" | "consolidated" | "number" | "receipt";
 
 /** Column order on the screen, and the sort order within one production. */
 export const DOC_TYPES = [100, 300, 305, 320, 400] as const;
@@ -96,6 +120,14 @@ export type JobLink = { job_id: string; production_id: string };
  */
 export type ReceiptLink = { morning_doc_id: string; linked_document_ids: string[] };
 
+/**
+ * A production whose own queued work order was folded into a consolidated one,
+ * and the Morning id of the row it was folded into. Derived server-side by
+ * following pending_documents.consolidated_into — the pointer the redemption
+ * writes on every source row (bundle.ts:562).
+ */
+export type ConsolidationLink = { production_id: string; morning_doc_id: string };
+
 export type ResolvedDocument = {
   id: string;
   type: number;
@@ -120,6 +152,7 @@ export function resolveProductionDocuments(input: {
   jobs: JobRow[];
   documents: DocumentRow[];
   receiptLinks?: ReceiptLink[];
+  consolidationLinks?: ConsolidationLink[];
 }): Map<string, ResolvedDocument[]> {
   // Archived documents are gone from every surface (0045); they must not
   // reappear here. Filtered defensively even though the queries exclude them —
@@ -135,6 +168,7 @@ export function resolveProductionDocuments(input: {
   const byBundleJob = new Map<string, DocumentRow[]>();
   const byNumber = new Map<string, DocumentRow[]>();
   const byReceiptJob = new Map<string, DocumentRow[]>();
+  const byConsolidated = new Map<string, DocumentRow[]>();
 
   const push = <T,>(m: Map<string, T[]>, k: string, v: T) => {
     const arr = m.get(k);
@@ -165,6 +199,12 @@ export function resolveProductionDocuments(input: {
     }
   }
 
+  // route 6: the folded work order, reached from the production's own queue row
+  for (const link of input.consolidationLinks ?? []) {
+    const doc = byMorningId.get(link.morning_doc_id);
+    if (doc) push(byConsolidated, link.production_id, doc);
+  }
+
   const jobsByProduction = new Map<string, string[]>();
   for (const l of input.jobLinks) {
     if (!l.job_id || !l.production_id) continue;
@@ -188,6 +228,7 @@ export function resolveProductionDocuments(input: {
     const jobIds = jobsByProduction.get(productionId) ?? [];
     for (const jobId of jobIds) claim(byJob.get(jobId), "job");
     for (const jobId of jobIds) claim(byBundleJob.get(jobId), "bundle");
+    claim(byConsolidated.get(productionId), "consolidated");
     for (const jobId of jobIds) {
       const job = jobById.get(jobId);
       if (!job) continue;

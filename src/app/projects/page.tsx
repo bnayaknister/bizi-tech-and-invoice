@@ -7,6 +7,7 @@ import {
   resolveProductionDocuments,
   type DocumentRow,
   type ReceiptLink,
+  type ConsolidationLink,
 } from "@/lib/documents/forProduction";
 import AppHeader from "@/components/AppHeader";
 import ProjectsClient, { type BillingClass, type MonthBucket, type ProjectRow } from "./ProjectsClient";
@@ -300,7 +301,7 @@ export default async function ProjectsPage() {
   // invoice. They run in parallel; the region is co-located (sin1), so the
   // extra round-trips cost about a millisecond each.
   const emptyRes = Promise.resolve({ data: [] as unknown[] });
-  const [addonsRes, byProdRes, byJobRes, byBundleRes, byNumberRes, receiptsRes, monthDocsRes] =
+  const [addonsRes, byProdRes, byJobRes, byBundleRes, byNumberRes, receiptsRes, foldedRes, monthDocsRes] =
     await Promise.all([
       prodIds.length
         ? admin.from("production_addons").select("production_id,status,total").in("production_id", prodIds)
@@ -317,6 +318,16 @@ export default async function ProjectsPage() {
       fetchAllPages<DocumentRow>((from, to) =>
         admin.from("documents").select(DOC_SELECT).eq("type", 400).order("id").range(from, to)
       ).then((data) => ({ data })),
+      // route 4's first hop: this production's own queue rows that were folded
+      // into a consolidated one. The second hop (parent -> morning_doc_id) has
+      // to wait for these ids, so it runs just below rather than here.
+      prodIds.length
+        ? admin
+            .from("pending_documents")
+            .select("production_id,consolidated_into")
+            .in("production_id", prodIds)
+            .not("consolidated_into", "is", null)
+        : emptyRes,
       // the month totals are document-anchored and deliberately NOT restricted
       // to these productions — see the summary note in ProjectsClient
       fetchAllPages<MonthDoc>((from, to) =>
@@ -344,12 +355,48 @@ export default async function ProjectsPage() {
     })
     .filter((r) => r.morning_doc_id && r.linked_document_ids.length);
 
+  // ---- route 4, second hop: the folded parents and their documents ---------
+  // Sequential on purpose: the parent ids only exist once the first hop has
+  // returned, and the consolidated document is reachable by NO other query here
+  // (production_id, job_id and bundle_job_ids are all null on it), so without
+  // this read it would simply be absent from the set the resolver walks.
+  const folded = (foldedRes.data ?? []) as unknown as {
+    production_id: string;
+    consolidated_into: string;
+  }[];
+  const parentIds = Array.from(new Set(folded.map((f) => f.consolidated_into).filter(Boolean)));
+  const consolidationLinks: ConsolidationLink[] = [];
+  if (parentIds.length) {
+    const [{ data: parents }] = await Promise.all([
+      admin.from("pending_documents").select("id,morning_doc_id").in("id", parentIds),
+    ]);
+    const midByParent = new Map(
+      ((parents ?? []) as { id: string; morning_doc_id: string | null }[])
+        .filter((p) => p.morning_doc_id)
+        .map((p) => [p.id, p.morning_doc_id as string])
+    );
+    const mids = Array.from(new Set(Array.from(midByParent.values())));
+    if (mids.length) {
+      const bundleDocs = await fetchAllPages<DocumentRow>((from, to) =>
+        admin.from("documents").select(DOC_SELECT).in("morning_doc_id", mids).order("id").range(from, to)
+      );
+      for (const d of bundleDocs) docsById.set(d.id, d);
+      for (const f of folded) {
+        const mid = midByParent.get(f.consolidated_into);
+        // A folded row whose parent has not been issued yet has no morning_doc_id
+        // and therefore no document — an ordinary state, not a gap.
+        if (mid) consolidationLinks.push({ production_id: f.production_id, morning_doc_id: mid });
+      }
+    }
+  }
+
   const resolved = resolveProductionDocuments({
     productionIds: prodIds,
     jobLinks,
     jobs: relevantJobs,
     documents: Array.from(docsById.values()),
     receiptLinks,
+    consolidationLinks,
   });
 
   const addonsByProduction = new Map<string, AddonRow[]>();
