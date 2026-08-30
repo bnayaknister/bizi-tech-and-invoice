@@ -36,6 +36,13 @@ export type PendingDocRow = {
    * productions this row does not point at. Feeds missingGuestLines.
    */
   guests_by_line: (string | null)[];
+  /**
+   * The line buildLineItemText would have written for each printed line, same
+   * index alignment. Offered as text to copy when a line is flagged — never
+   * auto-filled, because the operator is the one who decides what the client
+   * reads.
+   */
+  suggested_by_line: (string | null)[];
   payload: Record<string, unknown>;
   last_error: string | null;
   attempts: number;
@@ -284,6 +291,39 @@ function TaxPayloadPreview({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * The guest behind a flagged line, and the line the enqueue would have written.
+ *
+ * Extracted so it can be rendered on its own (scripts/test_documents_edit_render.tsx):
+ * the edit form only enters the DOM after a click, which renderToString cannot
+ * perform, so without this the one thing that regressed had no coverage at all.
+ * Both call sites — a bundle's per-line block and the single-line description —
+ * render THIS, so the test exercises the real component rather than a copy.
+ *
+ * The guest used to live only in a title="…" on an 8px ⚠ glyph. It was there
+ * the whole time; the person who needed it left the screen to look it up.
+ *
+ * The suggestion is display-only and deliberately not a fill button: what the
+ * client reads is the operator's decision, not ours.
+ */
+export function GuestHint({ guest, suggestion }: { guest: string | null; suggestion: string | null }) {
+  if (!guest && !suggestion) return null;
+  return (
+    <>
+      {guest && (
+        <div className="text-[10px] text-[var(--warn)]">
+          ⚠ אורח ההפקה: <span className="font-bold">{guest}</span>
+        </div>
+      )}
+      {suggestion && (
+        <div className="text-[10px] text-[var(--faint)]">
+          הפורמט המלא: <span className="font-mono text-[var(--dim)] select-all">{suggestion}</span>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -760,32 +800,42 @@ export default function DocumentsClient({
                                     // them needs fixing — on a 4-episode bundle
                                     // the difference is the whole point
                                     const flagged = missingGuest(r).includes(i);
+                                    const lineGuest = r.guests_by_line?.[i] ?? null;
+                                    const suggestion = r.suggested_by_line?.[i] ?? null;
                                     return (
-                                      <div key={i} className="flex items-center gap-2">
-                                        {flagged && (
-                                          <span
-                                            className="shrink-0 text-[var(--warn)]"
-                                            title={`אורח ההפקה (${r.guests_by_line?.[i] ?? ""}) לא מופיע בשורה הזאת`}
-                                          >
-                                            ⚠
+                                      <div key={i} className="flex flex-col gap-0.5">
+                                        {/* The guest as READABLE TEXT, not a tooltip on a ⚠ glyph.
+                                            It was already here, hidden in a title attribute — which
+                                            meant the one person who needed it had to leave the
+                                            screen and search the board by date to find a name the
+                                            row was already holding. */}
+                                        {flagged && <GuestHint guest={lineGuest} suggestion={suggestion} />}
+                                        <div className="flex items-center gap-2">
+                                          {flagged && (
+                                            <span
+                                              className="shrink-0 text-[var(--warn)]"
+                                              title={`אורח ההפקה (${lineGuest ?? ""}) לא מופיע בשורה הזאת`}
+                                            >
+                                              ⚠
+                                            </span>
+                                          )}
+                                          <input
+                                            value={editLines[i] ?? ""}
+                                            onChange={(e) =>
+                                              setEditLines((prev) => {
+                                                const next = [...prev];
+                                                next[i] = e.target.value;
+                                                return next;
+                                              })
+                                            }
+                                            className={`flex-1 min-w-0 bg-transparent border rounded-lg px-2 py-1 ${
+                                              flagged ? "border-[var(--warn)]" : "border-[var(--rule)]"
+                                            }`}
+                                          />
+                                          <span className="shrink-0 font-mono text-[10px] text-[var(--faint)]">
+                                            {l.quantity ?? 1} × {l.price ?? 0}
                                           </span>
-                                        )}
-                                        <input
-                                          value={editLines[i] ?? ""}
-                                          onChange={(e) =>
-                                            setEditLines((prev) => {
-                                              const next = [...prev];
-                                              next[i] = e.target.value;
-                                              return next;
-                                            })
-                                          }
-                                          className={`flex-1 min-w-0 bg-transparent border rounded-lg px-2 py-1 ${
-                                            flagged ? "border-[var(--warn)]" : "border-[var(--rule)]"
-                                          }`}
-                                        />
-                                        <span className="shrink-0 font-mono text-[10px] text-[var(--faint)]">
-                                          {l.quantity ?? 1} × {l.price ?? 0}
-                                        </span>
+                                        </div>
                                       </div>
                                     );
                                   })}
@@ -810,7 +860,7 @@ export default function DocumentsClient({
                               <label className="text-[11px]">
                                 <span className="text-[var(--faint)]">תיאור</span>
                                 {missingGuest(r).includes(0) && (
-                                  <span className="text-[var(--warn)]"> ⚠ אורח ההפקה: {r.guest}</span>
+                                  <GuestHint guest={r.guest} suggestion={r.suggested_by_line?.[0] ?? null} />
                                 )}
                                 <input
                                   value={editDesc}

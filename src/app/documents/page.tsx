@@ -6,6 +6,7 @@ import DocumentsClient, { type PendingDocRow } from "./DocumentsClient";
 import { isDryRun, morningEnv } from "@/lib/morning/client";
 import { DOC_TYPE_TO_MORNING_CODE, requiresPayment, type PendingDocType } from "@/lib/morning/types";
 import { sumParentGross } from "@/lib/documents/parentGross";
+import { buildLineItemText } from "@/lib/documents/enqueue";
 
 export const dynamic = "force-dynamic";
 
@@ -85,6 +86,14 @@ export default async function DocumentsPage() {
   // those rows with no ORDER BY, so the order that built the bundle is not one
   // this page can reproduce. The text is copied byte for byte and is the only
   // stable key between the two.
+  // Alongside the guest, the line the enqueue WOULD have written — offered as
+  // text to copy, never auto-filled (owner spec 2026-08-30). Built with
+  // buildLineItemText, the same function that writes the real line, so the
+  // suggestion cannot drift from the standard it is suggesting. Server-side
+  // rather than in the client component: the helper lives in enqueue.ts, and
+  // importing that into a "use client" file drags its whole module graph into
+  // the browser bundle to format one string.
+  const suggestedByLine = new Map<string, (string | null)[]>();
   const guestsByLine = new Map<string, (string | null)[]>();
   const bundleRows = ((data ?? []) as unknown as Array<Record<string, unknown>>).filter(
     (r) => r.production_id === null && r.doc_type === "work_order"
@@ -96,10 +105,11 @@ export default async function DocumentsPage() {
     if (!lines.length) continue;
     const { data: sources } = await admin
       .from("pending_documents")
-      .select("payload,productions(guest)")
+      .select("payload,productions(guest,podcast_name,record_date)")
       .eq("consolidated_into", r.id as string);
     // one line's text -> the guest of the production that contributed it
     const guestByText = new Map<string, string | null>();
+    const suggestByText = new Map<string, string | null>();
     for (const s of (sources ?? []) as unknown as Array<Record<string, unknown>>) {
       const text = ((s.payload as { income?: { description?: string }[] })?.income ?? [])[0]?.description;
       if (typeof text !== "string") continue;
@@ -108,10 +118,29 @@ export default async function DocumentsPage() {
       // line text, and there is no way to tell which is which from the bundle.
       // Flagging the first is honest; flagging both off a coin flip is not.
       if (!guestByText.has(text)) guestByText.set(text, g);
+      if (!suggestByText.has(text)) {
+        const pr = s.productions as
+          | { guest?: string; podcast_name?: string; record_date?: string }
+          | null;
+        suggestByText.set(
+          text,
+          pr
+            ? buildLineItemText({
+                podcast_name: pr.podcast_name ?? null,
+                guest: pr.guest ?? null,
+                record_date: pr.record_date ?? null,
+              })
+            : null
+        );
+      }
     }
     guestsByLine.set(
       r.id as string,
       lines.map((l) => (typeof l.description === "string" ? guestByText.get(l.description) ?? null : null))
+    );
+    suggestedByLine.set(
+      r.id as string,
+      lines.map((l) => (typeof l.description === "string" ? suggestByText.get(l.description) ?? null : null))
     );
   }
 
@@ -139,6 +168,20 @@ export default async function DocumentsPage() {
       // array is exactly the claim "the guest belongs on the base line and
       // nowhere else". See missingGuestLines.
       guests_by_line: guestsByLine.get(r.id as string) ?? [prod?.guest ?? null],
+      // same index alignment as guests_by_line: one element for a
+      // production-anchored row (the session line), one per folded line for a
+      // bundle
+      suggested_by_line:
+        suggestedByLine.get(r.id as string) ??
+        (prod
+          ? [
+              buildLineItemText({
+                podcast_name: prod.podcast_name ?? null,
+                guest: prod.guest ?? null,
+                record_date: prod.record_date ?? null,
+              }),
+            ]
+          : [null]),
       payload: r.payload as Record<string, unknown>,
       last_error: (r.last_error as string | null) ?? null,
       attempts: (r.attempts as number | null) ?? 0,
