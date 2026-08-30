@@ -42,6 +42,7 @@ export async function POST(request: Request) {
     studio?: string | null;
     guest?: string | null;
     notes?: string | null;
+    confirm?: boolean;
   };
 
   const showId = body.show_id?.trim();
@@ -61,6 +62,59 @@ export async function POST(request: Request) {
     .eq("id", showId)
     .maybeSingle();
   if (!show) return NextResponse.json({ error: "התוכנית לא נמצאה" }, { status: 404 });
+
+  // ---- the calendar already caught this day? ------------------------------
+  // Narrow on purpose (owner spec 2026-08-30). It fires ONLY for a hand-made
+  // production landing on a show+day the CALENDAR already produced one for.
+  // Several calendar episodes on one day (עומר חן ×3 on 3.8, SFI ×2 on 17.8)
+  // are ordinary and must never warn; manual-vs-manual is a different problem
+  // and deliberately out of scope.
+  //
+  // Three real cases, all genuine duplicates, none caught: 28.7 (cancelled as
+  // "הקמה כפולה"), 13.8 (unnoticed for two weeks, and it would have double-billed
+  // the September redemption — migration 0066), 28.8 (migration 0065). Two of
+  // the three cost a data-fix migration each.
+  //
+  // merged_into / cancelled_at are excluded because a duplicate that was already
+  // resolved is not evidence of anything: 94d4a7ea was merged away and 4696ed68
+  // was cancelled, and counting either would warn about work already done.
+  //
+  // calendar_uid IS NOT NULL is the whole test of "came from the calendar" —
+  // 32 productions carry one and none has ever lost it.
+  if (!body.confirm) {
+    const { data: fromCalendar, error: dupErr } = await admin
+      .from("productions")
+      .select("id,record_time,guest,status,episode_no")
+      .eq("show_id", showId)
+      .eq("record_date", recordDate)
+      .not("calendar_uid", "is", null)
+      .is("merged_into", null)
+      .is("cancelled_at", null);
+    // a failed lookup must not read as "nothing there" — that is the silent
+    // direction, and silence here is exactly what this guard exists to end
+    if (dupErr) {
+      return NextResponse.json(
+        { error: `בדיקת כפילות מול היומן נכשלה: ${dupErr.message}` },
+        { status: 500 }
+      );
+    }
+    if (fromCalendar && fromCalendar.length > 0) {
+      return NextResponse.json(
+        {
+          error: `כבר יש ${fromCalendar.length === 1 ? "הפקה אחת" : `${fromCalendar.length} הפקות`} של "${show.name}" ב-${recordDate} שנקלטו מהיומן`,
+          needs_confirmation: true,
+          calendar_productions: fromCalendar.map((p) => ({
+            id: p.id as string,
+            record_time: (p.record_time as string | null) ?? null,
+            guest: (p.guest as string | null) ?? null,
+            status: p.status as string,
+            episode_no: (p.episode_no as number | null) ?? null,
+          })),
+        },
+        { status: 409 }
+      );
+    }
+  }
 
   // identical derivation to the sync create branch
   const kind =
@@ -135,7 +189,15 @@ export async function POST(request: Request) {
     entity_id: inserted.id,
     event_type: "production_created_manually",
     actor_id: user.id,
-    payload: { show_id: show.id, show: show.name, record_date: recordDate, kind },
+    payload: {
+      show_id: show.id,
+      show: show.name,
+      record_date: recordDate,
+      kind,
+      // recorded so "is this warning too aggressive?" is answerable from the
+      // log in two months rather than from memory
+      ...(body.confirm ? { confirmed_over_calendar_duplicate: true } : {}),
+    },
   });
 
   // same work-order queue as the sync create branch: queued if eligible,

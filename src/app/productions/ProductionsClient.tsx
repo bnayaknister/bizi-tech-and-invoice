@@ -6,6 +6,16 @@ import { useDrawer } from "@/components/EntityDrawer";
 import IconTile from "@/components/IconTile";
 import { STATUS_ORDER, STATUS_LABEL, IN_PROGRESS_STATES, TERMINAL_STATES } from "@/lib/productions/status";
 
+/** An episode the calendar already produced for this show+day, as the create
+ *  modal shows it back: enough to decide without leaving the screen. */
+export type CalendarDupe = {
+  id: string;
+  record_time: string | null;
+  guest: string | null;
+  status: string;
+  episode_no: number | null;
+};
+
 export type BoardProduction = {
   id: string;
   status: string;
@@ -131,23 +141,37 @@ export default function ProductionsClient({
     router.refresh();
   }
 
-  async function createProduction(input: {
-    show_id: string;
-    record_date: string;
-    record_time: string;
-    studio: string;
-    guest: string;
-    notes: string;
-  }): Promise<{ error?: string }> {
+  /**
+   * Create a production by hand.
+   *
+   * Two-step, same shape as cancelProduction above: the server answers 409 +
+   * needs_confirmation when the calendar already produced an episode for this
+   * show on this day, and the modal shows what is already there before the
+   * second call goes out with confirm: true. Until now this read `!res.ok` and
+   * nothing else, so a 409 would have surfaced as a flat error with no way past
+   * it — and no way to see what it was talking about.
+   */
+  async function createProduction(
+    input: {
+      show_id: string;
+      record_date: string;
+      record_time: string;
+      studio: string;
+      guest: string;
+      notes: string;
+    },
+    confirm = false
+  ): Promise<{ error?: string; needsConfirmation?: boolean; calendarProductions?: CalendarDupe[] }> {
     const res = await fetch("/api/productions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
+      body: JSON.stringify({ ...input, confirm }),
     });
-    if (!res.ok) {
-      const d = await res.json().catch(() => ({}));
-      return { error: d.error ?? "יצירת ההפקה נכשלה" };
+    const d = await res.json().catch(() => ({}));
+    if (res.status === 409 && d.needs_confirmation) {
+      return { needsConfirmation: true, calendarProductions: d.calendar_productions ?? [], error: d.error };
     }
+    if (!res.ok) return { error: d.error ?? "יצירת ההפקה נכשלה" };
     router.refresh();
     return {};
   }
@@ -1216,14 +1240,17 @@ function NewProductionModal({
   shows: { id: string; name: string }[];
   defaultDate: string;
   onClose: () => void;
-  onCreate: (input: {
-    show_id: string;
-    record_date: string;
-    record_time: string;
-    studio: string;
-    guest: string;
-    notes: string;
-  }) => Promise<{ error?: string }>;
+  onCreate: (
+    input: {
+      show_id: string;
+      record_date: string;
+      record_time: string;
+      studio: string;
+      guest: string;
+      notes: string;
+    },
+    confirm?: boolean
+  ) => Promise<{ error?: string; needsConfirmation?: boolean; calendarProductions?: CalendarDupe[] }>;
 }) {
   const [showId, setShowId] = useState("");
   const [date, setDate] = useState(defaultDate);
@@ -1234,15 +1261,38 @@ function NewProductionModal({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // What the calendar already has for this show+day. null = not asked yet;
+  // an array = the server refused once, and this is what it saw.
+  const [calDupes, setCalDupes] = useState<CalendarDupe[] | null>(null);
+  const [dupeMsg, setDupeMsg] = useState<string | null>(null);
+
   const canSubmit = !!showId && !!date && !busy;
   async function submit() {
     if (!canSubmit) return;
     setBusy(true);
     setErr(null);
-    const res = await onCreate({ show_id: showId, record_date: date, record_time: time, studio, guest, notes });
+    const res = await onCreate(
+      { show_id: showId, record_date: date, record_time: time, studio, guest, notes },
+      // a second press means the technician has now SEEN what is already there
+      calDupes !== null
+    );
     setBusy(false);
+    if (res.needsConfirmation) {
+      setCalDupes(res.calendarProductions ?? []);
+      setDupeMsg(res.error ?? null);
+      return;
+    }
     if (res.error) setErr(res.error);
     else onClose();
+  }
+
+  // changing the show or the date makes the previous answer stale — ask again
+  // rather than let a confirmation earned for one day carry to another
+  function resetDupes() {
+    if (calDupes !== null) {
+      setCalDupes(null);
+      setDupeMsg(null);
+    }
   }
 
   const fieldClass =
@@ -1270,7 +1320,7 @@ function NewProductionModal({
             <select
               autoFocus
               value={showId}
-              onChange={(e) => setShowId(e.target.value)}
+              onChange={(e) => { setShowId(e.target.value); resetDupes(); }}
               className={fieldClass}
             >
               <option value="">— בחר תוכנית —</option>
@@ -1285,7 +1335,7 @@ function NewProductionModal({
           <div className="flex gap-2">
             <div className="flex-1">
               <label className="block text-xs text-[var(--dim)] mb-1">תאריך</label>
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={fieldClass} />
+              <input type="date" value={date} onChange={(e) => { setDate(e.target.value); resetDupes(); }} className={fieldClass} />
             </div>
             <div className="w-28">
               <label className="block text-xs text-[var(--dim)] mb-1">שעה</label>
@@ -1316,6 +1366,35 @@ function NewProductionModal({
 
         {err && <div className="mt-3 text-xs text-[var(--peak)] border border-[var(--peak)] rounded-xl px-3 py-2">{err}</div>}
 
+        {/* What the calendar already holds for this show+day — listed, not
+            merely counted. A warning that says only "there is already one"
+            is friction to click through; the time and the guest are what let
+            the technician see that his own episode is already on the board and
+            stop. Three real duplicates reached the money screens without this,
+            two of them costing a data-fix migration each. */}
+        {calDupes && calDupes.length > 0 && (
+          <div className="mt-3 text-xs border border-[var(--warn)] rounded-xl px-3 py-2 text-[var(--warn)]">
+            <div className="font-bold">⚠ {dupeMsg}</div>
+            <ul className="mt-1.5 space-y-0.5 text-[var(--dim)]">
+              {calDupes.map((d) => {
+                // an exact time match is the strongest tell: of the three real
+                // duplicates, two shared the recording time to the minute
+                const sameTime = !!d.record_time && !!time && d.record_time === time;
+                return (
+                  <li key={d.id} className={sameTime ? "text-[var(--warn)] font-bold" : ""}>
+                    {d.record_time ?? "ללא שעה"}
+                    {d.guest ? ` · ${d.guest}` : ""}
+                    {d.episode_no != null ? ` · פרק ${d.episode_no}` : ""}
+                    {` · ${d.status.replace(/_/g, " ")}`}
+                    {sameTime ? "  ← אותה שעה" : ""}
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="mt-1.5 text-[var(--dim)]">לוודא שאתה אכן מעוניין להוסיף עוד פרק.</div>
+          </div>
+        )}
+
         <div className="flex gap-2 mt-4">
           <button
             onClick={submit}
@@ -1323,7 +1402,7 @@ function NewProductionModal({
             className="text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-40"
             style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))", boxShadow: "0 4px 14px rgba(139,92,246,0.3)" }}
           >
-            {busy ? "יוצר…" : "צור הפקה"}
+            {busy ? "יוצר…" : calDupes ? "אשר והוסף פרק נוסף" : "צור הפקה"}
           </button>
           <button onClick={onClose} className="border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)]">
             ביטול
