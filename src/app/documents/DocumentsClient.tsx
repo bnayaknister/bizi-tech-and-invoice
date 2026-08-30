@@ -464,9 +464,22 @@ export default function DocumentsClient({
         setError(body.error ?? "הפעולה נכשלה");
         return;
       }
+      // One filter, both actions. Reject used to answer with a bare
+      // `{ok:true, rejected:N}` and no `results` at all — so `body.results ?? []`
+      // was always empty, `failed` was always zero, and a rejection that never
+      // reached the database reported success on this screen. The server now
+      // returns the same `{id, ok, detail}` shape for reject as for approve
+      // (2026-08-30), which is what lets this line cover it unchanged.
+      //
+      // `error` is read as a fallback so a caller that reports a per-row failure
+      // under that key still renders instead of printing "undefined".
       const failed = (body.results ?? []).filter((r: { ok: boolean }) => !r.ok);
       if (failed.length) {
-        setError(failed.map((f: { detail: string }) => f.detail).join(" · "));
+        setError(
+          failed
+            .map((f: { detail?: string; error?: string }) => f.detail ?? f.error ?? "הפעולה נכשלה")
+            .join(" · ")
+        );
       }
       setSelected(new Set());
       setConfirming(null);

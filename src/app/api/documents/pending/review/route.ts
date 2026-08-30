@@ -163,11 +163,70 @@ export async function POST(request: Request) {
         { status: 409 }
       );
     }
+    // The UPDATE result is READ, not assumed (2026-08-30).
+    //
+    // This loop used to discard it, and the line below reported `rows.length` —
+    // the number of rows we had READ, never the number we had WRITTEN. A
+    // rejection that never landed came back as `{ok:true, rejected:N}`.
+    //
+    // It was invisible in a way the approve path is not. Approve answers with a
+    // `results` array and the screen renders every failure in it; reject
+    // answered with a bare boolean, so there was nothing on any screen that
+    // could contradict the claim. The bookkeeper saw "rejected", the row stayed
+    // `pending`, and it remained approvable by the next person — a document she
+    // believed she had killed, still live in the queue.
+    //
+    // `.select("id")` is what makes "actually updated" answerable at all. An
+    // error is the loud failure; a zero-row match is the quiet one — the row was
+    // deleted, or moved out of an actionable status, between the read above and
+    // this write. Both are failures here and neither was visible before.
+    //
+    // Shape is `{id, ok, detail}`, IDENTICAL to the approve path's results, so
+    // the client renders both with the single filter it already had.
+    const rejectResults: Array<{ id: string; ok: boolean; detail: string }> = [];
     for (const r of rows) {
-      await admin
+      const { data: updated, error: updErr } = await admin
         .from("pending_documents")
         .update({ status: "rejected", reject_reason: reason, approved_by: user.id, approved_at: new Date().toISOString() })
-        .eq("id", r.id);
+        .eq("id", r.id)
+        .select("id");
+      if (updErr || !updated?.length) {
+        rejectResults.push({
+          id: r.id,
+          ok: false,
+          detail: updErr
+            ? `הדחייה לא נשמרה: ${updErr.message}`
+            : "הדחייה לא נשמרה — השורה לא נמצאה או השתנתה בינתיים. רענני את המסך ובדקי את הסטטוס לפני ניסיון חוזר",
+        });
+        // Two separate rules, and they are not in tension.
+        //
+        // No `document_rejected` on a row that was not rejected: an audit trail
+        // recording a rejection that did not happen is worse than no record at
+        // all — it is precisely what a later investigation would trust.
+        //
+        // But the FAILURE is written, under its own type. Silence here would
+        // reproduce the original bug one level down: the screen would show the
+        // error to whoever was standing there, and by tomorrow morning nothing
+        // would remain to say the queue row survived a rejection attempt (rule
+        // 0024 — silence must be documented). `cause` separates the loud failure
+        // from the quiet one, which is the difference between "the database
+        // refused" and "the row was gone before we got to it".
+        await admin.from("events").insert({
+          entity_type: "pending_document",
+          entity_id: r.id,
+          event_type: "document_reject_failed",
+          actor_id: user.id,
+          payload: {
+            doc_type: r.doc_type,
+            reason,
+            production_id: r.production_id ?? null,
+            document_id: r.morning_doc_id ?? null,
+            cause: updErr ? "update_error" : "no_row_matched",
+            error: updErr?.message ?? null,
+          },
+        });
+        continue;
+      }
       await admin.from("events").insert({
         entity_type: "pending_document",
         entity_id: r.id,
@@ -175,8 +234,17 @@ export async function POST(request: Request) {
         actor_id: user.id,
         payload: { doc_type: r.doc_type, reason },
       });
+      rejectResults.push({ id: r.id, ok: true, detail: "נדחה" });
     }
-    return NextResponse.json({ ok: true, rejected: rows.length });
+    // Status stays 200 deliberately — the status-code layer is out of scope for
+    // this change (so is the approve path's own 200 at the end of this file).
+    // What changes is that the BODY now tells the truth: `ok` reflects what
+    // actually happened, and `rejected` counts only rows the database confirmed.
+    return NextResponse.json({
+      ok: rejectResults.every((x) => x.ok),
+      rejected: rejectResults.filter((x) => x.ok).length,
+      results: rejectResults,
+    });
   }
 
   // ---- approve ------------------------------------------------------------
