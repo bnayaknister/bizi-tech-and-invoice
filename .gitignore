@@ -42,7 +42,23 @@ next-env.d.ts
 supabase/.temp/
 
 # migration working files (2026-08-14)
+#
+# The blanket rule is for the singapore->frankfurt dump files in the repo root
+# — schema.sql, data.sql, data-wrapped.sql, auth-data.sql and the two
+# trigger toggles — which are heavy, one-off, and must stay out.
+#
+# But it is blanket, so it also swallowed supabase/migrations/*.sql, and a
+# migration that vanishes into a silent ignore makes no noise anywhere: it runs
+# in the database, the ledger records it, and the file simply is not in git.
+# Every migration from 0059 on had to be forced in with `git add -f`, and 0066
+# was nearly lost that way on 2026-08-30 — a plain `git add` skipped it without
+# a word. The exception below removes the need to remember the flag.
+#
+# (0052, the one migration actually missing, predates this rule by nine days —
+# it was pasted by hand and never saved as a file at all. Different cause, and
+# not one a .gitignore change could have prevented. See docs/BACKLOG-V1b.md.)
 *.sql
+!supabase/migrations/*.sql
 baseline-*.txt
 new-rows.txt
 seq-*.txt
