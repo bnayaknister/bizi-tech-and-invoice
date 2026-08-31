@@ -1,3 +1,7 @@
+> **לפני שאתה מריץ משהו — [docs/TICKETS.md](docs/TICKETS.md) הוא מקור האמת, כולל כלל 40 על שרתי בדיקה מבודדים. אל תריץ בדיקות מול `:3000`.**
+
+---
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started
