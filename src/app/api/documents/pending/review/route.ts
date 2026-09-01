@@ -96,7 +96,45 @@ const ACTIONABLE_STATUSES = ["pending", "failed"];
  */
 const TAX_VARIANTS: PendingDocType[] = ["tax_invoice", "tax_receipt"];
 
+/**
+ * The last-resort net. Everything real lives in `reviewPending` below.
+ *
+ * Without it, an unexpected throw reached Next's default handler, which answers
+ * 500 with a body that is NOT JSON. The queue screen does `await res.json()`
+ * before it looks at anything else, so that body threw in the client too and
+ * came out of its outer catch as "שגיאת רשת" — a network error, on a request
+ * that reached the server and ran. The operator was told the wrong thing about
+ * a money route, and the actual fault left no trace on screen.
+ *
+ * It does NOT swallow anything already handled. An inner catch runs first and
+ * only what propagates past it arrives here, so the Morning calls in issue.ts
+ * still turn into `{ok:false, detail}` rows exactly as before — this sees the
+ * throws that previously had no handler at all. A returned NextResponse is a
+ * return, not a throw, so every deliberate 4xx above passes through untouched.
+ *
+ * The message states no outcome. A throw from inside the approve loop can land
+ * after some rows already went to Morning, so "nothing happened" would be a
+ * guess; the honest instruction is to go look.
+ */
 export async function POST(request: Request) {
+  try {
+    return await reviewPending(request);
+  } catch (e) {
+    // Server-side only. The client is told that it failed, never how — a stack
+    // on a route that talks to Morning is an invitation to read it.
+    console.error("documents/pending/review: unhandled exception", e);
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "שגיאת שרת בלתי צפויה — ייתכן שחלק מהמסמכים כבר טופלו. רענני את המסך ובדקי את הסטטוס לפני ניסיון חוזר",
+      },
+      { status: 500 }
+    );
+  }
+}
+
+async function reviewPending(request: Request) {
   const supabase = createClient();
   const {
     data: { user },
@@ -136,7 +174,11 @@ export async function POST(request: Request) {
     .from("pending_documents")
     .select("id,doc_type,production_id,job_id,client_id,amount,payload,status,morning_doc_id,attempts")
     .in("id", ids);
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+  // 500, not 400. A failed SELECT is our database refusing us, not a caller
+  // sending a bad request — the ids were already validated above. Answering 400
+  // told every programmatic caller "fix your input" for a fault it cannot fix,
+  // and made a server outage indistinguishable from an empty selection.
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!rows?.length) return NextResponse.json({ error: "המסמכים לא נמצאו" }, { status: 404 });
   // Never act on a partial set: if an id vanished between the screen and
   // here, the operator's intent no longer matches what we hold.
@@ -236,10 +278,13 @@ export async function POST(request: Request) {
       });
       rejectResults.push({ id: r.id, ok: true, detail: "נדחה" });
     }
-    // Status stays 200 deliberately — the status-code layer is out of scope for
-    // this change (so is the approve path's own 200 at the end of this file).
-    // What changes is that the BODY now tells the truth: `ok` reflects what
-    // actually happened, and `rejected` counts only rows the database confirmed.
+    // Status stays 200 here even when a rejection failed. The approve path at
+    // the end of this file no longer does — it answers 207 on a partial or full
+    // failure — and this path was deliberately NOT changed with it, so the two
+    // now differ. Reject is the smaller risk (nothing leaves for Morning) and
+    // aligning it is its own change; until then the BODY is what tells the truth
+    // on this path: `ok` reflects what actually happened, and `rejected` counts
+    // only rows the database confirmed.
     return NextResponse.json({
       ok: rejectResults.every((x) => x.ok),
       rejected: rejectResults.filter((x) => x.ok).length,
@@ -553,12 +598,31 @@ export async function POST(request: Request) {
     });
   }
 
-  return NextResponse.json({
-    ok: results.every((r) => r.ok),
-    dry_run: isDryRun(),
-    env: morningEnv(),
-    results,
-  });
+  // 200 on full success, 207 Multi-Status on anything less.
+  //
+  // This route is per-row: a bulk approve can have three documents reach Morning
+  // and one fail, and no single code describes that. It answered 200 for all of
+  // them, so `ok:false` in the body was the only trace of a failure — fine for
+  // the screen, which reads `results`, and a lie to anything that checks status.
+  //
+  // 207 and not 5xx, for full failure TOO. The 2xx range is what keeps `res.ok`
+  // true in DocumentsClient, and its existing filter over `results` is what
+  // renders each row's own reason. A non-2xx takes that client's early-return
+  // branch instead: one generic message, and — the part that actually costs
+  // something — no `router.refresh()`, leaving rows the loop just moved to
+  // 'failed' still drawn as 'pending'. A code carrying less truth than the body,
+  // bought with a staler screen, is not a trade worth making. The body is the
+  // report; the code says only whether the report is uniform.
+  const allOk = results.every((r) => r.ok);
+  return NextResponse.json(
+    {
+      ok: allOk,
+      dry_run: isDryRun(),
+      env: morningEnv(),
+      results,
+    },
+    { status: allOk ? 200 : 207 }
+  );
 }
 
 // ---------------------------------------------------------------------------
