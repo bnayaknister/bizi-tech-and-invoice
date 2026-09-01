@@ -5,6 +5,7 @@ import { createTypedAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import ShowsClient, { type EpisodeRow, type ShowRow, type ContractOption } from "./ShowsClient";
 import { mustRows, type QueryResult } from "@/lib/supabase/unwrap";
+import { countsAsEpisode } from "@/lib/productions/status";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +45,7 @@ export default async function ShowsPage() {
   const [productionsRes, clientsRes] = await Promise.all([
     supabase
       .from("productions")
-      .select("id,show_id,record_date,status,guest,legacy")
+      .select("id,show_id,record_date,status,guest,legacy,cancelled_at,merged_into")
       .order("record_date", { ascending: false }),
     canViewMoney
       ? supabase.from("clients").select("id,name,morning_client_id").order("name")
@@ -55,7 +56,7 @@ export default async function ShowsPage() {
   // עברה כאן בשקט עד היום. בשתי הקריאות הבאות הקאסט עדיין קיים; להסיר גם שם.
   const shows = mustRows(showsRes, "טעינת התוכניות");
   const productions = mustRows(
-    productionsRes as QueryResult<{ id: string; show_id: string | null; record_date: string | null; status: string; guest: string | null; legacy: boolean }[]>,
+    productionsRes as QueryResult<{ id: string; show_id: string | null; record_date: string | null; status: string; guest: string | null; legacy: boolean; cancelled_at: string | null; merged_into: string | null }[]>,
     "טעינת ההפקות למסך התוכניות"
   );
   const clients = mustRows(clientsRes as QueryResult<{ id: string; name: string; morning_client_id?: string | null }[]>, "טעינת הלקוחות");
@@ -108,36 +109,76 @@ export default async function ShowsPage() {
   // Live jobs only; archive never enters any calculation. A job linked to
   // several productions splits its amount equally between them, so a
   // "2 פרקים" job never counts twice.
+  //
+  // BOTH ENDS OF THE LINK ARE FILTERED, because either one alone leaks:
+  //
+  //   • the JOB end — `dismissed = false`, the same predicate every other
+  //     money surface already applies (lib/documents/reconcile.ts,
+  //     modules/finance, projects/page.tsx). This read was the only one in the
+  //     codebase that omitted it, and the omission was worth ₪2,400: the jobs
+  //     that migrations 0064/0065/0066 dismissed when they merged the
+  //     duplicate registrations away were still being counted as income.
+  //
+  //   • the PRODUCTION end — a cancelled or merged row is not an episode, so
+  //     revenue must not hang off it. Not redundant with the dismissed filter:
+  //     dismissal is a decision someone took about a job, while cancellation
+  //     and merging are facts about the episode. A cancelled episode whose job
+  //     nobody got round to dismissing would still be billed on this screen.
+  //
+  // The divisor is built from the SURVIVING links, not from every link, so a
+  // live job always attributes its full amount across the episodes that are
+  // really there. With the all-links divisor a 2-episode job with one episode
+  // cancelled would quietly show half its money and the other half would land
+  // nowhere. No current row exercises this — the table holds exactly one
+  // multi-link job and no live job mixes surviving and dropped links — so it
+  // changes no number today; it decides which way the first such row falls.
   const revenueByShow: Record<string, number> = {};
   if (canViewMoney) {
     const [{ data: jobs }, { data: links }] = await Promise.all([
-      supabase.from("jobs").select("id,amount"),
+      supabase.from("jobs").select("id,amount").eq("dismissed", false),
       supabase.from("job_productions").select("job_id,production_id"),
     ]);
     const showByProduction: Record<string, string> = {};
     for (const p of productions) {
-      if (p.show_id) showByProduction[p.id] = p.show_id;
+      if (p.show_id && countsAsEpisode(p)) showByProduction[p.id] = p.show_id;
     }
     const amountByJob: Record<string, number> = {};
     for (const j of jobs ?? []) {
       if (j.amount) amountByJob[j.id] = Number(j.amount);
     }
+    // only links that clear BOTH ends survive to be counted and to divide
+    const liveLinks = (links ?? []).filter(
+      (l) => showByProduction[l.production_id] && amountByJob[l.job_id]
+    );
     const linkCountByJob: Record<string, number> = {};
-    for (const l of links ?? []) {
+    for (const l of liveLinks) {
       linkCountByJob[l.job_id] = (linkCountByJob[l.job_id] ?? 0) + 1;
     }
-    for (const l of links ?? []) {
+    for (const l of liveLinks) {
       const showId = showByProduction[l.production_id];
-      const amount = amountByJob[l.job_id];
-      if (showId && amount) {
-        revenueByShow[showId] = (revenueByShow[showId] ?? 0) + amount / linkCountByJob[l.job_id];
-      }
+      revenueByShow[showId] = (revenueByShow[showId] ?? 0) + amountByJob[l.job_id] / linkCountByJob[l.job_id];
     }
   }
 
+  // TWO counts, because the screen asks two different questions of the same
+  // rows and they have different right answers:
+  //
+  //   episodeCounts  — how many episodes this show HAS. Cancelled and merged
+  //     rows are not episodes, so they are out. This is the number in the
+  //     table column, in the drawer's list, and under the revenue division.
+  //
+  //   episodeCountsAll — how many production ROWS carry this show_id. The
+  //     merge modal needs this one and only this one: api/shows/merge repoints
+  //     `.eq("show_id", sourceId)` with no filter of its own, so every row
+  //     moves, cancelled and merged included, and the route reports that raw
+  //     figure back as movedProductions. A warning that promised 1 and moved 4
+  //     would be a false statement about a destructive action.
   const episodeCounts: Record<string, number> = {};
+  const episodeCountsAll: Record<string, number> = {};
   for (const p of productions) {
-    if (p.show_id) episodeCounts[p.show_id] = (episodeCounts[p.show_id] ?? 0) + 1;
+    if (!p.show_id) continue;
+    episodeCountsAll[p.show_id] = (episodeCountsAll[p.show_id] ?? 0) + 1;
+    if (countsAsEpisode(p)) episodeCounts[p.show_id] = (episodeCounts[p.show_id] ?? 0) + 1;
   }
 
   const rows: ShowRow[] = shows.map((s) => ({
@@ -156,11 +197,16 @@ export default async function ShowsPage() {
     has_episode: (s.has_episode as boolean) ?? true,
     reels_count: (s.reels_count as number) ?? 2,
     episodes: episodeCounts[s.id as string] ?? 0,
+    episodes_all: episodeCountsAll[s.id as string] ?? 0,
     revenue: canViewMoney ? (revenueByShow[s.id as string] ?? 0) : null,
   }));
 
+  // the drawer's episode list — filtered with the SAME predicate as the column
+  // above, deliberately. These two are read together on one screen: the column
+  // says 4 and the list underneath it opens with "פרקים (6)" the moment they
+  // disagree, and that visible contradiction reads as a fresh bug.
   const episodes: EpisodeRow[] = productions
-    .filter((p) => p.show_id)
+    .filter((p) => p.show_id && countsAsEpisode(p))
     .map((p) => ({
       id: p.id,
       show_id: p.show_id as string,

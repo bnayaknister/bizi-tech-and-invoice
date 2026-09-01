@@ -23,7 +23,11 @@ export type ShowRow = {
   // deliverables composition (0055) — what the production chain produces
   has_episode: boolean;
   reels_count: number;
+  // real episodes: cancelled and merged rows excluded (countsAsEpisode)
   episodes: number;
+  // every production row carrying this show_id, cancelled and merged included.
+  // Only the merge modal wants this — see the warning line there for why.
+  episodes_all: number;
   revenue: number | null; // null when the viewer lacks can_view_money
 };
 
@@ -539,7 +543,13 @@ function ShowCard({
   onLinkContract: (showId: string, contractId: string | null) => Promise<boolean>;
   onDeleteAsk: (show: ShowRow) => void;
 }) {
-  const perEpisode = show.revenue && episodes.length > 0 ? Math.round(show.revenue / episodes.length) : null;
+  // divided by show.episodes, not by episodes.length: the two are equal by
+  // construction (page.tsx filters the list with the same predicate that built
+  // the count), and naming the count makes the screen's headline figure the
+  // denominator outright rather than something that happens to match it. Both
+  // sides of this division are now filtered — the revenue no longer flows from
+  // cancelled or merged rows either — so it is per REAL episode.
+  const perEpisode = show.revenue && show.episodes > 0 ? Math.round(show.revenue / show.episodes) : null;
 
   return (
     <div
@@ -922,6 +932,16 @@ function MergeModal({
         className="w-full max-w-md border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl"
         style={{ background: "rgba(15,13,28,0.92)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}
       >
+        {/* This modal counts ROWS (episodes_all), not episodes, everywhere —
+            the pickers and the warning alike. api/shows/merge repoints
+            `.eq("show_id", sourceId)` with no filter, so cancelled and merged
+            productions move across too and the route returns that raw number
+            as movedProductions. Showing the filtered count here would promise
+            to move 1 row and move 4. The pickers use the same figure as the
+            warning on purpose: one modal, one meaning of "N", so the number
+            the operator reads while choosing is the number they are then
+            warned about. This is the one screen where the raw count is the
+            honest one, and it is why page.tsx carries both. */}
         <h3 className="font-bold mb-1">מיזוג שתי תוכניות</h3>
         <p className="text-xs text-[var(--dim)] mb-4">
           לשימוש נדיר — כשאותה תוכנית נוצרה פעמיים בטעות.
@@ -937,7 +957,7 @@ function MergeModal({
             <option value="">בחר…</option>
             {shows.map((s) => (
               <option key={s.id} value={s.id} disabled={s.id === targetId}>
-                {s.name} ({s.episodes})
+                {s.name} ({s.episodes_all})
               </option>
             ))}
           </select>
@@ -953,7 +973,7 @@ function MergeModal({
             <option value="">בחר…</option>
             {shows.map((s) => (
               <option key={s.id} value={s.id} disabled={s.id === sourceId}>
-                {s.name} ({s.episodes})
+                {s.name} ({s.episodes_all})
               </option>
             ))}
           </select>
@@ -961,7 +981,7 @@ function MergeModal({
 
         {ready && (
           <div className="text-xs text-[var(--warn)] border border-[var(--warn)] rounded px-3 py-2 mb-4">
-            {source!.episodes} הפקות של &quot;{source!.name}&quot; יעברו ל&quot;{target!.name}&quot;,
+            {source!.episodes_all} הפקות של &quot;{source!.name}&quot; יעברו ל&quot;{target!.name}&quot;,
             השם &quot;{source!.name}&quot; יתווסף ככינוי, והתוכנית תימחק. הפעולה נרשמת ביומן האירועים.
           </div>
         )}
@@ -1274,6 +1294,7 @@ function NewShowModal({
       has_episode: s.has_episode ?? true,
       reels_count: s.reels_count ?? 2,
       episodes: 0,
+      episodes_all: 0,
       revenue: canViewMoney ? 0 : null,
     });
   }

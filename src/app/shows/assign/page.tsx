@@ -3,6 +3,7 @@ import { getSessionAndProfile } from "@/lib/profile";
 import { createClient } from "@/lib/supabase/server";
 import AppHeader from "@/components/AppHeader";
 import AssignClient, { type OrphanRow } from "./AssignClient";
+import { countsAsEpisode } from "@/lib/productions/status";
 
 export const dynamic = "force-dynamic";
 
@@ -24,13 +25,18 @@ export default async function AssignPage() {
       .eq("active", true)
       .is("client_id", null)
       .order("name"),
-    supabase.from("productions").select("show_id"),
+    supabase.from("productions").select("show_id,status,cancelled_at,merged_into"),
     supabase.from("clients").select("id,name").order("name"),
   ]);
 
+  // Same predicate as the /shows column (countsAsEpisode) — one definition,
+  // two screens. It matters more here than there: the count is also the SORT
+  // key below, so a show with three cancelled episodes and one real one used
+  // to climb to the top of the owner's work queue on the strength of work
+  // that never happened.
   const episodeCounts: Record<string, number> = {};
   for (const p of productions ?? []) {
-    if (p.show_id) episodeCounts[p.show_id] = (episodeCounts[p.show_id] ?? 0) + 1;
+    if (p.show_id && countsAsEpisode(p)) episodeCounts[p.show_id] = (episodeCounts[p.show_id] ?? 0) + 1;
   }
 
   const rows: OrphanRow[] = (shows ?? [])

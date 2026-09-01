@@ -57,6 +57,46 @@ export function hasBeenPerformed(status: string | null | undefined, cancelledAt?
   return !NOT_YET_PERFORMED.has(status) && status !== "בוטל";
 }
 
+/**
+ * The row is a real episode of its show — it counts on a card, in a total, and
+ * as a denominator. Distinct from hasBeenPerformed: a scheduled episode that
+ * has not been recorded yet still COUNTS, it just has not been performed.
+ *
+ * TWO independent exclusions, and both are required:
+ *
+ *   • cancelled — cancelled_at is the field the schema's own triggers test
+ *     (0060, 0061, 0064), so it leads here. status 'בוטל' is checked beside it
+ *     as a belt: the one cancel path (api/productions/[id]/cancel) writes both
+ *     in a single update, and today all 15 cancelled rows carry both, but the
+ *     column is what the database believes.
+ *
+ *   • merged — merged_into is the ONE soft-delete mechanism of this table
+ *     (0019); nothing here is ever hard-deleted. A merged duplicate is NOT
+ *     cancelled and must not be inferred from status: 0064, 0065 and 0066 each
+ *     argue the point explicitly — 'בוטל' would claim the recording never
+ *     happened, which is false, only the registration was doubled. The two
+ *     sets are disjoint in the data (zero rows carry both), which is exactly
+ *     why one test cannot stand in for the other.
+ *
+ * NAMED, NEVER RANGED: 'בוטל' is the LAST value of production_status, so any
+ * `status >= …` ordinal comparison sweeps cancelled rows in rather than out —
+ * the trap 0060, 0061 and 0062 each warn about in turn.
+ *
+ * The three fields are REQUIRED, not optional, on purpose: a caller that
+ * forgot to name cancelled_at/merged_into in its select() fails to compile
+ * instead of silently counting everything.
+ */
+export function countsAsEpisode(p: {
+  status: string | null;
+  cancelled_at: string | null;
+  merged_into: string | null;
+}): boolean {
+  if (p.cancelled_at) return false;
+  if (p.status === "בוטל") return false;
+  if (p.merged_into) return false;
+  return true;
+}
+
 // the next status in the pipeline, or null if there is none (last stage, or a
 // value off the pipeline like בוטל). Drives the drawer's one-tap advance.
 export function nextStatus(status: string): string | null {
