@@ -4,7 +4,18 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { buildDocumentPayload } from "@/lib/documents/enqueue";
 import { DOC_TYPE_LABEL } from "@/lib/morning/types";
 
-// Queue a WORK ORDER for a contract milestone (stage 1).
+// Queue a WORK ORDER for a contract milestone.
+//
+// WORK ORDER ONLY, and the two siblings say why. This route builds a document
+// out of the milestone's own amount, which is the right verb for exactly one
+// document: the head of the chain, the one with no parent. Everything after it
+// is built from a PARENT and inherits that parent's frozen income lines —
+// milestones/[mid]/deal-invoice (300) and milestones/[mid]/tax (305/320).
+//
+// A `docType` parameter briefly lived here and was removed the same day: a
+// deal invoice must carry linkedDocumentIds to close its work order in Morning,
+// and buildDocumentPayload never emits them, so routing a 300 through here
+// produced a document that billed correctly and closed nothing.
 //
 // This is the route the sibling `issue` route is not. That one RECORDS a
 // document raised by hand in Morning; this one puts a real one into the
@@ -41,7 +52,7 @@ import { DOC_TYPE_LABEL } from "@/lib/morning/types";
 // /api/documents/enqueue treats as live.
 const LIVE_STATUSES = ["pending", "approved", "issued"];
 
-export async function POST(request: Request, { params }: { params: { mid: string } }) {
+export async function POST(_request: Request, { params }: { params: { mid: string } }) {
   const supabase = createClient();
   const {
     data: { user },
@@ -116,7 +127,7 @@ export async function POST(request: Request, { params }: { params: { mid: string
       const label = present(biz) ? "חשבון עסקה" : "חשבונית מס";
       return NextResponse.json(
         {
-          error: `ל-job של אבן הדרך כבר יצא ${label} מספר ${num} — לא ניתן להנפיק עליו הזמנת עבודה`,
+          error: `ל-job של אבן הדרך כבר יצא ${label} מספר ${num} — לא ניתן להנפיק עליו ${DOC_TYPE_LABEL.work_order}`,
           status: "exists",
         },
         { status: 409 }
@@ -162,6 +173,9 @@ export async function POST(request: Request, { params }: { params: { mid: string
     .in("status", LIVE_STATUSES)
     .maybeSingle();
   if (live) {
+    // "הזמנת עבודה" is feminine, "חשבון עסקה" is masculine — one verb cannot
+    // serve both without reading as broken Hebrew on a screen the bookkeeper
+    // uses every day.
     return NextResponse.json(
       { error: `כבר קיימת ${DOC_TYPE_LABEL.work_order} ל-job הזה (${live.status})`, status: "exists" },
       { status: 409 }

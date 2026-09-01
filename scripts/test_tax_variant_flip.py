@@ -249,7 +249,14 @@ try:
     r = requests.post(f"{APP_URL}/api/documents/pending/review", cookies=money,
                       headers={"Content-Type": "application/json"},
                       json={"ids": [probe_id], "action": "approve"})
-    probe = r.json() if r.status_code == 200 else {}
+    # ANY 2xx, not 200. This probe deliberately drives the FULL-FAILURE path —
+    # it approves a row it knows is refused, and asserts ok is False below — and
+    # since ad0470c (1.9) that path answers 207 Multi-Status, not 200. Reading
+    # the body only on a literal 200 made this safety check fail closed: it
+    # refused to run and reported dry_run=None, which looks exactly like "Morning
+    # may be live". 2xx is the contract the 207 was chosen to keep (res.ok stays
+    # true in DocumentsClient for the same reason).
+    probe = r.json() if 200 <= r.status_code < 300 else {}
     if probe.get("dry_run") is not True:
         check("0. server is provably in MORNING_DRY_RUN", False,
               f"status={r.status_code} dry_run={probe.get('dry_run')} env={probe.get('env')}")

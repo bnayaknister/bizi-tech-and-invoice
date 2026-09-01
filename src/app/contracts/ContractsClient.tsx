@@ -24,6 +24,14 @@ export type MilestoneCard = {
   has_work_order: boolean; // one is queued/approved/issued for the linked job
   has_deal_invoice: boolean; // the job carries invoice_biz
   has_tax_document: boolean; // the job carries invoice_tax
+  // Stage 2. A "source id" is a queue row REALLY issued in Morning (not
+  // pending, not a dry-run "dry-" id) — the only kind that may father a tax
+  // document. Non-null is what lights the tax button.
+  work_order_source_id: string | null;
+  deal_invoice_source_id: string | null;
+  has_queued_deal_invoice: boolean; // a 300 in flight, not yet issued
+  has_queued_tax: boolean; // a 305/320 already in the queue
+  issued_amount: number | null; // what the issued parent actually billed
 };
 export type ContractCard = {
   id: string;
@@ -111,6 +119,61 @@ export default function ContractsClient({
       setNotice(`הזמנת עבודה עבור "${m.name}" נכנסה לתור האישורים — אשרי במסך`);
       // the queue row is 'pending', which the page's fifth query counts, so the
       // refresh is what makes the button disappear
+      router.refresh();
+    } catch {
+      setError("שגיאת רשת");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  // A separate route from the work order, because it is a separate document:
+  // this one is built ON the order and carries linkedDocumentIds that CLOSE it
+  // in Morning. Naming the order it closes is the point of the message — that
+  // closure is the owner's stated reason for the document, and it is the one
+  // effect she cannot see anywhere on this screen.
+  async function enqueueDealInvoice(m: MilestoneCard) {
+    setBusyId(m.id);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/contracts/milestones/${m.id}/deal-invoice`, { method: "POST" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(body.error ?? "ההוספה לתור נכשלה");
+        return;
+      }
+      setNotice(
+        `חשבון עסקה עבור "${m.name}" — סוגר את הזמנה ${body.closes_doc_number ?? "?"} — נכנס לתור האישורים. אשרי במסך`
+      );
+      router.refresh();
+    } catch {
+      setError("שגיאת רשת");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  // The tax document is a different verb: it is built on a PARENT, not on the
+  // milestone's amount, and which parent is a decision the server makes (the
+  // deal invoice wins over the work order — see the route header). So the
+  // client sends nothing but the milestone id and reports back what came out.
+  async function enqueueTax(m: MilestoneCard) {
+    setBusyId(m.id);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/contracts/milestones/${m.id}/tax`, { method: "POST" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(body.error ?? "ההוספה לתור נכשלה");
+        return;
+      }
+      // The server picked the parent and the variant (305 by default); naming
+      // both here is what lets her catch a wrong parent before she approves.
+      setNotice(
+        `${body.label ?? "מסמך מס"} עבור "${m.name}" על סמך מסמך ${body.parent_doc_number ?? "?"} — נכנס לתור האישורים. אשרי במסך`
+      );
       router.refresh();
     } catch {
       setError("שגיאת רשת");
@@ -262,6 +325,22 @@ export default function ContractsClient({
                             צפי {heDate(m.expected_date)}
                           </span>
                         )}
+                        {/* The milestone's amount can be edited after a document
+                            has gone out, and then the two disagree. A tax
+                            document inherits its lines from the PARENT, never
+                            from the milestone, so the document is right and this
+                            row is the stale one. Said, not enforced: blocking
+                            here would stop a correction that is often the
+                            legitimate reason for the edit. */}
+                        {m.issued_amount !== null && Math.abs(m.issued_amount - m.amount) > 0.01 && (
+                          <span
+                            data-ms-warn="amount-mismatch"
+                            className="text-[11px] text-[var(--warn)]"
+                            title="מסמך מס נבנה מהמסמך שיצא, לא מסכום אבן הדרך"
+                          >
+                            ⚠ הסכום שיצא במסמך ({money(m.issued_amount)}) שונה מסכום אבן הדרך
+                          </span>
+                        )}
                         {canEditMoney && !closed && (
                           <div className="flex items-center gap-1.5" style={{ direction: "rtl" }}>
                             {(m.state === "open" || m.state === "overdue") && (
@@ -275,6 +354,7 @@ export default function ContractsClient({
                                     vanishes teaches her nothing. */}
                                 {!m.has_work_order && !m.has_deal_invoice && !m.has_tax_document && (
                                   <button
+                                    data-ms-action="work_order"
                                     onClick={() => enqueueWorkOrder(m)}
                                     disabled={busyId === m.id || !c.client_mapped}
                                     title={
@@ -287,6 +367,52 @@ export default function ContractsClient({
                                     {busyId === m.id ? "מוסיף לתור…" : "הנפק הזמנת עבודה"}
                                   </button>
                                 )}
+                                {/* ---- stage 2 ----------------------------------
+                                    Both buttons can be live at once, and that is
+                                    the point: the data holds both patterns —
+                                    Venus ran 100→300→305, Ofer Golan went
+                                    100→305 with no 300 at all. Which is right
+                                    depends on the deal, so the screen offers
+                                    both rather than guessing. */}
+                                {m.work_order_source_id && !m.has_deal_invoice && !m.has_tax_document &&
+                                  !m.has_queued_deal_invoice && (
+                                    <button
+                                      data-ms-action="deal_invoice"
+                                      onClick={() => enqueueDealInvoice(m)}
+                                      disabled={busyId === m.id || !c.client_mapped}
+                                      title={
+                                        c.client_mapped
+                                          ? "מכניס חשבון עסקה לתור האישורים על סמך הזמנת העבודה"
+                                          : `הלקוח ${c.client_name ?? ""} לא ממופה למורנינג — אי אפשר להנפיק`
+                                      }
+                                      className="text-[11px] font-bold rounded-lg px-2.5 py-1 bg-[var(--signal)] text-white disabled:opacity-40 transition-colors"
+                                    >
+                                      {busyId === m.id ? "מוסיף לתור…" : "חשבון עסקה"}
+                                    </button>
+                                  )}
+                                {/* Hidden while a deal invoice is merely QUEUED
+                                    (owner decision): the tax document would have
+                                    to be built on the work order, which closes
+                                    the order in Morning and strands the 300 open
+                                    forever — the `order_not_closed` alert, self
+                                    inflicted. Once the 300 is issued it becomes
+                                    the parent and this button returns. */}
+                                {(m.deal_invoice_source_id || m.work_order_source_id) &&
+                                  !m.has_tax_document && !m.has_queued_tax && !m.has_queued_deal_invoice && (
+                                    <button
+                                      data-ms-action="tax"
+                                      onClick={() => enqueueTax(m)}
+                                      disabled={busyId === m.id || !c.client_mapped}
+                                      title={
+                                        c.client_mapped
+                                          ? "מכניס חשבונית מס לתור האישורים על סמך המסמך האחרון שיצא"
+                                          : `הלקוח ${c.client_name ?? ""} לא ממופה למורנינג — אי אפשר להנפיק`
+                                      }
+                                      className="text-[11px] font-bold rounded-lg px-2.5 py-1 border border-[var(--signal)] text-[var(--signal)] disabled:opacity-40 transition-colors"
+                                    >
+                                      {busyId === m.id ? "מוסיף לתור…" : "חשבונית מס"}
+                                    </button>
+                                  )}
                                 {/* Records a document raised by hand in Morning
                                     — it issues nothing. Named for what it does
                                     since 2026-09-01; it read "הנפק חשבונית",
