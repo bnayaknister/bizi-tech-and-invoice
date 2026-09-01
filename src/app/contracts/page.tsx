@@ -14,18 +14,39 @@ export default async function ContractsPage() {
   if (!profile.can_view_money) redirect("/"); // money-only screen
 
   const admin = createAdminClient();
-  const [{ data: contracts }, { data: milestones }, { data: clients }, { data: jobs }] = await Promise.all([
-    admin.from("contracts").select("id,name,client_id,total_amount,status").order("created_at"),
-    admin
-      .from("contract_milestones")
-      .select("id,contract_id,name,amount,expected_date,is_estimated,status,job_id")
-      .order("expected_date", { nullsFirst: true }),
-    admin.from("clients").select("id,name"),
-    admin.from("jobs").select("id,invoice_biz,invoice_tax,date,paid"),
-  ]);
+  const [{ data: contracts }, { data: milestones }, { data: clients }, { data: jobs }, { data: queued }] =
+    await Promise.all([
+      admin.from("contracts").select("id,name,client_id,total_amount,status").order("created_at"),
+      admin
+        .from("contract_milestones")
+        .select("id,contract_id,name,amount,expected_date,is_estimated,status,job_id")
+        .order("expected_date", { nullsFirst: true }),
+      // morning_client_id rides along so the screen can say WHY a milestone
+      // cannot be issued instead of hiding the button — an unmapped client is
+      // the one refusal the bookkeeper can fix herself.
+      admin.from("clients").select("id,name,morning_client_id"),
+      admin.from("jobs").select("id,invoice_biz,invoice_tax,date,paid"),
+      // Whether a work order is already ON ITS WAY for a job. It cannot be read
+      // off `jobs`: that table models the deal invoice (invoice_biz) and the tax
+      // document (invoice_tax) and has no column for a 100 at all. A queued work
+      // order lives only here, and 'pending' is in the list on purpose — it is
+      // what makes the button disappear the moment it is clicked, not only once
+      // Shiri approves.
+      admin
+        .from("pending_documents")
+        .select("job_id,status")
+        .eq("doc_type", "work_order")
+        .not("job_id", "is", null)
+        .in("status", ["pending", "approved", "issued"]),
+    ]);
 
   const clientName = new Map((clients ?? []).map((c) => [c.id, c.name]));
+  const clientMapped = new Map((clients ?? []).map((c) => [c.id, !!c.morning_client_id]));
   const jobById = new Map((jobs ?? []).map((j) => [j.id, j]));
+  const jobsWithQueuedWorkOrder = new Set((queued ?? []).map((q) => q.job_id as string));
+
+  // null and "" both mean "no document number" — a blank string is not one.
+  const present = (v: unknown) => v != null && String(v).trim() !== "";
 
   const cards: ContractCard[] = (contracts ?? []).map((c) => {
     const ms = (milestones ?? []).filter((m) => m.contract_id === c.id);
@@ -53,6 +74,13 @@ export default async function ContractsPage() {
         job_number: job ? job.invoice_tax ?? job.invoice_biz ?? null : null,
         invoice_number: invoiceNumber,
         invoice_date: state === "paid" || state === "invoiced" ? job?.date ?? null : null,
+        // The three facts the issue button needs, kept SEPARATE. The fields
+        // above collapse both columns into one string (`invoice_tax ??
+        // invoice_biz`), which is right for display and useless for a decision:
+        // it cannot tell a job that has been billed from one that has not.
+        has_work_order: !!(m.job_id && jobsWithQueuedWorkOrder.has(m.job_id)),
+        has_deal_invoice: present(job?.invoice_biz),
+        has_tax_document: present(job?.invoice_tax),
       };
     });
     const paidSum = milestoneCards.filter((m) => m.state === "paid").reduce((t, m) => t + m.amount, 0);
@@ -61,6 +89,7 @@ export default async function ContractsPage() {
       name: c.name,
       client_id: c.client_id,
       client_name: c.client_id ? clientName.get(c.client_id) ?? null : null,
+      client_mapped: c.client_id ? clientMapped.get(c.client_id) ?? false : false,
       total_amount: c.total_amount as number,
       paid_sum: paidSum,
       status: c.status,

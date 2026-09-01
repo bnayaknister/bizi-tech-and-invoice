@@ -18,12 +18,19 @@ export type MilestoneCard = {
   job_number: string | null;
   invoice_number: string | null;
   invoice_date: string | null;
+  // What the issue button keys off. Separate booleans rather than the collapsed
+  // *_number strings above, which cannot distinguish a billed job from a bare
+  // one — see the comment beside them in page.tsx.
+  has_work_order: boolean; // one is queued/approved/issued for the linked job
+  has_deal_invoice: boolean; // the job carries invoice_biz
+  has_tax_document: boolean; // the job carries invoice_tax
 };
 export type ContractCard = {
   id: string;
   name: string;
   client_id: string | null;
   client_name: string | null;
+  client_mapped: boolean; // the client has a morning_client_id
   total_amount: number;
   paid_sum: number;
   status: string; // 'active' | 'closed'
@@ -60,6 +67,7 @@ export default function ContractsClient({
   const [showClosed, setShowClosed] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const closedCount = contracts.filter((c) => c.status !== "active").length;
   const visible = showClosed ? contracts : contracts.filter((c) => c.status === "active");
@@ -82,6 +90,33 @@ export default function ContractsClient({
     }
     setError(null);
     router.refresh();
+  }
+
+  // One click, no modal. Nothing here needs a human choice: the amount, the
+  // client and the description are all derivable from the milestone and its
+  // contract, and the human gate this document has to pass is the approval
+  // queue — which is where it is going. A modal that only says "are you sure"
+  // in front of a gate that already asks is a second lock on the same door.
+  async function enqueueWorkOrder(m: MilestoneCard) {
+    setBusyId(m.id);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/contracts/milestones/${m.id}/enqueue`, { method: "POST" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(body.error ?? "ההוספה לתור נכשלה");
+        return;
+      }
+      setNotice(`הזמנת עבודה עבור "${m.name}" נכנסה לתור האישורים — אשרי במסך`);
+      // the queue row is 'pending', which the page's fifth query counts, so the
+      // refresh is what makes the button disappear
+      router.refresh();
+    } catch {
+      setError("שגיאת רשת");
+    } finally {
+      setBusyId(null);
+    }
   }
 
   async function setMilestoneStatus(m: MilestoneCard, status: string) {
@@ -132,6 +167,14 @@ export default function ContractsClient({
       </div>
 
       {error && <div className="mb-3 text-xs text-[var(--peak)] border border-[var(--peak)] rounded-xl px-3 py-2">{error}</div>}
+      {notice && (
+        <div className="mb-3 text-xs text-[var(--signal)] border border-[var(--signal)] rounded-xl px-3 py-2">
+          {notice}{" "}
+          <a href="/documents" className="font-bold hover:underline">
+            מסמכים לאישור
+          </a>
+        </div>
+      )}
 
       {visible.length === 0 && (
         <div className="text-center text-sm text-[var(--faint)] py-16 border border-dashed border-[var(--rule)] rounded-2xl">
@@ -223,6 +266,31 @@ export default function ContractsClient({
                           <div className="flex items-center gap-1.5" style={{ direction: "rtl" }}>
                             {(m.state === "open" || m.state === "overdue") && (
                               <>
+                                {/* Queue a real work order. Hidden once one is
+                                    on its way, and once the job has been billed
+                                    at all — an order for work already invoiced
+                                    is backwards. An unmapped client leaves it
+                                    VISIBLE but disabled: that refusal is the one
+                                    she can fix herself, and a button that simply
+                                    vanishes teaches her nothing. */}
+                                {!m.has_work_order && !m.has_deal_invoice && !m.has_tax_document && (
+                                  <button
+                                    onClick={() => enqueueWorkOrder(m)}
+                                    disabled={busyId === m.id || !c.client_mapped}
+                                    title={
+                                      c.client_mapped
+                                        ? "מכניס הזמנת עבודה לתור האישורים — לא נשלח למורנינג עד לאישור"
+                                        : `הלקוח ${c.client_name ?? ""} לא ממופה למורנינג — אי אפשר להנפיק`
+                                    }
+                                    className="text-[11px] font-bold rounded-lg px-2.5 py-1 bg-[var(--signal)] text-white disabled:opacity-40 transition-colors"
+                                  >
+                                    {busyId === m.id ? "מוסיף לתור…" : "הנפק הזמנת עבודה"}
+                                  </button>
+                                )}
+                                {/* Records a document raised by hand in Morning
+                                    — it issues nothing. Named for what it does
+                                    since 2026-09-01; it read "הנפק חשבונית",
+                                    which its own modal then contradicted. */}
                                 <button
                                   onClick={() => setIssueFor(m)}
                                   className={`text-[11px] border rounded-lg px-2.5 py-1 transition-colors ${
@@ -231,7 +299,7 @@ export default function ContractsClient({
                                       : "border-[var(--rule)] text-[var(--dim)] hover:bg-[var(--panel3)]"
                                   }`}
                                 >
-                                  הנפק חשבונית
+                                  רשום מסמך שהונפק
                                 </button>
                                 <button
                                   onClick={() => setEditDateFor(m)}
