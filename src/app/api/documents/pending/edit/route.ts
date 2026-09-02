@@ -55,20 +55,45 @@ import type { MorningDocumentRequest } from "@/lib/morning/types";
 // `lines` runs the exact code it ran yesterday. Three rules make the new branch
 // safe to stand beside it:
 //
-//   1. MONEY IS LOCKED. A line edit changes text only. `amount` alongside
-//      `lines` is refused rather than ignored — the column is Σ of the source
+//   1. MONEY IS LOCKED. A line edit changes text only. `amount` on a bundled
+//      document is refused rather than ignored — the column is Σ of the source
 //      jobs, and per-line prices that no longer sum to it would be a silent
-//      discrepancy between our books and Morning's.
+//      discrepancy between our books and Morning's. (Stated here as "alongside
+//      `lines`" until 2026-09-02, which was the rule half-enforced: see the
+//      amount gate further down, keyed on the document's own income length.)
 //   2. THE TITLE IS INDEPENDENT. The single-line path writes one string to both
 //      payload.description and income[0].description, which is right when there
 //      is one line: the title IS the line. With N lines there is no line the
-//      title could mirror, so it is left alone entirely.
+//      title could mirror, so it mirrors into none of them.
 //   3. ONE LINE MEANS THE OLD PATH. `lines` on a document with income.length<=1
 //      is refused (see rule 2 — that document's title must keep moving with its
 //      line, and only `description` does that).
 //
 // Validation is complete before anything is written: a bad index in the middle
 // of the array leaves the row untouched rather than half-edited.
+//
+// ---------------------------------------------------------------------------
+// THE TITLE ON A MULTI-LINE DOCUMENT — 2026-09-02
+// ---------------------------------------------------------------------------
+// Rule 2 said the title is "left alone entirely" on a multi-line row, and that
+// was true of INTENT but not of CODE: the description branch mirrored into
+// income[0] unconditionally, so sending a title to a 5-line bundle overwrote
+// the first episode's line with the heading. Nothing did — the multi-line form
+// sent no `description` — so it was latent, never fired.
+//
+// It is closed here because the field is now EXPOSED beside the line editor.
+// The bookkeeper needs her own heading ("הפקת חומרים שיווקיים אוגוסט") on a
+// consolidated 320, whose lines are inherited verbatim from the work order
+// and still read "הזמנת עבודה — …". Title and lines are now genuinely
+// independent: `description` writes the heading and never a line, `lines`
+// writes lines and never the heading, and the two remain mutually exclusive in
+// one request so neither can race the other.
+//
+// The money rule is not relaxed by any of this — it is TIGHTENED. Rule 1 was
+// only ever enforced against `amount` + `lines` in one request, which is the
+// shape the screen produces; `amount` alone on a bundle slipped through and
+// wrote income[0]. Both are refused now, keyed on the document rather than on
+// the request. A single-line row's amount is still editable, as it must be.
 
 export async function POST(request: Request) {
   const supabase = createClient();
@@ -106,14 +131,20 @@ export async function POST(request: Request) {
     typeof body.morningClientId === "string" && body.morningClientId.trim() !== ""
       ? body.morningClientId.trim()
       : undefined;
-  if (hasLines && newDescription !== undefined) {
-    // both write income[0]; letting them race inside one request would make the
-    // winner an accident of statement order
-    return NextResponse.json(
-      { error: "לא ניתן לשלוח גם תיאור מסמך וגם עריכת שורות באותה בקשה" },
-      { status: 400 }
-    );
-  }
+  // `lines` + `description` together used to be refused here, because both
+  // wrote income[0] and the winner would have been an accident of statement
+  // order. As of 2026-09-02 the description branch mirrors into a line ONLY on
+  // a single-line document, and `lines` is refused outright on one — so on the
+  // only document type where both can appear, they write disjoint things and
+  // there is nothing left to race.
+  //
+  // Removing the refusal is what lets the bookkeeper fix the inherited line
+  // texts AND set her own heading in ONE save. Two requests would have meant
+  // two audit entries and a window where the lines were saved and the title was
+  // not — on a document that cannot be corrected after it is issued.
+  //
+  // `lines` on a single-line row is still refused, just later and with a better
+  // sentence: the income-length gate below names the real reason.
   if (!hasAmount && !hasLines && newDescription === undefined && newMorningClientId === undefined) {
     return NextResponse.json({ error: "אין שינוי" }, { status: 400 });
   }
@@ -152,6 +183,35 @@ export async function POST(request: Request) {
   };
 
   const payload = { ...(row.payload as MorningDocumentRequest) };
+
+  // ---- the amount is not editable on a BUNDLE, however it is asked for ------
+  // The parse-time refusal above only catches `amount` arriving WITH `lines`.
+  // That was the shape the screen could produce, so it read as complete — but
+  // the rule it was enforcing is about the DOCUMENT, not about the request:
+  // a bundled row's amount column is Σ of the source jobs, and only the jobs
+  // may move it.
+  //
+  // `{ id, amount: 9999 }` alone, with no `lines`, walked straight past it and
+  // into the income[0] write below: on a 5-episode bundle that set the first
+  // line to 9,999 and left four at 600, so the payload summed to 12,399 while
+  // the column said 9,999. Our books and Morning's would have disagreed on the
+  // same document, and on a 320 that is unrecoverable.
+  //
+  // Keyed on the ROW's income length rather than on what the request happens to
+  // contain, which is why it can only live here — parse time cannot know how
+  // many lines the document has. The single-line path is untouched: there the
+  // amount and the one line are the same money and editing it is the point.
+  const incomeLen = Array.isArray(payload.income) ? payload.income.length : 0;
+  if (hasAmount && incomeLen > 1) {
+    return NextResponse.json(
+      {
+        error:
+          `הסכום במסמך מאוגד נגזר מהעבודות שאוגדו ואינו נערך — למסמך ${incomeLen} שורות פירוט. ` +
+          "לתיקון טקסט השורות יש להשתמש בעריכת השורות; לשינוי סכום יש לתקן את העבודות שאוגדו.",
+      },
+      { status: 400 }
+    );
+  }
 
   // ---- multi-line validation: everything, before anything is written --------
   // Resolved here rather than at parse time because every rule needs the row:
@@ -235,7 +295,26 @@ export async function POST(request: Request) {
   }
   if (newDescription !== undefined) {
     payload.description = newDescription;
-    payload.income = (payload.income ?? []).map((r, i) => (i === 0 ? { ...r, description: newDescription } : r));
+    // MIRROR INTO THE LINE ONLY WHEN THERE IS EXACTLY ONE.
+    //
+    // With one line the title and the line are the same string — that is rule 3
+    // above, and why a single-line row is refused the `lines` branch. Writing
+    // both keeps them together, and that behaviour is unchanged.
+    //
+    // With SEVERAL lines each one names its own episode, and line 0 is not a
+    // title in any sense — it is the first episode. Mirroring there overwrote
+    // "דעה לא פופולרית · עידן טנדלר · 02.08.26" with the document's heading and
+    // deleted that episode from the printed page, silently, while the amount
+    // column still counted it. On a 320 that is unrecoverable: a tax document
+    // cannot be corrected after issuance, only credited.
+    //
+    // Nothing reached this state through the screen — the multi-line form never
+    // sent `description` — so this is a latent path being closed before the
+    // field is exposed beside it, not a live bug being cleaned up.
+    const lineCount = Array.isArray(payload.income) ? payload.income.length : 0;
+    if (lineCount === 1) {
+      payload.income = (payload.income ?? []).map((r, i) => (i === 0 ? { ...r, description: newDescription } : r));
+    }
   }
 
   // Multi-line: TEXT only, on the named lines only. price/quantity/currency/

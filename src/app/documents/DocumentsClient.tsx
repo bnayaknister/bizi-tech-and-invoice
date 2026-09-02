@@ -592,6 +592,19 @@ export default function DocumentsClient({
       return;
     }
 
+    // The document HEADING, on a multi-line row. Independent of the lines since
+    // 2026-09-02: the server writes it to payload.description only and never
+    // touches a line, so the two travel together in one save. Sent only when it
+    // actually moved, for the same reason the lines are — an untouched field
+    // must not appear in the audit trail as an edit.
+    const originalDesc = (r.payload as { description?: string })?.description ?? "";
+    const descTrimmed = editDesc.trim();
+    const descChanged = multi && descTrimmed !== originalDesc;
+    if (multi && descChanged && descTrimmed.length === 0) {
+      setError("כותרת המסמך לא יכולה להיות ריקה");
+      return;
+    }
+
     const amountNum = editAmount.trim() === "" ? undefined : Number(editAmount);
     if (!multi && amountNum !== undefined && !(amountNum > 0)) {
       setError("סכום חייב להיות מספר חיובי");
@@ -601,7 +614,7 @@ export default function DocumentsClient({
     // not cost a live Morning lookup on every save
     const originalClient = (r.payload as { client?: { id?: string } })?.client?.id ?? null;
     const clientChanged = editClient !== null && editClient !== originalClient;
-    if (multi && changedLines.length === 0 && !clientChanged) {
+    if (multi && changedLines.length === 0 && !descChanged && !clientChanged) {
       setError("אין שינוי");
       return;
     }
@@ -613,11 +626,16 @@ export default function DocumentsClient({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id: r.id,
-          // The two modes are mutually exclusive on the wire, exactly as the
-          // server requires: a multi-line row sends neither amount nor
-          // description, a single-line row sends no lines.
+          // A multi-line row sends no AMOUNT — that is still locked, the column
+          // is Σ of the bundled jobs. It may now send the heading alongside the
+          // lines: since 2026-09-02 they write disjoint parts of the payload, so
+          // one save carries both. A single-line row sends no lines, exactly as
+          // before — there the title and the line are one string.
           ...(multi
-            ? { ...(changedLines.length ? { lines: changedLines } : {}) }
+            ? {
+                ...(changedLines.length ? { lines: changedLines } : {}),
+                ...(descChanged ? { description: descTrimmed } : {}),
+              }
             : { amount: amountNum, description: editDesc.trim() || undefined }),
           ...(clientChanged
             ? {
@@ -803,6 +821,25 @@ export default function DocumentsClient({
                           </div>
                           {incomeLines(r).length > 1 ? (
                             <>
+                              {/* The document HEADING, above the lines because that
+                                  is where it prints: it is the bold line over the
+                                  item table, not one of the items. Exposed
+                                  2026-09-02 — a consolidated 320 inherits its lines
+                                  verbatim from the work order, so they still read
+                                  "הזמנת עבודה — …", and the bookkeeper needs her own
+                                  heading over them. Editing it never touches a
+                                  line; the server writes payload.description alone. */}
+                              <label className="text-[11px]">
+                                <span className="text-[var(--faint)]">כותרת המסמך</span>
+                                <input
+                                  value={editDesc}
+                                  onChange={(e) => setEditDesc(e.target.value)}
+                                  className="w-full mt-0.5 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1"
+                                />
+                                <span className="text-[10px] text-[var(--faint)]">
+                                  השורה המודגשת מעל טבלת הפריטים במסמך. אינה משנה את שורות הפירוט.
+                                </span>
+                              </label>
                               <div className="text-[11px]">
                                 <span className="text-[var(--faint)]">
                                   שורות פירוט ({incomeLines(r).length})
@@ -855,8 +892,8 @@ export default function DocumentsClient({
                                 </div>
                               </div>
                               <div className="text-[10px] text-[var(--faint)]">
-                                הסכום ({r.amount ?? 0} ₪) וכותרת המסמך נגזרים מהעבודות שאוגדו ואינם נערכים כאן —
-                                עריכה כאן משנה את הטקסט של השורות בלבד.
+                                הסכום ({r.amount ?? 0} ₪) נגזר מהעבודות שאוגדו ואינו נערך כאן. הכותרת ושורות
+                                הפירוט כן — הן טקסט בלבד, ואינן משנות אף סכום.
                               </div>
                             </>
                           ) : (
