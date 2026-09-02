@@ -150,8 +150,16 @@ try:
               card.get_by_text("כותרת המסמך", exact=True).count() > 0)
 
         card_txt = card.inner_text()
-        check("3. the note says the AMOUNT is derived (not the title)",
-              "נגזר מהעבודות שאוגדו ואינו נערך כאן" in card_txt, "note text not found")
+        # UPDATED 2026-09-02, and it is the assertion that had to move rather
+        # than the app: this used to check for "הסכום … ואינו נערך כאן", which
+        # merge mode makes FALSE — the amount is an editable input in this form
+        # now, and the balance line beside it is what keeps it honest. The
+        # claim under test is unchanged (the note tells the truth about what is
+        # editable); only the truth it tells has.
+        check("3. the note explains that deleting lines requires re-pricing the survivor",
+              "מחיקת שורות מאחדת את המסמך" in card_txt, "note text not found")
+        check("3b. the running balance is displayed",
+              "סכום השורות:" in card_txt, "balance line not found")
         check("4. the stale 'וכותרת המסמך נגזרים' wording is gone",
               "וכותרת המסמך נגזרים" not in card_txt)
         line_inputs = [i for i in card.locator("input").all()

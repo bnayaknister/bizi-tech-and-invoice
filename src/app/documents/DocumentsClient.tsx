@@ -370,7 +370,11 @@ export default function DocumentsClient({
   // the form edits the LINES and locks the money (the amount is the sum of the
   // bundled jobs); with one, it stays the amount+description form it has always
   // been, because there the title and the line are the same string.
-  const [editLines, setEditLines] = useState<string[]>([]);
+  // Each line as {text, price}. Price became editable with merge mode
+  // (2026-09-02): deleting four of five lines is only meaningful if the
+  // survivor can carry their money. Kept as strings so a half-typed number
+  // does not reset to 0 under the user's cursor.
+  const [editLines, setEditLines] = useState<{ description: string; price: string }[]>([]);
   // The recipient the document will be MADE OUT TO. Separate from the client
   // who owes — a document ordered by one entity and invoiced to another is
   // normal here (owner 2026-08-02), so this picker lists all of Morning's
@@ -596,25 +600,72 @@ export default function DocumentsClient({
     setEditAmount(r.amount === null ? "" : String(r.amount));
     const desc = (r.payload as { description?: string })?.description ?? "";
     setEditDesc(desc);
-    setEditLines(incomeLines(r).map((l) => l.description ?? ""));
+    setEditLines(incomeLines(r).map((l) => ({
+      description: l.description ?? "",
+      price: String(l.price ?? 0),
+    })));
     setEditClient((r.payload as { client?: { id?: string } })?.client?.id ?? null);
     void loadMorningClients();
+  }
+
+  /** Σ of the line prices as currently typed — the live half of the balance. */
+  function lineSum(): number {
+    return Number(
+      editLines.reduce((s, l) => s + (Number(l.price) || 0), 0).toFixed(2)
+    );
+  }
+
+  /**
+   * Do the typed lines add up to the typed amount? Mirrors lineBalance.ts on the
+   * server — same epsilon, same rule. Only meaningful on a multi-line row; a
+   * single-line one has always kept amount and price in lockstep by itself.
+   */
+  function linesBalanced(r: PendingDocRow): boolean {
+    if (incomeLines(r).length <= 1) return true;
+    return Math.abs(lineSum() - Number(editAmount || 0)) <= 0.01;
   }
 
   async function saveEdit(r: PendingDocRow) {
     const lines = incomeLines(r);
     const multi = lines.length > 1;
 
+    // MERGE MODE is entered by what CHANGED, never by a toggle the user has to
+    // find: a line was deleted or added, or a price moved. Text-only edits keep
+    // sending the old `lines` patch, byte for byte, so the path that has been
+    // running since 2026-08-20 is untouched by this feature.
+    const countChanged = multi && editLines.length !== lines.length;
+    const priceChanged =
+      multi &&
+      editLines.length === lines.length &&
+      editLines.some((l, i) => Number(l.price) !== Number(lines[i]?.price ?? 0));
+    const mergeMode = countChanged || priceChanged;
+
     // Only the changed lines are sent. An untouched line must not appear in the
     // audit trail as an edit, and the server refuses a no-op save outright.
-    const changedLines = multi
-      ? editLines
-          .map((description, index) => ({ index, description: description.trim() }))
-          .filter((l) => l.description !== (lines[l.index]?.description ?? ""))
-      : [];
-    if (multi && changedLines.some((l) => l.description.length === 0)) {
+    const changedLines =
+      multi && !mergeMode
+        ? editLines
+            .map((l, index) => ({ index, description: l.description.trim() }))
+            .filter((l) => l.description !== (lines[l.index]?.description ?? ""))
+        : [];
+    if (multi && !mergeMode && changedLines.some((l) => l.description.length === 0)) {
       setError("תיאור שורה לא יכול להיות ריק");
       return;
+    }
+
+    // merge mode: the full final set, plus the amount it must add up to
+    const replaceLines = mergeMode
+      ? editLines.map((l) => ({ description: l.description.trim(), price: Number(l.price) }))
+      : [];
+    if (mergeMode) {
+      if (replaceLines.some((l) => l.description.length === 0)) {
+        setError("תיאור שורה לא יכול להיות ריק");
+        return;
+      }
+      if (replaceLines.some((l) => !Number.isFinite(l.price) || l.price < 0)) {
+        setError("מחיר שורה אינו תקין");
+        return;
+      }
     }
 
     // The document HEADING, on a multi-line row. Independent of the lines since
@@ -639,7 +690,7 @@ export default function DocumentsClient({
     // not cost a live Morning lookup on every save
     const originalClient = (r.payload as { client?: { id?: string } })?.client?.id ?? null;
     const clientChanged = editClient !== null && editClient !== originalClient;
-    if (multi && changedLines.length === 0 && !descChanged && !clientChanged) {
+    if (multi && !mergeMode && changedLines.length === 0 && !descChanged && !clientChanged) {
       setError("אין שינוי");
       return;
     }
@@ -651,12 +702,19 @@ export default function DocumentsClient({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id: r.id,
-          // A multi-line row sends no AMOUNT — that is still locked, the column
-          // is Σ of the bundled jobs. It may now send the heading alongside the
-          // lines: since 2026-09-02 they write disjoint parts of the payload, so
-          // one save carries both. A single-line row sends no lines, exactly as
-          // before — there the title and the line are one string.
-          ...(multi
+          // Three shapes, mutually exclusive, exactly as the server expects:
+          //   merge      — the final line set AND the amount, checked against
+          //                each other by the balance gate
+          //   multi-line — the text patch and the heading; no amount, still
+          //                locked, the column is Σ of the bundled jobs
+          //   single     — amount + description, the original path
+          ...(mergeMode
+            ? {
+                replace_lines: replaceLines,
+                amount: amountNum,
+                ...(descChanged ? { description: descTrimmed } : {}),
+              }
+            : multi
             ? {
                 ...(changedLines.length ? { lines: changedLines } : {}),
                 ...(descChanged ? { description: descTrimmed } : {}),
@@ -867,16 +925,24 @@ export default function DocumentsClient({
                               </label>
                               <div className="text-[11px]">
                                 <span className="text-[var(--faint)]">
-                                  שורות פירוט ({incomeLines(r).length})
+                                  שורות פירוט ({editLines.length}
+                                  {editLines.length !== incomeLines(r).length
+                                    ? ` — היו ${incomeLines(r).length}`
+                                    : ""}
+                                  )
                                 </span>
                                 <div className="mt-0.5 flex flex-col gap-1">
-                                  {incomeLines(r).map((l, i) => {
-                                    // which line to fix, not merely that one of
-                                    // them needs fixing — on a 4-episode bundle
-                                    // the difference is the whole point
-                                    const flagged = missingGuest(r).includes(i);
-                                    const lineGuest = r.guests_by_line?.[i] ?? null;
-                                    const suggestion = r.suggested_by_line?.[i] ?? null;
+                                  {editLines.map((line, i) => {
+                                    // The guest flags are positional against the
+                                    // ORIGINAL row, so they only mean anything
+                                    // while the set is untouched. Once a line is
+                                    // deleted the indices no longer line up and
+                                    // showing them would point at the wrong
+                                    // episode — worse than showing nothing.
+                                    const intact = editLines.length === incomeLines(r).length;
+                                    const flagged = intact && missingGuest(r).includes(i);
+                                    const lineGuest = intact ? r.guests_by_line?.[i] ?? null : null;
+                                    const suggestion = intact ? r.suggested_by_line?.[i] ?? null : null;
                                     return (
                                       <div key={i} className="flex flex-col gap-0.5">
                                         {/* The guest as READABLE TEXT, not a tooltip on a ⚠ glyph.
@@ -895,11 +961,11 @@ export default function DocumentsClient({
                                             </span>
                                           )}
                                           <input
-                                            value={editLines[i] ?? ""}
+                                            value={line.description}
                                             onChange={(e) =>
                                               setEditLines((prev) => {
                                                 const next = [...prev];
-                                                next[i] = e.target.value;
+                                                next[i] = { ...next[i], description: e.target.value };
                                                 return next;
                                               })
                                             }
@@ -907,18 +973,81 @@ export default function DocumentsClient({
                                               flagged ? "border-[var(--warn)]" : "border-[var(--rule)]"
                                             }`}
                                           />
-                                          <span className="shrink-0 font-mono text-[10px] text-[var(--faint)]">
-                                            {l.quantity ?? 1} × {l.price ?? 0}
-                                          </span>
+                                          <input
+                                            value={line.price}
+                                            onChange={(e) =>
+                                              setEditLines((prev) => {
+                                                const next = [...prev];
+                                                next[i] = { ...next[i], price: e.target.value };
+                                                return next;
+                                              })
+                                            }
+                                            inputMode="decimal"
+                                            className="shrink-0 w-20 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1 font-mono text-left"
+                                          />
+                                          {/* the last line may never be deleted — a
+                                              document must carry at least one, and the
+                                              server refuses it too */}
+                                          <button
+                                            type="button"
+                                            disabled={editLines.length <= 1}
+                                            title={
+                                              editLines.length <= 1
+                                                ? "לא ניתן למחוק את השורה האחרונה"
+                                                : "מחק שורה"
+                                            }
+                                            onClick={() =>
+                                              setEditLines((prev) => prev.filter((_, j) => j !== i))
+                                            }
+                                            className="shrink-0 text-[var(--peak)] px-1 disabled:opacity-30"
+                                          >
+                                            ✕
+                                          </button>
                                         </div>
                                       </div>
                                     );
                                   })}
                                 </div>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setEditLines((prev) => [...prev, { description: "", price: "0" }])
+                                  }
+                                  className="mt-1 text-[10px] text-[var(--violet-light)] hover:underline"
+                                >
+                                  ＋ הוסף שורה
+                                </button>
+                              </div>
+
+                              {/* ---- the live balance ----
+                                  The heart of this form. Deleting four of five
+                                  lines leaves 600 against a 3,000 document, and
+                                  without this line the bookkeeper would only find
+                                  out from a refusal — or, before the gate existed,
+                                  from a wrong tax invoice. Σ is shown next to the
+                                  document amount at every keystroke. */}
+                              <label className="text-[11px]">
+                                <span className="text-[var(--faint)]">סכום המסמך (₪)</span>
+                                <input
+                                  value={editAmount}
+                                  onChange={(e) => setEditAmount(e.target.value)}
+                                  inputMode="decimal"
+                                  className="w-full mt-0.5 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1 font-mono"
+                                />
+                              </label>
+                              <div
+                                className={`text-[11px] font-mono ${
+                                  linesBalanced(r) ? "text-[var(--green)]" : "text-[var(--peak)]"
+                                }`}
+                              >
+                                סכום השורות: {lineSum().toLocaleString("he-IL")} ₪{" "}
+                                {linesBalanced(r)
+                                  ? "✓ תואם את סכום המסמך"
+                                  : `✗ סכום המסמך: ${Number(editAmount || 0).toLocaleString("he-IL")} ₪`}
                               </div>
                               <div className="text-[10px] text-[var(--faint)]">
-                                הסכום ({r.amount ?? 0} ₪) נגזר מהעבודות שאוגדו ואינו נערך כאן. הכותרת ושורות
-                                הפירוט כן — הן טקסט בלבד, ואינן משנות אף סכום.
+                                מחיקת שורות מאחדת את המסמך. הסכום הכולל חייב להישאר זהה — אם מוחקים שורות,
+                                יש לעדכן את המחיר של השורה שנשארת.
                               </div>
                             </>
                           ) : (
@@ -949,7 +1078,8 @@ export default function DocumentsClient({
                           )}
                           <div className="flex gap-2">
                             <button
-                              disabled={busy}
+                              disabled={busy || !linesBalanced(r)}
+                              title={!linesBalanced(r) ? "סכום השורות אינו תואם את סכום המסמך" : undefined}
                               onClick={() => saveEdit(r)}
                               className="text-[11px] bg-[var(--signal)] text-white font-bold rounded-lg px-3 py-1 disabled:opacity-40"
                             >

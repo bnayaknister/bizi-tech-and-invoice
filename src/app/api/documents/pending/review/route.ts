@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { issuePendingDocument, type PendingRow } from "@/lib/documents/issue";
+import { balanceError } from "@/lib/documents/lineBalance";
 import { todayInIsrael } from "@/lib/dates";
 import { isDryRun, morningEnv } from "@/lib/morning/client";
 import {
@@ -773,6 +774,24 @@ async function checkPaymentShape(
       error: `${DOC_TYPE_LABEL[row.doc_type]} בלי שורות הכנסה — אין מה להנפיק`,
     };
   }
+
+  // ---- the balance gate: Σ(lines) must equal the amount column -------------
+  // A HOLE, closed 2026-09-02, and it stands on its own: until now NOTHING
+  // compared the printed lines against the figure our books carry. Only 320 and
+  // 400 were checked at all, and only their PAYMENT block, and only against the
+  // parent's gross — so a 305 whose lines summed to 600 while the column said
+  // 3,000 passed every gate and issued silently. On a tax document that is
+  // unrecoverable.
+  //
+  // Deliberately BEFORE the `needsPayment` early return, so it covers 305 and
+  // the two work-order types too — every document that carries lines at all,
+  // not only the ones that also carry money. That placement is the fix.
+  //
+  // Audited before shipping: 51 of 51 queue rows carrying income already
+  // satisfy this, so nothing existing is rejected by it
+  // (scripts/audit_line_balance.py).
+  const imbalance = balanceError(incomeRows, row.amount);
+  if (imbalance) return { ok: false, status: 400, error: imbalance };
 
   if (!needsPayment) return { ok: true, payload: supplied !== undefined ? payload : undefined };
 

@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { balanceError } from "@/lib/documents/lineBalance";
 import { listClients, MorningError } from "@/lib/morning/client";
-import type { MorningDocumentRequest } from "@/lib/morning/types";
+import type { MorningDocumentRequest, MorningIncomeRow } from "@/lib/morning/types";
 
 // "ערוך פרטים לפני אישור" (owner spec) — the bookkeeper corrects a queued
 // document before it's issued. Amount, description and the RECIPIENT.
@@ -114,10 +115,26 @@ export async function POST(request: Request) {
     morningClientName?: string;
     // multi-line mode — see the block comment above
     lines?: { index?: number; description?: string }[];
+    // MERGE MODE (owner spec 2026-09-02) — the FULL replacement line set.
+    // Separate from `lines` on purpose, see the block comment above.
+    replace_lines?: { description?: string; price?: number; quantity?: number }[];
   };
   if (!body.id) return NextResponse.json({ error: "חסר מזהה מסמך" }, { status: 400 });
 
   const hasLines = Array.isArray(body.lines);
+  const hasReplace = Array.isArray(body.replace_lines);
+  if (hasLines && hasReplace) {
+    // one describes a patch, the other the final state; together they have no
+    // single meaning and the winner would be an accident of statement order
+    return NextResponse.json(
+      { error: "לא ניתן לשלוח גם עריכת שורות וגם החלפת שורות באותה בקשה" },
+      { status: 400 }
+    );
+  }
+  // `amount` alongside `lines` stays refused: a text-only edit must never move
+  // money. Alongside `replace_lines` it is REQUIRED (see the balance gate) —
+  // that is the whole point of merge mode, and the two numbers are checked
+  // against each other rather than either being trusted alone.
   if (hasLines && typeof body.amount === "number") {
     return NextResponse.json(
       { error: "לא ניתן לערוך סכום בעריכה רב-שורתית — הסכום נגזר מהעבודות שאוגדו" },
@@ -145,8 +162,17 @@ export async function POST(request: Request) {
   //
   // `lines` on a single-line row is still refused, just later and with a better
   // sentence: the income-length gate below names the real reason.
-  if (!hasAmount && !hasLines && newDescription === undefined && newMorningClientId === undefined) {
+  if (!hasAmount && !hasLines && !hasReplace && newDescription === undefined && newMorningClientId === undefined) {
     return NextResponse.json({ error: "אין שינוי" }, { status: 400 });
+  }
+  // merge mode restates the whole money side, so the amount must be restated
+  // with it — there is no "keep whatever the column said" that could be
+  // verified against the new lines
+  if (hasReplace && !hasAmount) {
+    return NextResponse.json(
+      { error: "החלפת שורות מחייבת גם את סכום המסמך, כדי שהשניים ייבדקו זה מול זה" },
+      { status: 400 }
+    );
   }
   if (hasAmount && (!(body.amount! > 0) || !Number.isFinite(body.amount))) {
     return NextResponse.json({ error: "סכום חייב להיות מספר חיובי" }, { status: 400 });
@@ -201,8 +227,14 @@ export async function POST(request: Request) {
   // contain, which is why it can only live here — parse time cannot know how
   // many lines the document has. The single-line path is untouched: there the
   // amount and the one line are the same money and editing it is the point.
+  //
+  // QUALIFIED 2026-09-02, not lifted. Merge mode restates the lines and the
+  // amount together and the balance gate below proves they agree, so the thing
+  // this refusal protects against — a number moving with nothing to check it
+  // against — cannot happen there. `amount` alone on a bundle is still refused,
+  // exactly as it was.
   const incomeLen = Array.isArray(payload.income) ? payload.income.length : 0;
-  if (hasAmount && incomeLen > 1) {
+  if (hasAmount && incomeLen > 1 && !hasReplace) {
     return NextResponse.json(
       {
         error:
@@ -211,6 +243,81 @@ export async function POST(request: Request) {
       },
       { status: 400 }
     );
+  }
+
+  // ---- MERGE MODE: the full replacement line set ----------------------------
+  // `lines` is a patch map keyed by index and can never change the line COUNT
+  // (its output is always payload.income.map(...)). Merging five episode lines
+  // into one — the bookkeeper's "הפקת חומרים שיווקיים אוגוסט, 3,000 ₪" — needs
+  // a shape that states the FINAL set, so deleting is expressible at all.
+  //
+  // A replacement array rather than a delete flag on an index, because a
+  // per-index delete depends on evaluation order (delete 1 and 3 of 5 — before
+  // or after each renumbering?) while a final-state array has one reading and
+  // is the same object the balance check runs on.
+  //
+  // MERGE ONLY, by owner decision 2026-09-02: refused on a single-line document.
+  // The contract would support splitting one line into several for free, but
+  // nobody has asked for it and an unexercised path through the money side is
+  // not worth carrying. One guard, reversible the day it is wanted.
+  let replacementIncome: MorningIncomeRow[] | null = null;
+  if (hasReplace) {
+    const existing = Array.isArray(payload.income) ? payload.income : [];
+    if (existing.length <= 1) {
+      return NextResponse.json(
+        {
+          error:
+            existing.length === 0
+              ? "מסמך זה אינו נושא שורות פירוט"
+              : "פיצול שורה בודדת לכמה שורות אינו נתמך — החלפת שורות מיועדת לאיחוד מסמך מאוגד",
+        },
+        { status: 400 }
+      );
+    }
+    const sent = body.replace_lines!;
+    if (sent.length === 0) {
+      // income is required on everything except a receipt (the review route's
+      // own gate), and a receipt never reaches here — it has no lines to replace
+      return NextResponse.json(
+        { error: "לא ניתן למחוק את כל שורות הפירוט — מסמך חייב לשאת לפחות שורה אחת" },
+        { status: 400 }
+      );
+    }
+    if (sent.length > existing.length) {
+      return NextResponse.json(
+        { error: `החלפת שורות מיועדת לאיחוד — אי אפשר להגדיל מ-${existing.length} ל-${sent.length} שורות` },
+        { status: 400 }
+      );
+    }
+    const built: MorningIncomeRow[] = [];
+    for (let i = 0; i < sent.length; i++) {
+      const raw = sent[i];
+      const description = typeof raw?.description === "string" ? raw.description.trim() : "";
+      if (description.length === 0) {
+        return NextResponse.json({ error: `תיאור שורה ${i + 1} לא יכול להיות ריק` }, { status: 400 });
+      }
+      const price = Number(raw?.price);
+      // >= 0, not > 0: a zero line is legitimate (a free episode inherited from
+      // a work order), and refusing it would be inventing a rule
+      if (!Number.isFinite(price) || price < 0) {
+        return NextResponse.json({ error: `מחיר שורה ${i + 1} אינו תקין` }, { status: 400 });
+      }
+      const quantity = raw?.quantity === undefined ? 1 : Number(raw.quantity);
+      if (!Number.isInteger(quantity) || quantity < 1) {
+        return NextResponse.json({ error: `כמות שורה ${i + 1} אינה תקינה` }, { status: 400 });
+      }
+      // currency/vatType are carried from the row being replaced, never from the
+      // request: they are facts about the document, not about this edit
+      const template = existing[Math.min(i, existing.length - 1)];
+      built.push({
+        description,
+        quantity,
+        price: Number(price.toFixed(2)),
+        currency: template?.currency ?? "ILS",
+        vatType: template?.vatType ?? 0,
+      });
+    }
+    replacementIncome = built;
   }
 
   // ---- multi-line validation: everything, before anything is written --------
@@ -290,7 +397,11 @@ export async function POST(request: Request) {
     payload.client = { id: match.id, name: match.name, add: false };
   }
 
-  if (hasAmount) {
+  // merge mode replaces the whole set outright — the single-line price write
+  // below is the OTHER path and must not also run
+  if (replacementIncome) {
+    payload.income = replacementIncome;
+  } else if (hasAmount) {
     payload.income = (payload.income ?? []).map((r, i) => (i === 0 ? { ...r, price: body.amount! } : r));
   }
   if (newDescription !== undefined) {
@@ -330,6 +441,18 @@ export async function POST(request: Request) {
   const patch: Record<string, unknown> = { payload };
   if (hasAmount) patch.amount = body.amount;
 
+  // ---- the balance gate ----------------------------------------------------
+  // Σ(price × quantity) must equal the amount column. Checked on the FINAL
+  // payload, after every branch above has had its say, so one gate covers merge
+  // mode, the single-line price write and the text-only path alike — and a
+  // future branch cannot slip past it by being written somewhere else.
+  //
+  // It stops the save while the bookkeeper is still on the form and can fix it.
+  // The same rule is enforced again in the review route, where it is the real
+  // wall: a row can reach approval by paths that never touch this file.
+  const editBalance = balanceError(payload.income, (patch.amount as number | undefined) ?? row.amount);
+  if (editBalance) return NextResponse.json({ error: editBalance }, { status: 400 });
+
   const { error } = await admin.from("pending_documents").update(patch).eq("id", body.id);
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
@@ -356,6 +479,17 @@ export async function POST(request: Request) {
         ? {
             mode: "lines",
             lines: lineEdits.map((l) => ({ index: l.index, before: l.before, after: l.description })),
+          }
+        : {}),
+      // merge mode records BOTH line sets in full. A deleted line leaves no
+      // trace anywhere else — there is no index to point at afterwards — so if
+      // this event does not carry the old set, the money that used to be on
+      // those lines is unreconstructable.
+      ...(replacementIncome
+        ? {
+            mode: "replace_lines",
+            income_before: (row.payload as MorningDocumentRequest)?.income ?? [],
+            income_after: replacementIncome,
           }
         : {}),
     },
