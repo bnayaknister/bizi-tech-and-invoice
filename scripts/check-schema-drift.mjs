@@ -20,6 +20,30 @@
 // no personal access token, no database password, no direct DB connection.
 // It is a plain read.
 //
+// ⚠️ WHAT IT DOES **NOT** CHECK — read this before trusting a green tick.
+// The comparison covers TABLES, VIEWS, COLUMNS and ENUM VALUES. Nothing else.
+// Two whole sections of the generated file are invisible to it:
+//
+//   • Constants — the enums appear TWICE in database.types.ts: once as a type
+//     under `Enums`, once as a runtime array under `Constants`. This script
+//     reads the first and never looks at the second.
+//   • Functions — every exposed RPC, its Args and its Returns.
+//
+// This is not theoretical; both were caught in the same hour on 2026-09-02,
+// while the check was reporting ✅:
+//   • Constants.show_pricing_model was missing after 0067's enum was added to
+//     `Enums` by hand and not to `Constants`. Green.
+//   • ensure_job_for_production — an exposed RPC (/rpc/ensure_job_for_production)
+//     since 0060 on 2026-08-24 — was absent from `Functions` for a fortnight.
+//     Green that whole time, and it only surfaced because 0067 replaced the
+//     function and the file was regenerated for an unrelated reason.
+//
+// So: a ✅ here means "no table, view, column or enum value has drifted". It is
+// NOT a substitute for running the generator, and it never confirms that the
+// committed file equals what the generator would produce today:
+//   npx supabase gen types typescript --project-id teobjwdszasavvmvukfb > src/lib/supabase/database.types.ts
+// Widening this to Functions and Constants is an open ticket (docs/TICKETS.md).
+//
 // FAIL-OPEN BY DESIGN. The only condition that returns a non-zero exit is a
 // successfully-fetched, confirmed divergence. Missing key, unreachable
 // endpoint, non-200, timeout, unparseable file, no types file yet — all warn
