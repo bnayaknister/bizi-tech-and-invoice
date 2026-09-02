@@ -1042,6 +1042,7 @@ export type Database = {
           status: Database["public"]["Enums"]["production_status"]
           storage_disk: string | null
           studio: string | null
+          studio_hours: number | null
         }
         Insert: {
           billing_block_reason?: string | null
@@ -1087,6 +1088,7 @@ export type Database = {
           status?: Database["public"]["Enums"]["production_status"]
           storage_disk?: string | null
           studio?: string | null
+          studio_hours?: number | null
         }
         Update: {
           billing_block_reason?: string | null
@@ -1132,6 +1134,7 @@ export type Database = {
           status?: Database["public"]["Enums"]["production_status"]
           storage_disk?: string | null
           studio?: string | null
+          studio_hours?: number | null
         }
         Relationships: [
           {
@@ -1257,12 +1260,14 @@ export type Database = {
           default_rate: number | null
           default_studio: string | null
           has_episode: boolean
+          hourly_rate: number | null
           id: string
           internal_confirmed_at: string | null
           internal_confirmed_by: string | null
           is_oneoff: boolean
           name: string
           notes: string | null
+          pricing_model: Database["public"]["Enums"]["show_pricing_model"]
           reels_count: number
           settings: Json
         }
@@ -1278,12 +1283,14 @@ export type Database = {
           default_rate?: number | null
           default_studio?: string | null
           has_episode?: boolean
+          hourly_rate?: number | null
           id?: string
           internal_confirmed_at?: string | null
           internal_confirmed_by?: string | null
           is_oneoff?: boolean
           name: string
           notes?: string | null
+          pricing_model?: Database["public"]["Enums"]["show_pricing_model"]
           reels_count?: number
           settings?: Json
         }
@@ -1299,12 +1306,14 @@ export type Database = {
           default_rate?: number | null
           default_studio?: string | null
           has_episode?: boolean
+          hourly_rate?: number | null
           id?: string
           internal_confirmed_at?: string | null
           internal_confirmed_by?: string | null
           is_oneoff?: boolean
           name?: string
           notes?: string | null
+          pricing_model?: Database["public"]["Enums"]["show_pricing_model"]
           reels_count?: number
           settings?: Json
         }
@@ -1564,6 +1573,7 @@ export type Database = {
         | "הופץ"
         | "בוטל"
       show_billing_mode: "per_episode" | "contract" | "none"
+      show_pricing_model: "per_episode" | "per_hour"
       stage_status: "pending" | "in_progress" | "done"
       stage_step: "record" | "edit" | "deliver"
       stage_track: "episode" | "reels"
