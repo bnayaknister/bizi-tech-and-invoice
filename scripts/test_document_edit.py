@@ -10,6 +10,16 @@ Proves:
   2. a negative amount is refused
   3. an issued row is frozen (409)
   4. a stages-only user can't edit (403)
+
+Assertions 9, 10d and 14 were rewritten on 2026-09-02 against the contract
+d952b85 established the same morning: `lines` + `description` in one request is
+no longer refused, because the heading stopped being mirrored into line 0 of a
+multi-line document and the two therefore no longer collide. What 9 now proves
+is the thing the removal depended on — the heading lands on
+payload.description and NOWHERE near line 0. 10d needed a fresh baseline (the
+old one predated a write that is now legal) and 14 a second event. Nothing was
+relaxed: 8 gained an explicit "the refusal wrote nothing", and every other
+refusal in the file still refuses.
 """
 import base64
 import json
@@ -204,11 +214,41 @@ try:
 
     # 8. money is locked in multi-line mode
     r = edit(money, id=bid, amount=999, lines=[{"index": 0, "description": "x"}])
-    check("8. lines + amount refused (400)", r.status_code == 400, r.text[:120])
+    check("8a. lines + amount refused (400)", r.status_code == 400, r.text[:120])
+    check("8b. ...and the refusal wrote nothing", payload_of(bid)["payload"] == after["payload"],
+          "payload moved after a refused request")
 
-    # 9. lines + description refused (both write income[0])
-    r = edit(money, id=bid, description="y", lines=[{"index": 0, "description": "x"}])
-    check("9. lines + description refused (400)", r.status_code == 400, r.text[:120])
+    # 9. lines + description TOGETHER — ACCEPTED since d952b85 (2026-09-02).
+    #
+    # This assertion used to demand a 400. The lock's stated reason was "both
+    # write income[0]", and that stopped being true the moment the heading
+    # stopped being mirrored into line 0 of a MULTI-line document (the mirror is
+    # now conditional on exactly one line — edit/route.ts). Keeping the refusal
+    # would have forced two saves for one edit: two audit rows, and a window in
+    # which the lines were stored and the heading was not, on a document that
+    # cannot be corrected once issued.
+    #
+    # The line edited here is index 2, deliberately NOT index 0: what has to be
+    # proven is that the heading lands on payload.description and nowhere near
+    # line 0 — which is the episode the old mirror silently deleted.
+    r = edit(money, id=bid, description="כותרת מאוחדת", lines=[{"index": 2, "description": "פרק שלישי מתוקן"}])
+    check("9a. lines + description accepted in ONE save (post-d952b85)",
+          r.status_code == 200 and r.json().get("ok"), r.text[:150])
+    combined = payload_of(bid)
+    cinc = combined["payload"]["income"]
+    check("9b. the heading was written to payload.description",
+          combined["payload"]["description"] == "כותרת מאוחדת", combined["payload"]["description"])
+    check("9c. line 0 is byte-for-byte untouched — the heading did NOT overwrite it",
+          cinc[0] == after["payload"]["income"][0],
+          json.dumps([cinc[0], after["payload"]["income"][0]], ensure_ascii=False)[:200])
+    check("9d. the named line took the line's own text", cinc[2]["description"] == "פרק שלישי מתוקן",
+          cinc[2]["description"])
+    check("9e. the amount column still did not move with a line edit",
+          float(combined["amount"]) == 303.0, str(combined["amount"]))
+
+    # the baseline for 10d, and it has to be taken HERE: after the last accepted
+    # write, or it measures that write instead of the refusals it is about
+    frozen = payload_of(bid)["payload"]
 
     # 10. index validation
     r = edit(money, id=bid, lines=[{"index": 7, "description": "x"}])
@@ -220,7 +260,7 @@ try:
 
     # 10d. a rejected batch must leave the row EXACTLY as it was — the whole
     # point of validating everything before writing anything
-    check("10d. refused batches wrote nothing", payload_of(bid)["payload"] == after["payload"],
+    check("10d. refused batches wrote nothing", payload_of(bid)["payload"] == frozen,
           "payload moved after a refused request")
 
     # 11. one line means the old path — the title must keep moving with it
@@ -246,16 +286,32 @@ try:
           and srow["payload"]["income"][0]["description"] == "רגרסיה",
           json.dumps(srow["payload"], ensure_ascii=False)[:200])
 
-    # 14. the audit trail records the line edit, per line
+    # 14. the audit trail records the line edit, per line.
+    #
+    # TWO accepted line edits reach this row now — test 5 (line only) and test 9
+    # (line + heading, one save) — so the count moved from 1 to 2 and the events
+    # are keyed by the index they touched rather than by position: nothing
+    # guarantees the order they come back in.
     evs = requests.get(
         rest(f"events?entity_id=eq.{bid}&event_type=eq.document_edited&select=payload"),
         headers=ADMIN).json()
     line_evs = [e for e in evs if (e["payload"] or {}).get("mode") == "lines"]
-    check("14. document_edited event carries per-line before/after",
-          len(line_evs) == 1
-          and line_evs[0]["payload"]["lines"] == [
+    by_index = {p["lines"][0]["index"]: p
+                for p in (e["payload"] for e in line_evs)
+                if len(p.get("lines") or []) == 1}
+    check("14a. one document_edited event per accepted line edit, no more",
+          len(line_evs) == 2 and len(by_index) == 2, json.dumps(line_evs, ensure_ascii=False)[:220])
+    check("14b. the line-only edit carries before/after for the line it touched",
+          by_index.get(1, {}).get("lines") == [
               {"index": 1, "before": f"{MARK} line 1", "after": "פרק שני מתוקן"}],
-          json.dumps(line_evs, ensure_ascii=False)[:220])
+          json.dumps(by_index.get(1), ensure_ascii=False)[:220])
+    # the atomicity the removed lock was costing: ONE audit row for an edit that
+    # moved both a line and the heading, never two
+    check("14c. the combined edit is a SINGLE event carrying the line and the new heading",
+          by_index.get(2, {}).get("lines") == [
+              {"index": 2, "before": f"{MARK} line 2", "after": "פרק שלישי מתוקן"}]
+          and by_index.get(2, {}).get("after", {}).get("description") == "כותרת מאוחדת",
+          json.dumps(by_index.get(2), ensure_ascii=False)[:260])
 
 finally:
     print("\n--- cleanup ---")
