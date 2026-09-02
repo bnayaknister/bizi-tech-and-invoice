@@ -151,6 +151,129 @@ function RecipientPicker({
   );
 }
 
+// ---- the manual document date (owner spec 2026-09-02) ----------------------
+// Lifted out of the tax-confirmation modal on 2026-09-02, when the same field
+// was asked for on the recipient modal (100/300). The server has always been
+// type-blind here — review/route.ts gates on `ids.length === 1` and nothing
+// else — so the only thing that kept a work order from carrying a chosen date
+// was that no screen offered one.
+//
+// Shared as components rather than copied because this is a money guard with
+// three parts that have to agree (the stated date, the field's rules, the
+// month-cross confirmation). Two copies drift, and the copy that drifts is the
+// one nobody is looking at.
+//
+// The SERVER is the authority and re-validates every rule below; these mirrors
+// exist so an impossible date disables the button with a sentence instead of a
+// round-trip.
+const DOC_DATE_MAX_BACKDATE_DAYS = 14;
+
+const asILDate = (iso: string) => iso.split("-").reverse().join(".");
+
+function earliestDocDate(todayIL: string) {
+  return new Date(Date.parse(`${todayIL}T00:00:00Z`) - DOC_DATE_MAX_BACKDATE_DAYS * 86400_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** null when the date is usable (empty included — empty means "today"). */
+function docDateIssue(docDate: string, todayIL: string): string | null {
+  if (docDate === "") return null;
+  if (docDate > todayIL) return "לא ניתן לתארך מסמך קדימה — תאריך המסמך הוא לכל המאוחר יום ההנפקה";
+  const earliest = earliestDocDate(todayIL);
+  if (docDate < earliest)
+    return `ניתן לתארך אחורה עד ${DOC_DATE_MAX_BACKDATE_DAYS} יום (המוקדם ביותר: ${earliest})`;
+  return null;
+}
+
+/**
+ * ALWAYS shown, chosen date or not. The document date appeared nowhere in the
+ * approval modals, and its absence is what led the owner to read the
+ * payment-date field as the document date. What the document will carry is
+ * stated before the click.
+ */
+function DocDateSummary({ docDate, todayIL }: { docDate: string; todayIL: string }) {
+  return (
+    <div>
+      <span className="text-[var(--faint)]">תאריך המסמך: </span>
+      {docDate ? (
+        <span className="font-bold text-[var(--violet-light)]">
+          {asILDate(docDate)} — נבחר ידנית (ברירת המחדל: היום)
+        </span>
+      ) : (
+        <span>{asILDate(todayIL)} — יום ההנפקה</span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The field, its note, and the local refusal sentence — its own block on
+ * purpose. NOT inside a payment block: that one renders only for 320/400 while
+ * the document date applies to a 305, a 100 and a 300 too — and blending the
+ * two dates is exactly the confusion this field exists to end.
+ */
+function DocDateField({
+  value,
+  todayIL,
+  onChange,
+}: {
+  value: string;
+  todayIL: string;
+  onChange: (v: string) => void;
+}) {
+  const issue = docDateIssue(value, todayIL);
+  return (
+    <div className="border-t border-[var(--rule)] pt-3 mb-3">
+      <label className="block">
+        <span className="text-[var(--faint)] text-[11px]">תאריך המסמך (אופציונלי)</span>
+        <input
+          type="date"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full mt-1 bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-sm font-mono"
+        />
+        <span className="text-[10px] text-[var(--faint)]">
+          ריק = היום, יום ההנפקה. תיארוך אחורה עד {DOC_DATE_MAX_BACKDATE_DAYS} יום; מעבר לחודש קודם ידרוש
+          אישור נוסף. לא ניתן לתארך קדימה.
+        </span>
+      </label>
+      {issue && <div className="mt-1 text-[11px] text-[var(--warn)]">{issue}</div>}
+    </div>
+  );
+}
+
+/**
+ * The month-crossing gate's second step (server 409). The modal's own approve
+ * button stays disabled while this is open: the ONLY way forward with this date
+ * is the button that names it — a click reading "כן, הנפק" or "אשר ושלח" must
+ * not be the one that backdates a document into a closed reporting period.
+ */
+function BackdateConfirm({
+  warn,
+  docDate,
+  busy,
+  onConfirm,
+}: {
+  warn: string;
+  docDate: string;
+  busy: boolean;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="text-[11px] text-[var(--warn)] border border-[var(--warn)] rounded-xl px-3 py-2 mb-3 leading-relaxed">
+      <div className="mb-2">⚠️ {warn}</div>
+      <button
+        disabled={busy}
+        onClick={onConfirm}
+        className="w-full border border-[var(--warn)] text-[var(--warn)] text-xs font-bold rounded-xl px-4 py-2 disabled:opacity-40"
+      >
+        אני מאשרת — הנפק בתאריך {asILDate(docDate)}
+      </button>
+    </div>
+  );
+}
+
 /**
  * The exact body that will be POSTed to Morning, shown before the last click.
  *
@@ -424,12 +547,27 @@ export default function DocumentsClient({
     });
   }
 
+  /** picking a date invalidates a confirmation given for the previous one */
+  function pickDocDate(v: string) {
+    setDocDate(v);
+    setBackdateWarn(null);
+  }
+
   // non-tax: the recipient modal's confirm → issue with the chosen recipients
+  // and, since 2026-09-02, the document date it picked.
+  //
+  // The modal is NOT closed here any more. It used to close on the click, which
+  // was harmless while the only outcome was success-or-toast; a month-crossing
+  // 409 renders its confirmation panel INSIDE this modal, and closing it would
+  // throw away both the panel and the date that produced it. `send` closes it
+  // on success (and only then), exactly as it does for the tax modal.
   function submitRecipients() {
     const r = recipientFor;
     if (!r) return;
-    setRecipientFor(null);
-    send([r.id], "approve", { recipients: selectedEmails });
+    send([r.id], "approve", {
+      recipients: selectedEmails,
+      ...(docDate ? { doc_date: docDate } : {}),
+    });
   }
 
   const groups = useMemo(() => {
@@ -457,11 +595,23 @@ export default function DocumentsClient({
   async function send(ids: string[], action: "approve" | "reject", extra: Record<string, unknown> = {}) {
     setBusy(true);
     setError(null);
+    // A manual document date is a single-document decision, and the server
+    // refuses it on a batch with a 400 ("...מסמך בודד בלבד"). Both modals that
+    // can carry one send exactly one id, and the batch buttons open no modal at
+    // all — so this strip is unreachable today. It is here so it STAYS
+    // unreachable: the day someone routes a batch through a modal that holds a
+    // stale docDate, the batch issues on the default date instead of dying on a
+    // 400 in the bookkeeper's face.
+    const payload = { ...extra };
+    if (ids.length !== 1) {
+      delete payload.doc_date;
+      delete payload.confirm_backdate;
+    }
     try {
       const res = await fetch("/api/documents/pending/review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids, action, ...extra }),
+        body: JSON.stringify({ ids, action, ...payload }),
       });
       const body = await res.json();
       if (res.status === 412 && body.needs_confirmation) {
@@ -543,6 +693,11 @@ export default function DocumentsClient({
       void loadRecipients(r);
       return;
     }
+    // 100/300: the recipient modal, which since 2026-09-02 carries the document
+    // date too. Same reset, same reason — a date chosen for the previous
+    // document must never survive into the next one.
+    setDocDate("");
+    setBackdateWarn(null);
     setRecipientFor(r);
     void loadRecipients(r);
   }
@@ -1182,19 +1337,10 @@ export default function DocumentsClient({
           : undefined;
 
         // ---- the document date (owner spec 2026-09-02) ----
-        // The SERVER is the authority (review/route.ts validates again); these
-        // mirrors exist so an impossible date disables the button with a
-        // sentence instead of a round-trip. Same 14-day constant, same order.
+        // The field, its rules and its confirmation panel are shared with the
+        // recipient modal — see the block above the component.
         const todayIL = todayInIsrael();
-        const earliestDocDate = new Date(Date.parse(`${todayIL}T00:00:00Z`) - 14 * 86400_000)
-          .toISOString()
-          .slice(0, 10);
-        const docDateIssue =
-          docDate === "" ? null
-          : docDate > todayIL ? "לא ניתן לתארך מסמך קדימה — תאריך המסמך הוא לכל המאוחר יום ההנפקה"
-          : docDate < earliestDocDate ? `ניתן לתארך אחורה עד 14 יום (המוקדם ביותר: ${earliestDocDate})`
-          : null;
-        const asIL = (iso: string) => iso.split("-").reverse().join(".");
+        const dateIssue = docDateIssue(docDate, todayIL);
         // everything the approve buttons send — built once so the main button
         // and the backdate-confirm button can never disagree on anything but
         // the confirm flag itself
@@ -1223,20 +1369,7 @@ export default function DocumentsClient({
                 <span className="text-[var(--faint)]">סכום: </span>
                 <span className="font-bold">{money(confirming.amount)}</span>
               </div>
-              {/* ALWAYS shown, chosen date or not. The document date appeared
-                  nowhere in this modal, and its absence is what led the owner
-                  to read the payment-date field as the document date. What the
-                  document will carry is stated here before the click. */}
-              <div>
-                <span className="text-[var(--faint)]">תאריך המסמך: </span>
-                {docDate ? (
-                  <span className="font-bold text-[var(--violet-light)]">
-                    {asIL(docDate)} — נבחר ידנית (ברירת המחדל: היום)
-                  </span>
-                ) : (
-                  <span>{asIL(todayIL)} — יום ההנפקה</span>
-                )}
-              </div>
+              <DocDateSummary docDate={docDate} todayIL={todayIL} />
               {/* only a 305/320 row has this choice — a receipt is what it is */}
               {isTax(confirming.doc_type) && (
                 <label className="block pt-2">
@@ -1316,34 +1449,7 @@ export default function DocumentsClient({
               </div>
             )}
 
-            {/* ---- the document date, its own block, on purpose ----
-                NOT inside the payment block: that one renders only for 320/400
-                (needsPayment) while the document date applies to a 305 too —
-                and blending the two dates is exactly the confusion this field
-                exists to end (the payment date was being read as the document
-                date). The server re-validates everything (review/route.ts). */}
-            <div className="border-t border-[var(--rule)] pt-3 mb-3">
-              <label className="block">
-                <span className="text-[var(--faint)] text-[11px]">תאריך המסמך (אופציונלי)</span>
-                <input
-                  type="date"
-                  value={docDate}
-                  onChange={(e) => {
-                    setDocDate(e.target.value);
-                    // a new date invalidates a confirmation given for the old one
-                    setBackdateWarn(null);
-                  }}
-                  className="w-full mt-1 bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-sm font-mono"
-                />
-                <span className="text-[10px] text-[var(--faint)]">
-                  ריק = היום, יום ההנפקה. תיארוך אחורה עד 14 יום; מעבר לחודש קודם ידרוש אישור נוסף. לא ניתן
-                  לתארך קדימה.
-                </span>
-              </label>
-              {docDateIssue && (
-                <div className="mt-1 text-[11px] text-[var(--warn)]">{docDateIssue}</div>
-              )}
-            </div>
+            <DocDateField value={docDate} todayIL={todayIL} onChange={pickDocDate} />
 
             {/* The real thing, not a summary of it (owner spec 2026-08-06): the
                 links that close the parents, the remark that gets PRINTED, and
@@ -1366,25 +1472,17 @@ export default function DocumentsClient({
             <p className="text-[11px] text-[var(--peak)] mb-4">
               מסמך מס אינו הפיך מהאפליקציה. ביטול מחייב חשבונית זיכוי במורנינג ישירות.
             </p>
-            {/* the month-crossing gate's second step (server 409). The main
-                button stays disabled while this is open: the ONLY way forward
-                with this date is the button that names it — a click that reads
-                "כן, הנפק" must not be the one that backdates a tax document. */}
             {backdateWarn && (
-              <div className="text-[11px] text-[var(--warn)] border border-[var(--warn)] rounded-xl px-3 py-2 mb-3 leading-relaxed">
-                <div className="mb-2">⚠️ {backdateWarn}</div>
-                <button
-                  disabled={busy}
-                  onClick={() => send([confirming.id], "approve", { ...approveBody, confirm_backdate: true })}
-                  className="w-full border border-[var(--warn)] text-[var(--warn)] text-xs font-bold rounded-xl px-4 py-2 disabled:opacity-40"
-                >
-                  אני מאשרת — הנפק בתאריך {asIL(docDate)}
-                </button>
-              </div>
+              <BackdateConfirm
+                warn={backdateWarn}
+                docDate={docDate}
+                busy={busy}
+                onConfirm={() => send([confirming.id], "approve", { ...approveBody, confirm_backdate: true })}
+              />
             )}
             <div className="flex gap-2">
               <button
-                disabled={busy || !paymentReady || docDateIssue !== null || backdateWarn !== null}
+                disabled={busy || !paymentReady || dateIssue !== null || backdateWarn !== null}
                 onClick={() => send([confirming.id], "approve", approveBody)}
                 className="flex-1 bg-[var(--signal)] text-white text-xs font-bold rounded-xl px-4 py-2 disabled:opacity-40"
               >
@@ -1403,18 +1501,56 @@ export default function DocumentsClient({
         );
       })()}
 
-      {/* recipient picker for a non-tax document (owner spec 2026-07-29) */}
-      {recipientFor && (
+      {/* recipient picker for a non-tax document (owner spec 2026-07-29), and
+          since 2026-09-02 the document date for a 100/300 as well.
+
+          ⚠️ SINGLE DOCUMENT ONLY, and that is what makes the date field safe
+          here: `recipientFor` holds ONE row, set only by approveOne(r), and
+          submitRecipients posts `[r.id]`. The bulk buttons ("אשר את כל N",
+          "אשר N מסמכים שנבחרו") call send(groupIds, ...) directly and never
+          open this modal — so a batch cannot reach a date picker, cannot send
+          doc_date, and cannot earn the server's 400. send() strips the key on a
+          multi-id call as a second line of defence. */}
+      {recipientFor && (() => {
+        const todayIL = todayInIsrael();
+        const dateIssue = docDateIssue(docDate, todayIL);
+        return (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
-          <div className="bg-[var(--bg)] border border-[var(--rule)] rounded-2xl p-5 max-w-md w-full">
+          <div className="bg-[var(--bg)] border border-[var(--rule)] rounded-2xl p-5 max-w-md w-full max-h-[88vh] overflow-y-auto">
             <h3 className="font-bold text-sm mb-1">שליחת המסמך במייל</h3>
             <div className="text-xs text-[var(--faint)] mb-3">
               {recipientFor.client_name} · {TYPE_LABEL[recipientFor.doc_type]}
             </div>
+            <div className="text-sm mb-3">
+              <DocDateSummary docDate={docDate} todayIL={todayIL} />
+            </div>
             <RecipientPicker loading={loadingRecipients} data={recipientData} selected={selectedEmails} onToggle={toggleEmail} />
+            <DocDateField value={docDate} todayIL={todayIL} onChange={pickDocDate} />
+            {/* the page-level banner sits BEHIND this overlay, and the modal no
+                longer closes on failure — so a refusal has to be readable from
+                inside, or it is invisible */}
+            {error && (
+              <div className="text-[11px] text-[var(--peak)] border border-[var(--peak)] rounded-xl px-3 py-2 mb-3">
+                {error}
+              </div>
+            )}
+            {backdateWarn && (
+              <BackdateConfirm
+                warn={backdateWarn}
+                docDate={docDate}
+                busy={busy}
+                onConfirm={() =>
+                  send([recipientFor.id], "approve", {
+                    recipients: selectedEmails,
+                    doc_date: docDate,
+                    confirm_backdate: true,
+                  })
+                }
+              />
+            )}
             <div className="flex gap-2">
               <button
-                disabled={busy || loadingRecipients}
+                disabled={busy || loadingRecipients || dateIssue !== null || backdateWarn !== null}
                 onClick={submitRecipients}
                 className="flex-1 bg-[var(--signal)] text-white text-xs font-bold rounded-xl px-4 py-2 disabled:opacity-40"
               >
@@ -1430,7 +1566,8 @@ export default function DocumentsClient({
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
     </main>
   );
 }

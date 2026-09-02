@@ -14,7 +14,15 @@ never hard-coded — and the script verifies /api/morning/status reports
 dryRun:true with a real cookie BEFORE approving anything. Approvals here reach
 the review→issue path; in dry-run nothing is sent to Morning.
 
-Scenarios (the seven from the approved plan, plus format):
+Scenarios 1-8 all run on a WORK ORDER (100) — they always did, because a 100
+needs no confirmation gate and no payment block, so an approve exercises the
+doc_date path and nothing else. That is the whole of the server's 100 coverage.
+Section 9 adds the DEAL INVOICE (300), for the UI change of 2026-09-02 that
+exposed the field on the recipient modal: the guards are type-blind by
+construction (review/route.ts gates on ids.length === 1 and never reads
+doc_type), and 9 is what proves it rather than assuming it.
+
+Scenarios (the seven from the approved plan, plus format, plus 300):
   1. valid backdate           → sent.date = chosen, registry document_date = chosen,
                                 document_date_overridden event with from/to
   2. future date              → 400, nothing issued
@@ -24,6 +32,8 @@ Scenarios (the seven from the approved plan, plus format):
   6. batch (2 ids) + doc_date → 400, neither row issued
   7. no doc_date              → sent.date = today (the default is untouched)
   8. garbage format           → 400
+  9. the same on a 300        → valid backdate issues, month-cross needs the
+                                confirm, and a batch of two 300s is refused
 
 Self-cleaning in FK order; exit code decided AFTER cleanup (eb0115f).
 
@@ -127,12 +137,17 @@ cli = ins("clients", {"name": "ZTESTDOV " + uuid.uuid4().hex[:5],
 mdids = []
 
 
-def mk_row():
-    """A plain work order — no confirmation gate, no payment block — so an
-    approve exercises the doc_date path and nothing else."""
+MORNING_CODE = {"work_order": 100, "deal_invoice": 300}
+
+
+def mk_row(doc_type="work_order"):
+    """A plain work order (100) or deal invoice (300) — neither has a
+    confirmation gate or a payment block, so an approve exercises the doc_date
+    path and nothing else. Both are the types that reach the RECIPIENT modal,
+    which is where the field was exposed on 2026-09-02."""
     return ins("pending_documents", {
-        "doc_type": "work_order", "client_id": cli["id"], "amount": 700, "status": "pending",
-        "payload": {"type": 100, "lang": "he", "currency": "ILS", "vatType": 0,
+        "doc_type": doc_type, "client_id": cli["id"], "amount": 700, "status": "pending",
+        "payload": {"type": MORNING_CODE[doc_type], "lang": "he", "currency": "ILS", "vatType": 0,
                     # a stale payload date on purpose — the override must beat
                     # the human choice into the payload, never merely join it
                     "date": "2026-06-15",
@@ -256,6 +271,63 @@ try:
     check("8. non-ISO format → 400", res.status_code == 400, f"{res.status_code}")
     res = approve([b2["id"]], doc_date="2026-02-30")
     check("8. impossible calendar date → 400", res.status_code == 400, f"{res.status_code}")
+
+    # ---- 9. the same guards on a DEAL INVOICE (300) -------------------------
+    # 100 and 300 are the two types that reach the RECIPIENT modal, which is
+    # where the date field was exposed on 2026-09-02. The server never
+    # distinguished them — review/route.ts reads ids.length and never doc_type —
+    # so this section proves the claim the UI change rests on instead of
+    # assuming it.
+    d9 = iso(1)
+    r9 = mk_row("deal_invoice")
+    extra9 = {"doc_date": d9}
+    if d9[:7] != TODAY_IL[:7]:
+        extra9["confirm_backdate"] = True  # on the 1st of a month, yesterday crosses
+    res = approve([r9["id"]], **extra9)
+    ok9 = res.status_code == 200 and (res.json().get("results") or [{}])[0].get("ok")
+    check("9. deal invoice (300) accepts a manual document date", ok9,
+          f"{res.status_code}: {res.text[:160]}")
+    check("9. ...sent.date = the chosen date on a 300 too", sent_date(r9["id"]) == d9,
+          f"sent={sent_date(r9['id'])} wanted={d9}")
+    md9 = row_status(r9["id"])["morning_doc_id"]
+    if md9:
+        mdids.append(md9)
+        doc9 = get(f"documents?morning_doc_id=eq.{md9}&select=document_date")
+        check("9. ...registry document_date = the chosen date",
+              doc9 and doc9[0]["document_date"] == d9, str(doc9))
+    ev = get(f"events?entity_id=eq.{r9['id']}&event_type=eq.document_date_overridden&select=payload")
+    check("9. ...override event recorded, doc_type says deal_invoice",
+          bool(ev) and ev[0]["payload"].get("to") == d9
+          and ev[0]["payload"].get("doc_type") == "deal_invoice", json.dumps(ev)[:200])
+
+    # month-cross: the same two-step, on the type the modal now offers it for
+    if days_back <= 14:
+        dcross9 = prev_month_last.strftime("%Y-%m-%d")
+        r9b = mk_row("deal_invoice")
+        res = approve([r9b["id"]], doc_date=dcross9)
+        check("9. 300 month-cross without confirm → 409",
+              res.status_code == 409 and res.json().get("needs_backdate_confirmation") is True,
+              f"{res.status_code}: {res.text[:160]}")
+        check("9. ...row untouched by the refusal", row_status(r9b["id"])["status"] == "pending")
+        res = approve([r9b["id"]], doc_date=dcross9, confirm_backdate=True)
+        ok9b = res.status_code == 200 and (res.json().get("results") or [{}])[0].get("ok")
+        check("9. 300 month-cross WITH confirm → issued", ok9b, f"{res.status_code}: {res.text[:160]}")
+        check("9. ...sent.date = the crossed-month date", sent_date(r9b["id"]) == dcross9,
+              f"sent={sent_date(r9b['id'])}")
+        md9b = row_status(r9b["id"])["morning_doc_id"]
+        if md9b:
+            mdids.append(md9b)
+    else:
+        print("  ⚠ SKIP 9 month-cross: no in-window month-cross exists today")
+
+    # the batch refusal is type-blind as well — this is the case the UI must
+    # never be able to produce (the recipient modal is single-document only)
+    c1, c2 = mk_row("deal_invoice"), mk_row("deal_invoice")
+    res = approve([c1["id"], c2["id"]], doc_date=iso(1))
+    check("9. two 300 ids + doc_date → 400 (the batch rule is type-blind too)",
+          res.status_code == 400, f"{res.status_code}: {res.text[:140]}")
+    check("9. ...neither 300 issued",
+          row_status(c1["id"])["status"] == "pending" and row_status(c2["id"])["status"] == "pending")
 
 finally:
     for md in mdids:
