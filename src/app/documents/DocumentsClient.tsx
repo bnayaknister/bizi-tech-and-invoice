@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import ClientCombobox, { type ComboboxClient } from "@/components/ClientCombobox";
+import { todayInIsrael } from "@/lib/dates";
 import { STUDIOS } from "@/lib/calendar/studios";
 import { missingGuestLines } from "@/lib/documents/guestFlag";
 import {
@@ -353,6 +354,14 @@ export default function DocumentsClient({
   const [payMethod, setPayMethod] = useState<number>(4);
   const [payAmount, setPayAmount] = useState<string>("");
   const [payDate, setPayDate] = useState<string>("");
+  // Manual DOCUMENT date (owner spec 2026-09-02). "" = the default, today —
+  // deliberately the opposite initialisation from payDate: payDate starts at
+  // today because a payment date is REQUIRED, docDate starts empty because
+  // empty is a legitimate state with a meaning ("issue dated today").
+  const [docDate, setDocDate] = useState<string>("");
+  // the month-crossing 409's sentence, rendered as a panel INSIDE the modal —
+  // null = no pending confirmation
+  const [backdateWarn, setBackdateWarn] = useState<string | null>(null);
   // inline "edit before approve"
   const [editing, setEditing] = useState<string | null>(null);
   const [editAmount, setEditAmount] = useState<string>("");
@@ -457,7 +466,17 @@ export default function DocumentsClient({
         if (row) {
           setTaxVariant(row.doc_type === "tax_invoice" ? "tax_invoice" : "tax_receipt");
           setConfirming(row);
+          setDocDate("");
+          setBackdateWarn(null);
         }
+        return;
+      }
+      if (res.status === 409 && body.needs_backdate_confirmation) {
+        // the month-crossing gate. Not an error and not a toast: the modal is
+        // already open (this request came from its button), so the sentence is
+        // rendered INSIDE it with a second, explicit button. Nothing is closed
+        // and nothing is retried automatically — the second click is the point.
+        setBackdateWarn(body.error ?? "התאריך שנבחר שייך לחודש דיווח קודם — נדרש אישור נוסף");
         return;
       }
       if (!res.ok) {
@@ -486,6 +505,8 @@ export default function DocumentsClient({
       setRecipientFor(null);
       setRecipientData(null);
       setSelectedEmails([]);
+      setDocDate("");
+      setBackdateWarn(null);
       router.refresh();
     } catch {
       setError("שגיאת רשת");
@@ -510,6 +531,10 @@ export default function DocumentsClient({
       setPayMethod(4);
       setPayAmount(r.parent_gross !== null ? String(r.parent_gross) : "");
       setPayDate(new Date().toISOString().slice(0, 10));
+      // a date chosen for the previous document must never survive into the
+      // next one — "" is the meaningful default (today), so reset to it
+      setDocDate("");
+      setBackdateWarn(null);
       setConfirming(r);
       void loadRecipients(r);
       return;
@@ -1026,6 +1051,31 @@ export default function DocumentsClient({
             }]
           : undefined;
 
+        // ---- the document date (owner spec 2026-09-02) ----
+        // The SERVER is the authority (review/route.ts validates again); these
+        // mirrors exist so an impossible date disables the button with a
+        // sentence instead of a round-trip. Same 14-day constant, same order.
+        const todayIL = todayInIsrael();
+        const earliestDocDate = new Date(Date.parse(`${todayIL}T00:00:00Z`) - 14 * 86400_000)
+          .toISOString()
+          .slice(0, 10);
+        const docDateIssue =
+          docDate === "" ? null
+          : docDate > todayIL ? "לא ניתן לתארך מסמך קדימה — תאריך המסמך הוא לכל המאוחר יום ההנפקה"
+          : docDate < earliestDocDate ? `ניתן לתארך אחורה עד 14 יום (המוקדם ביותר: ${earliestDocDate})`
+          : null;
+        const asIL = (iso: string) => iso.split("-").reverse().join(".");
+        // everything the approve buttons send — built once so the main button
+        // and the backdate-confirm button can never disagree on anything but
+        // the confirm flag itself
+        const approveBody = {
+          confirmed: true,
+          tax_variant: taxVariant,
+          recipients: selectedEmails,
+          ...(paymentRows ? { payment: paymentRows } : {}),
+          ...(docDate ? { doc_date: docDate } : {}),
+        };
+
         return (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
           <div className="bg-[var(--bg)] border border-[var(--rule)] rounded-2xl p-5 max-w-md w-full max-h-[88vh] overflow-y-auto">
@@ -1042,6 +1092,20 @@ export default function DocumentsClient({
               <div>
                 <span className="text-[var(--faint)]">סכום: </span>
                 <span className="font-bold">{money(confirming.amount)}</span>
+              </div>
+              {/* ALWAYS shown, chosen date or not. The document date appeared
+                  nowhere in this modal, and its absence is what led the owner
+                  to read the payment-date field as the document date. What the
+                  document will carry is stated here before the click. */}
+              <div>
+                <span className="text-[var(--faint)]">תאריך המסמך: </span>
+                {docDate ? (
+                  <span className="font-bold text-[var(--violet-light)]">
+                    {asIL(docDate)} — נבחר ידנית (ברירת המחדל: היום)
+                  </span>
+                ) : (
+                  <span>{asIL(todayIL)} — יום ההנפקה</span>
+                )}
               </div>
               {/* only a 305/320 row has this choice — a receipt is what it is */}
               {isTax(confirming.doc_type) && (
@@ -1122,6 +1186,35 @@ export default function DocumentsClient({
               </div>
             )}
 
+            {/* ---- the document date, its own block, on purpose ----
+                NOT inside the payment block: that one renders only for 320/400
+                (needsPayment) while the document date applies to a 305 too —
+                and blending the two dates is exactly the confusion this field
+                exists to end (the payment date was being read as the document
+                date). The server re-validates everything (review/route.ts). */}
+            <div className="border-t border-[var(--rule)] pt-3 mb-3">
+              <label className="block">
+                <span className="text-[var(--faint)] text-[11px]">תאריך המסמך (אופציונלי)</span>
+                <input
+                  type="date"
+                  value={docDate}
+                  onChange={(e) => {
+                    setDocDate(e.target.value);
+                    // a new date invalidates a confirmation given for the old one
+                    setBackdateWarn(null);
+                  }}
+                  className="w-full mt-1 bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-sm font-mono"
+                />
+                <span className="text-[10px] text-[var(--faint)]">
+                  ריק = היום, יום ההנפקה. תיארוך אחורה עד 14 יום; מעבר לחודש קודם ידרוש אישור נוסף. לא ניתן
+                  לתארך קדימה.
+                </span>
+              </label>
+              {docDateIssue && (
+                <div className="mt-1 text-[11px] text-[var(--warn)]">{docDateIssue}</div>
+              )}
+            </div>
+
             {/* The real thing, not a summary of it (owner spec 2026-08-06): the
                 links that close the parents, the remark that gets PRINTED, and
                 every income line. A tax document cannot be corrected once it is
@@ -1143,17 +1236,26 @@ export default function DocumentsClient({
             <p className="text-[11px] text-[var(--peak)] mb-4">
               מסמך מס אינו הפיך מהאפליקציה. ביטול מחייב חשבונית זיכוי במורנינג ישירות.
             </p>
+            {/* the month-crossing gate's second step (server 409). The main
+                button stays disabled while this is open: the ONLY way forward
+                with this date is the button that names it — a click that reads
+                "כן, הנפק" must not be the one that backdates a tax document. */}
+            {backdateWarn && (
+              <div className="text-[11px] text-[var(--warn)] border border-[var(--warn)] rounded-xl px-3 py-2 mb-3 leading-relaxed">
+                <div className="mb-2">⚠️ {backdateWarn}</div>
+                <button
+                  disabled={busy}
+                  onClick={() => send([confirming.id], "approve", { ...approveBody, confirm_backdate: true })}
+                  className="w-full border border-[var(--warn)] text-[var(--warn)] text-xs font-bold rounded-xl px-4 py-2 disabled:opacity-40"
+                >
+                  אני מאשרת — הנפק בתאריך {asIL(docDate)}
+                </button>
+              </div>
+            )}
             <div className="flex gap-2">
               <button
-                disabled={busy || !paymentReady}
-                onClick={() =>
-                  send([confirming.id], "approve", {
-                    confirmed: true,
-                    tax_variant: taxVariant,
-                    recipients: selectedEmails,
-                    ...(paymentRows ? { payment: paymentRows } : {}),
-                  })
-                }
+                disabled={busy || !paymentReady || docDateIssue !== null || backdateWarn !== null}
+                onClick={() => send([confirming.id], "approve", approveBody)}
                 className="flex-1 bg-[var(--signal)] text-white text-xs font-bold rounded-xl px-4 py-2 disabled:opacity-40"
               >
                 כן, הנפק

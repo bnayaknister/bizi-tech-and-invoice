@@ -101,6 +101,11 @@ try:
     print(f"      line  : {line!r}")
 
     # 2. approve (DRY_RUN → no real Morning call) → sent.date + registry date = TODAY
+    #
+    # Qualified since 2026-09-02: "today" is the DEFAULT — the claim holds when
+    # no manual doc_date is sent, which is what this request does (and what
+    # every caller did before the override existed). A chosen date is a separate
+    # path with its own suite: scripts/test_document_date_override.py.
     ap = requests.post(f"{APP}/api/documents/pending/review", cookies=ck, headers={"Content-Type": "application/json"},
                        json={"ids": [wo["id"]], "action": "approve"})
     check("2 approve 200 dry_run", ap.status_code == 200 and ap.json().get("dry_run") is True)
@@ -113,6 +118,12 @@ try:
         check("2 registry document_date = TODAY", doc and doc[0]["document_date"] == TODAY_IL)
 
     # 3. retry path: a status=failed row re-issues via the review approve ("נסה שוב")
+    #
+    # UNQUALIFIED, deliberately — this is the original bug and it needs no
+    # "when no date was chosen" caveat: the stale payload.date planted below
+    # must NEVER win, override feature or not. The manual date travels as a
+    # separate parameter (issue.ts docDateOverride), precisely so this
+    # assertion stays true verbatim forever.
     failed = ins("pending_documents", {
         "doc_type": "deal_invoice", "client_id": cli["id"], "amount": 900, "status": "failed",
         "attempts": 1, "last_error": "התאריך שנבחר עתידי או מוקדם מדי לסוג מסמך זה",

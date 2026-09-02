@@ -167,7 +167,14 @@ export async function issuePendingDocument(
   // undefined = caller opted out of the feature entirely (client.emails and
   // sent_to are left untouched). Recorded in sent_to since Morning has no
   // send-log. The caller (the review route) has already capped/sanitized it.
-  recipients?: string[]
+  recipients?: string[],
+  // A manual DOCUMENT date, already validated by the caller (owner spec
+  // 2026-09-02: format, not future, within the backdate window, month-cross
+  // confirmed). Passed as a parameter like `recipients` — chosen at the moment
+  // of approval, never persisted on the row — so a retry of a failed row loses
+  // it and the bookkeeper picks again, exactly as she re-picks recipients.
+  // undefined = today, the unchanged default.
+  docDateOverride?: string
 ): Promise<IssueOutcome> {
   // ---- iron rule 1, before ------------------------------------------------
   if (row.morning_doc_id) {
@@ -184,7 +191,31 @@ export async function issuePendingDocument(
   // dates to the real day it goes out. Covers every doc type and every enqueue
   // path, because this is the ONLY place that calls Morning. The work date
   // stays in the line description (built at enqueue). Owner bug 2026-07-29.
-  const docDate = todayInIsrael();
+  //
+  // Since 2026-09-02 the VALUE may come from the bookkeeper (docDateOverride,
+  // validated by the review route) — but the override itself is unchanged:
+  // payload.date, whatever the enqueue baked in, still always loses. The
+  // choice travels beside the payload, never inside it, precisely so that
+  // stays true — including on a retry, where the stale payload date is the
+  // one thing that must never win.
+  const today = todayInIsrael();
+  const docDate = docDateOverride ?? today;
+  if (docDateOverride && docDateOverride !== today) {
+    // a backdated tax document is exactly what an accountant asks about later —
+    // same from/to shape as production_price_override_set
+    await admin.from("events").insert({
+      entity_type: "pending_document",
+      entity_id: row.id,
+      event_type: "document_date_overridden",
+      actor_id: actorId,
+      payload: {
+        from: today,
+        to: docDateOverride,
+        doc_type: row.doc_type,
+        crossed_month: docDateOverride.slice(0, 7) !== today.slice(0, 7),
+      },
+    });
+  }
   const sent: MorningDocumentRequest = {
     ...row.payload,
     date: docDate,

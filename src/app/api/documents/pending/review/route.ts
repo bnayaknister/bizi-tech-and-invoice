@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { issuePendingDocument, type PendingRow } from "@/lib/documents/issue";
+import { todayInIsrael } from "@/lib/dates";
 import { isDryRun, morningEnv } from "@/lib/morning/client";
 import {
   DOC_TYPE_LABEL,
@@ -157,6 +158,13 @@ async function reviewPending(request: Request) {
     // than when the row was built. An array — withholding tax rides as a second
     // line beside the transfer (see MorningPaymentRow).
     payment?: MorningPaymentRow[];
+    // single-approve only: a manual DOCUMENT date (owner spec 2026-09-02).
+    // Empty/absent = today, exactly as before. Travels as its own key — never
+    // through payload.date, so the 57893cc protection (the stale enqueue date
+    // is always overridden) stays whole. Validated below before the loop.
+    doc_date?: string;
+    // second click of the month-crossing gate — see the 409 below
+    confirm_backdate?: boolean;
   };
 
   // Dedupe first. The tax-document guard below counts documents, and a
@@ -321,6 +329,81 @@ async function reviewPending(request: Request) {
   // default). A failed email read degrades to sending to nobody — never blocks.
   const providedRecipients =
     ids.length === 1 && Array.isArray(body.recipients) ? sanitizeRecipients(body.recipients) : null;
+
+  // ---- manual document date (owner spec 2026-09-02) -------------------------
+  // The document's date has been "today, always" since 57893cc — the right
+  // default, and the wrong ceiling: Morning itself accepts a backdated date
+  // (Shiri does it by hand there), and an end-of-month payment issued at the
+  // start of the next month belongs, accounting-wise, to the month it closed.
+  //
+  // The override is a separate explicit value, NEVER payload.date. That is what
+  // keeps 57893cc whole: the stale enqueue date baked into the payload is still
+  // overridden on every issue, including retries of a failed row — only the
+  // SOURCE of the overriding value can now be a human choice.
+  //
+  // Guards, in order — each later one may assume the earlier ones held:
+  //   format → not future → within the backdate window → month-cross confirm.
+  // The window is OURS, not Morning's documented limit (there is none in the
+  // repo; DRY_RUN cannot discover it since it never calls Morning). 14 days:
+  // a week is proven by hand, twice that covers a month-end closed after a
+  // holiday, and nothing near it has ever been tried. If Morning still refuses,
+  // the row falls to `failed` with Morning's own sentence — the normal path.
+  //
+  // Month-cross is a TWO-STEP CONFIRM, not a block, and deliberately fires even
+  // inside the window (25.8 approved on 2.9 is 8 days — and a different VAT
+  // reporting period; the risk is the period, never the day count). 409 +
+  // needs_backdate_confirmation, same shape as the production-cancel gate: the
+  // modal shows the warning and the second click carries confirm_backdate.
+  const DOC_DATE_MAX_BACKDATE_DAYS = 14;
+  let docDateOverride: string | null = null;
+  if (typeof body.doc_date === "string" && body.doc_date.trim() !== "") {
+    const picked = body.doc_date.trim();
+    if (ids.length !== 1) {
+      // a batch has no modal and nobody consciously chose one date for N
+      // documents — same rule, same reason, as recipients above
+      return NextResponse.json({ error: "תאריך מסמך ידני מתקבל באישור מסמך בודד בלבד" }, { status: 400 });
+    }
+    // Date.parse of a malformed ISO date (2026-02-30) is NaN per spec, so the
+    // regex + parse pair rejects both bad shapes and impossible dates
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(picked) || Number.isNaN(Date.parse(`${picked}T00:00:00Z`))) {
+      return NextResponse.json({ error: "תאריך המסמך אינו תקין — נדרש תאריך בפורמט YYYY-MM-DD" }, { status: 400 });
+    }
+    const today = todayInIsrael();
+    // ISO strings compare correctly as strings; both sides are Israel-time days
+    if (picked > today) {
+      return NextResponse.json(
+        { error: "לא ניתן לתארך מסמך קדימה — תאריך המסמך הוא לכל המאוחר יום ההנפקה" },
+        { status: 400 }
+      );
+    }
+    const earliest = new Date(Date.parse(`${today}T00:00:00Z`) - DOC_DATE_MAX_BACKDATE_DAYS * 86400_000)
+      .toISOString()
+      .slice(0, 10);
+    if (picked < earliest) {
+      return NextResponse.json(
+        {
+          error:
+            `התאריך שנבחר מוקדם מדי — ניתן לתארך אחורה עד ${DOC_DATE_MAX_BACKDATE_DAYS} יום ` +
+            `(המוקדם ביותר: ${earliest}). אם נדרש תאריך מוקדם יותר, יש להנפיק ידנית במורנינג.`,
+        },
+        { status: 400 }
+      );
+    }
+    if (picked.slice(0, 7) !== today.slice(0, 7) && !body.confirm_backdate) {
+      return NextResponse.json(
+        {
+          error:
+            `התאריך ${picked} שייך לחודש הדיווח הקודם, וההנפקה מתבצעת ב-${today.slice(0, 7)}. ` +
+            "אם דוח המע\"מ של אותו חודש כבר הוגש — המסמך יחייב דיווח מתקן. יש לוודא מול הנהלת החשבונות לפני האישור.",
+          needs_backdate_confirmation: true,
+          doc_date: picked,
+        },
+        { status: 409 }
+      );
+    }
+    // picking today is not an override — the default; no audit noise for it
+    if (picked !== today) docDateOverride = picked;
+  }
 
   const results: Array<{ id: string; ok: boolean; detail: string }> = [];
   for (const r of rows) {
@@ -590,7 +673,7 @@ async function reviewPending(request: Request) {
       recipients = resolveDefaultRecipients(row.doc_type, emails);
     }
 
-    const outcome = await issuePendingDocument(admin, row, user.id, recipients);
+    const outcome = await issuePendingDocument(admin, row, user.id, recipients, docDateOverride ?? undefined);
     results.push({
       id: r.id,
       ok: outcome.ok,
