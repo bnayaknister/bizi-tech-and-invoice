@@ -13,6 +13,14 @@ export type ShowRow = {
   client_id: string | null;
   aliases: string[];
   default_rate: number | null; // null when the viewer lacks can_view_money
+  // 0067 — which of the two rates this show carries. A SEPARATE AXIS from
+  // billing_mode, which stays 'per_episode' on an hourly show: it genuinely
+  // bills once per production, only the amount is computed differently.
+  // pricing_model is readable by everyone (it is a classification, and the
+  // technician's drawer needs it to ask for hours at all); hourly_rate is
+  // money and is null without can_view_money, exactly like default_rate.
+  pricing_model: string;
+  hourly_rate: number | null;
   default_studio: string | null;
   camera_count: number | null;
   notes: string | null;
@@ -318,7 +326,18 @@ export default function ShowsClient({
                     ? s.aliases.join(", ")
                     : `${s.aliases.slice(0, 2).join(", ")} +${s.aliases.length - 2}`}
                 </td>
-                {canViewMoney && <td className="px-3 py-2.5 font-mono">{money(s.default_rate)}</td>}
+                {/* 0067: the column shows whichever rate the show actually
+                    carries, with its unit — a bare "250 ₪" beside a show billed
+                    at 250 an hour reads as a 250 ₪ episode. */}
+                {canViewMoney && (
+                  <td className="px-3 py-2.5 font-mono">
+                    {s.pricing_model === "per_hour"
+                      ? s.hourly_rate == null
+                        ? "—"
+                        : `${money(s.hourly_rate)}/שעה`
+                      : money(s.default_rate)}
+                  </td>
+                )}
                 {canViewMoney && (
                   <td className="px-3 py-2.5 font-mono font-bold">{s.revenue ? money(s.revenue) : "—"}</td>
                 )}
@@ -651,11 +670,24 @@ function ShowCard({
                       // among them the on_production_approved trigger, which would
                       // otherwise create a job for the stale amount.
                       const clearsRate = v === "none" || v === "contract";
-                      if (clearsRate && show.default_rate != null) {
+                      // 0067: whichever rate the show carries is the one that
+                      // disappears, and pricing_model goes back to per_episode
+                      // with it. A show that bills nothing must not keep an
+                      // hourly model and a stale hourly rate waiting for the day
+                      // someone moves it back — that is the same stale-number
+                      // trap this confirm was written for.
+                      const leaving = show.pricing_model === "per_hour" ? show.hourly_rate : show.default_rate;
+                      if (clearsRate && leaving != null) {
                         const where = v === "none" ? "פנימית" : "מחויבת לפי חוזה";
-                        if (!confirm(`התוכנית תסומן כ${where}, והמחיר ${money(show.default_rate)} יימחק. אין דרך לשחזר אותו.`)) return;
+                        const what = show.pricing_model === "per_hour" ? "התעריף השעתי" : "המחיר";
+                        if (!confirm(`התוכנית תסומן כ${where}, ו${what} ${money(leaving)} יימחק. אין דרך לשחזר אותו.`)) return;
                       }
-                      onSave(show.id, clearsRate ? { billing_mode: v, default_rate: null } : { billing_mode: v });
+                      onSave(
+                        show.id,
+                        clearsRate
+                          ? { billing_mode: v, default_rate: null, hourly_rate: null, pricing_model: "per_episode" }
+                          : { billing_mode: v }
+                      );
                     }}
                     disabled={!canEditMoney}
                     className={`flex-1 rounded-lg py-1.5 border transition-colors disabled:opacity-50 ${
@@ -685,33 +717,96 @@ function ShowCard({
               />
             </div>
           )}
-          {canViewMoney && (
-            <label className="text-xs">
-              <span className="block text-[var(--faint)] mb-1">מחיר לפרק</span>
-              <input
-                key={`rate-${show.billing_mode}-${show.default_rate ?? ""}`}
-                type="number"
-                defaultValue={show.default_rate ?? ""}
-                disabled={!canEditMoney || show.billing_mode !== "per_episode"}
-                onBlur={(e) => {
-                  const v = e.target.value === "" ? null : Number(e.target.value);
-                  if (v !== show.default_rate) onSave(show.id, { default_rate: v });
-                }}
-                placeholder={
-                  show.billing_mode === "none"
-                    ? "לא מחויבת"
-                    : show.billing_mode === "contract"
-                      ? "החיוב מגיע מאבן דרך"
-                      : "—"
-                }
-                className={`w-full border border-[var(--rule)] rounded px-2 py-1.5 ${
-                  show.billing_mode === "per_episode"
-                    ? "bg-[var(--panel)]"
-                    : "bg-[var(--panel2)] text-[var(--faint)]"
-                }`}
-              />
-            </label>
+          {/* ── מודל תמחור (0067) ────────────────────────────────────────
+              רק כשהחיוב הוא פר-פרק: לתוכנית בחוזה או פנימית אין תעריף מאף
+              סוג, ובורר שמוצג שם היה מציע בחירה חסרת משמעות. זה מה שהופך את
+              האילוץ shows_one_rate_per_model לגלוי במסך — שני מודלים, תא
+              מחיר אחד שמתחלף, ולא שני שדות שאפשר למלא את שניהם. */}
+          {canViewMoney && show.billing_mode === "per_episode" && (
+            <div className="text-xs">
+              <span className="block text-[var(--faint)] mb-1">מודל תמחור</span>
+              <div className="flex gap-1">
+                {(
+                  [
+                    ["per_episode", "פר פרק"],
+                    ["per_hour", "לפי שעת אולפן"],
+                  ] as const
+                ).map(([v, l]) => (
+                  <button
+                    key={v}
+                    onClick={() => {
+                      if (!canEditMoney || show.pricing_model === v) return;
+                      // The same confirm shape the billing-mode buttons use, and
+                      // for a stronger reason: shows_one_rate_per_model REFUSES
+                      // a row carrying both rates, so the switch cannot leave the
+                      // old one behind even if we wanted it to. Saying so before
+                      // the number disappears is the difference between a
+                      // decision and a surprise.
+                      const leaving = show.pricing_model === "per_hour" ? show.hourly_rate : show.default_rate;
+                      if (leaving != null) {
+                        const what = show.pricing_model === "per_hour" ? "התעריף השעתי" : "המחיר לפרק";
+                        const to = v === "per_hour" ? "לפי שעת אולפן" : "פר פרק";
+                        if (!confirm(`התוכנית תתומחר ${to}, ו${what} ${money(leaving)} יימחק. אין דרך לשחזר אותו.`)) return;
+                      }
+                      // both columns move in ONE patch — a two-step save would
+                      // pass through a state the CHECK constraint rejects
+                      onSave(
+                        show.id,
+                        v === "per_hour"
+                          ? { pricing_model: v, default_rate: null }
+                          : { pricing_model: v, hourly_rate: null }
+                      );
+                    }}
+                    disabled={!canEditMoney}
+                    className={`flex-1 rounded-lg py-1.5 border transition-colors disabled:opacity-50 ${
+                      show.pricing_model === v
+                        ? "border-[var(--violet-light)] text-[var(--violet-light)] font-bold"
+                        : "border-[var(--rule)] text-[var(--dim)]"
+                    }`}
+                  >
+                    {l}
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
+          {/* ONE price cell that changes label and column, never two side by
+              side: two inputs would invite filling both, which is exactly what
+              the constraint forbids. */}
+          {canViewMoney && (() => {
+            const hourly = show.billing_mode === "per_episode" && show.pricing_model === "per_hour";
+            const column = hourly ? "hourly_rate" : "default_rate";
+            const current = hourly ? show.hourly_rate : show.default_rate;
+            return (
+              <label className="text-xs">
+                <span className="block text-[var(--faint)] mb-1">{hourly ? "תעריף לשעה" : "מחיר לפרק"}</span>
+                <input
+                  key={`rate-${show.billing_mode}-${show.pricing_model}-${current ?? ""}`}
+                  type="number"
+                  defaultValue={current ?? ""}
+                  disabled={!canEditMoney || show.billing_mode !== "per_episode"}
+                  onBlur={(e) => {
+                    const v = e.target.value === "" ? null : Number(e.target.value);
+                    if (v !== current) onSave(show.id, { [column]: v });
+                  }}
+                  placeholder={
+                    show.billing_mode === "none"
+                      ? "לא מחויבת"
+                      : show.billing_mode === "contract"
+                        ? "החיוב מגיע מאבן דרך"
+                        : hourly
+                          ? "₪ לשעה"
+                          : "—"
+                  }
+                  className={`w-full border border-[var(--rule)] rounded px-2 py-1.5 ${
+                    show.billing_mode === "per_episode"
+                      ? "bg-[var(--panel)]"
+                      : "bg-[var(--panel2)] text-[var(--faint)]"
+                  }`}
+                />
+              </label>
+            );
+          })()}
           <label className="text-xs">
             <span className="block text-[var(--faint)] mb-1">אולפן ברירת מחדל</span>
             <input
@@ -1213,6 +1308,11 @@ function NewShowModal({
   const [aliasDraft, setAliasDraft] = useState("");
   const [clientId, setClientId] = useState<string | null>(null);
   const [billingMode, setBillingMode] = useState<"per_episode" | "contract" | "none">("per_episode");
+  // 0067 — ONE rate field for both models, exactly like the card. Two fields
+  // here would let a new show be created with both filled, and the CHECK would
+  // reject it after the form was completed rather than while it was being
+  // filled in.
+  const [pricingModel, setPricingModel] = useState<"per_episode" | "per_hour">("per_episode");
   const [rate, setRate] = useState("");
   const [studio, setStudio] = useState("");
   const [cameras, setCameras] = useState("");
@@ -1257,7 +1357,16 @@ function NewShowModal({
         aliases,
         client_id: canEditMoney ? clientId : null,
         billing_mode: canEditMoney ? billingMode : "none",
-        default_rate: canEditMoney && billingMode === "per_episode" && rate.trim() ? Number(rate) : null,
+        // one field, routed to the column the chosen model uses — never both
+        pricing_model: canEditMoney && billingMode === "per_episode" ? pricingModel : "per_episode",
+        default_rate:
+          canEditMoney && billingMode === "per_episode" && pricingModel === "per_episode" && rate.trim()
+            ? Number(rate)
+            : null,
+        hourly_rate:
+          canEditMoney && billingMode === "per_episode" && pricingModel === "per_hour" && rate.trim()
+            ? Number(rate)
+            : null,
         default_studio: studio.trim() || null,
         camera_count: cameras.trim() ? Number(cameras) : null,
         has_episode: hasEpisode,
@@ -1284,6 +1393,8 @@ function NewShowModal({
       client_id: s.client_id ?? null,
       aliases: s.aliases ?? [],
       default_rate: canViewMoney ? data.default_rate ?? null : null,
+      pricing_model: s.pricing_model ?? "per_episode",
+      hourly_rate: canViewMoney ? data.hourly_rate ?? null : null,
       default_studio: s.default_studio ?? null,
       camera_count: s.camera_count ?? null,
       notes: s.notes ?? null,
@@ -1391,10 +1502,39 @@ function NewShowModal({
               </div>
 
               {billingMode === "per_episode" && canEditMoney && (
-                <div>
-                  <label className={labelCls}>מחיר לפרק (₪)</label>
-                  <input value={rate} onChange={(e) => setRate(e.target.value.replace(/[^\d.]/g, ""))} className={field} placeholder="למשל 1500" inputMode="decimal" />
-                </div>
+                <>
+                  <div>
+                    <label className={labelCls}>מודל תמחור</label>
+                    <div className="flex gap-2">
+                      {([["per_episode", "פר פרק"], ["per_hour", "לפי שעת אולפן"]] as const).map(([v, l]) => (
+                        <button
+                          key={v}
+                          onClick={() => setPricingModel(v)}
+                          className={`flex-1 text-xs rounded-lg py-2 border transition-colors ${
+                            pricingModel === v ? "border-[var(--violet-light)] text-[var(--violet-light)] font-bold" : "border-[var(--rule)] text-[var(--dim)]"
+                          }`}
+                        >
+                          {l}
+                        </button>
+                      ))}
+                    </div>
+                    {pricingModel === "per_hour" && (
+                      <div className="text-[10px] text-[var(--faint)] mt-1">
+                        הסכום ייגזר משעות ההקלטה שהטכנאי מזין בסיום ההקלטה — עד אז לא תיווצר הזמנת עבודה.
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <label className={labelCls}>{pricingModel === "per_hour" ? "תעריף לשעת אולפן (₪)" : "מחיר לפרק (₪)"}</label>
+                    <input
+                      value={rate}
+                      onChange={(e) => setRate(e.target.value.replace(/[^\d.]/g, ""))}
+                      className={field}
+                      placeholder={pricingModel === "per_hour" ? "למשל 250" : "למשל 1500"}
+                      inputMode="decimal"
+                    />
+                  </div>
+                </>
               )}
             </>
           )}

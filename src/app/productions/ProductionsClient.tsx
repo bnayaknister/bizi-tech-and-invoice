@@ -41,6 +41,11 @@ export type BoardProduction = {
   absorbed: { id: string }[];
   legacy: boolean;
   log_count: number; // human journal entries (notes + client notes)
+  // F6: an hourly show whose recorded session has no hours yet, so no work
+  // order can be built. Computed on the server from the same `hoursMissing`
+  // the drawer uses (lib/productions/hours.ts) — the board and the drawer can
+  // never disagree about which episodes are waiting.
+  hours_missing: boolean;
 };
 
 const STEP_LABEL: Record<string, string> = { record: "הקלטה", edit: "עריכה", deliver: "מסירה" };
@@ -506,6 +511,15 @@ function ProductionCard({
         {p.needs_attention && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: "var(--red)" }} title="דורש טיפול" />}
         <span className="font-bold text-sm truncate flex-1">{p.show_name}</span>
         {p.on_hold && <span className="text-[10px] text-[var(--amber)] shrink-0">⏸ מוקפא</span>}
+        {/* F6 — visible from the board so a missing number does not need the
+            drawer to be opened to be noticed. The card already opens the drawer
+            on click, and the drawer's flag has the button, so this stays a
+            marker rather than a second control. */}
+        {p.hours_missing && (
+          <span className="text-[10px] text-rose-400 shrink-0" title="לא הוזנו שעות הקלטה — לא תיווצר הזמנת עבודה">
+            ⛔ חסרות שעות
+          </span>
+        )}
         {/* journal indicator — visible from the board so you know there's
             something written without opening the drawer. Click opens it. */}
         {p.log_count > 0 && (

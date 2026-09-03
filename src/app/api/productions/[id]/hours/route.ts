@@ -9,6 +9,7 @@ import {
   type ShowForBilling,
 } from "@/lib/documents/enqueue";
 import { approvedAddonTotal } from "@/lib/productions/price";
+import { MAX_HOURS } from "@/lib/productions/hours";
 import { balanceError } from "@/lib/documents/lineBalance";
 import type { MorningDocumentRequest } from "@/lib/morning/types";
 
@@ -48,8 +49,6 @@ import type { MorningDocumentRequest } from "@/lib/morning/types";
 // through the service role — deriving money from a fact the technician is
 // allowed to state is the system's job, not the technician's, which is the same
 // division ensure_job_for_production makes as a security-definer function.
-
-const MAX_HOURS = 24;
 
 // A live work order occupies the production's slot in
 // pending_documents_one_live_per_production (0025 → 0047 → 0063), so these are
@@ -98,11 +97,10 @@ export async function POST(request: Request, { params }: { params: { id: string 
       { status: 400 }
     );
   }
-  // A route-level judgement with a readable sentence, exactly as 0067's header
-  // says it should be: the column carries no upper bound, because a constraint
-  // violation is not a message anyone can act on. 24 is the ceiling because a
-  // studio day cannot exceed one, and a 48 that reaches the rate is a document
-  // for twice the money with nothing to catch it.
+  // MAX_HOURS is shared with the form (lib/productions/hours.ts) so the field's
+  // max attribute and this refusal are the same number. The column carries no
+  // upper bound on purpose — a constraint violation is not a message anyone can
+  // act on (0067's header).
   if (hours > MAX_HOURS) {
     return NextResponse.json(
       { error: `מספר השעות חייב להיות עד ${MAX_HOURS} — מספר גדול יותר הוא כמעט תמיד טעות הקלדה` },

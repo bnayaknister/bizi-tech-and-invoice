@@ -29,6 +29,7 @@ import {
 import ClientCombobox from "@/components/ClientCombobox";
 import IconTile, { type IconAccent } from "@/components/IconTile";
 import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
+import { HOURS_STEP, MAX_HOURS, hoursError as validateHours, hoursMissing } from "@/lib/productions/hours";
 
 // entity type -> line icon + tile accent (no emoji, DESIGN.md §12)
 const ENTITY_ICON: Record<string, string> = {
@@ -115,6 +116,10 @@ type DrawerData = {
   // reels), so pressing send may burn one, both, or none.
   reviewLinks: { id: string; url: string; scope: string; created_at: string }[] | null;
   reelsSummary: { count: number } | null;
+  // 0067 / F6 — how this show is priced and how long the session ran. Two
+  // stage-tier facts, never a rate and never an amount: the technician is asked
+  // for hours, the server does the arithmetic.
+  hourly: { pricing_model: string; studio_hours: number | null } | null;
   log: LogEntry[] | null;
   diskOptions: string[] | null;
 };
@@ -550,10 +555,21 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   const [diskModal, setDiskModal] = useState(false);
   const [diskValue, setDiskValue] = useState("");
   const [diskSaving, setDiskSaving] = useState(false);
-  // §3 note-on-stage-complete modal
-  const [noteModal, setNoteModal] = useState<{ stage: Stage } | null>(null);
+  // §3 note-on-stage-complete modal.
+  //
+  // `stage: null` is F6: the same modal opened straight from the missing-hours
+  // flag, with no stage just completed. One modal rather than two because on an
+  // hourly show they ARE the same moment — "you finished recording" and "how
+  // long did it run" — and a second dialog for the same answer is a second
+  // place for it to be skipped.
+  const [noteModal, setNoteModal] = useState<{ stage: Stage | null } | null>(null);
   const [noteValue, setNoteValue] = useState("");
   const [noteSaving, setNoteSaving] = useState(false);
+  // F6 — the studio hours typed into that modal (string, so a half-typed "3."
+  // is not silently a 3). Its own error line: this field posts to its own
+  // route, and a failure here must not read as "the note failed".
+  const [hoursValue, setHoursValue] = useState("");
+  const [hoursError, setHoursError] = useState<string | null>(null);
   // dirty text/number edits awaiting blur/Cmd+Enter
   const dirty = useRef<Record<string, unknown>>({});
 
@@ -749,8 +765,27 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
       setDiskModal(true);
     } else if (next === "done") {
       setNoteValue("");
+      // F6: on an hourly show, finishing פרק·הקלטה is the moment the hours are
+      // known and the only moment the technician is standing in front of the
+      // question. Seed the field from whatever is already stored so a
+      // correction opens on the current number rather than on a blank.
+      setHoursValue(String(data?.hourly?.studio_hours ?? ""));
+      setHoursError(null);
       setNoteModal({ stage });
     }
+  }
+
+  // F6: the same modal, opened from the missing-hours flag rather than by
+  // finishing a stage. This is what makes the flag an ACTION and not a notice.
+  function askHours() {
+    setNoteValue("");
+    setHoursValue(String(data?.hourly?.studio_hours ?? ""));
+    setHoursError(null);
+    // attach to the episode·record stage when there is one, so the optional
+    // note lands on the step it is about; a production with no stage rows (the
+    // legacy ones) still gets the field, with the note as a free entry
+    const rec = (data?.stages ?? []).find((s) => s.track === "episode" && s.step === "record") ?? null;
+    setNoteModal({ stage: rec });
   }
 
   // §2: save the recording disk (logged automatically by the DB trigger).
@@ -764,6 +799,32 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     setDiskModal(false);
     broadcast();
     void load(ref, true);
+  }
+
+  // F6: the studio hours. Its own endpoint, not the entity PATCH, because the
+  // number has three destinations — the column, jobs.amount and the work order
+  // — and only that route writes all three (see api/productions/[id]/hours).
+  // Returns true when the modal may close.
+  async function saveHours(): Promise<boolean> {
+    if (!ref) return false;
+    const bad = validateHours(hoursValue);
+    if (bad) { setHoursError(bad); return false; }
+    const res = await fetch(`/api/productions/${ref.id}/hours`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hours: Number(hoursValue) }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      // Shown INSIDE the modal, not in the drawer's error strip: the modal is
+      // covering the strip, so a failure written there is a failure nobody sees
+      // while the form still looks like it saved.
+      setHoursError(body.error ?? "שמירת השעות נכשלה");
+      return false;
+    }
+    setHoursError(null);
+    broadcast();
+    return true;
   }
 
   // §3: add a note (free, or attached to the just-completed stage)
@@ -888,6 +949,13 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
       if (!ref) return;
       if (e.key === "Escape") {
         e.preventDefault();
+        // A modal closes before the drawer under it — otherwise Escape used to
+        // dismiss the drawer and leave the note/disk dialog floating over an
+        // empty screen. It is also the unadvertised way out of the hours modal
+        // when "דלג" is hidden (see the modal): a way out that nobody is
+        // invited to take, backed by the red flag that reappears if they do.
+        if (noteModal) { setNoteModal(null); return; }
+        if (diskModal) { setDiskModal(false); return; }
         close();
       } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
@@ -897,7 +965,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ref, data]);
+  }, [ref, data, noteModal, diskModal]);
 
   function optionsFor(f: FieldMeta): { value: string; label: string }[] {
     if (f.options === "clients")
@@ -1153,18 +1221,74 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
 
       {/* §3 note-on-complete modal — "סיימת [X]. רוצה להוסיף הערה?" [שמור][דלג].
           The completion itself is already logged by the DB trigger, so "דלג"
-          simply closes — the log still records who/when/which step. */}
-      {noteModal && (
+          simply closes — the log still records who/when/which step.
+
+          F6 GRAFTS THE STUDIO HOURS ONTO IT. On a per_hour show, finishing
+          פרק·הקלטה is the one moment the answer is known and the technician is
+          looking at the screen. A separate dialog would be a second thing to
+          dismiss; the same dialog, with the hours ABOVE the note and a title
+          that asks for them, is one question at the right time.
+
+          WHAT THE TECHNICIAN SEES: hours. Never a rate, never a total. The
+          amount is derived on the server (api/productions/[id]/hours), and
+          hourly_rate is not even readable by their role (0067's grants).
+
+          "דלג" IS HIDDEN, NOT DISABLED, WHEN THE HOURS ARE MISSING. A greyed
+          button still says "skipping is a thing you may do here"; on an hourly
+          show it is not, because no work order exists until the number does.
+          The sentence that replaces it says exactly what skipping would cost.
+          Escape still closes the modal (see the key handler) — that is the
+          escape hatch, unadvertised, and the red flag in the drawer catches
+          anyone who takes it. */}
+      {noteModal && (() => {
+        const stage = noteModal.stage;
+        // the hours are asked for exactly on episode·record of an hourly show —
+        // and on the flag's own opening, which passes that same stage
+        const wantsHours =
+          data?.hourly?.pricing_model === "per_hour" &&
+          (stage === null || (stage.track === "episode" && stage.step === "record"));
+        const hoursOk = wantsHours ? validateHours(hoursValue) === null : true;
+        const note = noteValue.trim();
+        return (
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(3,2,10,0.7)", backdropFilter: "blur(6px)" }}>
           <div className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl" style={{ background: "rgba(15,13,28,0.95)", backdropFilter: "blur(24px)" }}>
             <h3 className="font-bold mb-1">
-              סיימת {TRACK_LABEL[noteModal.stage.track] ?? noteModal.stage.track}·{STEP_LABEL[noteModal.stage.step]}
+              {wantsHours
+                ? "⏱ כמה שעות אולפן הוקלטו?"
+                : stage
+                  ? `סיימת ${TRACK_LABEL[stage.track] ?? stage.track}·${STEP_LABEL[stage.step]}`
+                  : "הערה להפקה"}
             </h3>
-            <p className="text-[11px] text-[var(--faint)] mb-3">רוצה להוסיף הערה?</p>
+            <p className="text-[11px] text-[var(--faint)] mb-3">
+              {wantsHours
+                ? "התוכנית מתומחרת לפי שעת אולפן — השעות קובעות את הזמנת העבודה."
+                : "רוצה להוסיף הערה?"}
+            </p>
+            {wantsHours && (
+              <div className="mb-3">
+                <input
+                  type="number"
+                  value={hoursValue}
+                  onChange={(e) => { setHoursValue(e.target.value); setHoursError(null); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" && hoursOk) e.currentTarget.blur(); }}
+                  autoFocus
+                  step={HOURS_STEP}
+                  min={HOURS_STEP}
+                  max={MAX_HOURS}
+                  inputMode="decimal"
+                  placeholder="למשל 3.5"
+                  className="w-full text-lg font-mono bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-3 py-2 text-center outline-none focus:border-[var(--violet-light)]"
+                />
+                <div className="text-[10px] text-[var(--faint)] mt-1">
+                  ברבעי שעה — 0.25 = רבע שעה · עד {MAX_HOURS} שעות
+                </div>
+                {hoursError && <div className="text-[11px] text-rose-400 mt-1">{hoursError}</div>}
+              </div>
+            )}
             <textarea
               value={noteValue}
               onChange={(e) => setNoteValue(e.target.value)}
-              autoFocus
+              autoFocus={!wantsHours}
               rows={3}
               placeholder="הערה (אופציונלי)…"
               className="w-full text-sm bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-3 py-2 text-right outline-none focus:border-[var(--violet-light)] resize-none"
@@ -1173,24 +1297,36 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
               <button
                 onClick={async () => {
                   if (noteSaving) return;
-                  const n = noteValue.trim();
-                  if (!n) { setNoteModal(null); return; }
                   setNoteSaving(true);
-                  await addLogNote(n, noteModal.stage);
+                  // Hours first, and the modal stays open if they fail: the note
+                  // is optional and recoverable, the hours are what decides
+                  // whether a work order exists at all.
+                  if (wantsHours && !(await saveHours())) { setNoteSaving(false); return; }
+                  if (note) await addLogNote(note, stage);
                   setNoteSaving(false);
                   setNoteModal(null);
+                  if (ref) void load(ref, true);
                 }}
-                disabled={noteSaving}
+                disabled={noteSaving || !hoursOk}
                 className="flex-1 text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-50"
                 style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}
               >
                 {noteSaving ? "שומר…" : "שמור"}
               </button>
-              <button onClick={() => setNoteModal(null)} className="flex-1 border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)]">דלג</button>
+              {hoursOk ? (
+                <button onClick={() => setNoteModal(null)} className="flex-1 border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)]">
+                  {wantsHours ? "סגור" : "דלג"}
+                </button>
+              ) : (
+                <div className="flex-1 flex items-center justify-center text-[11px] text-rose-400 text-center leading-tight px-1">
+                  בלי שעות לא תיווצר הזמנת עבודה
+                </div>
+              )}
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {ref && (
         <>
@@ -1485,6 +1621,48 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                     </div>
                   );
                 })()}
+
+                {/* ⛔ THE MISSING-HOURS FLAG (F6).
+                    Shaped like the client's correction note above — same red
+                    border, same tint — because it is the same kind of thing:
+                    something a person asked for that the production cannot
+                    proceed without.
+
+                    IT CARRIES A BUTTON, and that is the whole point. A notice
+                    that only states a problem gets read once and lived with;
+                    the fix has to be one press away, in the place the problem
+                    is named. (Same lesson as 70488a5.)
+
+                    DERIVED AT RENDER, from three columns already loaded — not
+                    from billing_block_reason. That column is only written when
+                    something RUNS the eligibility check, nothing re-runs it on
+                    a status change, and technicians cannot open /radar where it
+                    is surfaced. So the drawer decides for itself, and is right
+                    the moment the recording ends. */}
+                {data.type === "production" &&
+                  hoursMissing({
+                    pricing_model: data.hourly?.pricing_model,
+                    studio_hours: data.hourly?.studio_hours,
+                    status: String(data.entity.status ?? ""),
+                  }) && (
+                    <div
+                      className="rounded-lg border border-rose-500/40 px-2.5 py-2 flex items-center gap-2"
+                      style={{ background: "rgba(251,113,133,0.10)" }}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[11px] font-bold text-rose-400">⛔ לא הוזנו שעות הקלטה</div>
+                        <div className="text-[10px] text-[var(--dim)]">לא תיווצר הזמנת עבודה עד שיוזנו</div>
+                      </div>
+                      {data.canEditStages && (
+                        <button
+                          onClick={askHours}
+                          className="shrink-0 text-[11px] rounded-lg px-2.5 py-1.5 border border-rose-500/60 text-rose-300 hover:bg-rose-500/15 transition-colors"
+                        >
+                          הזן שעות
+                        </button>
+                      )}
+                    </div>
+                  )}
 
                 {data.type === "production" && ref && (
                   <AddonsSection productionId={ref.id} onChanged={broadcast} />

@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import ProductionsClient, { type BoardProduction } from "./ProductionsClient";
+import { hoursMissing } from "@/lib/productions/hours";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +36,9 @@ type ProdRow = {
   calendar_dup_ack: boolean;
   merged_into: string | null;
   legacy: boolean;
+  // F6 — stage-tier and granted to `authenticated` by 0067, so it rides on the
+  // common column list rather than the money one. The RATE never comes here.
+  studio_hours: number | null;
 };
 
 // Per-production stage rollup, read from the production_stage_rollup view
@@ -140,7 +144,7 @@ export default async function ProductionsPage() {
   // money columns (client) are only ever selected with the permission —
   // the board never carries money for a stages-only viewer
   const commonCols =
-    "id,status,record_date,record_time,guest,studio,on_hold,on_hold_reason,on_hold_since,needs_attention,show_id,calendar_uid,split_index,split_count,calendar_dup_ack,merged_into,legacy";
+    "id,status,record_date,record_time,guest,studio,on_hold,on_hold_reason,on_hold_since,needs_attention,show_id,calendar_uid,split_index,split_count,calendar_dup_ack,merged_into,legacy,studio_hours";
   const prodSelect = canViewMoney ? `${commonCols},client_id` : commonCols;
 
   // ONE network wave, not two. Every read below is independent — none of them
@@ -163,7 +167,11 @@ export default async function ProductionsPage() {
   const [allProds, { data: shows }, stageRollup, logCounts, { data: profilesRows }, clientsRes] =
     await Promise.all([
       fetchProductions(supabase, prodSelect),
-      supabase.from("shows").select("id,name,color,active"),
+      // pricing_model rides along for the missing-hours flag (F6). It is a
+      // classification, granted to `authenticated` by 0067 precisely so a
+      // stages-only viewer can be told the show is hourly; hourly_rate is not
+      // granted and is not read anywhere on this screen.
+      supabase.from("shows").select("id,name,color,active,pricing_model"),
       fetchStageRollup(supabase),
       fetchLogCounts(supabase),
       admin.from("profiles").select("id,name,email"),
@@ -258,6 +266,11 @@ export default async function ProductionsPage() {
       absorbed: absorbedBySurvivor.get(p.id) ?? [],
       legacy: p.legacy,
       log_count: logCounts.get(p.id) ?? 0,
+      hours_missing: hoursMissing({
+        pricing_model: show?.pricing_model,
+        studio_hours: p.studio_hours,
+        status: p.status,
+      }),
     };
   });
 

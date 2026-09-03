@@ -114,6 +114,21 @@ async function handleGet(
     | { id: string; kind: string; reel_index: number | null; media_link: string | null; approved: boolean; last_note: string | null }[]
     | null = null;
   let reviewLinks: { id: string; url: string; scope: string; created_at: string }[] | null = null;
+  // 0067 / F6 — the two facts the hourly flag is derived from, in their own
+  // block rather than as generic drawer fields.
+  //
+  // NOT registered in lib/entities.ts, deliberately. `pricing_model` lives on
+  // the SHOW, which the registry cannot express (it selects one table), and
+  // `studio_hours` as a generic row would render an editable number beside the
+  // guest with no rate, no context and no consequence — the exact bare-row
+  // problem `billing_block_reason` is filtered out of the drawer for.
+  //
+  // NO MONEY CROSSES THIS LINE. pricing_model is a classification and 0067
+  // grants it to `authenticated` for precisely this reason; hourly_rate is NOT
+  // granted and is NOT read here. The technician learns that the show is billed
+  // by the hour and how many hours are recorded — never what an hour costs, and
+  // never what the session is worth.
+  let hourly: { pricing_model: string; studio_hours: number | null } | null = null;
   if (type === "production" && profile.can_view_stages) {
     const { data } = await supabase
       .from("stages")
@@ -154,6 +169,29 @@ async function handleGet(
       // an approved reels add-on raises it, so nothing has to be summed here.
       // production_addons stays the money record, not the tally.
       reelsSummary = { count: Number(r.reels_count) || 0 };
+    }
+
+    // the hourly pair. Through the user's own client: both columns are granted
+    // to `authenticated` by 0067, so a viewer who may not see them simply reads
+    // nothing — the same gate as every other select on this route.
+    const { data: hoursRow } = await supabase
+      .from("productions")
+      .select("studio_hours,show_id")
+      .eq("id", params.id)
+      .maybeSingle();
+    const hourlyShowId = (hoursRow?.show_id as string | null) ?? null;
+    if (hourlyShowId) {
+      const { data: showRow } = await supabase
+        .from("shows")
+        .select("pricing_model")
+        .eq("id", hourlyShowId)
+        .maybeSingle();
+      hourly = {
+        // an absent column reads as per_episode — today's behaviour, and what
+        // the column's NOT NULL DEFAULT says every existing row is
+        pricing_model: (showRow?.pricing_model as string) ?? "per_episode",
+        studio_hours: (hoursRow?.studio_hours as number | null) ?? null,
+      };
     }
 
     // per-item media links (0057) — read via the service role: the table has
@@ -334,6 +372,7 @@ async function handleGet(
     reviewItems,
     reviewLinks,
     reelsSummary,
+    hourly,
     log,
     diskOptions,
   });

@@ -15,8 +15,15 @@ const STAGE_FIELDS = new Set([
   "camera_count", "notes", "settings", "has_episode", "reels_count",
 ]);
 // billing_mode + client_id are money classification — both guarded by DB
-// triggers (0008 trg_guard_show_money, 0012 trg_guard_show_billing)
-const MONEY_FIELDS = new Set(["default_rate", "client_id", "billing_mode"]);
+// triggers (0008 trg_guard_show_money, 0012 trg_guard_show_billing).
+//
+// 0067 adds pricing_model and hourly_rate to the same set, and to the same DB
+// guard: pricing_model decides WHICH rate is billed and hourly_rate IS that
+// rate. pricing_model is readable by a stages user (the technician's drawer
+// must know the show is hourly in order to ask for hours) but it is NOT
+// editable by one — being told how a show is priced and deciding it are
+// different permissions.
+const MONEY_FIELDS = new Set(["default_rate", "client_id", "billing_mode", "pricing_model", "hourly_rate"]);
 
 export async function POST(request: Request) {
   const { id, patch } = (await request.json()) as {
@@ -57,7 +64,12 @@ export async function POST(request: Request) {
     .from("shows")
     .update(patch)
     .eq("id", id)
-    .select("id,name,aliases,active,is_oneoff,default_studio,camera_count,notes,color,client_id,billing_mode,has_episode,reels_count")
+    // pricing_model is in the returning list, hourly_rate is NOT — the same
+    // asymmetry as default_rate, which is absent for the same reason: 0022
+    // revoked its SELECT from `authenticated`, so naming it here would make
+    // every update fail with a permission error rather than leak anything.
+    // The screen re-renders the rate from what it already has.
+    .select("id,name,aliases,active,is_oneoff,default_studio,camera_count,notes,color,client_id,billing_mode,has_episode,reels_count,pricing_model")
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 

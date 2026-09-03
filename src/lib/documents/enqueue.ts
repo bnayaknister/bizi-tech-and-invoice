@@ -8,6 +8,7 @@ import {
 } from "@/lib/morning/types";
 import { shortDate, todayInIsrael } from "@/lib/dates";
 import { SupabaseReadError } from "@/lib/supabase/unwrap";
+import { hasBeenPerformed } from "@/lib/productions/status";
 
 // Enqueueing, not issuing. Nothing in this file talks to Morning — it
 // decides whether a document is OWED, builds the exact payload that would
@@ -85,16 +86,23 @@ export type ShowForBilling = {
   hourly_rate?: number | null;
 };
 
-// The statuses at which the hours could not exist yet, so their absence is a
-// fact about the calendar rather than a problem anyone can fix. Named
-// literally, never by enum order — 0061 made the same choice for the same
-// reason: 'בוטל' sorts LAST in production_status and a range test would read
-// it as "recorded, and then some".
-const HOURS_NOT_YET_EXPECTED = new Set([
-  "עתיד_להתחיל", // hasn't happened
-  "בהקלטה", // happening right now — the number is typed when it ends
-  "בוטל", // never happened and never will
-]);
+/**
+ * Could the hours exist yet?
+ *
+ * `hasBeenPerformed` is the line 0060/0061 draw in the database and the accrued
+ * screen already reads — scheduled and mid-recording are "not yet", and 'בוטל'
+ * is excluded by name rather than by enum order (it sorts LAST, so any range
+ * test would sweep cancelled episodes in as "recorded and then some").
+ * Imported, not re-declared: since F6's UI computes the same flag in the
+ * drawer, a second copy of this set would be a second definition of when a
+ * technician is asked for hours.
+ *
+ * The null guard is this file's own, and it is the LOUD direction: a caller
+ * that omits `status` gets a 🟡 it can see and fix, never silence. See the
+ * field's own note on ProductionForBilling.
+ */
+const hoursNotYetExpected = (status: string | null | undefined) =>
+  status != null && !hasBeenPerformed(status);
 
 /**
  * Agorot, at the one point the number is derived.
@@ -304,7 +312,7 @@ export function checkEligibility(
     // type. Documented silence (applicable:false) — no row, no 🟡, and no stale
     // flag left behind. The work order is created later, by the hours route, at
     // the moment the number arrives.
-    if (production.status != null && HOURS_NOT_YET_EXPECTED.has(production.status)) {
+    if (hoursNotYetExpected(production.status)) {
       return {
         ok: false,
         applicable: false,

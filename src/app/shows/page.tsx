@@ -32,9 +32,13 @@ export default async function ShowsPage() {
   // ליוניון, וסופאבייס מוותר בשקט על הבדיקה (או ש-tsc נופל על
   // "union type too complex"). כל ענף כאן הוא קריאה מלאה עם ליטרל אחד —
   // עמודה שגויה בכל אחד מהם היא כשל build, לא 400 בזמן ריצה.
+  // pricing_model joins the same list for the same reason has_episode did: 0067
+  // named it in a grant, so `authenticated` can read it. hourly_rate was
+  // deliberately NOT granted — it comes through the service role below, beside
+  // default_rate, on the money branch only.
   const showsRes = canViewMoney
-    ? await supabase.from("shows").select("id,name,client_id,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count").order("name")
-    : await supabase.from("shows").select("id,name,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count").order("name");
+    ? await supabase.from("shows").select("id,name,client_id,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count,pricing_model").order("name")
+    : await supabase.from("shows").select("id,name,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count,pricing_model").order("name");
 
   // mustRows, not `?? []`: these three ARE the screen. A failure here used to
   // render "0 פעילות · 0 חד־פעמיות" with a clean console — see lib/supabase/
@@ -64,6 +68,8 @@ export default async function ShowsPage() {
   // default_rate via the service role, money-gated — the one money column
   // that lives on an otherwise stages-readable table (0021)
   const rateByShow: Record<string, number | null> = {};
+  // 0067's second rate, read the same way and gated the same way
+  const hourlyRateByShow: Record<string, number | null> = {};
   // contracts for the "מחויבת בחוזה" picker (0056). Money viewers only —
   // contracts are can_view_money throughout. The milestone count rides along
   // because a contract with none cannot issue anything, and the card has to
@@ -72,8 +78,11 @@ export default async function ShowsPage() {
   let contractsError: string | null = null;
   if (canViewMoney) {
     const admin = createTypedAdminClient();
-    const { data: rateRows } = await admin.from("shows").select("id,default_rate");
-    for (const r of rateRows ?? []) rateByShow[r.id as string] = (r.default_rate as number) ?? null;
+    const { data: rateRows } = await admin.from("shows").select("id,default_rate,hourly_rate");
+    for (const r of rateRows ?? []) {
+      rateByShow[r.id as string] = (r.default_rate as number) ?? null;
+      hourlyRateByShow[r.id as string] = (r.hourly_rate as number) ?? null;
+    }
 
     const { data: contractRows, error: contractsErr } = await admin
       .from("contracts")
@@ -187,6 +196,8 @@ export default async function ShowsPage() {
     client_id: canViewMoney && "client_id" in s && typeof s.client_id === "string" ? s.client_id : null,
     aliases: (s.aliases as string[]) ?? [],
     default_rate: canViewMoney ? (rateByShow[s.id as string] ?? null) : null,
+    pricing_model: (s.pricing_model as string) ?? "per_episode",
+    hourly_rate: canViewMoney ? (hourlyRateByShow[s.id as string] ?? null) : null,
     default_studio: (s.default_studio as string) ?? null,
     camera_count: (s.camera_count as number) ?? null,
     notes: (s.notes as string) ?? null,
