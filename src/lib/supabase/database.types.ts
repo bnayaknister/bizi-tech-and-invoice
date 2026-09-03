@@ -191,7 +191,10 @@ export type Database = {
           episode_note: string | null
           episode_response: string | null
           expires_at: string
+          first_opened_at: string | null
           id: string
+          last_opened_at: string | null
+          open_count: number
           production_id: string
           reels_included: boolean
           reels_link: string | null
@@ -209,7 +212,10 @@ export type Database = {
           episode_note?: string | null
           episode_response?: string | null
           expires_at: string
+          first_opened_at?: string | null
           id?: string
+          last_opened_at?: string | null
+          open_count?: number
           production_id: string
           reels_included?: boolean
           reels_link?: string | null
@@ -227,7 +233,10 @@ export type Database = {
           episode_note?: string | null
           episode_response?: string | null
           expires_at?: string
+          first_opened_at?: string | null
           id?: string
+          last_opened_at?: string | null
+          open_count?: number
           production_id?: string
           reels_included?: boolean
           reels_link?: string | null
@@ -1031,6 +1040,9 @@ export type Database = {
           record_date: string | null
           record_time: string | null
           reels_count: number
+          review_ack_at: string | null
+          review_ack_by: string | null
+          review_ack_link_id: string | null
           review_episode_approved: boolean
           review_episode_note: string | null
           review_reels_approved: boolean
@@ -1077,6 +1089,9 @@ export type Database = {
           record_date?: string | null
           record_time?: string | null
           reels_count?: number
+          review_ack_at?: string | null
+          review_ack_by?: string | null
+          review_ack_link_id?: string | null
           review_episode_approved?: boolean
           review_episode_note?: string | null
           review_reels_approved?: boolean
@@ -1123,6 +1138,9 @@ export type Database = {
           record_date?: string | null
           record_time?: string | null
           reels_count?: number
+          review_ack_at?: string | null
+          review_ack_by?: string | null
+          review_ack_link_id?: string | null
           review_episode_approved?: boolean
           review_episode_note?: string | null
           review_reels_approved?: boolean
@@ -1170,6 +1188,20 @@ export type Database = {
             columns: ["on_hold_by"]
             isOneToOne: false
             referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "productions_review_ack_by_fkey"
+            columns: ["review_ack_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "productions_review_ack_link_id_fkey"
+            columns: ["review_ack_link_id"]
+            isOneToOne: false
+            referencedRelation: "client_review_links"
             referencedColumns: ["id"]
           },
           {
@@ -1472,6 +1504,24 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "stages_production_id_fkey"
+            columns: ["production_id"]
+            isOneToOne: false
+            referencedRelation: "productions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      v_production_review_rounds: {
+        Row: {
+          first_sent_at: string | null
+          last_response_at: string | null
+          production_id: string | null
+          revision_rounds: number | null
+          total_rounds: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "client_review_links_production_id_fkey"
             columns: ["production_id"]
             isOneToOne: false
             referencedRelation: "productions"
