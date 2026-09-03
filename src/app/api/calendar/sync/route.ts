@@ -326,7 +326,10 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string, allEven
         calendar_synced_at: new Date().toISOString(),
         legacy: false,
       })
-      .select("id")
+      // `status` is read back rather than restated: it is the column's DEFAULT
+      // ('עתיד_להתחיל'), and the work-order enqueue below needs the value the
+      // DB actually wrote — see the per_hour branch of checkEligibility.
+      .select("id,status")
       .single();
     if (error) throw new Error(error.message);
     created++;
@@ -357,6 +360,12 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string, allEven
       // the same value just written to the production — the guest belongs on
       // the printed line, not only in the drawer
       guest: titleParts.guest,
+      // 0067: an hourly show's production is created with no hours (the
+      // session hasn't happened), and this status is what tells
+      // checkEligibility that their absence is the calendar, not a fault —
+      // documented silence instead of a 🟡 on every future episode. The work
+      // order for such a show is created later, by the hours route.
+      status: inserted!.status,
     });
     if (enq.status === "queued") queuedWorkOrders++;
     else if (enq.status === "accrued") accruedWorkOrders++;

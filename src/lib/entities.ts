@@ -78,6 +78,22 @@ export const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
           { value: "contract", label: "חוזה" },
         ],
       },
+      // Why this production is not billing (enqueue.ts writes it, the radar
+      // reads it as a 🟡). Exposed here so the drawer can SELECT the column at
+      // all — `selectColumns` is built from this list, so a column that isn't
+      // registered does not exist for the drawer.
+      //
+      // view "any", not "money", and that is a deliberate call rather than an
+      // oversight: no reason string this column can hold carries an amount —
+      // they name a missing show, a missing client, an unmapped Morning client,
+      // an undefined rate or unentered hours. And since 0067 the reason most
+      // often waiting here is "לא הוזנו שעות ההקלטה", whose only possible
+      // reader is the TECHNICIAN, who has no money permission at all. A money-
+      // gated flag would be invisible to the one person who can clear it.
+      //
+      // edit "none": it is derived state. It is cleared by enqueueDocument on
+      // the next successful pass, never by hand.
+      { key: "billing_block_reason", label: "חסימת חיוב", type: "readonly", view: "any", edit: "none" },
       { key: "notes", label: "הערות", type: "text", view: "any", edit: "either" },
     ],
   },

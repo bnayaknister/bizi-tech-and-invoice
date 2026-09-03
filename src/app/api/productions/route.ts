@@ -167,7 +167,10 @@ export async function POST(request: Request) {
       calendar_uid: null,
       legacy: false,
     })
-    .select("id")
+    // `status` is read back rather than restated: it is the column's DEFAULT,
+    // and the work-order enqueue below needs the value the DB actually wrote
+    // (0067 — see the per_hour branch of checkEligibility).
+    .select("id,status")
     .single();
   if (error) {
     // RLS / guard rejection surfaces here as a clean 403
@@ -213,6 +216,9 @@ export async function POST(request: Request) {
     // identical expression to the insert above, so a hand-made production's
     // line reads the same as a synced one's
     guest: body.guest?.trim() || null,
+    // 0067: same as the sync's create branch — an hourly show with no hours
+    // yet is silence, not a flag, and this status is what says so.
+    status: inserted.status,
   });
 
   return NextResponse.json({ ok: true, id: inserted.id, work_order: enq.status });

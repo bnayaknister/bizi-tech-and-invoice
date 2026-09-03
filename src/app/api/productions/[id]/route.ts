@@ -101,7 +101,11 @@ export async function POST(request: Request, { params }: { params: { id: string 
       // `guest` is read, not merely typed: it reaches the printed line via
       // buildLineItemText, and an omitted column would silently produce the
       // guestless form on a session that had one.
-      .select("id,kind,legacy,client_id,show_id,podcast_name,record_date,guest,price_override")
+      // 0067: `status` and `studio_hours` are read for the same reason —
+      // an hourly show's amount is hours × rate, and a missing status would
+      // make checkEligibility read "no hours yet" as a 🟡 on a production that
+      // has, by definition, already been recorded and approved.
+      .select("id,kind,legacy,client_id,show_id,podcast_name,record_date,guest,price_override,status,studio_hours")
       .eq("id", id)
       .maybeSingle();
     if (prod) {

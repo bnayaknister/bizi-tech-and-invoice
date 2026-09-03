@@ -522,7 +522,10 @@ export async function applyResponse(
       .from("productions")
       // `guest` feeds the printed line (buildLineItemText) — omitting the
       // column would quietly bill a guest session as a guestless one
-      .select("id,kind,legacy,client_id,show_id,podcast_name,record_date,guest,price_override")
+      // 0067: `status` and `studio_hours` decide an hourly show's amount, and
+      // an omitted status reads as "recorded with no hours" — a 🟡 raised by a
+      // missing column rather than by a missing number
+      .select("id,kind,legacy,client_id,show_id,podcast_name,record_date,guest,price_override,status,studio_hours")
       .eq("id", production.id)
       .maybeSingle();
     const { data: link2 } = await admin

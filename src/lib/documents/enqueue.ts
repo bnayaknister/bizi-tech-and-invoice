@@ -23,8 +23,14 @@ import { SupabaseReadError } from "@/lib/supabase/unwrap";
 // radar must surface) from "no document is owed here at all" (internal,
 // legacy, non-client — correct silence, never a flag). Only an applicable
 // block writes billing_block_reason.
+//
+// `amount` is a number, never null (0067). Until then an eligible production
+// could still come back priceless, and the caller had to catch that separately
+// — which is exactly how the priceless block ended up as the one refusal in
+// this file that set billing_block_reason and wrote NO event. There is now one
+// place that decides a block, and every block it decides is logged.
 export type Eligibility =
-  | { ok: true; clientId: string; morningClientId: string; amount: number | null }
+  | { ok: true; clientId: string; morningClientId: string; amount: number }
   | { ok: false; applicable: boolean; reason: string };
 
 export type ProductionForBilling = {
@@ -45,6 +51,20 @@ export type ProductionForBilling = {
   // existed (e.g. calendar sync at creation, when no override can exist yet)
   // simply omit it and fall through to the show rate.
   price_override?: number | null;
+  // ---- 0067, read ONLY by the per_hour branch below ----
+  // Where the production stands. It decides one thing and one thing only:
+  // whether "an hourly show with no hours yet" is correct silence or a 🟡.
+  //
+  // Optional, like its neighbours — but an OMITTED status is deliberately the
+  // LOUD reading, not the quiet one (see HOURS_NOT_YET_EXPECTED). A caller that
+  // forgets the column gets a flag it can see and fix; the opposite default
+  // would hide a real missing-hours block behind a call site's omission, which
+  // is the silence 0024 exists to prevent. Every live call site passes it.
+  status?: string | null;
+  // The recorded studio hours (numeric(5,2)). Multiplied by the show's
+  // hourly_rate; null until the technician types it, which is normal and is
+  // NOT by itself an error — see the branch below.
+  studio_hours?: number | null;
 };
 
 export type ShowForBilling = {
@@ -52,7 +72,95 @@ export type ShowForBilling = {
   client_id: string | null;
   billing_mode: string | null;
   default_rate: number | null;
+  // ---- 0067 ----
+  // A SEPARATE AXIS from billing_mode, which stays 'per_episode' on an hourly
+  // show: it genuinely does bill once per production, only the way the amount
+  // is COMPUTED changes. Optional so that an omitted column reads as
+  // 'per_episode' — today's behaviour, which is also what the column's NOT NULL
+  // DEFAULT says every existing row is.
+  pricing_model?: string | null;
+  // ₪ per studio hour. shows_one_rate_per_model (0067) makes it impossible for
+  // a show to carry this AND default_rate, so "which rate applies?" is not a
+  // question that can be asked.
+  hourly_rate?: number | null;
 };
+
+// The statuses at which the hours could not exist yet, so their absence is a
+// fact about the calendar rather than a problem anyone can fix. Named
+// literally, never by enum order — 0061 made the same choice for the same
+// reason: 'בוטל' sorts LAST in production_status and a range test would read
+// it as "recorded, and then some".
+const HOURS_NOT_YET_EXPECTED = new Set([
+  "עתיד_להתחיל", // hasn't happened
+  "בהקלטה", // happening right now — the number is typed when it ends
+  "בוטל", // never happened and never will
+]);
+
+/**
+ * Agorot, at the one point the number is derived.
+ *
+ * The same `round(studio_hours * hourly_rate, 2)` runs in SQL inside
+ * ensure_job_for_production (0067 §7), which is what writes jobs.amount. These
+ * are two independent derivations of ONE base, and they must come out equal to
+ * the agora or the job and its document quietly disagree about the same money.
+ *
+ * The owner's example is the reason the rounding is stated rather than assumed:
+ * 1.5 h × 333.33 ₪ = 499.995. Unrounded, that number reaches
+ * `pending_documents.amount` with three decimals while the SQL side rounds to
+ * 500.00, and every downstream comparison — the balance gate's
+ * BALANCE_EPSILON = 0.01 (lineBalance.ts:31, c339215), the issue-time amount
+ * check (issue.ts:476) — is then judging a difference of half an agora that
+ * nobody can see, reconcile by hand, or explain.
+ */
+const roundAgorot = (n: number) => Number(n.toFixed(2));
+
+/**
+ * What one production is worth, before add-ons — or the reason it is worth
+ * nothing yet.
+ *
+ * ONE EXPRESSION, because the rule already has four copies (the migration
+ * header of 0067 names them: enqueue.ts, productions/price.ts,
+ * addons/route.ts, and ensure_job_for_production in SQL). checkEligibility
+ * turns the `blocked` codes into the sentences a bookkeeper reads; the hours
+ * route uses the number to write jobs.amount. Neither owns a second copy of
+ * the arithmetic.
+ *
+ * The three codes are distinct because the person who fixes them is:
+ *   no_hourly_rate  — whoever configures the show (money)
+ *   no_hours        — the technician who ran the session (stages)
+ *   no_default_rate — whoever configures the show (money)
+ * Collapsing them into one null is what would send the wrong person looking.
+ *
+ * WHAT THIS DOES NOT DECIDE: whether the absence is a problem. `no_hours` on a
+ * session that hasn't happened yet is simply the calendar. That judgement needs
+ * the production's status and belongs to the caller — see checkEligibility.
+ */
+// `blocked: null` on the priced arm rather than an optional field: an optional
+// property is not a discriminant, and the compiler could then not prove that
+// exhausting the three codes leaves a number behind — which is the one thing
+// this shape exists to make provable.
+export type BaseAmount =
+  | { amount: number; blocked: null }
+  | { amount: null; blocked: "no_hourly_rate" | "no_hours" | "no_default_rate" };
+
+export function effectivePrice(production: ProductionForBilling, show: ShowForBilling): BaseAmount {
+  // The human said the number. It wins in BOTH models — an override on an
+  // hourly show is the owner pricing one session by hand, and there is nothing
+  // for hours × rate to add to that.
+  if (production.price_override != null) return { amount: Number(production.price_override), blocked: null };
+
+  if (show.pricing_model === "per_hour") {
+    // Rate before hours, on purpose: with no rate there is nothing to multiply,
+    // and reporting missing HOURS on a show that has no rate sends a technician
+    // to fix something that was never the fault.
+    if (show.hourly_rate == null) return { amount: null, blocked: "no_hourly_rate" };
+    if (production.studio_hours == null) return { amount: null, blocked: "no_hours" };
+    return { amount: roundAgorot(Number(production.studio_hours) * Number(show.hourly_rate)), blocked: null };
+  }
+
+  if (show.default_rate == null) return { amount: null, blocked: "no_default_rate" };
+  return { amount: Number(show.default_rate), blocked: null };
+}
 
 export type ClientForBilling = {
   id: string;
@@ -101,6 +209,20 @@ export async function getClientCadence(
  *   AND billing_mode='per_episode' AND legacy=false
  * Any miss returns a human-readable reason — that string is what the
  * bookkeeper reads on the radar, so it names the fix, not the rule.
+ *
+ * Then, and only for a production that passed all of them, the PRICE (0067):
+ *
+ *   price_override                        → price_override        (both models)
+ *   per_hour + hours + rate               → round(hours × rate, 2)
+ *   per_hour, no rate                     → blocked, applicable    (config)
+ *   per_hour, no hours, not yet recorded  → blocked, NOT applicable (silence)
+ *   per_hour, no hours, recorded or later → blocked, applicable    (🟡)
+ *   per_episode + default_rate            → default_rate
+ *   per_episode, no default_rate          → blocked, applicable
+ *
+ * Still a pure function of its arguments — the one piece of billing logic that
+ * is testable without a database (scripts/test_hourly_pricing.ts), and that is
+ * worth keeping.
  */
 export function checkEligibility(
   production: ProductionForBilling,
@@ -152,13 +274,51 @@ export function checkEligibility(
   if (!client.morning_client_id) {
     return { ok: false, applicable: true, reason: `הלקוח '${client.name ?? ""}' לא ממופה למורנינג` };
   }
-  return {
-    ok: true,
-    clientId: client.id,
-    morningClientId: client.morning_client_id,
-    // effective price: the production's override wins over the show default
-    amount: production.price_override ?? show.default_rate ?? null,
-  };
+
+  // ═══ the effective price, across both pricing models (0067) ═══
+  // Everything above this line answers "is a document owed?". Everything below
+  // answers "for how much?" — and a production that is owed a document but has
+  // no number to put on it is BLOCKED, not eligible-with-null. That refusal
+  // used to live in enqueueDocument, where it was the one block in the whole
+  // path that set a 🟡 and wrote no event.
+  const base = effectivePrice(production, show);
+  if (base.amount !== null) {
+    return {
+      ok: true,
+      clientId: client.id,
+      morningClientId: client.morning_client_id,
+      amount: base.amount,
+    };
+  }
+  if (base.blocked === "no_hourly_rate") {
+    // A different sentence from the missing-hours one, on purpose. Sending a
+    // technician to look for hours when the real fault is a show with no rate
+    // is how a 🟡 gets dismissed as noise. Loud regardless of status: the rate
+    // is a property of the SHOW, knowable and fixable before anyone records
+    // anything, and shows_one_rate_per_model means a show without it carries no
+    // price in either column.
+    return { ok: false, applicable: true, reason: "התוכנית מתומחרת לפי שעת אולפן אך לא הוגדר תעריף שעתי" };
+  }
+  if (base.blocked === "no_hours") {
+    // Not a problem yet: the session hasn't happened, so nobody has hours to
+    // type. Documented silence (applicable:false) — no row, no 🟡, and no stale
+    // flag left behind. The work order is created later, by the hours route, at
+    // the moment the number arrives.
+    if (production.status != null && HOURS_NOT_YET_EXPECTED.has(production.status)) {
+      return {
+        ok: false,
+        applicable: false,
+        reason: "התוכנית מתומחרת לפי שעת אולפן — ההקלטה טרם התבצעה ואין עדיין שעות לחייב",
+      };
+    }
+    // Recorded (or beyond) with no hours: the work was done and the number that
+    // decides its price is missing. This is the 🟡 the whole model needs —
+    // without it an hourly episode would simply never be billed, silently.
+    return { ok: false, applicable: true, reason: "התוכנית מתומחרת לפי שעת אולפן — לא הוזנו שעות ההקלטה" };
+  }
+  // no_default_rate — the refusal that used to live in enqueueDocument, now a
+  // block like every other: a reason, a 🟡, and an event.
+  return { ok: false, applicable: true, reason: "לתוכנית אין מחיר ברירת מחדל — אי אפשר לבנות מסמך" };
 }
 
 /**
@@ -445,7 +605,10 @@ export async function enqueueDocument(
 ): Promise<EnqueueResult> {
   const { data: show, error: showErr } = await admin
     .from("shows")
-    .select("id,client_id,billing_mode,default_rate")
+    // 0067: pricing_model and hourly_rate are read here, not merely typed — an
+    // omitted column reads as per_episode and would bill an hourly show at a
+    // default_rate the constraint guarantees is null.
+    .select("id,client_id,billing_mode,default_rate,pricing_model,hourly_rate")
     .eq("id", production.show_id ?? "")
     .maybeSingle();
   if (showErr) return { status: "error", error: `קריאת התוכנית נכשלה: ${showErr.message}` };
@@ -531,12 +694,16 @@ export async function enqueueDocument(
     }
   }
 
+  // elig.amount is a number by construction (0067): "eligible but priceless"
+  // is no longer a state this function has to handle, because checkEligibility
+  // now refuses it as a block like every other — with a reason, a 🟡 AND an
+  // event, which the refusal that used to stand here never wrote.
+  //
+  // amountOverride adjusts the amount of a production that is ALREADY eligible;
+  // it does not manufacture eligibility. No call site passes it today (verified
+  // across src/ and scripts/), so nothing changes — but the semantics are now
+  // stated rather than emergent from statement order.
   const baseAmount = opts.amountOverride ?? elig.amount;
-  if (baseAmount === null || baseAmount === undefined) {
-    const reason = "לתוכנית אין מחיר ברירת מחדל — אי אפשר לבנות מסמך";
-    await setBlockReason(admin, production.id, reason);
-    return { status: "blocked", reason };
-  }
 
   // A deal invoice bills base package + every approved, priced add-on
   // (owner spec 2026-07-21) — one income row per line. Add-ons never touch a

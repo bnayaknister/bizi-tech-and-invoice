@@ -1315,7 +1315,21 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
 
                 <div className="space-y-2.5">
                   {data.fields
-                    .filter((f) => !(data.type === "production" && (f.key === "status" || f.key === "storage_disk")))
+                    // Registered in entities.ts, deliberately not rendered here.
+                    // `status` and `storage_disk` have their own dedicated UI at
+                    // the top of the drawer; `billing_block_reason` (0067) is
+                    // registered so `selectColumns` will fetch the column at all
+                    // — the hourly-pricing UI needs it — but a bare readonly row
+                    // reading "חסימת חיוב: לא הוזנו שעות ההקלטה" beside the
+                    // guest and the studio explains nothing and offers nothing to
+                    // press. It comes back with a display built for it.
+                    .filter(
+                      (f) =>
+                        !(
+                          data.type === "production" &&
+                          (f.key === "status" || f.key === "storage_disk" || f.key === "billing_block_reason")
+                        )
+                    )
                     .map((f) => (
                     <div key={f.key} className="grid grid-cols-[110px_1fr] items-center gap-2">
                       <label className="text-xs text-[var(--dim)]">{f.label}</label>
