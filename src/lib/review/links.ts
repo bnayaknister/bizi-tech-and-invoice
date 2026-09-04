@@ -405,6 +405,13 @@ export async function applyResponse(
     // a correction was requested — back to the board, loudly
     patch.status = "בעריכה";
     patch.needs_attention = true;
+    // a new correction round outdates any earlier "קיבלתי": that ack answered
+    // the previous note, not this one. Cleared unconditionally whenever this
+    // branch runs, so the flag can never be lit while an ack still claims the
+    // loop was closed.
+    patch.review_ack_at = null;
+    patch.review_ack_by = null;
+    patch.review_ack_link_id = null;
   }
 
   // Resolve the upsells the client just decided on BEFORE flipping the
