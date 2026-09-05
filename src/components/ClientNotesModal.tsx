@@ -160,7 +160,9 @@ export default function ClientNotesModal({
 
         {error && <div className="text-[11px] text-[var(--peak)] mb-2">{error}</div>}
 
-        <div className="flex gap-2 mt-4">
+        {/* flex-wrap: four controls do not fit one line on a phone, and a
+            footer that overflows hides the one button that matters */}
+        <div className="flex flex-wrap items-center gap-2 mt-4">
           {round && !acked && (
             <button
               onClick={ack}
@@ -173,6 +175,38 @@ export default function ClientNotesModal({
           )}
           {acked && (
             <div className="text-sm text-[var(--green)] font-bold">✓ אושר — ההפקה בטיפול</div>
+          )}
+          {/* the print sheet, in a tab of its own. ?print=1 opens the browser's
+              print dialog on arrival — that dialog is where the PDF comes from,
+              so there is no PDF dependency behind this button. Nothing to print
+              without a round, so both are gated on it. */}
+          {round && (
+            <>
+              <button
+                onClick={() =>
+                  window.open(
+                    `/productions/${productionId}/review-notes/print?print=1`,
+                    "_blank",
+                    "noopener"
+                  )
+                }
+                className="border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)] hover:bg-[var(--panel3)]"
+              >
+                ⬇️ הורד PDF
+              </button>
+              <button
+                onClick={() =>
+                  window.open(
+                    `/productions/${productionId}/review-notes/print`,
+                    "_blank",
+                    "noopener"
+                  )
+                }
+                className="border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)] hover:bg-[var(--panel3)]"
+              >
+                ↗️ פתח בטאב
+              </button>
+            </>
           )}
           <button
             onClick={onClose}

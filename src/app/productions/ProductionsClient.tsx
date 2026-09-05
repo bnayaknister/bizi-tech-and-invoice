@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useDrawer } from "@/components/EntityDrawer";
+import ClientNotesModal from "@/components/ClientNotesModal";
 import IconTile from "@/components/IconTile";
 import { STATUS_ORDER, STATUS_LABEL, IN_PROGRESS_STATES, TERMINAL_STATES } from "@/lib/productions/status";
 
@@ -86,6 +87,8 @@ export default function ProductionsClient({
   const [splitFor, setSplitFor] = useState<BoardProduction | null>(null);
   const [cancelFor, setCancelFor] = useState<BoardProduction | null>(null);
   const [reviewFor, setReviewFor] = useState<BoardProduction | null>(null);
+  // the client's notes from the round they last answered, + "קיבלתי, מטפל"
+  const [notesFor, setNotesFor] = useState<BoardProduction | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -368,6 +371,7 @@ export default function ProductionsClient({
           onFreezeAsk={setHoldFor}
           onCancelAsk={setCancelFor}
           onReviewAsk={setReviewFor}
+          onNotesAsk={setNotesFor}
           canEditStages={canEditStages}
           onSplitAsk={setSplitFor}
           onUndoSplit={undoSplit}
@@ -388,6 +392,7 @@ export default function ProductionsClient({
           onUnfreeze={(id) => setHold(id, false)}
           onCancelAsk={setCancelFor}
           onReviewAsk={setReviewFor}
+          onNotesAsk={setNotesFor}
           onSplitAsk={setSplitFor}
           onUndoSplit={undoSplit}
           onDupAction={dupAction}
@@ -415,6 +420,19 @@ export default function ProductionsClient({
       )}
 
       {reviewFor && <ReviewLinkModal production={reviewFor} onClose={() => setReviewFor(null)} />}
+
+      {/* router.refresh(), not a local row patch: an ack clears
+          needs_attention, so the production leaves "דורש טיפול" and joins
+          "בעבודה עכשיו" — a change to the SET of rows in each section, which
+          is what the note at the top of this file reserves refresh() for. */}
+      {notesFor && (
+        <ClientNotesModal
+          productionId={notesFor.id}
+          showName={notesFor.show_name}
+          onClose={() => setNotesFor(null)}
+          onAcked={() => router.refresh()}
+        />
+      )}
 
       {createOpen && (
         <NewProductionModal
@@ -461,6 +479,7 @@ function ProductionCard({
   onUnfreeze,
   onCancelAsk,
   onReviewAsk,
+  onNotesAsk,
   draggable,
   onDragStart,
   onDragEnd,
@@ -477,6 +496,7 @@ function ProductionCard({
   onUnfreeze?: (id: string) => void;
   onCancelAsk?: (p: BoardProduction) => void;
   onReviewAsk?: (p: BoardProduction) => void;
+  onNotesAsk?: (p: BoardProduction) => void;
   draggable?: boolean;
   onDragStart?: () => void;
   onDragEnd?: () => void;
@@ -678,6 +698,20 @@ function ProductionCard({
             לינק אישור
           </button>
         )}
+        {/* only while the flag is lit — the button exists to answer the red
+            dot, and once the notes are acknowledged the dot goes out and this
+            goes with it. Red like "בטל הפקה", because it belongs to the flag. */}
+        {canEditStages && onNotesAsk && p.needs_attention && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onNotesAsk(p);
+            }}
+            className="text-[10px] text-[var(--red)] border border-[var(--rule)] rounded px-2 py-0.5 hover:bg-[rgba(251,113,133,0.08)]"
+          >
+            💬 הערות הלקוח
+          </button>
+        )}
       </div>
     </div>
   );
@@ -690,6 +724,7 @@ function TodayView({
   onFreezeAsk,
   onCancelAsk,
   onReviewAsk,
+  onNotesAsk,
   canEditStages,
   onSplitAsk,
   onUndoSplit,
@@ -702,6 +737,7 @@ function TodayView({
   onFreezeAsk: (p: BoardProduction) => void;
   onCancelAsk: (p: BoardProduction) => void;
   onReviewAsk: (p: BoardProduction) => void;
+  onNotesAsk: (p: BoardProduction) => void;
   canEditStages: boolean;
   onSplitAsk: (p: BoardProduction) => void;
   onUndoSplit: (id: string) => void;
@@ -741,6 +777,7 @@ function TodayView({
               onUnfreeze={(id) => onHold(id, false)}
               onCancelAsk={onCancelAsk}
               onReviewAsk={onReviewAsk}
+              onNotesAsk={onNotesAsk}
               showStatus
               canEditStages={canEditStages}
               onSplitAsk={onSplitAsk}
@@ -780,6 +817,7 @@ function Kanban({
   onUnfreeze,
   onCancelAsk,
   onReviewAsk,
+  onNotesAsk,
   onSplitAsk,
   onUndoSplit,
   onDupAction,
@@ -797,6 +835,7 @@ function Kanban({
   onUnfreeze: (id: string) => void;
   onCancelAsk: (p: BoardProduction) => void;
   onReviewAsk: (p: BoardProduction) => void;
+  onNotesAsk: (p: BoardProduction) => void;
   onSplitAsk: (p: BoardProduction) => void;
   onUndoSplit: (id: string) => void;
   onDupAction: (id: string, action: "confirm" | "merge") => void;
@@ -855,6 +894,7 @@ function Kanban({
                     onUnfreeze={onUnfreeze}
                     onCancelAsk={onCancelAsk}
                     onReviewAsk={onReviewAsk}
+                    onNotesAsk={onNotesAsk}
                     draggable={canEditStages}
                     onDragStart={() => setDragId(p.id)}
                     onDragEnd={() => setDragId(null)}
@@ -902,6 +942,7 @@ function Kanban({
                     onUnfreeze={onUnfreeze}
                     onCancelAsk={onCancelAsk}
                     onReviewAsk={onReviewAsk}
+                    onNotesAsk={onNotesAsk}
                     draggable={false}
                     canEditStages={canEditStages}
                     onSplitAsk={onSplitAsk}
