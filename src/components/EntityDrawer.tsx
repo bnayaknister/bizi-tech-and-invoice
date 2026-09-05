@@ -27,6 +27,7 @@ import {
   nextStatus as prodNextStatus,
 } from "@/lib/productions/status";
 import ClientCombobox from "@/components/ClientCombobox";
+import ClientNotesModal from "./ClientNotesModal";
 import IconTile, { type IconAccent } from "@/components/IconTile";
 import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
 import { HOURS_STEP, MAX_HOURS, hoursError as validateHours, hoursMissing } from "@/lib/productions/hours";
@@ -377,6 +378,7 @@ function logIcon(e: LogEntry): string {
   if (e.kind === "disk") return "💾";
   if (e.kind === "note") return "📝";
   if (e.kind === "client") return "💬";
+  if (e.kind === "ack") return "🤝";
   if (e.kind === "stage") {
     if (e.stage_status === "done") return "✓";
     if (e.stage_status === "in_progress") return "▶";
@@ -390,6 +392,8 @@ function logHead(e: LogEntry): string {
   const where = e.track ? `${TRACK_LABEL[e.track] ?? e.track}${e.step ? "·" + STEP_LABEL[e.step] : ""}` : "";
   if (e.kind === "disk") return `דיסק: ${e.note ?? "—"}`;
   if (e.kind === "client") return `${where ? where + " · " : ""}הערת לקוח`;
+  // written with note: null (review-ack route), so the head IS the entry
+  if (e.kind === "ack") return "הטכנאי קיבל את ההערות ומטפל";
   if (e.kind === "stage") {
     const verb = e.stage_status === "done" ? "הושלם" : e.stage_status === "in_progress" ? "התחיל" : "הוחזר";
     return `${where} ${verb}`;
@@ -535,6 +539,8 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   const [savingStatus, setSavingStatus] = useState(false);
   const [excOpen, setExcOpen] = useState(false); // "exceptional actions" disclosure on the status cursor
   const [reviewSending, setReviewSending] = useState<string | null>(null); // scope currently being sent
+  // the client's notes from the last answered round, + the "קיבלתי" step (0071)
+  const [showClientNotes, setShowClientNotes] = useState(false);
   // scope — where the sent-box renders (per-track block, or "all" = under the
   // unified button); sentScope — what the unified send ACTUALLY minted, for the
   // success label (the unified button downgrades to a single track when only
@@ -1100,6 +1106,18 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     <DrawerContext.Provider value={{ openEntity }}>
       {children}
 
+      {showClientNotes && data?.entity && (
+        <ClientNotesModal
+          productionId={ref!.id}
+          showName={(data.entity.podcast_name as string) ?? undefined}
+          onClose={() => setShowClientNotes(false)}
+          onAcked={() => {
+            broadcast();
+            void load(ref!, true);
+          }}
+        />
+      )}
+
       {freezeAsk && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: "rgba(3,2,10,0.7)", backdropFilter: "blur(6px)" }}>
           <div
@@ -1516,6 +1534,18 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           overwrite warning stays on each button, where it is
                           genuinely different per track. */}
                       {data.canEditStages && <LiveLinksBox links={allLive} />}
+                      {/* the round the client already answered — its notes, and
+                          the "קיבלתי, מטפל" step that closes the loop. Above the
+                          track blocks: what the client said comes before what is
+                          being sent next. */}
+                      {data.canEditStages && (
+                        <button
+                          onClick={() => setShowClientNotes(true)}
+                          className="w-full text-sm border border-[var(--rule)] rounded-lg px-3 py-2 mb-2 text-[var(--violet-light)] hover:bg-[var(--panel3)] transition-colors flex items-center justify-center gap-2"
+                        >
+                          💬 צפה בהערות הלקוח
+                        </button>
+                      )}
                       {epStages.length > 0 && (
                         <ProductionTrackBlock
                           icon="🎬"

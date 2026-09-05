@@ -8,10 +8,14 @@ import { createAdminClient } from "@/lib/supabase/admin";
 // the same client coming back through a live link and approving everything
 // (links.ts:403). This route is the human "received" step.
 //
-// The three ack columns are the ONLY thing written here. needs_attention stays
-// as it is: it is a generic board flag with its own manual route, and 0071
-// (header, "WHY needs_attention SURVIVES AS A SEPARATE COLUMN") keeps the two
-// apart on purpose.
+// Four columns are written: the three ack columns, and needs_attention off.
+// They stay SEPARATE columns for the reason 0071's header gives ("WHY
+// needs_attention SURVIVES AS A SEPARATE COLUMN") — the flag is a generic
+// board signal with its own manual route, and merging it into review_ack_at
+// would weld the board's only "look at this" mechanism to one feature. This
+// route moves both because acknowledging a note IS the moment the board should
+// stop shouting: with the dot still lit the production sat in "דורש טיפול" and
+// "בעבודה עכשיו" at the same time.
 //
 // ═══ WHY THE ROUND IS IDENTIFIED, NOT ASSUMED ═══
 // The ack is per-round — that is what review_ack_link_id is for. The caller
@@ -88,9 +92,14 @@ export async function POST(request: Request, { params }: { params: { id: string 
       review_ack_at: new Date().toISOString(),
       review_ack_by: user.id,
       review_ack_link_id: latestRound.id,
+      // the red dot goes out here. Leaving it lit put the production in two
+      // places at once — "דורש טיפול" and "בעבודה עכשיו" — which reads as two
+      // jobs when it is one. status is NOT touched: the client's response
+      // already set it to בעריכה (links.ts:406) and that is still true.
+      needs_attention: false,
     })
     .eq("id", params.id)
-    .select("id,review_ack_at,review_ack_by,review_ack_link_id")
+    .select("id,review_ack_at,review_ack_by,review_ack_link_id,needs_attention")
     .single();
   if (updErr || !updated) {
     return NextResponse.json({ error: "ההפקה לא נמצאה או שאין הרשאה" }, { status: 404 });
@@ -118,5 +127,6 @@ export async function POST(request: Request, { params }: { params: { id: string 
     review_ack_at: updated.review_ack_at,
     review_ack_by: updated.review_ack_by,
     review_ack_link_id: updated.review_ack_link_id,
+    needs_attention: updated.needs_attention,
   });
 }
