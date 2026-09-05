@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useDrawer } from "@/components/EntityDrawer";
 import AssignDocModal from "@/components/AssignDocModal";
 import NewDocModal from "./NewDocModal";
+import BundleFromShowModal from "@/components/BundleFromShowModal";
 import { REGISTRY_TAB_LABEL, type RegistryTab } from "@/lib/morning/types";
 
 const BILLING_TYPES = [300, 305, 320, 400]; // deal / tax / tax-receipt / receipt — real חיוב, linkable to a job
@@ -159,6 +160,8 @@ export default function RegistryClient({
   const [assignDoc, setAssignDoc] = useState<DocRow | null>(null);
   const [cancelDoc, setCancelDoc] = useState<DocRow | null>(null);
   const [newDoc, setNewDoc] = useState<"work_order" | "deal_invoice" | null>(null);
+  // N episodes of one show, billed as a single order — no productions involved
+  const [bundleOpen, setBundleOpen] = useState(false);
   const [childDoc, setChildDoc] = useState<{ row: DocRow; action: "tax" | "receipt" } | null>(null);
   // in "לא משויך", quotes/orders/credits are noise for the bookkeeper — show
   // only real billing docs by default (owner spec 2026-07-27), the rest behind a toggle
@@ -393,6 +396,14 @@ export default function RegistryClient({
             className="rounded-xl px-3 py-1.5 border border-[var(--rule2)] shrink-0 font-bold text-[var(--signal)]"
           >
             {tab === "work_order" ? "+ הזמנת עבודה חדשה" : "+ חשבון עסקה חדש"}
+          </button>
+        )}
+        {canPull && tab === "work_order" && (
+          <button
+            onClick={() => setBundleOpen(true)}
+            className="rounded-xl px-3 py-1.5 border border-[var(--rule2)] shrink-0 font-bold text-[var(--signal)]"
+          >
+            + הזמנה מרוכזת מתוכנית
           </button>
         )}
         {tab === "unmatched" && hiddenNonBilling > 0 && (
@@ -691,6 +702,17 @@ export default function RegistryClient({
           onClose={() => setNewDoc(null)}
           onQueued={(m) => {
             setNewDoc(null);
+            setMsg(m);
+            router.refresh();
+          }}
+        />
+      )}
+
+      {bundleOpen && (
+        <BundleFromShowModal
+          onClose={() => setBundleOpen(false)}
+          onQueued={(m) => {
+            setBundleOpen(false);
             setMsg(m);
             router.refresh();
           }}
