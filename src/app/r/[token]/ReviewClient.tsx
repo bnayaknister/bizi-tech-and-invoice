@@ -99,6 +99,105 @@ function MediaView({ link }: { link: string }) {
   );
 }
 
+// One deliverable: its player, its approve/revisions pair, and the correction
+// note that appears when the client picks revisions.
+//
+// MODULE LEVEL, and it has to stay here. It lived inside ReviewClient until
+// 2026-09-05, which made it a NEW component type on every render — so React
+// tore down the whole subtree and rebuilt it after each keystroke: the
+// textarea lost focus mid-word, and the Drive iframe below it reloaded from
+// the start. It closes over nothing from ReviewClient (every value it reads is
+// a prop; `card` and `MediaView` are module-level), which is exactly why the
+// fix is a move and not a rewrite.
+const Block = ({
+  emoji,
+  title,
+  approved,
+  pending,
+  link,
+  choice,
+  setChoice,
+  note,
+  setNote,
+  notePlaceholder,
+}: {
+  emoji: string;
+  title: string;
+  approved: boolean;
+  pending: boolean;
+  link: string | null;
+  choice: Choice;
+  setChoice: (c: Choice) => void;
+  note: string;
+  setNote: (s: string) => void;
+  notePlaceholder: string;
+}) => (
+  <div style={card}>
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+      <span style={{ fontSize: 22 }}>{emoji}</span>
+      <span style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>{title}</span>
+      {approved && <span style={{ color: "#4ade80", fontSize: 13, fontWeight: 700 }}>✓ אושר</span>}
+    </div>
+    {link && <MediaView link={link} />}
+    {pending && (
+      <>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={() => setChoice("approved")}
+            style={{
+              flex: 1,
+              padding: "10px",
+              borderRadius: 12,
+              fontSize: 14,
+              fontWeight: 700,
+              border: choice === "approved" ? "1px solid #4ade80" : "1px solid rgba(255,255,255,0.14)",
+              background: choice === "approved" ? "rgba(74,222,128,0.15)" : "transparent",
+              color: choice === "approved" ? "#4ade80" : "#ece9f5",
+            }}
+          >
+            ✓ מאשר
+          </button>
+          <button
+            onClick={() => setChoice("revisions")}
+            style={{
+              flex: 1,
+              padding: "10px",
+              borderRadius: 12,
+              fontSize: 14,
+              fontWeight: 700,
+              border: choice === "revisions" ? "1px solid #fbbf24" : "1px solid rgba(255,255,255,0.14)",
+              background: choice === "revisions" ? "rgba(251,191,36,0.15)" : "transparent",
+              color: choice === "revisions" ? "#fbbf24" : "#ece9f5",
+            }}
+          >
+            ✎ תיקונים
+          </button>
+        </div>
+        {choice === "revisions" && (
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder={notePlaceholder}
+            rows={3}
+            style={{
+              width: "100%",
+              marginTop: 10,
+              background: "rgba(0,0,0,0.25)",
+              border: "1px solid rgba(255,255,255,0.14)",
+              borderRadius: 12,
+              padding: 10,
+              color: "#ece9f5",
+              fontSize: 14,
+              fontFamily: "inherit",
+              resize: "vertical",
+            }}
+          />
+        )}
+      </>
+    )}
+  </div>
+);
+
 export default function ReviewClient({
   token,
   showName,
@@ -240,95 +339,6 @@ export default function ReviewClient({
       </div>
     );
   }
-
-  const Block = ({
-    emoji,
-    title,
-    approved,
-    pending,
-    link,
-    choice,
-    setChoice,
-    note,
-    setNote,
-    notePlaceholder,
-  }: {
-    emoji: string;
-    title: string;
-    approved: boolean;
-    pending: boolean;
-    link: string | null;
-    choice: Choice;
-    setChoice: (c: Choice) => void;
-    note: string;
-    setNote: (s: string) => void;
-    notePlaceholder: string;
-  }) => (
-    <div style={card}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-        <span style={{ fontSize: 22 }}>{emoji}</span>
-        <span style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>{title}</span>
-        {approved && <span style={{ color: "#4ade80", fontSize: 13, fontWeight: 700 }}>✓ אושר</span>}
-      </div>
-      {link && <MediaView link={link} />}
-      {pending && (
-        <>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button
-              onClick={() => setChoice("approved")}
-              style={{
-                flex: 1,
-                padding: "10px",
-                borderRadius: 12,
-                fontSize: 14,
-                fontWeight: 700,
-                border: choice === "approved" ? "1px solid #4ade80" : "1px solid rgba(255,255,255,0.14)",
-                background: choice === "approved" ? "rgba(74,222,128,0.15)" : "transparent",
-                color: choice === "approved" ? "#4ade80" : "#ece9f5",
-              }}
-            >
-              ✓ מאשר
-            </button>
-            <button
-              onClick={() => setChoice("revisions")}
-              style={{
-                flex: 1,
-                padding: "10px",
-                borderRadius: 12,
-                fontSize: 14,
-                fontWeight: 700,
-                border: choice === "revisions" ? "1px solid #fbbf24" : "1px solid rgba(255,255,255,0.14)",
-                background: choice === "revisions" ? "rgba(251,191,36,0.15)" : "transparent",
-                color: choice === "revisions" ? "#fbbf24" : "#ece9f5",
-              }}
-            >
-              ✎ תיקונים
-            </button>
-          </div>
-          {choice === "revisions" && (
-            <textarea
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder={notePlaceholder}
-              rows={3}
-              style={{
-                width: "100%",
-                marginTop: 10,
-                background: "rgba(0,0,0,0.25)",
-                border: "1px solid rgba(255,255,255,0.14)",
-                borderRadius: 12,
-                padding: 10,
-                color: "#ece9f5",
-                fontSize: 14,
-                fontFamily: "inherit",
-                resize: "vertical",
-              }}
-            />
-          )}
-        </>
-      )}
-    </div>
-  );
 
   return (
     <div style={{ width: "100%", maxWidth: 420 }}>
