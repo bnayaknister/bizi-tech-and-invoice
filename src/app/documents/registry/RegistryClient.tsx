@@ -28,6 +28,12 @@ export type DocRow = {
   source: "app" | "pull" | "manual";
   production_id: string | null;
   job_id: string | null;
+  // The OTHER way a document points at jobs, and the only way a bundled one
+  // does: a consolidated deal invoice covers N episodes, so it carries job_id
+  // NULL and lists every job here (issue.ts writes it through at issuance).
+  // Any code that asks "is this document linked?" by reading job_id alone will
+  // say no about a document linked to four.
+  bundle_job_ids: string[] | null;
   show_name: string | null;
   cancelled_at: string | null;
   cancel_reason: string | null;
@@ -311,6 +317,26 @@ export default function RegistryClient({
 
   // the checkbox column exists only where bundling is on the table
   const selectMode = canPull && tab === "deal_invoice";
+
+  /** How many jobs a BUNDLED document covers. 0 = not a bundle. */
+  const bundleSize = (r: DocRow): number => r.bundle_job_ids?.length ?? 0;
+
+  /**
+   * Does this document still need a job?
+   *
+   * Extracted because two places asked it and asked it DIFFERENTLY the moment a
+   * bundle appeared — the button below and the `assignShown` mirror beside the
+   * openness chip, whose comment already warned they must agree. One predicate,
+   * two readers, no drift.
+   *
+   * The bundle clause is the fix: a consolidated deal invoice (40312,
+   * חתונמיות) carries job_id NULL and four ids in bundle_job_ids. Reading
+   * job_id alone called it unassigned and offered to assign it — on a document
+   * already linked to every episode it bills, where the assign path writes a
+   * single job_id and would have narrowed four links to one.
+   */
+  const needsJobAssignment = (r: DocRow): boolean =>
+    canPull && !r.job_id && bundleSize(r) === 0 && BILLING_TYPES.includes(r.type);
 
   // Re-filtered through taxSelectable, not trusted from the tick alone: the
   // ticks were made against the rows as they were, and this is the last read
@@ -644,7 +670,7 @@ export default function RegistryClient({
                       </span>
                     ) : (
                       <div className="flex items-center gap-1.5">
-                        {canPull && !r.job_id && BILLING_TYPES.includes(r.type) && (
+                        {needsJobAssignment(r) && (
                           <button
                             onClick={() => setAssignDoc(r)}
                             className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)]"
@@ -652,7 +678,20 @@ export default function RegistryClient({
                             שייך ל-job
                           </button>
                         )}
-                        {r.job_id && <span className="text-[10px] text-[var(--green)]">משויך</span>}
+                        {r.job_id ? (
+                          <span className="text-[10px] text-[var(--green)]">משויך</span>
+                        ) : bundleSize(r) > 0 ? (
+                          // same chip, same colour — a bundle is not "less
+                          // assigned" than a single link, it is assigned to more.
+                          // The count is the point: it is what tells the reader
+                          // the empty job_id column is correct and not a gap.
+                          <span
+                            className="text-[10px] text-[var(--green)]"
+                            title="מסמך מאוגד — הקישור לעבודות נשמר עליו עצמו ולא דרך פרק בודד"
+                          >
+                            משויך ל-{bundleSize(r)} עבודות
+                          </span>
+                        ) : null}
                         {/* The chip and the button tell ONE story: the chip is
                             why the button is or isn't there. Shown only on
                             100/300, the rows where "can I still build on this?"
@@ -666,8 +705,9 @@ export default function RegistryClient({
                           // mirrors the "שייך ל-job" button's condition above:
                           // when that button is in the cell, the visible block
                           // sentence would say the same thing twice — the
-                          // tooltip keeps the full reason either way
-                          const assignShown = canPull && !r.job_id && BILLING_TYPES.includes(r.type);
+                          // tooltip keeps the full reason either way.
+                          // Literally the same predicate now, not a copy of it.
+                          const assignShown = needsJobAssignment(r);
                           return (
                             <>
                               <span

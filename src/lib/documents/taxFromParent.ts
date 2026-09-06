@@ -453,10 +453,17 @@ export async function createTaxFromParents(
       .from("pending_documents")
       .select("id,bundle_job_ids")
       .in("id", ids);
-    if (!bundleErr) {
-      for (const b of (bundleRows ?? []) as { id: string; bundle_job_ids: string[] | null }[]) {
-        for (const j of b.bundle_job_ids ?? []) jobIds.add(j);
-      }
+    // Was `if (!bundleErr)` — a failed read fell through as "no jobs here",
+    // and for a CONSOLIDATED document that is not a partial answer, it is the
+    // whole one: such a row carries job_id NULL and production_id NULL, and the
+    // fold lookup below cannot reach it either (its episodes hang off the WORK
+    // ORDER, not off this invoice). bundle_job_ids is its only link, so an
+    // unreadable one produced "no linked jobs found" — a message that then sent
+    // the bookkeeper to check client approval, which was never the problem.
+    // Same rule as the two lookups below, and the one their comment states.
+    if (bundleErr) return { ok: false, status: 400, error: bundleErr.message };
+    for (const b of (bundleRows ?? []) as { id: string; bundle_job_ids: string[] | null }[]) {
+      for (const j of b.bundle_job_ids ?? []) jobIds.add(j);
     }
   }
   for (const r of rows) {
@@ -534,8 +541,11 @@ export async function createTaxFromParents(
       status: 409,
       error:
         "לא נמצאו עבודות מקושרות למסמכי המקור — מסמך מס חייב לסמן את העבודות שהוא סוגר. " +
-        "עבודה נוצרת כשהלקוח מאשר את הפרק, ולכן ברוב המקרים הפרק עדיין ממתין לאישור הלקוח — " +
-        "יש לאשר אותו ואז לנסות שוב. אם הפרק כבר אושר, המסמך אינו משויך לפרק ויש לבדוק אותו ברישום.",
+        "אם מדובר בפרק בודד: עבודה נוצרת כשהלקוח מאשר את הפרק, ולכן ברוב המקרים הפרק עדיין " +
+        "ממתין לאישור — יש לאשר אותו ואז לנסות שוב, ואם הוא כבר אושר, יש לשייך אותו למסמך ברישום. " +
+        "אם מדובר במסמך מאוגד שמכסה כמה פרקים: הקישור לעבודות נשמר על המסמך עצמו ולא דרך פרק, " +
+        "ובמסך הרישום הוא מופיע כ״משויך ל-N עבודות״. אם לא — זו תקלה ולא חוסר אישור, ואין " +
+        "מה לתקן מהמסך.",
     };
   }
 

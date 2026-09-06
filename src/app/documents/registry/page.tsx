@@ -24,8 +24,13 @@ export default async function RegistryPage() {
   // rendering.
   const docsQuery = (cols: string) =>
     admin.from("documents").select(cols).order("document_date", { ascending: false, nullsFirst: false }).limit(5000);
+  // bundle_job_ids rides with the optional columns, not in BASE_COLS, for the
+  // same reason they do: if 0044 were ever unapplied, the fallback below still
+  // renders the screen — it just loses the bundle knowledge and the assign
+  // button reverts to its old, over-eager condition. Degrading is correct here;
+  // a blank registry is not.
   const [docsRes, { data: settings }] = await Promise.all([
-    docsQuery(`${BASE_COLS},cancelled_at,cancel_reason,archived_at,archive_reason`),
+    docsQuery(`${BASE_COLS},cancelled_at,cancel_reason,archived_at,archive_reason,bundle_job_ids`),
     admin.from("app_settings").select("documents_pulled_at").eq("id", true).maybeSingle(),
   ]);
   const data = docsRes.error ? (await docsQuery(BASE_COLS)).data : docsRes.data;
@@ -294,6 +299,9 @@ export default async function RegistryPage() {
     cancel_reason: (d.cancel_reason as string | null) ?? null,
     archived_at: (d.archived_at as string | null) ?? null,
     archive_reason: (d.archive_reason as string | null) ?? null,
+    // a bundled document points at its jobs HERE, not through job_id — a
+    // consolidated deal invoice carries job_id NULL and this array full
+    bundle_job_ids: (d.bundle_job_ids as string[] | null) ?? null,
     pending_id: pendingByMorningId.get(d.morning_doc_id as string)?.id ?? null,
     // the queue row's NET, not documents.amount — see the select above
     pending_amount: pendingByMorningId.get(d.morning_doc_id as string)?.amount ?? null,
