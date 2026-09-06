@@ -11,6 +11,35 @@ import { REGISTRY_TAB_LABEL, type RegistryTab } from "@/lib/morning/types";
 const BILLING_TYPES = [300, 305, 320, 400]; // deal / tax / tax-receipt / receipt — real חיוב, linkable to a job
 const isBilling = (t: number) => BILLING_TYPES.includes(t);
 
+// What /api/documents/[id]/cancel accepts, and nothing else — a deal invoice
+// and, since 2026-08-25, a work order (the route's own comment explains why:
+// Shiri closes an issued order in Morning and needs to issue a corrected one,
+// and until then nothing here could move it out of 'issued').
+//
+// A list of its own rather than BILLING_TYPES, which is the wrong set twice
+// over: it omits 100 and it includes 305/320/400, which the route refuses with
+// "ניתן לבטל רק חשבון עסקה או הזמנת עבודה". Offering the button on those would
+// promise a 400.
+const CANCELLABLE_TYPES = [300, 100];
+
+// What to call each of them in the cancel dialog's heading — and why this is a
+// third map rather than a reuse of one of the three that already exist.
+//
+// The heading needs the DEFINITE form, and Hebrew puts the article on the
+// SECOND noun of a construct chain: הזמנת ה‏עבודה, חשבון ה‏עסקה. It cannot be
+// derived by prefixing "ה" to DOC_TYPE_LABEL's "הזמנת עבודה" / "חשבון עסקה",
+// which would produce "ההזמנת עבודה". MORNING_DOC_NAME is wrong on two counts:
+// it is keyed by code but speaks MORNING's vocabulary, where 100 is "הזמנה"
+// and not the "הזמנת עבודה" our screens say. REGISTRY_TAB_LABEL is plural.
+//
+// Kept beside CANCELLABLE_TYPES on purpose: the set of types this dialog
+// accepts and the words it uses for them are one decision, and widening the
+// first without the second is what the fallback below quietly covers.
+const CANCEL_TITLE_NAME: Record<number, string> = {
+  100: "הזמנת העבודה",
+  300: "חשבון העסקה",
+};
+
 export type DocRow = {
   id: string;
   morning_doc_id: string | null;
@@ -807,7 +836,12 @@ export default function RegistryClient({
                             {r.build_block}
                           </span>
                         )}
-                        {canPull && r.type === 300 && (
+                        {/* No !r.cancelled_at guard, and that is not an
+                            oversight: `shown` drops every cancelled row from
+                            the normal tabs, and the "מבוטלים" tab renders its
+                            own branch above with no action buttons at all. A
+                            cancelled row cannot reach this line. */}
+                        {canPull && CANCELLABLE_TYPES.includes(r.type) && (
                           <button
                             onClick={() => setCancelDoc(r)}
                             className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--red)]"
@@ -1241,7 +1275,12 @@ function CancelModal({ doc, onClose, onCancelled }: { doc: DocRow; onClose: () =
         className="glass-card w-full max-w-md p-5 rounded-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="text-sm font-bold mb-1">לבטל את חשבון עסקה #{doc.number ?? ""}?</h2>
+        {/* "המסמך" is the fallback, not a default anyone should hit: it keeps
+            the sentence grammatical if CANCELLABLE_TYPES ever grows a type
+            nobody named here, instead of printing "לבטל את undefined". */}
+        <h2 className="text-sm font-bold mb-1">
+          לבטל את {CANCEL_TITLE_NAME[doc.type] ?? "המסמך"} #{doc.number ?? ""}?
+        </h2>
         <p className="text-[11px] text-[var(--faint)] mb-3 leading-relaxed">
           הביטול משקף פעולה שכבר נעשתה במורנינג — המערכת אינה מבטלת שם.
           {doc.job_id ? " ה-job המקושר יחזור למצב “לא חויב”." : ""}
