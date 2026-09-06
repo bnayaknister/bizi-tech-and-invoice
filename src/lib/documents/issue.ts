@@ -157,6 +157,219 @@ export async function jobsBehindReceipt(
   return Array.from(out);
 }
 
+/**
+ * The parent work order a deal invoice should be issued "on the basis of", so
+ * Morning CLOSES it — the half `createDealInvoiceFromWorkOrder` has always done
+ * and the approval path never did.
+ *
+ * ═══ WHY HERE AND NOT IN enqueue.ts ═══
+ * The obvious home looks like enqueue.ts, beside the payload it builds. It is
+ * the wrong one, for a reason the data proves rather than suggests: a deal
+ * invoice raised by client approval can be created BEFORE its work order has
+ * been issued. Live case 40293/10293 (2026-07-29) — the invoice row was created
+ * at 11:42:40 and the order was issued at 11:43:47, sixty-seven seconds later.
+ * At enqueue time there was no morning_doc_id to link to, and a lookup there
+ * would have found nothing and written nothing, silently, forever.
+ *
+ * By the time THIS function runs the order has its Morning id if it will ever
+ * have one, because issue.ts is the only place in the app that calls Morning
+ * (see the date comment below) and it writes morning_doc_id before returning.
+ * The same argument the `date` override rests on: the value is only knowable at
+ * the moment of sending, so it is resolved at the moment of sending.
+ *
+ * ═══ WHY GATE 4 (consolidation) IS THE ONE THAT MATTERS ═══
+ * A REDEEMED work order is one document covering four or five episodes
+ * (10317 folds 5, 10323 folds 4 — nine live productions between them today).
+ * Its own row carries production_id NULL, and each folded source row keeps
+ * consolidated_into pointing at it (bundle.ts:562). A per-episode deal invoice
+ * linked to such an order would close a debt for every episode it covers while
+ * exactly one was billed — and Morning has no PUT on documents, so that cannot
+ * be taken back. Both directions are therefore refused: a source row that was
+ * folded (status 'consolidated'), and an order that is itself a fold parent.
+ *
+ * ═══ THE PRINCIPLE ═══
+ * Doubt = do not link. An order left open is an inconvenience a human closes by
+ * hand in a minute; an order closed wrongly is money nobody can un-close. Every
+ * gate below therefore fails toward NOT linking, including "the lookup itself
+ * broke" — a query that cannot answer is not evidence that the answer is yes.
+ * Nothing here can fail the issuance: the document going out matters more than
+ * the link, and the caller treats a missing link as an ordinary outcome.
+ *
+ * Note on gate 5: issue.ts does NOT send `status` to upsertDocument, so an
+ * order the app issued carries documents.status NULL until the next daily pull
+ * overwrites it with Morning's own value. That is reported as its own skip
+ * (`work_order_status_unknown`) rather than folded into "closed", because the
+ * two mean different things to whoever reads the log — and because it is the
+ * one skip that resolves itself.
+ */
+// Exported for scripts/test_parent_work_order_link.ts, which calls the resolver
+// directly against the live database. issuePendingDocument is the only caller
+// in the app, and the only way to exercise these gates through it is to issue a
+// document — so the decision is testable in isolation or not at all.
+export type ParentLink =
+  | { linked: true; work_order_id: string; work_order_number: string | null; morning_doc_id: string }
+  | {
+      linked: false;
+      skip_reason: string;
+      detail?: string;
+      work_order_id?: string;
+      morning_doc_id?: string | null;
+    };
+
+type WorkOrderRow = {
+  id: string;
+  status: string;
+  morning_doc_id: string | null;
+  morning_doc_number: string | null;
+};
+
+// Exported for the test script only — see the note on ParentLink above.
+// Read-only by construction: three SELECTs, no writes, no Morning call.
+export async function resolveParentWorkOrderLink(
+  admin: SupabaseClient,
+  productionId: string
+): Promise<ParentLink> {
+  const { data: orders, error: ordersErr } = await admin
+    .from("pending_documents")
+    .select("id,status,morning_doc_id,morning_doc_number")
+    .eq("doc_type", "work_order")
+    .eq("production_id", productionId);
+  if (ordersErr) return { linked: false, skip_reason: "lookup_failed", detail: ordersErr.message };
+
+  const rows = (orders ?? []) as WorkOrderRow[];
+
+  // ---- gate 1: no order at all -------------------------------------------
+  if (!rows.length) return { linked: false, skip_reason: "no_work_order" };
+
+  // ---- gate 4a: this episode's order was folded into a consolidated one ----
+  // Checked BEFORE the 'issued' filter on purpose: a folded row's status is
+  // 'consolidated', so the filter below would drop it and report the vaguer
+  // "not issued". This is the diagnosis that has to survive to the log.
+  const folded = rows.find((o) => o.status === "consolidated");
+  if (folded) {
+    return {
+      linked: false,
+      skip_reason: "work_order_consolidated",
+      work_order_id: folded.id,
+      morning_doc_id: folded.morning_doc_id,
+    };
+  }
+
+  // ---- gate 2: only an ISSUED order exists in Morning ---------------------
+  const issued = rows.filter((o) => o.status === "issued");
+  if (!issued.length) {
+    return {
+      linked: false,
+      skip_reason: "work_order_not_issued",
+      detail: rows.map((o) => o.status).sort().join(","),
+      work_order_id: rows[0].id,
+    };
+  }
+  // 0025's partial unique index should make this impossible — one live row per
+  // (doc_type, production). Not trusted: picking the wrong order closes the
+  // wrong debt, and there is no undo. Refuse and let a human decide.
+  if (issued.length > 1) {
+    return {
+      linked: false,
+      skip_reason: "multiple_issued_work_orders",
+      detail: issued.map((o) => o.morning_doc_number ?? o.id).join(","),
+    };
+  }
+  const wo = issued[0];
+
+  // ---- gate 3: a real Morning document, not a dry run ---------------------
+  if (!wo.morning_doc_id) {
+    return { linked: false, skip_reason: "work_order_without_morning_id", work_order_id: wo.id };
+  }
+  if (wo.morning_doc_id.startsWith("dry-")) {
+    return {
+      linked: false,
+      skip_reason: "work_order_dry_run",
+      work_order_id: wo.id,
+      morning_doc_id: wo.morning_doc_id,
+    };
+  }
+
+  // ---- gate 4b: the order is itself a consolidation parent -----------------
+  // A fold parent carries production_id NULL and so cannot be reached by the
+  // query above. Checked anyway: the cost is one indexed lookup, and the thing
+  // it guards against is the irreversible one.
+  const { data: children, error: childErr } = await admin
+    .from("pending_documents")
+    .select("id")
+    .eq("consolidated_into", wo.id)
+    .limit(1);
+  if (childErr) {
+    return {
+      linked: false,
+      skip_reason: "consolidation_lookup_failed",
+      detail: childErr.message,
+      work_order_id: wo.id,
+      morning_doc_id: wo.morning_doc_id,
+    };
+  }
+  if (children && children.length) {
+    return {
+      linked: false,
+      skip_reason: "work_order_is_consolidation_parent",
+      work_order_id: wo.id,
+      morning_doc_id: wo.morning_doc_id,
+    };
+  }
+
+  // ---- gate 5: still open in Morning --------------------------------------
+  // 0 = פתוח, 1 = נסגר אוטומטית, 2 = נסגר ידנית (RegistryClient.tsx:109).
+  // Only 0 may be linked; anything else, including an unrecognised code, is
+  // treated as closed — the same fail-safe reading that screen already applies.
+  const { data: reg, error: regErr } = await admin
+    .from("documents")
+    .select("status")
+    .eq("morning_doc_id", wo.morning_doc_id)
+    .maybeSingle();
+  if (regErr) {
+    return {
+      linked: false,
+      skip_reason: "registry_lookup_failed",
+      detail: regErr.message,
+      work_order_id: wo.id,
+      morning_doc_id: wo.morning_doc_id,
+    };
+  }
+  if (!reg) {
+    return {
+      linked: false,
+      skip_reason: "work_order_not_in_registry",
+      work_order_id: wo.id,
+      morning_doc_id: wo.morning_doc_id,
+    };
+  }
+  const morningStatus = (reg as { status: number | null }).status;
+  if (morningStatus === null || morningStatus === undefined) {
+    return {
+      linked: false,
+      skip_reason: "work_order_status_unknown",
+      work_order_id: wo.id,
+      morning_doc_id: wo.morning_doc_id,
+    };
+  }
+  if (morningStatus !== 0) {
+    return {
+      linked: false,
+      skip_reason: "work_order_closed_in_morning",
+      detail: String(morningStatus),
+      work_order_id: wo.id,
+      morning_doc_id: wo.morning_doc_id,
+    };
+  }
+
+  return {
+    linked: true,
+    work_order_id: wo.id,
+    work_order_number: wo.morning_doc_number,
+    morning_doc_id: wo.morning_doc_id,
+  };
+}
+
 export async function issuePendingDocument(
   admin: SupabaseClient,
   row: PendingRow,
@@ -216,6 +429,61 @@ export async function issuePendingDocument(
       },
     });
   }
+  // A deal invoice raised by client approval carries no parent link — the
+  // payload builder in enqueue.ts has no such field at all — so Morning never
+  // closed the work order it settles. Resolved here, at the only moment the
+  // order's Morning id is guaranteed to exist. Full reasoning, and why gate 4
+  // is the load-bearing one, on resolveParentWorkOrderLink above.
+  //
+  // Attempted ONLY for a deal invoice anchored to one episode and carrying no
+  // link yet. The last condition is what keeps createDealInvoiceFromWorkOrder's
+  // own link untouchable: that path writes linkedDocumentIds at enqueue and
+  // production_id NULL, so it fails this test twice over and can never be
+  // overwritten here. Outside these three conditions the payload is not read
+  // and no event is written — a tax document has its own parent rules, and
+  // noise in the log is what makes a log unreadable.
+  let parentLink: ParentLink | null = null;
+  const alreadyLinked =
+    Array.isArray(row.payload?.linkedDocumentIds) && row.payload.linkedDocumentIds.length > 0;
+  if (row.doc_type === "deal_invoice" && row.production_id && !alreadyLinked) {
+    try {
+      parentLink = await resolveParentWorkOrderLink(admin, row.production_id);
+    } catch (e) {
+      // The resolver returns its failures rather than throwing, so this is the
+      // unexpected kind. Same verdict either way: no link, and the issuance
+      // proceeds — the document matters more than the link.
+      parentLink = {
+        linked: false,
+        skip_reason: "lookup_threw",
+        detail: e instanceof Error ? e.message : String(e),
+      };
+    }
+    // Evented on BOTH outcomes. "Why did the order not close?" has to be
+    // answerable from the log rather than reconstructed — the same rule
+    // deal_invoice_skipped_already_billed follows in enqueue.ts:686-689
+    // (0024: silence must be documented). Its own try/catch: a failed event
+    // must not cost the document either.
+    try {
+      await admin.from("events").insert({
+        entity_type: "pending_document",
+        entity_id: row.id,
+        event_type: "deal_invoice_parent_link",
+        actor_id: actorId,
+        payload: {
+          linked: parentLink.linked,
+          production_id: row.production_id,
+          work_order_id: parentLink.work_order_id ?? null,
+          work_order_number: parentLink.linked ? parentLink.work_order_number : null,
+          morning_doc_id: parentLink.morning_doc_id ?? null,
+          skip_reason: parentLink.linked ? null : parentLink.skip_reason,
+          ...(parentLink.linked ? {} : { detail: parentLink.detail ?? null }),
+        },
+      });
+    } catch {
+      // swallowed on purpose — see above
+    }
+  }
+
   const sent: MorningDocumentRequest = {
     ...row.payload,
     date: docDate,
@@ -224,6 +492,10 @@ export async function issuePendingDocument(
     ...(recipients !== undefined
       ? { client: { ...row.payload.client, emails: recipients } }
       : {}),
+    // linkType is deliberately absent — not required for 100 -> 300 (verified
+    // live 2026-08-02, bundle.ts:203). remarks is left alone too: Morning
+    // generates it from the link. income and amount are never touched.
+    ...(parentLink?.linked ? { linkedDocumentIds: [parentLink.morning_doc_id] } : {}),
   };
   await admin.from("events").insert({
     entity_type: "pending_document",
