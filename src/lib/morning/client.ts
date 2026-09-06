@@ -213,6 +213,21 @@ export async function createDocument(
  * are immutable once issued and have no update endpoint — clients CAN be
  * edited. Respects DRY_RUN: in dry-run it makes no call and reports it, so
  * local testing never mutates a real Morning client.
+ *
+ * ✅ THE PUT IS A PARTIAL UPDATE — verified 2026-09-06 against live data.
+ *
+ * The verb said "replace", the caller sends one field, and nothing here or in
+ * Morning's docs said which of the two wins. It was left open from the day this
+ * was written. Measured on the rename of client `dce40719` (וואיקי דיגיטל →
+ * וואי 360 בע״מ), body `{ name }` alone, snapshot GET before and after:
+ * `name` changed and **all 29 other fields were byte-identical** — `taxId`
+ * (516006988), `phone`, `emails`, `accountingKey`, `country`, `active`,
+ * `category`, and the address block that was already empty.
+ *
+ * So a caller may send only what it means to change. Two caveats before
+ * relying on it: this was ONE field on ONE client, and it is Morning's
+ * behaviour rather than a contract they publish — a caller touching several
+ * fields at once should snapshot first. scripts/morning_client_snapshot.py.
  */
 export async function updateClient(
   morningClientId: string,
