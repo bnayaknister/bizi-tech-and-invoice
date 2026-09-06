@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useDrawer } from "@/components/EntityDrawer";
 import AssignDocModal from "@/components/AssignDocModal";
@@ -37,6 +37,15 @@ export type DocRow = {
   // null = raised by hand in Morning, so there is no frozen payload to inherit
   // — since stage 4 such a document may still be buildable through the raw path.
   pending_id: string | null;
+  // The queue row's own amount — the NET this document was issued on, and the
+  // figure createTaxFromParents sums when it builds a child. `amount` above is
+  // documents.amount, Morning's GROSS. They differ by VAT and both are correct
+  // about different things, so the bundling UI reads THIS one: it previews what
+  // the child will carry, not what the parent printed.
+  // null when there is no queue row (a raw row), or when one exists without an
+  // amount — a state the builder itself refuses ("אין סכום"), so the screen
+  // shows "—" rather than substitute the gross.
+  pending_amount: number | null;
   // Which child this row may raise, resolved server-side from the allow-list in
   // taxFromParent.ts. null = a leaf (320, 400) or a type we never build on.
   // Not a list of codes kept here: the rungs are declared in one place.
@@ -141,6 +150,25 @@ const SOURCE_LABEL: Record<DocRow["source"], string> = { app: "מהאפליקצ�
 const money = (n: number | null, cur: string) =>
   n === null ? "—" : new Intl.NumberFormat("he-IL", { style: "currency", currency: cur || "ILS", maximumFractionDigits: 0 }).format(n);
 
+/**
+ * Σ of the queue rows' net amounts — the figure the bundled child will carry.
+ *
+ * ALL-OR-NOTHING: one missing `pending_amount` returns null, and `money` renders
+ * that as "—". Skipping the row instead would print a total that is short by
+ * exactly the line nobody can see, on a screen whose whole job is to say what
+ * is about to be issued. Substituting `amount` (the gross) would be worse
+ * still — a bigger number wearing the net's label.
+ *
+ * The case is close to unreachable: a selectable row has a queue row by
+ * definition, and createTaxFromParents refuses a source with no amount
+ * ("אין סכום — לא ניתן לסכם את מסמכי המקור") before it builds anything. So "—"
+ * here previews a refusal rather than hiding one.
+ */
+const sumPendingAmounts = (rows: DocRow[]): number | null =>
+  rows.some((r) => r.pending_amount === null)
+    ? null
+    : rows.reduce((s, r) => s + (r.pending_amount ?? 0), 0);
+
 export default function RegistryClient({
   rows,
   canPull,
@@ -162,7 +190,14 @@ export default function RegistryClient({
   const [newDoc, setNewDoc] = useState<"work_order" | "deal_invoice" | null>(null);
   // N episodes of one show, billed as a single order — no productions involved
   const [bundleOpen, setBundleOpen] = useState(false);
-  const [childDoc, setChildDoc] = useState<{ row: DocRow; action: "tax" | "receipt" } | null>(null);
+  // ONE child document, N source rows. The array is the whole shape change:
+  // createTaxFromParents has taken N parents since it was written, and the
+  // route caps only the `documentIds` door — `sourceIds` never had a limit.
+  const [childDoc, setChildDoc] = useState<{ rows: DocRow[]; action: "tax" | "receipt" } | null>(null);
+  // Bundled tax documents: which queue rows are ticked. Keyed by pending_id —
+  // that IS what goes out as sourceIds, so the state holds the thing it sends
+  // rather than a row id that would have to be re-resolved at submit time.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   // in "לא משויך", quotes/orders/credits are noise for the bookkeeper — show
   // only real billing docs by default (owner spec 2026-07-27), the rest behind a toggle
   const [showNonBilling, setShowNonBilling] = useState(false);
@@ -250,6 +285,59 @@ export default function RegistryClient({
     });
     return list;
   }, [rows, tab, q, sort, showNonBilling]);
+
+  /**
+   * May this row join a bundled tax document?
+   *
+   * The conditions are the "צור חשבונית מס" button's own, plus one: the row
+   * must go through the `sourceIds` door. A `raw` row (raised by hand in
+   * Morning, no queue row) travels as `documentIds`, which the route caps at
+   * one and refuses to mix with sourceIds — so a checkbox on it could only ever
+   * produce a 400. It keeps its single-row button and gets no checkbox at all:
+   * a control that cannot work is worse than a control that is not there.
+   *
+   * `over_ceiling` needs no thought here and that is not an accident — the
+   * ceiling lives in mapPullDocToSource and is only ever set on a raw row
+   * (page.tsx's `over-ceiling` state), which this predicate has already
+   * excluded. Selectable rows are therefore always ceiling-free, and the
+   * handshake below stays exactly the single-row path it is today.
+   */
+  const taxSelectable = (r: DocRow): boolean =>
+    canPull &&
+    r.buildable === "pending" &&
+    !!r.pending_id &&
+    r.child_actions.includes("tax") &&
+    parentOpenness(r.status).open;
+
+  // the checkbox column exists only where bundling is on the table
+  const selectMode = canPull && tab === "deal_invoice";
+
+  // Re-filtered through taxSelectable, not trusted from the tick alone: the
+  // ticks were made against the rows as they were, and this is the last read
+  // before they are sent. Deliberately not memoised — a filter over the visible
+  // page costs nothing, and a memo here would need taxSelectable in its deps,
+  // which is rebuilt every render anyway.
+  const selectedRows = shown.filter(
+    (r) => r.pending_id && selected.has(r.pending_id) && taxSelectable(r)
+  );
+
+  function toggleSelected(pendingId: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(pendingId)) next.delete(pendingId);
+      else next.add(pendingId);
+      return next;
+    });
+  }
+
+  // A tick means "this row, as it is now". Both things that can invalidate that
+  // clear it: switching tabs (the rows are a different set) and any refresh of
+  // the list (a pull, a create — `rows` is a new array from the server every
+  // time). Carrying ticks across either would let the operator submit a set
+  // they can no longer see.
+  useEffect(() => {
+    setSelected(new Set());
+  }, [rows, tab]);
 
   // how many non-billing (quotes/orders/credits) are hidden in the unassigned tab
   const hiddenNonBilling = useMemo(
@@ -428,6 +516,38 @@ export default function RegistryClient({
         </span>
       </div>
 
+      {/* The bundling bar. Its own row rather than another button in the
+          controls above: it is a MODE the operator entered by ticking boxes,
+          and it has to carry the count and the sum — the two numbers that say
+          what is about to be created. One selected row is not a bundle, so it
+          appears at two and the single-row button keeps that case. */}
+      {selectMode && selectedRows.length >= 2 && (
+        <div className="flex items-center justify-between gap-3 mb-3 text-xs border border-[var(--rule2)] rounded-xl px-3 py-2">
+          <span>
+            <span className="font-bold">נבחרו {selectedRows.length} חשבונות עסקה</span>
+            <span className="text-[var(--faint)]">
+              {" · "}
+              {money(sumPendingAmounts(selectedRows), selectedRows[0]?.currency ?? "ILS")}
+            </span>
+          </span>
+          <span className="flex items-center gap-2">
+            <button
+              onClick={() => setSelected(new Set())}
+              className="rounded-lg px-3 py-1 border border-[var(--rule)] text-[var(--faint)]"
+            >
+              נקה בחירה
+            </button>
+            <button
+              onClick={() => setChildDoc({ rows: selectedRows, action: "tax" })}
+              className="font-bold rounded-lg px-3 py-1 bg-[var(--signal)] text-white"
+              title="חשבונית מס אחת שסוגרת את כל המסמכים שנבחרו"
+            >
+              צור חשבונית מס מאוגדת ({selectedRows.length})
+            </button>
+          </span>
+        </div>
+      )}
+
       {shown.length === 0 ? (
         <div className="text-center text-sm text-[var(--faint)] py-12 border border-dashed border-[var(--rule)] rounded-2xl">
           אין מסמכים בלשונית זו
@@ -437,6 +557,7 @@ export default function RegistryClient({
           <table className="w-full text-xs">
             <thead className="text-[var(--faint)] text-[10px] uppercase tracking-wider">
               <tr className="text-right">
+                {selectMode && <th className="py-2 px-2 w-6"></th>}
                 <th className="py-2 px-2">מספר</th>
                 <th className="py-2 px-2">לקוח</th>
                 <th className="py-2 px-2">תוכנית / הפקה</th>
@@ -454,6 +575,18 @@ export default function RegistryClient({
                   onClick={() => openRow(r)}
                   className="border-t border-[var(--rule)] hover:bg-[var(--hover)] cursor-pointer"
                 >
+                  {selectMode && (
+                    <td className="py-2 px-2" onClick={(e) => e.stopPropagation()}>
+                      {taxSelectable(r) && (
+                        <input
+                          type="checkbox"
+                          checked={selected.has(r.pending_id!)}
+                          onChange={() => toggleSelected(r.pending_id!)}
+                          title="כלול בחשבונית מס מאוגדת"
+                        />
+                      )}
+                    </td>
+                  )}
                   <td className="py-2 px-2 font-mono">{r.number ?? "—"}</td>
                   <td className="py-2 px-2">
                     {r.client_name ?? "—"}
@@ -588,7 +721,7 @@ export default function RegistryClient({
                               )}
                               {action && canPull && r.buildable && o.open && (
                                 <button
-                                  onClick={() => setChildDoc({ row: r, action })}
+                                  onClick={() => setChildDoc({ rows: [r], action })}
                                   className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--signal)]"
                                   title={
                                     r.buildable === "raw"
@@ -685,11 +818,12 @@ export default function RegistryClient({
 
       {childDoc && (
         <TaxFromParentModal
-          doc={childDoc.row}
+          docs={childDoc.rows}
           action={childDoc.action}
           onClose={() => setChildDoc(null)}
           onQueued={(m) => {
             setChildDoc(null);
+            setSelected(new Set());
             setMsg(m);
             router.refresh();
           }}
@@ -734,17 +868,35 @@ type BuiltPayload = {
   income?: { description: string; quantity: number; price: number }[];
 };
 
+/**
+ * ONE tax document (or receipt) from N source rows.
+ *
+ * `docs` is the whole difference from the single-row version, and everything
+ * below it follows one rule: docs[0] is the PRIMARY, and every text, amount and
+ * gate that existed before reads from it exactly as it did. A one-element array
+ * therefore renders and posts byte-for-byte what it did yesterday; the multi
+ * blocks are additive and appear only above one.
+ *
+ * The ceiling handshake is untouched and reachable only in the single case:
+ * `over_ceiling` is set exclusively on a `raw` row, and taxSelectable refuses
+ * those, so a bundle can never carry one. That is checked, not assumed — the
+ * predicate says so and this comment is the second place it is written down.
+ */
 function TaxFromParentModal({
-  doc,
+  docs,
   action,
   onClose,
   onQueued,
 }: {
-  doc: DocRow;
+  docs: DocRow[];
   action: "tax" | "receipt";
   onClose: () => void;
   onQueued: (msg: string) => void;
 }) {
+  const doc = docs[0];
+  const multi = docs.length > 1;
+  // the net the child will be built on, not the parents' printed gross
+  const sourcesTotal = sumPendingAmounts(docs);
   const isReceipt = action === "receipt";
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -766,9 +918,17 @@ function TaxFromParentModal({
     setErr(null);
     try {
       // which door: the queue row when there is one, the pulled document
-      // otherwise — mirrors the server's pending-wins rule exactly
+      // otherwise — mirrors the server's pending-wins rule exactly.
+      //
+      // The sourceIds branch maps over ALL of them. With one row that is the
+      // same single-element array it always sent; with several it is the bundle.
+      // The raw branch stays [doc.id] because it can never hold more than one:
+      // taxSelectable excludes raw rows from selection, and the route caps
+      // documentIds at 1 and refuses to mix the two doors in one request.
       const base =
-        doc.buildable === "raw" ? { documentIds: [doc.id] } : { sourceIds: [doc.pending_id] };
+        doc.buildable === "raw"
+          ? { documentIds: [doc.id] }
+          : { sourceIds: docs.map((d) => d.pending_id) };
 
       // The ceiling handshake, and note what is NOT here: no `confirm: true`
       // this code could hard-code. The first request carries no ticket and is
@@ -825,7 +985,8 @@ function TaxFromParentModal({
         {!built ? (
           <>
             <h2 className="text-sm font-bold mb-1">
-              {isReceipt ? "צור קבלה" : "צור מסמך מס"} על סמך #{doc.number ?? ""}
+              {isReceipt ? "צור קבלה" : "צור מסמך מס"}{" "}
+              {multi ? `על סמך ${docs.length} מסמכי מקור` : `על סמך #${doc.number ?? ""}`}
             </h2>
             {isReceipt ? (
               <p className="text-[11px] text-[var(--faint)] mb-3 leading-relaxed">
@@ -836,7 +997,8 @@ function TaxFromParentModal({
             ) : (
               <p className="text-[11px] text-[var(--faint)] mb-3 leading-relaxed">
                 המסמך ייווצר כ<b>חשבונית מס</b> ויכנס לתור האישורים — הוא אינו מונפק כאן. שורות
-                ההכנסה יורשות מהמסמך הזה במדויק, והקישור אליו הוא שסוגר אותו במורנינג. במסך האישור
+                ההכנסה יורשות {multi ? "מכל מסמכי המקור" : "מהמסמך הזה"} במדויק, והקישור{" "}
+                {multi ? "אליהם הוא שסוגר את כולם" : "אליו הוא שסוגר אותו"} במורנינג. במסך האישור
                 תוכלי להחליף ל<b>חשבונית מס קבלה</b> — אבל רק אם הכסף כבר התקבל, כי היא מצהירה על כך.
                 {doc.buildable === "raw" && (
                   <> המסמך הזה נמשך ממורנינג — הירושה היא מהנתונים שנמשכו, לפי הנטו המאומת.</>
@@ -844,10 +1006,34 @@ function TaxFromParentModal({
               </p>
             )}
             <div className="text-xs space-y-1 border border-[var(--rule)] rounded-xl p-3 mb-3">
-              <div>
-                <span className="text-[var(--faint)]">מסמך מקור: </span>
-                <span className="font-mono">#{doc.number ?? "—"}</span>
-              </div>
+              {multi ? (
+                <>
+                  <div className="text-[var(--faint)] mb-1">מסמכי מקור ({docs.length})</div>
+                  <div className="space-y-0.5 mb-2">
+                    {docs.map((d) => (
+                      <div key={d.id} className="flex justify-between gap-2 font-mono">
+                        <span>#{d.number ?? "—"}</span>
+                        <span className="text-[var(--faint)]">{d.document_date ?? "—"}</span>
+                        <span>{money(d.pending_amount, d.currency)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {/* Plain "סה״כ": this IS the figure the document will carry.
+                      Both the lines and the total read pending_amount — the
+                      queue rows' net, exactly what createTaxFromParents sums —
+                      so this preview and the סכום כולל on the confirmation
+                      screen are the same number reached two different ways. */}
+                  <div className="flex justify-between gap-2 border-t border-[var(--rule)] pt-1">
+                    <span className="text-[var(--faint)]">סה״כ</span>
+                    <span className="font-mono font-bold">{money(sourcesTotal, doc.currency)}</span>
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <span className="text-[var(--faint)]">מסמך מקור: </span>
+                  <span className="font-mono">#{doc.number ?? "—"}</span>
+                </div>
+              )}
               <div>
                 <span className="text-[var(--faint)]">לקוח: </span>
                 {doc.client_name ?? "—"}
@@ -857,7 +1043,7 @@ function TaxFromParentModal({
                   is the opposite: it states money that already moved, tax
                   included — the gross IS its number, and a net line here would
                   be the classic net-instead-of-gross mistake in reverse. */}
-              {doc.buildable === "raw" && isReceipt ? (
+              {multi ? null : doc.buildable === "raw" && isReceipt ? (
                 <div>
                   <span className="text-[var(--faint)]">סכום (ברוטו): </span>
                   <span className="font-mono">{money(doc.amount, doc.currency)}</span>
@@ -920,8 +1106,9 @@ function TaxFromParentModal({
             </p>
             {built.parentOpennessUnknown && (
               <div className="text-[11px] text-[var(--warn)] border border-[var(--warn)] rounded-xl px-3 py-2 mb-3 leading-relaxed">
-                לא ידוע אם מסמך המקור עדיין פתוח במורנינג — הוא טרם נמשך משם. אם הוא כבר נסגר,
-                הקישור לא יסגור אותו שוב ותידרש בדיקה ידנית.
+                {multi
+                  ? "לא ידוע אם כל מסמכי המקור עדיין פתוחים במורנינג — לפחות אחד מהם טרם נמשך משם. אם אחד מהם כבר נסגר, הקישור לא יסגור אותו שוב ותידרש בדיקה ידנית."
+                  : "לא ידוע אם מסמך המקור עדיין פתוח במורנינג — הוא טרם נמשך משם. אם הוא כבר נסגר, הקישור לא יסגור אותו שוב ותידרש בדיקה ידנית."}
               </div>
             )}
             <div className="text-[11px] space-y-2 border border-[var(--rule)] rounded-xl p-3 mb-3">
@@ -947,7 +1134,15 @@ function TaxFromParentModal({
             </div>
             <div className="flex items-center justify-end gap-2">
               <button
-                onClick={() => onQueued(`${isReceipt ? "נוצרה קבלה" : "נוצר מסמך מס"} על סמך #${doc.number ?? ""} — ממתין לאישור בתור המסמכים`)}
+                onClick={() =>
+                  onQueued(
+                    `${isReceipt ? "נוצרה קבלה" : "נוצר מסמך מס"} על סמך ${
+                      multi
+                        ? `${docs.length} מסמכים (${docs.map((d) => `#${d.number ?? "?"}`).join(", ")})`
+                        : `#${doc.number ?? ""}`
+                    } — ממתין לאישור בתור המסמכים`
+                  )
+                }
                 className="text-xs font-bold rounded-xl px-4 py-1.5 bg-[var(--signal)] text-white"
               >
                 סגור

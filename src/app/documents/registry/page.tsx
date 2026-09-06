@@ -51,7 +51,12 @@ export default async function RegistryPage() {
   const [{ data: parentRows }, { data: candRows }] = await Promise.all([
     admin
       .from("pending_documents")
-      .select("id,morning_doc_id")
+      // `amount` rides along with the id: it is the NET the queue row froze,
+      // and it is what createTaxFromParents sums into the child. documents.amount
+      // beside it is Morning's GROSS. A screen that offers to bundle N parents
+      // has to preview the figure the document will actually carry, so the row
+      // carries both and the bundling UI reads this one.
+      .select("id,morning_doc_id,amount")
       .in("doc_type", ["work_order", "deal_invoice", "tax_invoice"])
       .eq("status", "issued")
       .not("morning_doc_id", "is", null),
@@ -67,9 +72,9 @@ export default async function RegistryPage() {
       .order("document_date", { ascending: false, nullsFirst: false })
       .limit(RAW_CANDIDATE_LIMIT),
   ]);
-  const pendingIdByMorningId = new Map<string, string>();
-  for (const p of (parentRows ?? []) as { id: string; morning_doc_id: string }[]) {
-    pendingIdByMorningId.set(p.morning_doc_id, p.id);
+  const pendingByMorningId = new Map<string, { id: string; amount: number | null }>();
+  for (const p of (parentRows ?? []) as { id: string; morning_doc_id: string; amount: number | null }[]) {
+    pendingByMorningId.set(p.morning_doc_id, { id: p.id, amount: p.amount });
   }
 
   // Parents that already have a tax child WAITING IN THE QUEUE — the screen's
@@ -128,7 +133,7 @@ export default async function RegistryPage() {
   for (const c of cands) {
     // a pull doc with a queue row cannot occur through any code path, but if
     // one ever does, the pending door wins — same rule as the route
-    if (c.morning_doc_id && pendingIdByMorningId.has(c.morning_doc_id)) continue;
+    if (c.morning_doc_id && pendingByMorningId.has(c.morning_doc_id)) continue;
     if (c.type === 305) {
       // the SAME pure mapper the builder's raw door runs. No net: a receipt
       // is built on the GROSS, and the modal labels it so.
@@ -232,7 +237,7 @@ export default async function RegistryPage() {
         over_ceiling: null,
       };
     }
-    if (pendingIdByMorningId.has(d.morning_doc_id as string)) {
+    if (pendingByMorningId.has(d.morning_doc_id as string)) {
       return { buildable: "pending", build_block: null, net_amount: null, over_ceiling: null };
     }
     const rs = rawStateByDocId.get(d.id as string);
@@ -289,7 +294,9 @@ export default async function RegistryPage() {
     cancel_reason: (d.cancel_reason as string | null) ?? null,
     archived_at: (d.archived_at as string | null) ?? null,
     archive_reason: (d.archive_reason as string | null) ?? null,
-    pending_id: pendingIdByMorningId.get(d.morning_doc_id as string) ?? null,
+    pending_id: pendingByMorningId.get(d.morning_doc_id as string)?.id ?? null,
+    // the queue row's NET, not documents.amount — see the select above
+    pending_amount: pendingByMorningId.get(d.morning_doc_id as string)?.amount ?? null,
     child_actions: childActionsFor(d.type as number),
     ...buildState(d),
   }));
