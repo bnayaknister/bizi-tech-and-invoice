@@ -14,6 +14,7 @@ import {
   relabelDocDescription,
   requiresPayment,
   type MorningDocumentRequest,
+  type MorningIncomeRow,
 } from "@/lib/morning/types";
 
 // NOTE: a local copy of the type in lib/morning/types.ts, not an import — it
@@ -453,6 +454,163 @@ export function GuestHint({ guest, suggestion }: { guest: string | null; suggest
   );
 }
 
+// The income lines of a queued row, as the form needs them. One place, so the
+// opener, the renderer, the save and the live preview all agree on how many
+// lines there are. Module scope because editDiff below is pure and must stay so.
+function incomeLines(r: PendingDocRow): { description?: string; quantity?: number; price?: number }[] {
+  const income = (r.payload as { income?: unknown })?.income;
+  return Array.isArray(income) ? (income as { description?: string; quantity?: number; price?: number }[]) : [];
+}
+
+/** Everything the edit form holds that can reach the stored payload. */
+type EditState = {
+  amount: string;
+  description: string;
+  lines: { description: string; price: string }[];
+  clientId: string | null;
+  /** resolved from the live Morning list — the payload stores id AND name */
+  clientName: string | undefined;
+};
+
+/**
+ * WHAT THIS EDIT CHANGES, decided once.
+ *
+ * Extracted from saveEdit so the live preview and the save cannot disagree
+ * about which of the three server shapes this edit is. They used to be one
+ * function, which meant the only way to know what a save would produce was to
+ * perform it.
+ *
+ * NOTE ON WHAT IS *NOT* SHARED. There is no client-side "build the final
+ * payload" step to extract — saveEdit posts a PATCH (one of three mutually
+ * exclusive shapes) and the server assembles the payload from it
+ * (pending/edit:400-439). So what is shared is the DECISION; livePreview below
+ * re-applies the server's three branches to produce the result. If those
+ * branches move, both this file and the route have to move together — they
+ * already did before this change, only silently.
+ */
+function editDiff(r: PendingDocRow, s: EditState) {
+  const existing = incomeLines(r);
+  const multi = existing.length > 1;
+
+  // merge mode is entered by what CHANGED, never by a toggle
+  const countChanged = multi && s.lines.length !== existing.length;
+  const priceChanged =
+    multi &&
+    s.lines.length === existing.length &&
+    s.lines.some((l, i) => Number(l.price) !== Number(existing[i]?.price ?? 0));
+  const mergeMode = countChanged || priceChanged;
+
+  const changedLines =
+    multi && !mergeMode
+      ? s.lines
+          .map((l, index) => ({ index, description: l.description.trim() }))
+          .filter((l) => l.description !== (existing[l.index]?.description ?? ""))
+      : [];
+
+  const replaceLines = mergeMode
+    ? s.lines.map((l) => ({ description: l.description.trim(), price: Number(l.price) }))
+    : [];
+
+  const originalDesc = (r.payload as { description?: string })?.description ?? "";
+  const descTrimmed = s.description.trim();
+  const descChanged = multi && descTrimmed !== originalDesc;
+
+  const amountNum = s.amount.trim() === "" ? undefined : Number(s.amount);
+  const amountUsable = amountNum !== undefined && Number.isFinite(amountNum);
+
+  const originalClient = (r.payload as { client?: { id?: string } })?.client?.id ?? null;
+  const clientChanged = s.clientId !== null && s.clientId !== originalClient;
+
+  return {
+    multi,
+    mergeMode,
+    changedLines,
+    replaceLines,
+    descTrimmed,
+    descChanged,
+    amountNum,
+    amountUsable,
+    clientChanged,
+  };
+}
+
+/**
+ * The row as the form currently has it — the payload a save would produce,
+ * without saving.
+ *
+ * Mirrors the three branches of pending/edit:400-439 exactly:
+ *   merge  — the whole income array is replaced
+ *   multi  — description patched on the named indices only, money untouched
+ *   single — the amount is written to income[0].price and the description to
+ *            income[0].description (there the title and the line are one thing)
+ *
+ * ⚠️ ONE DELIBERATE DIVERGENCE: quantity. The form never loads it (openEdit
+ * drops it) and never sends it, so on the merge branch the server fills 1 and
+ * a 7-unit line silently becomes a 1-unit line. That is a real open bug, not
+ * something to reproduce here: a preview that printed 1 would make the loss
+ * look intended. The original quantity is carried through from the stored
+ * payload instead, so the sheet shows what the document is SUPPOSED to say.
+ * On the other two branches this matches the server exactly — they never touch
+ * quantity — and those are the only branches a quantity>1 row can reach today
+ * (both such rows in the account are single-line).
+ */
+function livePreview(
+  r: PendingDocRow,
+  s: EditState
+): { payload: MorningDocumentRequest; amount: number | null } {
+  const base = r.payload as unknown as MorningDocumentRequest;
+  const existing: MorningIncomeRow[] = Array.isArray(base?.income) ? base.income : [];
+  const d = editDiff(r, s);
+
+  let income: MorningIncomeRow[];
+  if (d.mergeMode) {
+    income = d.replaceLines.map((l, i) => {
+      // currency/vatType are carried from the row being replaced, exactly as
+      // the server does (pending/edit:311) — they are facts about the document
+      const template = existing[Math.min(i, existing.length - 1)];
+      return {
+        description: l.description,
+        quantity: Number(template?.quantity ?? 1), // see the divergence note above
+        price: Number.isFinite(l.price) ? l.price : 0,
+        currency: template?.currency ?? "ILS",
+        vatType: template?.vatType ?? 0,
+      };
+    });
+  } else if (d.multi) {
+    const byIndex = new Map(d.changedLines.map((l) => [l.index, l.description]));
+    income = existing.map((row, i) => (byIndex.has(i) ? { ...row, description: byIndex.get(i)! } : row));
+  } else {
+    income = existing.map((row, i) =>
+      i === 0
+        ? {
+            ...row,
+            ...(d.amountUsable ? { price: d.amountNum! } : {}),
+            ...(d.descTrimmed ? { description: d.descTrimmed } : {}),
+          }
+        : row
+    );
+  }
+
+  // multi-line: the heading is its own field and only moves when it changed.
+  // single-line: an empty box means "unchanged", so it falls back to the stored
+  // value rather than blanking the document.
+  const description = d.multi
+    ? d.descChanged
+      ? d.descTrimmed
+      : base?.description
+    : d.descTrimmed || base?.description;
+
+  const client = d.clientChanged
+    ? { ...base?.client, id: s.clientId ?? undefined, name: s.clientName, add: false as const }
+    : base?.client;
+
+  // A bundle's amount column is Σ of the bundled jobs and the text-only branch
+  // may not move it (pending/edit:237); every other branch restates it.
+  const amount = d.multi && !d.mergeMode ? r.amount : d.amountUsable ? d.amountNum! : r.amount;
+
+  return { payload: { ...base, description, client, income }, amount };
+}
+
 export default function DocumentsClient({
   rows,
   canApprove,
@@ -746,13 +904,6 @@ export default function DocumentsClient({
     }
   }
 
-  // The income lines of a queued row, as the form needs them. One place, so the
-  // opener, the renderer and the save all agree on how many lines there are.
-  function incomeLines(r: PendingDocRow): { description?: string; quantity?: number; price?: number }[] {
-    const income = (r.payload as { income?: unknown })?.income;
-    return Array.isArray(income) ? (income as { description?: string; quantity?: number; price?: number }[]) : [];
-  }
-
   // Which printed lines were supposed to name a guest and do not (owner spec
   // 2026-08-25). Derived on every render from the row we already hold — no
   // state, so it cannot go stale against an edit that just saved.
@@ -781,6 +932,35 @@ export default function DocumentsClient({
     void loadMorningClients();
   }
 
+  /** The form's live values, in the one shape editDiff and livePreview take. */
+  function editStateFor(): EditState {
+    return {
+      amount: editAmount,
+      description: editDesc,
+      lines: editLines,
+      clientId: editClient,
+      // the NAME is resolved from Morning's live list, never typed — the payload
+      // must never carry a label that disagrees with the id beside it
+      clientName: morningClients?.find((c) => c.id === editClient)?.name,
+    };
+  }
+
+  /**
+   * What the sheet renders for a row: the stored payload, or — while the form is
+   * open on it — the payload the form would save.
+   *
+   * The whole point of a preview is to be read BEFORE the save, so a sheet that
+   * only caught up afterwards would answer the question one click too late.
+   * The form does not force the sheet open (that stays her choice); it only
+   * changes what an already-open sheet shows.
+   */
+  function previewFor(r: PendingDocRow): { payload: MorningDocumentRequest; amount: number | null } {
+    if (editing !== r.id) {
+      return { payload: r.payload as unknown as MorningDocumentRequest, amount: r.amount };
+    }
+    return livePreview(r, editStateFor());
+  }
+
   /** Σ of the line prices as currently typed — the live half of the balance. */
   function lineSum(): number {
     return Number(
@@ -799,37 +979,26 @@ export default function DocumentsClient({
   }
 
   async function saveEdit(r: PendingDocRow) {
-    const lines = incomeLines(r);
-    const multi = lines.length > 1;
+    // The same decision the live preview is rendering from, so what she sees on
+    // the sheet is what this request produces. Merge mode is entered by what
+    // CHANGED, never by a toggle; the heading is independent of the lines; the
+    // recipient is sent only when it moved — all of that now lives in editDiff.
+    const state = editStateFor();
+    const {
+      multi,
+      mergeMode,
+      changedLines,
+      replaceLines,
+      descTrimmed,
+      descChanged,
+      amountNum,
+      clientChanged,
+    } = editDiff(r, state);
 
-    // MERGE MODE is entered by what CHANGED, never by a toggle the user has to
-    // find: a line was deleted or added, or a price moved. Text-only edits keep
-    // sending the old `lines` patch, byte for byte, so the path that has been
-    // running since 2026-08-20 is untouched by this feature.
-    const countChanged = multi && editLines.length !== lines.length;
-    const priceChanged =
-      multi &&
-      editLines.length === lines.length &&
-      editLines.some((l, i) => Number(l.price) !== Number(lines[i]?.price ?? 0));
-    const mergeMode = countChanged || priceChanged;
-
-    // Only the changed lines are sent. An untouched line must not appear in the
-    // audit trail as an edit, and the server refuses a no-op save outright.
-    const changedLines =
-      multi && !mergeMode
-        ? editLines
-            .map((l, index) => ({ index, description: l.description.trim() }))
-            .filter((l) => l.description !== (lines[l.index]?.description ?? ""))
-        : [];
     if (multi && !mergeMode && changedLines.some((l) => l.description.length === 0)) {
       setError("תיאור שורה לא יכול להיות ריק");
       return;
     }
-
-    // merge mode: the full final set, plus the amount it must add up to
-    const replaceLines = mergeMode
-      ? editLines.map((l) => ({ description: l.description.trim(), price: Number(l.price) }))
-      : [];
     if (mergeMode) {
       if (replaceLines.some((l) => l.description.length === 0)) {
         setError("תיאור שורה לא יכול להיות ריק");
@@ -840,29 +1009,14 @@ export default function DocumentsClient({
         return;
       }
     }
-
-    // The document HEADING, on a multi-line row. Independent of the lines since
-    // 2026-09-02: the server writes it to payload.description only and never
-    // touches a line, so the two travel together in one save. Sent only when it
-    // actually moved, for the same reason the lines are — an untouched field
-    // must not appear in the audit trail as an edit.
-    const originalDesc = (r.payload as { description?: string })?.description ?? "";
-    const descTrimmed = editDesc.trim();
-    const descChanged = multi && descTrimmed !== originalDesc;
     if (multi && descChanged && descTrimmed.length === 0) {
       setError("כותרת המסמך לא יכולה להיות ריקה");
       return;
     }
-
-    const amountNum = editAmount.trim() === "" ? undefined : Number(editAmount);
     if (!multi && amountNum !== undefined && !(amountNum > 0)) {
       setError("סכום חייב להיות מספר חיובי");
       return;
     }
-    // only send the recipient when it actually moved — an unchanged pick must
-    // not cost a live Morning lookup on every save
-    const originalClient = (r.payload as { client?: { id?: string } })?.client?.id ?? null;
-    const clientChanged = editClient !== null && editClient !== originalClient;
     if (multi && !mergeMode && changedLines.length === 0 && !descChanged && !clientChanged) {
       setError("אין שינוי");
       return;
@@ -892,12 +1046,9 @@ export default function DocumentsClient({
                 ...(changedLines.length ? { lines: changedLines } : {}),
                 ...(descChanged ? { description: descTrimmed } : {}),
               }
-            : { amount: amountNum, description: editDesc.trim() || undefined }),
+            : { amount: amountNum, description: descTrimmed || undefined }),
           ...(clientChanged
-            ? {
-                morningClientId: editClient,
-                morningClientName: morningClients?.find((c) => c.id === editClient)?.name,
-              }
+            ? { morningClientId: state.clientId, morningClientName: state.clientName }
             : {}),
         }),
       });
@@ -1085,11 +1236,7 @@ export default function DocumentsClient({
                           a row can never offer a toggle that renders nothing. */}
                       {(r.status === "pending" || r.status === "failed") && previewOpen.has(r.id) && (
                         <div className="mt-2">
-                          <DocumentPreview
-                            payload={r.payload as unknown as MorningDocumentRequest}
-                            docType={r.doc_type}
-                            amount={r.amount}
-                          />
+                          <DocumentPreview docType={r.doc_type} {...previewFor(r)} />
                         </div>
                       )}
                       {editing === r.id && (
