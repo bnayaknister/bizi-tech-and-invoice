@@ -136,7 +136,7 @@ export function docDescriptionLabel(docType: PendingDocType): string {
 }
 
 /**
- * The separator between the label and the rest of a description, and the word
+ * The separator between the label and the rest of a description, and the words
  * the bundled form inserts before it.
  *
  * Verified byte-for-byte against the builder (2026-08-11): SPACE, U+2014 EM
@@ -144,9 +144,23 @@ export function docDescriptionLabel(docType: PendingDocType): string {
  * builder's template ever disagree, every row stops matching and the normalizer
  * silently does nothing, which is exactly the failure this comment exists to
  * prevent.
+ *
+ * TWO BUNDLE MARKS, AND BOTH ARE CORRECT (2026-09-07). Hebrew inflects the
+ * adjective for the noun's gender, and the two bundling builders name different
+ * nouns: הזמנה is feminine, so bundle.ts:562 writes "מאוגדת"; חשבון is
+ * masculine, so :162 and :468 write "מאוגד". This constant held only the
+ * masculine form, and that is the very failure the paragraph above warns
+ * about — it went unnoticed because nothing read a consolidated order's
+ * description until inheritance did. A consolidated order then handed its
+ * "הזמנת עבודה מאוגדת — …" to the invoice unrecognised, so the invoice printed
+ * a title naming the wrong document type.
+ *
+ * Recognising both rather than forcing one: the builders are writing correct
+ * Hebrew and should keep doing so. It is the RECOGNISER's job to know the
+ * language, not the language's job to be convenient for the recogniser.
  */
 const DESCRIPTION_SEPARATOR = " — ";
-const DESCRIPTION_BUNDLE_MARK = "מאוגד";
+const DESCRIPTION_BUNDLE_MARKS = ["מאוגדת", "מאוגד"];
 
 /**
  * Every label a tax description could be carrying, longest FIRST.
@@ -169,9 +183,98 @@ const TAX_DESCRIPTION_LABELS: string[] = Array.from(
   )
 ).sort((a, b) => b.length - a.length);
 
+/**
+ * Every label ANY of our document types could be carrying — the tax set above
+ * plus 100 / 300 / 400, in both vocabularies. Longest FIRST, for the same
+ * reason and by the same rule: "חשבונית מס" is a prefix of two others here.
+ *
+ * WHY A SECOND CONSTANT AND NOT A WIDER FIRST ONE (owner decision 2026-09-07).
+ * Widening TAX_DESCRIPTION_LABELS in place would silently change what the
+ * APPROVAL path does: relabelDocDescription runs on every tax approval
+ * (review/route:605) and today answers `ok:false` — "a human wrote this, leave
+ * it alone" — for anything starting "חשבון עסקה" or "הזמנת עבודה". With the
+ * wider set it would start rewriting those instead.
+ *
+ * Measured before choosing: 0 of the 10 tax rows now in the queue start with a
+ * label only the wide set knows, so widening in place would move nothing TODAY.
+ * It is the day after that decides it — inheritance (bundle.ts, taxFromParent)
+ * makes "חשבון עסקה — …" the ordinary shape of an inherited description, so
+ * that population goes from none to most, and the approval path would begin
+ * overwriting exactly the text the owner just decided should be carried across.
+ * Two pools, two questions: what may be RELABELLED at approval, and what may be
+ * RECOGNISED when inheriting.
+ */
+const INHERITABLE_DESCRIPTION_LABELS: string[] = Array.from(
+  new Set(
+    (Object.keys(DOC_TYPE_TO_MORNING_CODE) as PendingDocType[]).flatMap((t) => [
+      MORNING_DOC_NAME[DOC_TYPE_TO_MORNING_CODE[t]],
+      DOC_TYPE_LABEL[t],
+    ])
+  )
+).sort((a, b) => b.length - a.length);
+
 export type RelabelResult =
   | { ok: true; description: string; changed: boolean }
   | { ok: false };
+
+/**
+ * The label swap itself, over whichever pool the caller trusts.
+ *
+ * Extracted so relabelDocDescription and inheritDocDescription cannot drift on
+ * WHAT a shaped description looks like while differing on WHICH labels they
+ * accept. The body is the one that shipped in c339215, moved unchanged.
+ */
+function swapDescriptionLabel(description: string, target: string, labels: string[]): RelabelResult {
+  for (const label of labels) {
+    if (!description.startsWith(label)) continue;
+    const rest = description.slice(label.length);
+    // longest bundle mark first, by the same rule the label list is sorted by:
+    // "מאוגד" is a prefix of "מאוגדת". The separator that must follow already
+    // disambiguates them, but relying on that would be relying on an accident.
+    const shaped =
+      rest.startsWith(DESCRIPTION_SEPARATOR) ||
+      DESCRIPTION_BUNDLE_MARKS.some((mark) => rest.startsWith(` ${mark}${DESCRIPTION_SEPARATOR}`));
+    // the longest matching label decides; a match whose remainder is not one of
+    // the builder's shapes is hand-edited, not a reason to try a shorter one
+    if (!shaped) return { ok: false };
+    const next = target + rest;
+    return { ok: true, description: next, changed: next !== description };
+  }
+  return { ok: false };
+}
+
+/**
+ * The description a CHILD document should carry, inherited from its parent.
+ *
+ * WHY IT IS INHERITED AT ALL (owner spec 2026-09-07). What is written on the
+ * work order is what the client has already read; the invoice that closes it
+ * has to say the same thing. Rebuilding it threw that away and left the
+ * bookkeeper retyping text the parent was already holding — deal invoice 40318
+ * (גו מובלין) was created 08:54 as "חשבון עסקה — גו מובלין דיגיטל (פרק אחד)",
+ * edited at 08:55 to drop the count, and edited AGAIN at 13:33 to restore the
+ * order's own wording by hand. The retyped version lost a space after the em
+ * dash, which is enough to make relabelDocDescription stop recognising it — so
+ * the manual repair also broke the automatic one.
+ *
+ * Three outcomes, and the middle one is the point:
+ *   • no parent description        → null, and the caller keeps its own builder
+ *   • a recognised label + shape   → the same sentence under the new label
+ *   • anything else (free text)    → carried across VERBATIM, no label forced
+ *
+ * The third is the owner's decision and it matches what this file already does
+ * elsewhere: a sentence a person wrote is a thing to carry, not to reformat.
+ * "פותחים שולחן, פודקאסט שיח פוליטי" reaches the invoice exactly as typed.
+ */
+export function inheritDocDescription(
+  parentDescription: string | null | undefined,
+  targetType: PendingDocType
+): string | null {
+  if (typeof parentDescription !== "string" || parentDescription.trim() === "") return null;
+  const target = docDescriptionLabel(targetType);
+  if (!target) return parentDescription;
+  const swapped = swapDescriptionLabel(parentDescription, target, INHERITABLE_DESCRIPTION_LABELS);
+  return swapped.ok ? swapped.description : parentDescription;
+}
 
 /**
  * Swap the LABEL at the head of a description for the one the final type wants,
@@ -200,20 +303,9 @@ export function relabelDocDescription(
   if (typeof description !== "string" || description.trim() === "") return { ok: false };
   const target = docDescriptionLabel(finalType);
   if (!target) return { ok: false };
-
-  for (const label of TAX_DESCRIPTION_LABELS) {
-    if (!description.startsWith(label)) continue;
-    const rest = description.slice(label.length);
-    const shaped =
-      rest.startsWith(DESCRIPTION_SEPARATOR) ||
-      rest.startsWith(` ${DESCRIPTION_BUNDLE_MARK}${DESCRIPTION_SEPARATOR}`);
-    // the longest matching label decides; a match whose remainder is not one of
-    // the builder's shapes is hand-edited, not a reason to try a shorter one
-    if (!shaped) return { ok: false };
-    const next = target + rest;
-    return { ok: true, description: next, changed: next !== description };
-  }
-  return { ok: false };
+  // TAX_DESCRIPTION_LABELS, deliberately — see INHERITABLE_DESCRIPTION_LABELS
+  // for why the wider pool is NOT used here.
+  return swapDescriptionLabel(description, target, TAX_DESCRIPTION_LABELS);
 }
 
 /**

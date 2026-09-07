@@ -6,6 +6,7 @@ import {
   MORNING_DOC_NAME,
   VAT_TYPE_DEFAULT,
   docDescriptionLabel,
+  inheritDocDescription,
   sourceRemark,
   type MorningDocumentRequest,
   type PendingDocType,
@@ -613,9 +614,21 @@ export async function createTaxFromParents(
   // for 305, which is what every row is created as; nothing in the queue moves.
   // DOC_TYPE_LABEL is still right for our own screens and for the error messages
   // above — it is only barred from what gets PRINTED.
+  // ONE parent inherits its wording; several do not (owner decision
+  // 2026-09-07). With a single source there is one sentence to carry across and
+  // it is the one the client already read — the same reason bundle.ts:455
+  // inherits. With several there is no single sentence: picking the first
+  // source's would print one client's episode as the title of a document that
+  // bills five, so the built form stays exactly as it was.
+  //
+  // The label is swapped to the FINAL variant's, so a 320 built from a 300 says
+  // "חשבונית מס / קבלה" and not "חשבון עסקה". Free text with no recognised
+  // label comes across untouched; an empty parent description falls back to the
+  // built form.
   const description =
     rows.length === 1
-      ? `${docDescriptionLabel(variant)} — ${clientName}`.trim()
+      ? inheritDocDescription(rows[0].payload?.description, variant) ??
+        `${docDescriptionLabel(variant)} — ${clientName}`.trim()
       : `${docDescriptionLabel(variant)} מאוגד — ${clientName} (${rows.length} מסמכי מקור)`.trim();
 
   const payload: MorningDocumentRequest = {

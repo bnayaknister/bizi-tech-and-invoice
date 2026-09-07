@@ -3,6 +3,7 @@ import {
   DOC_TYPE_TO_MORNING_CODE,
   MORNING_DOC_CODE,
   VAT_TYPE_DEFAULT,
+  inheritDocDescription,
   sourceRemark,
   type MorningDocumentRequest,
 } from "@/lib/morning/types";
@@ -445,13 +446,34 @@ export async function createDealInvoiceFromWorkOrder(
     wo.morning_doc_number as string | null,
   ]);
 
+  // THE ORDER'S OWN WORDING, not a rebuilt title (owner spec 2026-09-07).
+  //
+  // What is written on the work order is what the client has already read, and
+  // the invoice that closes it has to say the same thing. Rebuilding threw that
+  // away: 40318 (גו מובלין) was created 08:54 as "חשבון עסקה — גו מובלין דיגיטל
+  // (פרק אחד)" — client name and a line count, nothing of the order's own
+  // "אריאל - ב60 שניות — תשלום מלא 10 סרטונים" — then edited by hand at 08:55
+  // to drop the count and AGAIN at 13:33 to retype the order's text. Two manual
+  // repairs, four and a half hours apart, to restore something this row was
+  // holding all along in `payloadIn`.
+  //
+  // inheritDocDescription swaps only the label at the head ("הזמנת עבודה" →
+  // "חשבון עסקה") and carries the rest verbatim; free text with no label it
+  // recognises comes across untouched, no prefix forced. bundleTitle stays as
+  // the fallback for an order that carries no description at all — and stays in
+  // use, unchanged, on the two paths that really are bundles of N jobs (:161,
+  // :540), where `income.length` genuinely is the episode count.
+  const description =
+    inheritDocDescription(payloadIn?.description, "deal_invoice") ??
+    bundleTitle("חשבון עסקה", clientName, income.length, "פרק אחד", "פרקים", "מאוגד");
+
   const payload: MorningDocumentRequest = {
     type: DOC_TYPE_TO_MORNING_CODE["deal_invoice"],
     lang: "he",
     currency: "ILS",
     vatType: VAT_TYPE_DEFAULT,
     date: todayInIsrael(), // issuance date, not the work dates (issue.ts re-stamps)
-    description: bundleTitle("חשבון עסקה", clientName, income.length, "פרק אחד", "פרקים", "מאוגד"),
+    description,
     client: { id: client.id, name: client.name, add: false },
     income, // inherited verbatim: the invoice must total exactly what the order did
     // linkType is deliberately absent — not required by the API
