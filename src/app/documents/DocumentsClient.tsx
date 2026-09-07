@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import ClientCombobox, { type ComboboxClient } from "@/components/ClientCombobox";
+import DocumentPreview from "@/components/DocumentPreview";
 import { todayInIsrael } from "@/lib/dates";
 import { STUDIOS } from "@/lib/calendar/studios";
 import { missingGuestLines } from "@/lib/documents/guestFlag";
@@ -12,6 +13,7 @@ import {
   PAYMENT_METHODS,
   relabelDocDescription,
   requiresPayment,
+  type MorningDocumentRequest,
 } from "@/lib/morning/types";
 
 // NOTE: a local copy of the type in lib/morning/types.ts, not an import — it
@@ -467,6 +469,10 @@ export default function DocumentsClient({
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<string | null>(null);
+  // Which rows show the document facsimile. A Set rather than the single id
+  // `expanded` uses: two queued documents for one client are told apart by
+  // their LINES, and comparing them means having both open at once.
+  const [previewOpen, setPreviewOpen] = useState<Set<string>>(new Set());
   // the second gate for a tax document
   const [confirming, setConfirming] = useState<PendingDocRow | null>(null);
   // 305 by default, matching DEFAULT_TAX_VARIANT — a receipt declares the money
@@ -592,6 +598,15 @@ export default function DocumentsClient({
     });
   }
 
+  function togglePreview(id: string) {
+    setPreviewOpen((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }
+
   async function send(ids: string[], action: "approve" | "reject", extra: Record<string, unknown> = {}) {
     setBusy(true);
     setError(null);
@@ -661,6 +676,9 @@ export default function DocumentsClient({
       setSelectedEmails([]);
       setDocDate("");
       setBackdateWarn(null);
+      // the ids are about to be stale — a refresh brings a new `rows`, and a
+      // row that was approved away leaves an id nothing will ever close
+      setPreviewOpen(new Set());
       router.refresh();
     } catch {
       setError("שגיאת רשת");
@@ -889,6 +907,7 @@ export default function DocumentsClient({
         return;
       }
       setEditing(null);
+      setPreviewOpen(new Set());
       router.refresh();
     } catch {
       setError("שגיאת רשת");
@@ -1005,10 +1024,12 @@ export default function DocumentsClient({
                           (owner spec 2026-08-25). "ערוך לפני אישור" below has
                           always been here, but nothing on this screen ever told
                           the bookkeeper she had a reason to press it — the
-                          printed line is not on the row at all, and the only way
-                          to read it is the raw JSON behind "מה יישלח למורנינג".
-                          So the warning is the button: one click from "something
-                          is wrong" to the field that fixes it.
+                          printed line was not on the row at all, and the only
+                          way to read it was the raw JSON. So the warning is the
+                          button: one click from "something is wrong" to the
+                          field that fixes it. (The lines are now on the row, in
+                          DocumentPreview below — this flag still earns its place
+                          by naming WHICH line is wrong and why.)
 
                           Rendered only when a real guest is really missing, so a
                           clean queue looks exactly as it did yesterday. */}
@@ -1022,11 +1043,23 @@ export default function DocumentsClient({
                         </button>
                       )}
                       <div className="mt-1 flex items-center gap-3">
+                        {/* First in the row on purpose: reading the document is
+                            what should happen BEFORE editing it, and the order
+                            of these links is the only thing on the screen that
+                            says so. */}
+                        {(r.status === "pending" || r.status === "failed") && (
+                          <button
+                            onClick={() => togglePreview(r.id)}
+                            className="text-[11px] text-[var(--faint)] underline"
+                          >
+                            {previewOpen.has(r.id) ? "הסתר הדמיה" : "הצג הדמיה"}
+                          </button>
+                        )}
                         <button
                           onClick={() => setExpanded(expanded === r.id ? null : r.id)}
                           className="text-[11px] text-[var(--faint)] underline"
                         >
-                          {expanded === r.id ? "הסתר" : "מה יישלח למורנינג"}
+                          {expanded === r.id ? "הסתר JSON" : "הצג JSON"}
                         </button>
                         {canApprove && editing !== r.id && (
                           <button onClick={() => openEdit(r)} className="text-[11px] text-[var(--faint)] underline">
@@ -1034,6 +1067,31 @@ export default function DocumentsClient({
                           </button>
                         )}
                       </div>
+
+                      {/* THE DOCUMENT, as Morning will print it. Behind a
+                          toggle (owner spec 2026-09-07): a full page per row
+                          pushed the queue itself off the screen, and a queue you
+                          cannot scan is a worse trade than a document you have
+                          to click for. The link that opens it sits first in the
+                          row above, so the affordance is not hidden — only the
+                          page is.
+
+                          Rendered while the row can still be changed —
+                          'pending' and 'failed' are exactly the two statuses the
+                          edit route accepts (pending/edit:199), and a failed row
+                          is one somebody is about to inspect before retrying. An
+                          issued or approved row is past the point where reading
+                          it could change anything. Same test guards the link, so
+                          a row can never offer a toggle that renders nothing. */}
+                      {(r.status === "pending" || r.status === "failed") && previewOpen.has(r.id) && (
+                        <div className="mt-2">
+                          <DocumentPreview
+                            payload={r.payload as unknown as MorningDocumentRequest}
+                            docType={r.doc_type}
+                            amount={r.amount}
+                          />
+                        </div>
+                      )}
                       {editing === r.id && (
                         <div className="mt-2 border border-[var(--rule)] rounded-xl p-2 flex flex-col gap-2">
                           {/* the recipient comes first: it is the context for
