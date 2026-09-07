@@ -6,6 +6,7 @@ import {
   type MorningDocumentRequest,
   type PendingDocType,
 } from "@/lib/morning/types";
+import { roundAgorot } from "@/lib/documents/lineBalance";
 import { shortDate, todayInIsrael } from "@/lib/dates";
 import { SupabaseReadError } from "@/lib/supabase/unwrap";
 import { hasBeenPerformed } from "@/lib/productions/status";
@@ -104,23 +105,11 @@ export type ShowForBilling = {
 const hoursNotYetExpected = (status: string | null | undefined) =>
   status != null && !hasBeenPerformed(status);
 
-/**
- * Agorot, at the one point the number is derived.
- *
- * The same `round(studio_hours * hourly_rate, 2)` runs in SQL inside
- * ensure_job_for_production (0067 §7), which is what writes jobs.amount. These
- * are two independent derivations of ONE base, and they must come out equal to
- * the agora or the job and its document quietly disagree about the same money.
- *
- * The owner's example is the reason the rounding is stated rather than assumed:
- * 1.5 h × 333.33 ₪ = 499.995. Unrounded, that number reaches
- * `pending_documents.amount` with three decimals while the SQL side rounds to
- * 500.00, and every downstream comparison — the balance gate's
- * BALANCE_EPSILON = 0.01 (lineBalance.ts:31, c339215), the issue-time amount
- * check (issue.ts:476) — is then judging a difference of half an agora that
- * nobody can see, reconcile by hand, or explain.
- */
-const roundAgorot = (n: number) => Number(n.toFixed(2));
+// roundAgorot now lives in lineBalance.ts (imported above). The same
+// `round(studio_hours * hourly_rate, 2)` runs in SQL inside
+// ensure_job_for_production (0067 §7), which is what writes jobs.amount — two
+// independent derivations of ONE base that must come out equal to the agora, or
+// the job and its document quietly disagree about the same money.
 
 /**
  * What one production is worth, before add-ons — or the reason it is worth

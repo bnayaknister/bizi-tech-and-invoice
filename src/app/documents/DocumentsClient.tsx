@@ -8,6 +8,12 @@ import { todayInIsrael } from "@/lib/dates";
 import { STUDIOS } from "@/lib/calendar/studios";
 import { missingGuestLines } from "@/lib/documents/guestFlag";
 import {
+  roundAgorot,
+  splitAmountIntoUnits,
+  sumIncome,
+  unitSplitError,
+} from "@/lib/documents/lineBalance";
+import {
   DOC_TYPE_TO_MORNING_CODE,
   MORNING_DOC_CODE,
   PAYMENT_METHODS,
@@ -462,11 +468,69 @@ function incomeLines(r: PendingDocRow): { description?: string; quantity?: numbe
   return Array.isArray(income) ? (income as { description?: string; quantity?: number; price?: number }[]) : [];
 }
 
+/**
+ * "= 7 × ₪600.00 ליחידה" under the amount box on a single-line document that
+ * bills several units.
+ *
+ * The amount box holds the DOCUMENT's total and the printed line holds a
+ * per-unit price; on a 7-unit row those are two different numbers and the form
+ * showed only the first. Silent on a 1-unit line, which is every other row in
+ * the queue, so a clean queue looks exactly as it did.
+ */
+function UnitPriceHint({ quantity, amount }: { quantity: number; amount: string }) {
+  if (quantity <= 1) return null;
+  const total = Number(amount);
+  if (amount.trim() === "" || !Number.isFinite(total)) return null;
+
+  // A total that does not divide is refused by the route (pending/edit:405).
+  // Saying so HERE, off the typed value, is the whole point: she meets the
+  // sentence while the cursor is still in the box, not after a save that failed
+  // — and it is the same sentence, from the same function.
+  //
+  // Narrowed on `split.ok`, not on the message being non-null: the two say the
+  // same thing at runtime, but only the first tells the compiler which arm of
+  // UnitSplit this is, and `price` exists on one arm alone.
+  const split = splitAmountIntoUnits(total, quantity);
+  if (!split.ok) {
+    return (
+      <span className="mt-0.5 block text-[10px] text-[var(--peak)] leading-snug">
+        {unitSplitError(total, quantity, split)}
+      </span>
+    );
+  }
+
+  return (
+    <span className="mt-0.5 block text-[10px] text-[var(--faint)] font-mono tabular-nums">
+      = {quantity} × ₪
+      {split.price.toLocaleString("he-IL", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ליחידה
+    </span>
+  );
+}
+
+/**
+ * How many units a line bills, for dividing a total by. 0 or absent reads as 1
+ * — the same reading sumIncome makes (lineBalance.ts:38), and the one that
+ * keeps a division off Infinity. One spelling, used by the preview and by the
+ * two form hints, so none of them can round differently from the route.
+ */
+function unitDivisor(line: { quantity?: number | null } | undefined): number {
+  const q = Number(line?.quantity ?? 1);
+  return Number.isFinite(q) && q > 0 ? q : 1;
+}
+
+/**
+ * One line as the form holds it. `price` is a string so a half-typed number
+ * does not reset under the cursor; `quantity` is a number because nothing on
+ * the screen types it — it is carried from the stored payload and handed back
+ * unchanged, which is the whole of the 2026-09-07 quantity fix on this side.
+ */
+type EditLine = { description: string; price: string; quantity: number };
+
 /** Everything the edit form holds that can reach the stored payload. */
 type EditState = {
   amount: string;
   description: string;
-  lines: { description: string; price: string }[];
+  lines: EditLine[];
   clientId: string | null;
   /** resolved from the live Morning list — the payload stores id AND name */
   clientName: string | undefined;
@@ -507,8 +571,15 @@ function editDiff(r: PendingDocRow, s: EditState) {
           .filter((l) => l.description !== (existing[l.index]?.description ?? ""))
       : [];
 
+  // quantity goes BACK to the server (it accepts it — pending/edit:305 — and
+  // defaults to 1 only when it is absent). Sending it is what stops a merge
+  // from flattening a 7-unit line to one unit.
   const replaceLines = mergeMode
-    ? s.lines.map((l) => ({ description: l.description.trim(), price: Number(l.price) }))
+    ? s.lines.map((l) => ({
+        description: l.description.trim(),
+        price: Number(l.price),
+        quantity: l.quantity,
+      }))
     : [];
 
   const originalDesc = (r.payload as { description?: string })?.description ?? "";
@@ -544,15 +615,13 @@ function editDiff(r: PendingDocRow, s: EditState) {
  *   single — the amount is written to income[0].price and the description to
  *            income[0].description (there the title and the line are one thing)
  *
- * ⚠️ ONE DELIBERATE DIVERGENCE: quantity. The form never loads it (openEdit
- * drops it) and never sends it, so on the merge branch the server fills 1 and
- * a 7-unit line silently becomes a 1-unit line. That is a real open bug, not
- * something to reproduce here: a preview that printed 1 would make the loss
- * look intended. The original quantity is carried through from the stored
- * payload instead, so the sheet shows what the document is SUPPOSED to say.
- * On the other two branches this matches the server exactly — they never touch
- * quantity — and those are the only branches a quantity>1 row can reach today
- * (both such rows in the account are single-line).
+ * QUANTITY, as of 2026-09-07: no longer a divergence. The form carries each
+ * line's quantity through untouched and merge mode sends it back, so all three
+ * branches preserve it and this mirror is exact again. `amount` is the
+ * DOCUMENT's total and `price` is per unit, so the single-line branch divides —
+ * the same division the route now makes (pending/edit:405), through the same
+ * roundAgorot, because a preview that rounded differently would disagree with
+ * the balance gate by an agora and blame the wrong number.
  */
 function livePreview(
   r: PendingDocRow,
@@ -570,7 +639,10 @@ function livePreview(
       const template = existing[Math.min(i, existing.length - 1)];
       return {
         description: l.description,
-        quantity: Number(template?.quantity ?? 1), // see the divergence note above
+        // from the LINE, not from the template: deleting a line shifts every
+        // index below it, so the positional template would hand line 2's
+        // quantity to what is now line 1
+        quantity: Number(l.quantity ?? 1),
         price: Number.isFinite(l.price) ? l.price : 0,
         currency: template?.currency ?? "ILS",
         vatType: template?.vatType ?? 0,
@@ -584,7 +656,9 @@ function livePreview(
       i === 0
         ? {
             ...row,
-            ...(d.amountUsable ? { price: d.amountNum! } : {}),
+            // amount is the document total, price is per unit — divide, exactly
+            // as pending/edit:405 does, and read a missing/zero quantity as 1
+            ...(d.amountUsable ? { price: roundAgorot(d.amountNum! / unitDivisor(row)) } : {}),
             ...(d.descTrimmed ? { description: d.descTrimmed } : {}),
           }
         : row
@@ -661,7 +735,9 @@ export default function DocumentsClient({
   // (2026-09-02): deleting four of five lines is only meaningful if the
   // survivor can carry their money. Kept as strings so a half-typed number
   // does not reset to 0 under the user's cursor.
-  const [editLines, setEditLines] = useState<{ description: string; price: string }[]>([]);
+  // `quantity` rides along read-only: the form does not let it be edited, but
+  // dropping it is how a 7-unit line came back from a merge as a 1-unit line.
+  const [editLines, setEditLines] = useState<EditLine[]>([]);
   // The recipient the document will be MADE OUT TO. Separate from the client
   // who owes — a document ordered by one entity and invoiced to another is
   // normal here (owner 2026-08-02), so this picker lists all of Morning's
@@ -927,6 +1003,8 @@ export default function DocumentsClient({
     setEditLines(incomeLines(r).map((l) => ({
       description: l.description ?? "",
       price: String(l.price ?? 0),
+      // read but never edited — see EditLine
+      quantity: unitDivisor(l),
     })));
     setEditClient((r.payload as { client?: { id?: string } })?.client?.id ?? null);
     void loadMorningClients();
@@ -961,11 +1039,17 @@ export default function DocumentsClient({
     return livePreview(r, editStateFor());
   }
 
-  /** Σ of the line prices as currently typed — the live half of the balance. */
+  /**
+   * Σ of the lines as currently typed — the live half of the balance.
+   *
+   * Runs the SERVER's sumIncome, not a local reduce. The local one summed bare
+   * prices and ignored quantity, so on a 7 × 500 row it showed 500 against a
+   * 3,500 document and marked a correct row red: the screen contradicting the
+   * gate it posts to. Only the string→number parse is local, because only the
+   * form has strings.
+   */
   function lineSum(): number {
-    return Number(
-      editLines.reduce((s, l) => s + (Number(l.price) || 0), 0).toFixed(2)
-    );
+    return sumIncome(editLines.map((l) => ({ price: Number(l.price) || 0, quantity: l.quantity })));
   }
 
   /**
@@ -1345,6 +1429,20 @@ export default function DocumentsClient({
                                             inputMode="decimal"
                                             className="shrink-0 w-20 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1 font-mono text-left"
                                           />
+                                          {/* The units this line bills. READ ONLY, and
+                                              shown only when it is not 1: the price box
+                                              beside it holds a PER-UNIT figure, and
+                                              without this the bookkeeper reads 500 on a
+                                              line worth 3,500. Editing quantity is a
+                                              separate decision nobody has asked for. */}
+                                          {line.quantity > 1 && (
+                                            <span
+                                              className="shrink-0 text-[10px] text-[var(--faint)] font-mono tabular-nums"
+                                              title={`השורה מחייבת ${line.quantity} יחידות במחיר שלצידה`}
+                                            >
+                                              × {line.quantity}
+                                            </span>
+                                          )}
                                           {/* the last line may never be deleted — a
                                               document must carry at least one, and the
                                               server refuses it too */}
@@ -1371,7 +1469,7 @@ export default function DocumentsClient({
                                 <button
                                   type="button"
                                   onClick={() =>
-                                    setEditLines((prev) => [...prev, { description: "", price: "0" }])
+                                    setEditLines((prev) => [...prev, { description: "", price: "0", quantity: 1 }])
                                   }
                                   className="mt-1 text-[10px] text-[var(--violet-light)] hover:underline"
                                 >
@@ -1419,6 +1517,17 @@ export default function DocumentsClient({
                                   value={editAmount}
                                   onChange={(e) => setEditAmount(e.target.value)}
                                   className="w-full mt-0.5 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1"
+                                />
+                                {/* What this total becomes PER UNIT — the number
+                                    the document will actually print, and the one
+                                    the box above is not. Shown only on a line that
+                                    bills more than one unit, live off the typed
+                                    amount, through the same roundAgorot the route
+                                    uses, so what she reads here is what gets
+                                    written. */}
+                                <UnitPriceHint
+                                  quantity={unitDivisor(incomeLines(r)[0])}
+                                  amount={editAmount}
                                 />
                               </label>
                               <label className="text-[11px]">

@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { balanceError } from "@/lib/documents/lineBalance";
+import {
+  balanceError,
+  roundAgorot,
+  splitAmountIntoUnits,
+  unitSplitError,
+} from "@/lib/documents/lineBalance";
 import { listClients, MorningError } from "@/lib/morning/client";
 import type { MorningDocumentRequest, MorningIncomeRow } from "@/lib/morning/types";
 
@@ -402,7 +407,40 @@ export async function POST(request: Request) {
   if (replacementIncome) {
     payload.income = replacementIncome;
   } else if (hasAmount) {
-    payload.income = (payload.income ?? []).map((r, i) => (i === 0 ? { ...r, price: body.amount! } : r));
+    // `amount` IS THE DOCUMENT'S TOTAL; `price` IS PER UNIT. The two are the
+    // same number only when quantity is 1, and this line assumed that silently
+    // until 5.9, when bundle-from-show became the first path that writes a
+    // quantity above 1 (7 × 500 for one bundled show). On such a row it wrote
+    // 3,500 into a per-unit field, the balance gate multiplied it back out to
+    // 24,500, and the document became uneditable from the screen — every save,
+    // including one that only touched the title, because the form always
+    // restates the amount on a single-line row.
+    //
+    // The owner's rule (2026-09-07): a new total on an N-unit line moves the
+    // UNIT PRICE and leaves the quantity alone — 4,200 on 7 episodes is 600 an
+    // episode, not one episode of 4,200.
+    //
+    // quantity 0 or absent reads as 1, the same reading sumIncome makes
+    // (lineBalance.ts:38) — a line that omits it means one unit, and dividing
+    // by a literal 0 would produce Infinity on a money field.
+    //
+    // REFUSED EARLY WHEN IT DOES NOT DIVIDE (owner decision 2026-09-07). A
+    // total that leaves a remainder has no per-unit price that multiplies back
+    // to it, so storing one would put the lines and the amount column into
+    // permanent disagreement. The balance gate further down would catch most of
+    // those, but it would say only "the lines do not match the amount" — true,
+    // useless, and blaming a number she did not choose. This refuses at the
+    // cause and hands her the two totals that work.
+    const firstLine = (payload.income ?? [])[0];
+    const qty = Number(firstLine?.quantity ?? 1);
+    const divisor = Number.isFinite(qty) && qty > 0 ? qty : 1;
+    const split = splitAmountIntoUnits(body.amount!, divisor);
+    const splitError = unitSplitError(body.amount!, divisor, split);
+    if (splitError) return NextResponse.json({ error: splitError }, { status: 400 });
+
+    payload.income = (payload.income ?? []).map((r, i) =>
+      i === 0 ? { ...r, price: split.ok ? split.price : roundAgorot(body.amount! / divisor) } : r
+    );
   }
   if (newDescription !== undefined) {
     payload.description = newDescription;
