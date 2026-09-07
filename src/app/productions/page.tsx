@@ -151,8 +151,10 @@ export default async function ProductionsPage() {
   // takes an id or a filter from another — so they all belong in the same
   // Promise.all. The profiles/clients pair used to sit in a second wave after
   // this one purely because the code that consumes them appears later in the
-  // file; at ~250ms per round-trip (functions and DB in sin1, the office in
-  // Tel Aviv) that ordering cost a quarter second for nothing.
+  // file; back when a round-trip cost ~250ms that ordering threw away a
+  // quarter of a second for nothing. Functions and DB have been co-located in
+  // Frankfurt since Aug 2026 and a trip is now ~10ms, so the waste is smaller —
+  // but the reason to batch is round-trip COUNT, which no region fixes.
   //
   // Assignee names come from the SERVICE client because profiles RLS is
   // manager-only, while staff names on the board are visible to the whole team

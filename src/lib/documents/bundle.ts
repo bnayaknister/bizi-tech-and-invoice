@@ -56,6 +56,26 @@ export function bundleLineDesc(job: { campaign?: string | null; date?: string | 
   return `${job.campaign ?? ""} ${job.date ?? ""}`.trim() || "פרק";
 }
 
+/**
+ * How many EPISODES a set of income lines bills — Σ quantity, not the number of
+ * rows.
+ *
+ * The two are the same only while every line carries one unit, which was true
+ * of all 83 lines in the account until bundle-from-show (5.9) wrote its first
+ * `7 × 500`. Counting rows then printed "(פרק אחד)" at the head of deal invoice
+ * 40316 while the table below it billed seven — on a page the client reads.
+ *
+ * `?? 1` for the same reason sumIncome uses it (lineBalance.ts:38): a line that
+ * omits quantity means one unit, never zero.
+ */
+function episodeCount(income: { quantity?: number }[] | null | undefined): number {
+  const rows = Array.isArray(income) ? income : [];
+  return rows.reduce((n, l) => {
+    const q = Number(l?.quantity ?? 1);
+    return n + (Number.isFinite(q) && q > 0 ? q : 1);
+  }, 0);
+}
+
 function bundleTitle(kind: string, clientName: string, n: number, one: string, many: string, bundled: string) {
   return n === 1
     ? `${kind} — ${clientName} (${one})`.trim()
@@ -159,6 +179,10 @@ export async function createDealInvoiceBundle(
     currency: "ILS",
     vatType: VAT_TYPE_DEFAULT,
     date: todayInIsrael(), // issuance date, not the work dates (issue.ts re-stamps)
+    // ordered.length, NOT episodeCount: the noun here is "עבודות" and one job
+    // is one job whatever its line says. This bundle builds its own lines a few
+    // rows below, one per job at quantity 1, so a unit count would answer a
+    // question nobody asked. Deliberately left alone 2026-09-07.
     description: bundleTitle("חשבון עסקה", primaryClient.name ?? "", ordered.length, "עבודה אחת", "עבודות", "מאוגד"),
     client: { id: morningClientId, name: (primaryClient.name as string | null) ?? undefined, add: false },
     income: ordered.map((j) => ({
@@ -465,7 +489,7 @@ export async function createDealInvoiceFromWorkOrder(
   // :540), where `income.length` genuinely is the episode count.
   const description =
     inheritDocDescription(payloadIn?.description, "deal_invoice") ??
-    bundleTitle("חשבון עסקה", clientName, income.length, "פרק אחד", "פרקים", "מאוגד");
+    bundleTitle("חשבון עסקה", clientName, episodeCount(income), "פרק אחד", "פרקים", "מאוגד");
 
   const payload: MorningDocumentRequest = {
     type: DOC_TYPE_TO_MORNING_CODE["deal_invoice"],
@@ -559,7 +583,11 @@ export async function createWorkOrderBundle(
     currency: "ILS",
     vatType: VAT_TYPE_DEFAULT,
     date: todayInIsrael(), // issuance date, not the work dates (issue.ts re-stamps)
-    description: bundleTitle("הזמנת עבודה", baseClient.name ?? "", rows.length, "פרק אחד", "פרקים", "מאוגדת"),
+    // episodeCount(income), not rows.length: the noun is "פרקים", and one
+    // source row will not always mean one episode. Identical today (every
+    // accrued order carries a single one-unit line) and correct the first time
+    // it is not.
+    description: bundleTitle("הזמנת עבודה", baseClient.name ?? "", episodeCount(income), "פרק אחד", "פרקים", "מאוגדת"),
     client: { id: baseClient.id, name: baseClient.name, add: false },
     income,
   };

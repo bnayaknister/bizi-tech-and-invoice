@@ -10,7 +10,7 @@ import {
 } from "@/lib/documents/enqueue";
 import { approvedAddonTotal } from "@/lib/productions/price";
 import { MAX_HOURS } from "@/lib/productions/hours";
-import { balanceError } from "@/lib/documents/lineBalance";
+import { balanceError, splitAmountIntoUnits, unitSplitError } from "@/lib/documents/lineBalance";
 import type { MorningDocumentRequest } from "@/lib/morning/types";
 
 // "כמה שעות הוקלטו?" — the technician's answer, and everything that answer
@@ -346,8 +346,31 @@ export async function POST(request: Request, { params }: { params: { id: string 
   // Money only. The description is NOT rebuilt: the bookkeeper may have edited
   // it (documents/pending/edit), and re-deriving it here would silently discard
   // her wording on a route about hours.
+  //
+  // `amount` is the DOCUMENT's total and `price` is per unit — the second copy
+  // of the assumption fixed in pending/edit:405 on 2026-09-07. The guard above
+  // asks "how many LINES", which is the wrong question for this: a single line
+  // billing 7 units would have taken 4,200 straight into a per-unit field and
+  // the balance gate below would have measured 29,400 against 4,200. Not
+  // reachable today (an hourly row is one unit and bundle-from-show writes no
+  // production_id, so it never becomes `reusable`) — closed here so the pattern
+  // does not survive its own fix somewhere else.
   const amount = base.amount;
-  payload.income = income.map((line, i) => (i === 0 ? { ...line, price: amount } : line));
+  const units = Number(income[0]?.quantity ?? 1);
+  const split = splitAmountIntoUnits(amount, units);
+  const splitError = unitSplitError(amount, units, split);
+  // Same refusal and the same sentence as the edit route — an amount that
+  // leaves a remainder has no per-unit price that multiplies back to it. The
+  // hours themselves are already saved, which is why they ride along.
+  if (splitError) {
+    return NextResponse.json(
+      { error: splitError, studio_hours: hours, pending_document_id: reusable.id, ...jobResult },
+      { status: 400 }
+    );
+  }
+  payload.income = income.map((line, i) =>
+    i === 0 ? { ...line, price: split.ok ? split.price : amount } : line
+  );
   const gate = balanceError(payload.income, amount);
   if (gate) return NextResponse.json({ error: gate, studio_hours: hours }, { status: 400 });
 

@@ -298,8 +298,9 @@ export default async function ProjectsPage() {
   // returning well under a page, and the alternative — hand-assembling a
   // PostgREST or-filter out of UUID lists and text numbers — is a quoting bug
   // waiting to happen in the one place where a silent miss means a missing
-  // invoice. They run in parallel; the region is co-located (sin1), so the
-  // extra round-trips cost about a millisecond each.
+  // invoice. They run in parallel; functions and DB are co-located (both fra1
+  // / eu-central-1 since Aug 2026), so the extra round-trips cost about a
+  // millisecond each.
   const emptyRes = Promise.resolve({ data: [] as unknown[] });
   const [addonsRes, byProdRes, byJobRes, byBundleRes, byNumberRes, receiptsRes, foldedRes, monthDocsRes] =
     await Promise.all([
