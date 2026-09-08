@@ -6,7 +6,7 @@ import { useDrawer } from "@/components/EntityDrawer";
 import AssignDocModal from "@/components/AssignDocModal";
 import NewDocModal from "./NewDocModal";
 import BundleFromShowModal from "@/components/BundleFromShowModal";
-import { REGISTRY_TAB_LABEL, type RegistryTab } from "@/lib/morning/types";
+import { MORNING_DOC_NAME, REGISTRY_TAB_LABEL, type RegistryTab } from "@/lib/morning/types";
 
 const BILLING_TYPES = [300, 305, 320, 400]; // deal / tax / tax-receipt / receipt — real חיוב, linkable to a job
 const isBilling = (t: number) => BILLING_TYPES.includes(t);
@@ -128,6 +128,48 @@ const CHILD_ACTION_ENDPOINT: Record<"tax" | "receipt", string> = {
   tax: "/api/documents/tax",
   receipt: "/api/documents/receipt",
 };
+
+/**
+ * The WhatsApp share link for ONE document — message text included.
+ *
+ * NO PHONE NUMBER IN THE URL (owner decision). `wa.me/?text=` opens WhatsApp's
+ * own contact picker, so choosing the recipient stays a human act. That is the
+ * whole approval gate, and it has to be: the link this message carries is
+ * Morning's `pdf_url`, which was measured on 2026-09-08 to need no login at all
+ * (200 application/pdf with no auth header) and not to expire — a token minted
+ * 44 days earlier still served the file. Nothing can revoke one afterwards, so
+ * the recipient is never pre-filled. Same shape as the review link
+ * (api/productions/[id]/review-link/route.ts:67), which chooses no number either.
+ *
+ * NO GENDER AGREEMENT IN THE SENTENCE, deliberately. The document noun changes
+ * gender by type — חשבון עסקה is masculine, חשבונית מס / קבלה / הזמנה / הצעת
+ * מחיר are feminine — so any adjective or verb agreeing with it would need a
+ * seven-entry gender map that goes wrong in silence the day Morning adds a code.
+ * The one word here that agrees with anything is "הקישור", masculine for every
+ * type; the document's own name appears only after ל־, which attaches cleanly to
+ * all of them. This is the "חשבון עסקה מאוגדת" bug avoided rather than tabulated.
+ *
+ * NO AMOUNT: it is printed on the document the link opens.
+ */
+function whatsappShareUrl(r: DocRow): string {
+  // Asserted, not defaulted: the cell renders this only under `r.pdf_url &&`,
+  // exactly as the bundle checkbox asserts `pending_id!` under rowSelectable.
+  // A default would ship a message whose link is the word "null".
+  const url = r.pdf_url!;
+  // client_name is OUR mapped client; morning_client_name is what Morning knows.
+  // A pulled-but-unassigned row carries only the second — the very state the
+  // table marks "(לא משויך)" — and a row with neither gets a sentence with no
+  // greeting at all. Never the table's "—": that is a placeholder for someone
+  // reading a screen, not a word to send a client.
+  const name = r.client_name ?? r.morning_client_name;
+  // Morning's vocabulary for the type, because it is what is printed on the PDF
+  // the client is about to open. Keyed by numeric code, so it also covers the
+  // types we never issue (a quote, a credit note) that can sit in the "אחר" tab;
+  // an unmapped code falls back rather than printing "undefined".
+  const doc = [MORNING_DOC_NAME[r.type] ?? "מסמך", r.number].filter(Boolean).join(" ");
+  const text = `${name ? `היי ${name}, ` : ""}הנה הקישור ל${doc}:\n${url}`;
+  return `https://wa.me/?text=${encodeURIComponent(text)}`;
+}
 
 /**
  * Can this document still father a tax document?
@@ -865,6 +907,22 @@ export default function RegistryClient({
                         </a>
                       ) : (
                         "—"
+                      )}
+                      {/* Send THIS document to the client. No "—" when there is
+                          no pdf_url and no disabled button either: the action
+                          simply is not there, the same way "מורנינג ↗" below is
+                          not. "פתח" already printed the placeholder for this
+                          cell — a second one would say the same absence twice. */}
+                      {r.pdf_url && (
+                        <a
+                          href={whatsappShareUrl(r)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[var(--signal)] underline"
+                          title="שלח את המסמך ללקוח בוואטסאפ — בחירת הנמען היא שלך"
+                        >
+                          וואטסאפ
+                        </a>
                       )}
                       {/* Deep link to the document in Morning's own UI — the only
                           way to re-send an already-issued document (the API has
