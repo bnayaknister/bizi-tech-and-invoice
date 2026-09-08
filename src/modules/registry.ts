@@ -2,6 +2,7 @@ import type { ModuleDef } from "@/modules/types";
 import { radarModule } from "@/modules/radar";
 import { showsModule } from "@/modules/shows";
 import { productionsModule } from "@/modules/productions";
+import { miscModule } from "@/modules/misc";
 import { financeModule } from "@/modules/finance";
 import { projectsModule } from "@/modules/projects";
 import { contractsModule } from "@/modules/contracts";
@@ -23,6 +24,11 @@ export const MODULES: ModuleDef[] = [
   radarModule,
   usersModule,
   productionsModule,
+  // directly after הפקות (and so, trivially, before מסמכים): both are
+  // can_view_stages work lists and they answer the same question about two
+  // different kinds of job, so they belong adjacent rather than split by the
+  // money screens
+  miscModule,
   financeModule,
   projectsModule,
   docRegistryModule,

@@ -66,6 +66,12 @@ const MODULE_THEME: Record<string, { card: CardAccent; tile: IconAccent }> = {
   // same waveform glyph as productions, cyan instead of violet — the money
   // reading of the same list, not a different object
   projects: { card: "cyan", tile: "cyan" },
+  // third reading of the same waveform: productions is violet/violet, projects
+  // is cyan/cyan, and misc keeps the productions card hue with the lighter tile
+  // — same family of work, a different kind of job. Without this entry it would
+  // fall through to the violet/violet default and be indistinguishable from
+  // הפקות on the grid.
+  misc: { card: "violet", tile: "violet-light" },
   docregistry: { card: "cyan", tile: "cyan" },
   contracts: { card: "cyan", tile: "violet-light" },
   users: { card: "violet", tile: "violet" },

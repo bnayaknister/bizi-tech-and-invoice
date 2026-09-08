@@ -777,6 +777,137 @@ export type Database = {
           },
         ]
       }
+      misc_production_suppliers: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          due_date: string | null
+          id: string
+          misc_production_id: string
+          paid_at: string | null
+          price: number | null
+          service: string | null
+          supplier_name: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          due_date?: string | null
+          id?: string
+          misc_production_id: string
+          paid_at?: string | null
+          price?: number | null
+          service?: string | null
+          supplier_name: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          due_date?: string | null
+          id?: string
+          misc_production_id?: string
+          paid_at?: string | null
+          price?: number | null
+          service?: string | null
+          supplier_name?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "misc_production_suppliers_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "misc_production_suppliers_misc_production_id_fkey"
+            columns: ["misc_production_id"]
+            isOneToOne: false
+            referencedRelation: "misc_productions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      misc_productions: {
+        Row: {
+          amount: number
+          cancel_reason: string | null
+          client_id: string
+          client_order_ref: string | null
+          created_at: string
+          created_by: string | null
+          description: string | null
+          id: string
+          job_id: string | null
+          name: string
+          status: Database["public"]["Enums"]["misc_production_status"]
+          updated_at: string
+          updated_by: string | null
+          work_date: string
+        }
+        Insert: {
+          amount: number
+          cancel_reason?: string | null
+          client_id: string
+          client_order_ref?: string | null
+          created_at?: string
+          created_by?: string | null
+          description?: string | null
+          id?: string
+          job_id?: string | null
+          name: string
+          status?: Database["public"]["Enums"]["misc_production_status"]
+          updated_at?: string
+          updated_by?: string | null
+          work_date: string
+        }
+        Update: {
+          amount?: number
+          cancel_reason?: string | null
+          client_id?: string
+          client_order_ref?: string | null
+          created_at?: string
+          created_by?: string | null
+          description?: string | null
+          id?: string
+          job_id?: string | null
+          name?: string
+          status?: Database["public"]["Enums"]["misc_production_status"]
+          updated_at?: string
+          updated_by?: string | null
+          work_date?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "misc_productions_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "misc_productions_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "misc_productions_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "misc_productions_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       pending_documents: {
         Row: {
           amount: number | null
@@ -1591,6 +1722,7 @@ export type Database = {
       billing_mode: "per_episode" | "retainer" | "package" | "none"
       invoice_source: "morning_api" | "manual"
       invoice_type: "עסקה" | "מס"
+      misc_production_status: "נפתח" | "בעבודה" | "הושלם" | "בוטל"
       paid_status: "כן" | "לא" | "ללא חיוב" | "לא ידוע"
       payment_terms:
         | "immediate"
@@ -1762,6 +1894,7 @@ export const Constants = {
       billing_mode: ["per_episode", "retainer", "package", "none"],
       invoice_source: ["morning_api", "manual"],
       invoice_type: ["עסקה", "מס"],
+      misc_production_status: ["נפתח", "בעבודה", "הושלם", "בוטל"],
       paid_status: ["כן", "לא", "ללא חיוב", "לא ידוע"],
       payment_terms: [
         "immediate",
