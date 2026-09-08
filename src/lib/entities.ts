@@ -156,7 +156,23 @@ export const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
     titleKey: "name",
     fields: [
       { key: "name", label: "שם", type: "text", view: "any", edit: "money" },
-      { key: "contact_name", label: "איש קשר", type: "text", view: "money", edit: "money" },
+      // `contact_name` USED TO BE A ROW HERE. Removed 2026-09-09 (owner) — do
+      // not put it back.
+      //
+      // The card grew a contact block that reads Morning's `contactPerson`
+      // live, so "איש קשר" appeared TWICE on one screen with two different
+      // values. Not a display glitch: the two fields were never synced and had
+      // drifted apart in all three rows that held a value — for ידיעות
+      // אחרונות they name two different people.
+      //
+      // The column still exists and still holds those three values; nothing was
+      // migrated or deleted. It simply has no reader in the app any more, and
+      // that is deliberate — re-registering it here would restore the duplicate.
+      // The values, and the open question of which of the two is current, are
+      // written out in docs/TICKETS.md under "מבצעי / מונחה-אירוע".
+      //
+      // (It also cannot be quietly repurposed: selectColumns builds the SELECT
+      // from this list, so anything added here must be a real column.)
       {
         key: "billing_mode", label: "מודל חיוב", type: "select", view: "money", edit: "money",
         options: [

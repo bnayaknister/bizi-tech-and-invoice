@@ -424,7 +424,38 @@ export async function POST(
   }
 
   // --- entity field update ---
-  const patch = body.patch ?? {};
+  //
+  // MORNING-ONLY FIELDS, lifted out BEFORE the allow-list runs.
+  //
+  // emails / phone / contactPerson live in Morning and nowhere else — `clients`
+  // has no column for any of them. They cannot be registered in entities.ts:
+  // selectColumns() turns every registered key straight into the PostgREST
+  // select list (entities.ts:239-241), so a key with no column would 400 the
+  // ENTIRE client card for every viewer, not just fail the new field. And they
+  // must not reach `.update(patch)` below for the same reason.
+  //
+  // So they ride in the same PATCH, through the same double-confirmation gate,
+  // the same event and the same 502/partial contract as the client NAME — and
+  // are simply never part of the local write. One write path, not two.
+  const rawPatch = (body.patch ?? {}) as Record<string, unknown>;
+  const MORNING_ONLY_KEYS = ["emails", "phone", "contactPerson"] as const;
+  const morningOnly: Record<string, unknown> = {};
+  const patch: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(rawPatch)) {
+    if ((MORNING_ONLY_KEYS as readonly string[]).includes(k)) morningOnly[k] = v;
+    else patch[k] = v;
+  }
+  const hasMorningOnly = Object.keys(morningOnly).length > 0;
+
+  if (hasMorningOnly) {
+    // Not a third gate: can_edit_money is exactly what guards the client name
+    // (entities.ts:158). Contact details travel with the name.
+    if (type !== "client")
+      return NextResponse.json({ error: "פרטי קשר קיימים ללקוח בלבד" }, { status: 400 });
+    if (!profile.can_edit_money)
+      return NextResponse.json({ error: "אין הרשאת עריכת כספים" }, { status: 403 });
+  }
+
   const allowed = editableKeys(type, profile);
   const rejected = Object.keys(patch).filter((k) => !allowed.has(k));
   if (rejected.length) {
@@ -433,7 +464,7 @@ export async function POST(
       { status: 403 }
     );
   }
-  if (!Object.keys(patch).length)
+  if (!Object.keys(patch).length && !hasMorningOnly)
     return NextResponse.json({ error: "אין שינויים" }, { status: 400 });
 
   const { data: before, error: beforeErr } = await supabase
@@ -445,7 +476,8 @@ export async function POST(
     return NextResponse.json({ error: "לא נמצא או שאין הרשאה" }, { status: 404 });
 
   // Editing a MAPPED client's details propagates to Morning. We only propagate
-  // the fields Morning actually holds — today that's the client name.
+  // the fields Morning actually holds — the client name, and since 2026-09-09
+  // the contact block (emails / phone / contactPerson), which lives ONLY there.
   //
   // (Documents are deliberately absent here: an issued Morning document has
   // NO update endpoint — it's immutable by design — so it can never be edited
@@ -469,27 +501,51 @@ export async function POST(
   // to touch two systems, both or neither"; its job now is "you are about to
   // touch two systems, and one of them may not follow" — still worth a click.
   let morningPartial: { error: string; morning_client_id: string } | null = null;
-  if (type === "client" && "name" in patch) {
+  if (type === "client" && ("name" in patch || hasMorningOnly)) {
     const { data: mc } = await admin
       .from("clients")
       .select("morning_client_id,name")
       .eq("id", params.id)
       .maybeSingle();
     const morningId = mc?.morning_client_id as string | null;
-    const nameChanged = patch.name !== mc?.name;
-    if (morningId && nameChanged) {
+    const nameChanged = "name" in patch && patch.name !== mc?.name;
+
+    // What actually goes on the wire. Built with the measurements of 2026-09-09
+    // in front of it (all recorded on updateClient in morning/client.ts):
+    //
+    //  · NO DIRTY-CHECKING. Every field the block holds is sent every time. A
+    //    field resent at its current value does not register as a change, and
+    //    three fields in one body move exactly those three — both measured. So
+    //    "send what you have" is safe, and it is safer than diffing: a diff
+    //    that is wrong writes the wrong thing.
+    //  · emails is REPLACE-WHOLE. The caller sends the complete desired list,
+    //    never a delta — there is no array merge to add or remove one address.
+    //  · phone/contactPerson are cleared by an EXPLICIT "", never by omitting
+    //    the key. toMorningText does that; createMorningClient's
+    //    `if (fields.phone)` idiom is the opposite and must not be copied here.
+    //  · `send` is NEVER SENT. It is read-only in the card. Morning recomputes
+    //    it from emails and overwrites what you pass, so writing it would be a
+    //    lie in both directions — and it is a toggle we have no contract for.
+    const { toMorningText, normalizeMorningEmails } = await import("@/lib/morning/client");
+    const morningFields: Record<string, unknown> = {};
+    if (nameChanged) morningFields.name = patch.name;
+    if ("emails" in morningOnly) morningFields.emails = normalizeMorningEmails(morningOnly.emails);
+    if ("phone" in morningOnly) morningFields.phone = toMorningText(morningOnly.phone as string | null);
+    if ("contactPerson" in morningOnly)
+      morningFields.contactPerson = toMorningText(morningOnly.contactPerson as string | null);
+
+    if (morningId && Object.keys(morningFields).length) {
       if (!body.confirm_morning) {
-        return NextResponse.json(
-          {
-            needs_morning_confirmation: true,
-            changes: { name: { from: mc?.name ?? null, to: patch.name } },
-          },
-          { status: 409 }
-        );
+        const changes: Record<string, { from: unknown; to: unknown }> = {};
+        if (nameChanged) changes.name = { from: mc?.name ?? null, to: patch.name };
+        // The contact fields have no local "from" to show — Morning is the only
+        // holder — so the confirmation lists what they are about to BECOME.
+        for (const k of Object.keys(morningOnly)) changes[k] = { from: null, to: morningFields[k] };
+        return NextResponse.json({ needs_morning_confirmation: true, changes }, { status: 409 });
       }
       try {
         const { updateClient } = await import("@/lib/morning/client");
-        await updateClient(morningId, { name: patch.name });
+        await updateClient(morningId, morningFields);
       } catch (e) {
         const { MorningError } = await import("@/lib/morning/client");
         const err = e instanceof MorningError ? e : null;
@@ -497,8 +553,8 @@ export async function POST(
 
         // "Nothing to push" and "the push failed" are separated ABOVE this
         // catch, not inside it: a client with no morning_client_id never enters
-        // the block at all (`if (morningId && nameChanged)`), so it returns a
-        // quiet 200 and no event. That is the only benign case.
+        // the block at all (`if (morningId && …)`), so it returns a quiet 200
+        // and no event. That is the only benign case.
         //
         // Everything that reaches here is Morning answering with an error, and
         // all of it counts — 404 included. A 404 means the id we hold does not
@@ -512,7 +568,9 @@ export async function POST(
           event_type: "client_morning_update_failed",
           actor_id: user.id,
           payload: {
-            attempted: { name: patch.name },
+            // everything we tried to push, not just the name — a failed contact
+            // sync is the same divergence and has to be as recoverable
+            attempted: morningFields,
             error: message,
             morning_status: err?.status ?? null,
             morning_client_id: morningId,
@@ -524,18 +582,35 @@ export async function POST(
     }
   }
 
-  const { data: updated, error } = await supabase
-    .from(config.table)
-    .update(patch)
-    .eq("id", params.id)
-    .select(selectColumns(type, profile));
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-  if (!updated?.length) return NextResponse.json({ error: "אין הרשאה לעדכן" }, { status: 403 });
+  // A contacts-only save has NOTHING to write locally — those fields have no
+  // column. Running `.update({})` would be a no-op that PostgREST answers with
+  // zero rows, which the line below reads as "no permission" and turns into a
+  // spurious 403. So the local write is skipped, and `before` (already fetched,
+  // already permission-checked) stands in as the row we hand back.
+  const localKeys = Object.keys(patch);
+  let updated: Record<string, unknown>[] | null = null;
+  if (localKeys.length) {
+    const res = await supabase
+      .from(config.table)
+      .update(patch)
+      .eq("id", params.id)
+      .select(selectColumns(type, profile));
+    if (res.error) return NextResponse.json({ error: res.error.message }, { status: 400 });
+    if (!res.data?.length) return NextResponse.json({ error: "אין הרשאה לעדכן" }, { status: 403 });
+    updated = res.data as unknown as Record<string, unknown>[];
+  } else {
+    updated = [before as unknown as Record<string, unknown>];
+  }
 
   const beforeRec = before as unknown as Record<string, unknown>;
   const changes: Record<string, { from: unknown; to: unknown }> = {};
-  for (const k of Object.keys(patch)) {
+  for (const k of localKeys) {
     changes[k] = { from: beforeRec[k] ?? null, to: patch[k] ?? null };
+  }
+  // The Morning-only fields are evented too, but as "to" alone: there is no
+  // local `from` to compare against, because we never held these values.
+  for (const k of Object.keys(morningOnly)) {
+    changes[k] = { from: null, to: morningOnly[k] ?? null };
   }
   await admin.from("events").insert({
     entity_type: type,

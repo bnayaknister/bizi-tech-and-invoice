@@ -228,6 +228,65 @@ export async function createDocument(
  * relying on it: this was ONE field on ONE client, and it is Morning's
  * behaviour rather than a contract they publish — a caller touching several
  * fields at once should snapshot first. scripts/morning_client_snapshot.py.
+ *
+ * ---- FOLLOW-UP, 2026-09-09: the several-fields case above WAS measured ----
+ *
+ * Eight PUTs on client ac3309ec (מכללת מבחר — inactive, zero turnover, not
+ * mapped in our `clients` table), each one snapshotted before and after and
+ * diffed on the KEY SET, not a field count. Restored to byte-identical.
+ *
+ * ✅ THREE FIELDS AT ONCE IS SAFE. `{name, emails, phone}` in one body moved
+ *    exactly those fields; the other 24 came back byte-identical. A `name`
+ *    resent at its current value does not even register as a change, so a
+ *    caller may send all of its fields every time without diffing first.
+ * ✅ `emails` IS REPLACE-WHOLE. Sending two of three removes the third. There
+ *    is no array merge — to remove one address, send the ones that remain.
+ * ✅ `phone: ""` CLEARS the field (it comes back as "", never null, and the key
+ *    never disappears). NOTE the asymmetry with createMorningClient below,
+ *    which does `if (fields.phone) body.phone = ...` — correct on create,
+ *    WRONG on update: omitting the key means "leave as is", so copying that
+ *    idiom would make clearing a phone silently do nothing.
+ *
+ * 🔴 AND THE ONE NOBODY ASKED FOR — `emails` AND `send` ARE COUPLED ON WRITE.
+ *
+ * `send` is the client-card toggle for "email documents to this client at
+ * issuance" (Morning's own help centre: "ללקוחות שמורים תוכלו להגדיר בכרטיס
+ * הלקוח שליחה אוטומטית של מסמכים, בזמן הפקתם"). Sending `emails: []` turns it
+ * OFF — silently, with a 200, on a field that was not in the request.
+ *
+ * THE COUPLING IS ONE-WAY, and that is the dangerous half:
+ *   emptying the list  -> send goes false        (measured twice)
+ *   filling  the list  -> send is NOT touched    (measured twice)
+ * So there is NO automatic path back. A flag knocked off here stays off until
+ * somebody turns it on by hand in Morning.
+ *
+ * AND IT CANNOT BE PREVENTED IN-REQUEST. `{emails: [], send: true}` in ONE body,
+ * `send` sent explicitly, still came back false — Morning recomputes the flag
+ * from `emails` and overwrites what was sent. A separate follow-up
+ * `{send: true}` does work, but that is a compensating write with a window and
+ * a silent failure mode, on a toggle we have no published contract for.
+ *
+ * ✅ WHAT IT DOES *NOT* AFFECT — OUR OWN ISSUANCE. Answered 2026-09-09 by the
+ * owner, against the client rather than against the API: ונוס קונספט sits at
+ * send=false and DID receive the documents we issued to it (40303, 50068). So
+ * the `client.emails` we put in the POST /documents body wins, and `send`
+ * governs only Morning's own automatic dispatch. This bounds the blast radius —
+ * a knocked-off flag does NOT mean an invoice silently failed to reach anyone.
+ *
+ * It does NOT change the design, and the warning stays: the flag is still
+ * turned off silently, still does not come back on its own, and is still the
+ * owner's setting to lose. It is confirmed by ONE client, and it is Morning's
+ * behaviour rather than a contract — same standing as everything else here.
+ *
+ * Not derived on READ, only on WRITE: 115 of the 291 clients in the account sit
+ * at zero emails with send=true quite legally. Seven are send=false; six
+ * pre-date this test and three of those are active, revenue-bearing clients
+ * that DO have an address on file. Our issuance path was cleared as the cause
+ * (23 clients we issued to, 9 same-day record updates, 8 of them send=true).
+ *
+ * CONSEQUENCE FOR ANY UI OVER CLIENT EMAILS (owner decision 2026-09-09): show
+ * `send`, read-only; do NOT write it, and do NOT compensate; warn before the
+ * list drops to zero, because that is the only moment the coupling fires.
  */
 export async function updateClient(
   morningClientId: string,
@@ -257,6 +316,80 @@ export async function getClientEmails(morningClientId: string): Promise<{ emails
     return { emails, ok: true };
   } catch {
     return { emails: [], ok: false };
+  }
+}
+
+/**
+ * The contact block of one Morning client, for the drawer's client card.
+ *
+ * `send` rides along READ-ONLY and is never written back — see the coupling
+ * documented on updateClient above. It is here so the card can SHOW it, which
+ * is the whole mitigation: the flag is invisible today, and an invisible flag
+ * is what lets a silent change happen.
+ */
+export type MorningClientContacts = {
+  emails: string[];
+  phone: string | null;
+  contactPerson: string | null;
+  send: boolean | null;
+};
+
+/**
+ * Morning has THREE shapes for "this text field is empty" and they are not
+ * interchangeable across endpoints: `GET /clients/{id}` answers `""`,
+ * `/clients/search` answers `null`, and our own MorningClient type declares the
+ * key optional, i.e. `undefined`. Collapse all three at the boundary — the same
+ * idiom getAccountantEmail uses (recipients.ts:50-51) — so no screen ever
+ * compares against the wrong one and paints an untouched field as changed.
+ */
+export function normalizeMorningText(v: unknown): string | null {
+  return typeof v === "string" && v.trim() !== "" ? v.trim() : null;
+}
+
+/**
+ * And the way back out. Morning clears a text field ONLY when the key is
+ * present with an empty string — measured 2026-09-09. Omitting the key means
+ * "leave as is", which is why createMorningClient's `if (fields.phone)` idiom
+ * must not be copied into an update: it would make clearing a phone silently
+ * do nothing.
+ */
+export function toMorningText(v: string | null | undefined): string {
+  return typeof v === "string" ? v.trim() : "";
+}
+
+/** Same filter getClientEmails applies, extracted so the two cannot drift. */
+export function normalizeMorningEmails(v: unknown): string[] {
+  return Array.isArray(v)
+    ? v.filter((e): e is string => typeof e === "string" && e.trim() !== "").map((e) => e.trim())
+    : [];
+}
+
+/**
+ * Read-only, and degrades instead of blocking: `ok:false` lets the card render
+ * its own "Morning is unreachable" state beside the DB fields rather than
+ * failing the whole drawer. Same contract as getClientEmails/fetchClientEmails.
+ */
+export async function getClientContacts(
+  morningClientId: string
+): Promise<{ contacts: MorningClientContacts; ok: boolean }> {
+  const empty: MorningClientContacts = { emails: [], phone: null, contactPerson: null, send: null };
+  try {
+    const c = await request<Record<string, unknown>>(`/clients/${encodeURIComponent(morningClientId)}`, {
+      method: "GET",
+    });
+    return {
+      contacts: {
+        emails: normalizeMorningEmails(c.emails),
+        phone: normalizeMorningText(c.phone),
+        contactPerson: normalizeMorningText(c.contactPerson),
+        // a real boolean or nothing — never coerced, so "we could not tell"
+        // stays distinguishable from "it is off"
+        send: typeof c.send === "boolean" ? c.send : null,
+      },
+      ok: true,
+    };
+  } catch {
+    return { contacts: empty, ok: false };
   }
 }
 
