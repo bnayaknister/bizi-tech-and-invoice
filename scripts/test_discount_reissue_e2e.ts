@@ -168,7 +168,7 @@ async function main() {
   if (!second.ok) return;
 
   console.log("\n=== 5. it finds the SAME job with no manual re-linking ===");
-  const deal = await createDealInvoiceFromWorkOrder(admin, second.pendingId, null);
+  const deal = await createDealInvoiceFromWorkOrder(admin, [second.pendingId], null);
   check("the 400 work order converts to a deal invoice", deal.ok, deal.ok ? "" : deal.error);
   if (!deal.ok) return;
   pend.push(deal.id);

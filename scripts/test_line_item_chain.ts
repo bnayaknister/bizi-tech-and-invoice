@@ -189,7 +189,7 @@ async function main() {
   const parent = parentRes.data.id as string;
   made.pending.push(parent);
 
-  const conv = await createDealInvoiceFromWorkOrder(admin, parent, null);
+  const conv = await createDealInvoiceFromWorkOrder(admin, [parent], null);
   check("3a. deal invoice built from the order", conv.ok, conv.ok ? "" : conv.error);
   if (conv.ok) {
     made.pending.push(conv.id);

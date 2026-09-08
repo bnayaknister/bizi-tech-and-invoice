@@ -103,6 +103,37 @@ export default async function RegistryPage() {
     }
   }
 
+  // The SAME thing for the other rung: work orders that already have a live
+  // DEAL INVOICE built on them — the screen's mirror of
+  // createDealInvoiceFromWorkOrder's idempotency gate ("כבר קיים חשבון עסקה על
+  // סמך ההזמנה הזו", bundle.ts). Identical query, identical construction; only
+  // the doc_type filter differs, because that gate reads the same
+  // payload.linkedDocumentIds the tax one does.
+  //
+  // WHY IT EXISTS, and it is the same lesson as the block above rather than a
+  // new one: on 2026-09-08 the owner bundled 10303/10304/10305 into one deal
+  // invoice, the screen showed no change — the orders stay `issued` and open in
+  // Morning until the child is approved, issued, and pulled back — so he
+  // clicked twice more and collected two 409s. The server held, as it is
+  // designed to. But the ticks and the button were still being offered on work
+  // already billed, and "promises what the server would refuse" is exactly what
+  // this screen exists not to do.
+  //
+  // Morning's own `ref` cannot answer this: it only closes the order once the
+  // child is actually ISSUED there, and the whole window this covers is the one
+  // before that — while the invoice sits in the approval queue.
+  const dealInvoicedOrderMorningIds = new Set<string>();
+  {
+    const { data: liveDeal } = await admin
+      .from("pending_documents")
+      .select("payload")
+      .eq("doc_type", "deal_invoice")
+      .in("status", ["pending", "approved", "issued"]);
+    for (const r of (liveDeal ?? []) as { payload: { linkedDocumentIds?: string[] } | null }[]) {
+      for (const id of r.payload?.linkedDocumentIds ?? []) dealInvoicedOrderMorningIds.add(id);
+    }
+  }
+
   // judge every candidate in exactly the server's order, so the screen's
   // verdict IS the server's: a 300 through the real tax mapper + job
   // pre-checks, a 305 through the real receipt mapper
@@ -306,6 +337,10 @@ export default async function RegistryPage() {
     // the queue row's NET, not documents.amount — see the select above
     pending_amount: pendingByMorningId.get(d.morning_doc_id as string)?.amount ?? null,
     child_actions: childActionsFor(d.type as number),
+    // does a live deal invoice already sit on this order? Resolved here, beside
+    // every other server-side verdict, so the screen never has to ask the queue
+    // itself — and so this row and the server agree by construction.
+    has_live_deal_child: !!d.morning_doc_id && dealInvoicedOrderMorningIds.has(d.morning_doc_id as string),
     ...buildState(d),
   }));
 

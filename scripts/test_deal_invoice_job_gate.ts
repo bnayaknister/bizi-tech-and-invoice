@@ -228,7 +228,7 @@ async function main() {
   const clean = [];
   for (let i = 1; i <= 4; i++) clean.push(await makeEpisode("clean " + i));
   const okOrder = await makeConsolidatedOrder(clean.map((c) => c.prodId));
-  const okRes = await createDealInvoiceFromWorkOrder(admin, okOrder, null);
+  const okRes = await createDealInvoiceFromWorkOrder(admin, [okOrder], null);
   if (okRes.ok) createdPending.push(okRes.id);
   check("4-episode redemption builds", okRes.ok, okRes.ok ? "" : okRes.error);
   if (okRes.ok) {
@@ -250,7 +250,7 @@ async function main() {
   console.log("\n=== 2. a job already carrying invoice_biz -> 409, named ===");
   const billed = [await makeEpisode("billed", { invoice_biz: "40999" }), await makeEpisode("with-billed")];
   const billedOrder = await makeConsolidatedOrder(billed.map((b) => b.prodId));
-  const rBilled = await createDealInvoiceFromWorkOrder(admin, billedOrder, null);
+  const rBilled = await createDealInvoiceFromWorkOrder(admin, [billedOrder], null);
   if (rBilled.ok) createdPending.push(rBilled.id);
   check("refused", !rBilled.ok, rBilled.ok ? "built unexpectedly" : "");
   if (!rBilled.ok) {
@@ -262,7 +262,7 @@ async function main() {
   console.log("\n=== 3. an already-paid job -> 409 ===");
   const paid = [await makeEpisode("paid", { paid: "כן" }), await makeEpisode("with-paid")];
   const paidOrder = await makeConsolidatedOrder(paid.map((p) => p.prodId));
-  const rPaid = await createDealInvoiceFromWorkOrder(admin, paidOrder, null);
+  const rPaid = await createDealInvoiceFromWorkOrder(admin, [paidOrder], null);
   if (rPaid.ok) createdPending.push(rPaid.id);
   check("refused", !rPaid.ok, rPaid.ok ? "built unexpectedly" : "");
   if (!rPaid.ok) {
@@ -273,7 +273,7 @@ async function main() {
   console.log("\n=== 4. a job whose episode was cancelled -> 409 (only reachable since 0060) ===");
   const dead = [await makeEpisode("cancelled", { cancelled: true }), await makeEpisode("with-cancelled")];
   const deadOrder = await makeConsolidatedOrder(dead.map((d) => d.prodId));
-  const rDead = await createDealInvoiceFromWorkOrder(admin, deadOrder, null);
+  const rDead = await createDealInvoiceFromWorkOrder(admin, [deadOrder], null);
   if (rDead.ok) createdPending.push(rDead.id);
   check("refused", !rDead.ok, rDead.ok ? "built unexpectedly" : "");
   if (!rDead.ok) {
@@ -290,7 +290,7 @@ async function main() {
     await makeEpisode("still-billable-b"),
   ];
   const mixedOrder = await makeConsolidatedOrder(mixed.map((m) => m.prodId));
-  const rMixed = await createDealInvoiceFromWorkOrder(admin, mixedOrder, null);
+  const rMixed = await createDealInvoiceFromWorkOrder(admin, [mixedOrder], null);
   if (rMixed.ok) createdPending.push(rMixed.id);
   check("builds despite a dismissed job in the set", rMixed.ok, rMixed.ok ? "" : rMixed.error);
   if (rMixed.ok) {
@@ -312,7 +312,7 @@ async function main() {
     await makeEpisode("all-dismissed-2", { dismissed: true }),
   ];
   const goneOrder = await makeConsolidatedOrder(allGone.map((g) => g.prodId));
-  const rGone = await createDealInvoiceFromWorkOrder(admin, goneOrder, null);
+  const rGone = await createDealInvoiceFromWorkOrder(admin, [goneOrder], null);
   if (rGone.ok) createdPending.push(rGone.id);
   check("refused", !rGone.ok, rGone.ok ? "built unexpectedly" : "");
   if (!rGone.ok) {
@@ -327,7 +327,7 @@ async function main() {
     await makeEpisode("multi-clean"),
   ];
   const manyOrder = await makeConsolidatedOrder(many.map((m) => m.prodId));
-  const rMany = await createDealInvoiceFromWorkOrder(admin, manyOrder, null);
+  const rMany = await createDealInvoiceFromWorkOrder(admin, [manyOrder], null);
   if (rMany.ok) createdPending.push(rMany.id);
   check("refused", !rMany.ok, rMany.ok ? "built unexpectedly" : "");
   if (!rMany.ok) {
@@ -351,7 +351,7 @@ async function main() {
     .single();
   createdProductions.push(bareProd!.id);
   const bareOrder = await makeConsolidatedOrder([bareProd!.id]);
-  const rBare = await createDealInvoiceFromWorkOrder(admin, bareOrder, null);
+  const rBare = await createDealInvoiceFromWorkOrder(admin, [bareOrder], null);
   if (rBare.ok) createdPending.push(rBare.id);
   check("refused", !rBare.ok, rBare.ok ? "built unexpectedly" : "");
   if (!rBare.ok) {

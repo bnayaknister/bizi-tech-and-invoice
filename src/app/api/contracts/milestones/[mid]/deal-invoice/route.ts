@@ -89,7 +89,9 @@ export async function POST(_request: Request, { params }: { params: { mid: strin
     return NextResponse.json({ error: `לאבן הדרך '${ms.name}': ${why}` }, { status: 400 });
   }
 
-  const built = await createDealInvoiceFromWorkOrder(admin, order.id as string, user.id);
+  // one order, in the array the builder now takes — a milestone closes exactly
+  // its own work order and never bundles (2026-09-08 widening)
+  const built = await createDealInvoiceFromWorkOrder(admin, [order.id as string], user.id);
   if (!built.ok) {
     return NextResponse.json({ error: built.error }, { status: built.status });
   }

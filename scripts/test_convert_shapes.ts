@@ -141,7 +141,7 @@ async function attachChild(parentId: string, clientId: string, productionId: str
 
 /** Run convert and hand back the row it created (if any). */
 async function convert(orderId: string) {
-  const res = await createDealInvoiceFromWorkOrder(admin, orderId, null);
+  const res = await createDealInvoiceFromWorkOrder(admin, [orderId], null);
   if (res.ok) {
     made.pendingInvoices.push(res.id);
     const { data } = await admin

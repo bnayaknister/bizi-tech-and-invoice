@@ -119,7 +119,7 @@ async function main() {
 
   console.log("\n=== 1. the ORIGINAL work order finds the job ===");
   const first = await issueWorkOrder(600, "first");
-  const r1 = await createDealInvoiceFromWorkOrder(admin, first.pendingId, null);
+  const r1 = await createDealInvoiceFromWorkOrder(admin, [first.pendingId], null);
   check("original 600 work order converts", r1.ok, r1.ok ? "" : r1.error);
   let firstDealId: string | null = null;
   if (r1.ok) {
@@ -199,7 +199,7 @@ async function main() {
 
   console.log("\n=== 3. a NEW discounted work order — does it find the SAME job on its own? ===");
   const second = await issueWorkOrder(400, "second");
-  const r2 = await createDealInvoiceFromWorkOrder(admin, second.pendingId, null);
+  const r2 = await createDealInvoiceFromWorkOrder(admin, [second.pendingId], null);
   check("new 400 work order converts", r2.ok, r2.ok ? "" : r2.error);
   if (r2.ok) {
     createdPending.push(r2.id);
