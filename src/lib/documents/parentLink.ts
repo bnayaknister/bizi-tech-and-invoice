@@ -22,6 +22,17 @@
  * reproduced the backfill exactly (640 derived = 619 pull + 21 app, 5
  * cancellations, 23 multi-parent, zero rows changed).
  *
+ * THAT MEASUREMENT IS A SCRIPT, AND IT IS THE POINT:
+ *
+ *     npx tsx scripts/check_parent_link_parity.ts
+ *
+ * Run it whenever either regex is touched — here or in 0075. It reads every
+ * `documents` row and compares what this parser WOULD write against what is
+ * stored, so a one-sided edit shows up as a row count instead of as a quiet
+ * daily overwrite. Because the pull re-parses and re-writes these columns on
+ * every run, a drifted regex here does not merely stop finding new links: it
+ * overwrites the ones the backfill got right, once a day, without an error.
+ *
  * ---------------------------------------------------------------------------
  * WHY THE PATTERN IS ANCHORED TO THE WHOLE STRING, and never "find a number".
  *
