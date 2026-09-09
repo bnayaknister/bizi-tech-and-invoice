@@ -403,6 +403,12 @@ export type MorningSearchDoc = {
   currency?: string;
   client?: { id?: string; name?: string };
   url?: { origin?: string; he?: string };
+  // Morning's own provenance line — "<self> עבור <source> <number>", the same
+  // shape sourceRemark() writes. Undeclared here until 2026-09-09 even though
+  // search has always returned it (it is in `raw` on all 1,035 pulled rows);
+  // it is the ONLY record of which document a manually-raised one was built
+  // against, and parseParentLink turns it into the 0075 columns.
+  remarks?: string;
 };
 
 /**

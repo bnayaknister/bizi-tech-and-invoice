@@ -3,6 +3,7 @@ import { searchDocuments } from "@/lib/morning/client";
 import { autoReconcile } from "@/lib/documents/reconcile";
 import { backfillDocumentClients } from "@/lib/documents/backfill";
 import { mustRows, type QueryResult } from "@/lib/supabase/unwrap";
+import { parseParentLink } from "@/lib/documents/parentLink";
 
 // The documents registry: one row per Morning document, written from two
 // directions (app issuance write-through, and the daily pull of documents
@@ -30,6 +31,12 @@ export type UpsertDoc = {
   // clobbers a value we set.
   sent_to?: string[] | null;
   raw?: unknown;
+  // 0075 — which document(s) this one was raised against, parsed from Morning's
+  // remarks. Optional on purpose: the app-issuance write-through leaves both
+  // out, so an upsert from that path never clears what the pull worked out
+  // (a payload key absent from the upsert is absent from its SET list).
+  parent_doc_numbers?: string[] | null;
+  parent_relation?: string | null;
 };
 
 /**
@@ -225,6 +232,19 @@ export async function runDocumentPull(admin: SupabaseClient, opts?: { full?: boo
     if (!matched) unmatched++;
     const ex = existing.get(d.id);
     if (!ex) inserted++;
+    // 0075: the accounting chain, read off the remarks line Morning already
+    // sent. Pure and local — no lookup, no round-trip, nothing added to a job
+    // that already pages the whole account.
+    //
+    // RE-PARSED ON EVERY PULL, and that is the intended behaviour: `raw` is
+    // overwritten here too, so these columns are DERIVED, never edited. A
+    // correction made in Morning is picked up on the next run; a value typed
+    // into the column by hand would be overwritten by it. Anything needing a
+    // manual override needs a column of its own.
+    //
+    // null when there is no reference — both columns together, which is what
+    // documents_parent_pair_chk enforces.
+    const parent = parseParentLink(d.remarks);
     return {
       morning_doc_id: d.id,
       morning_doc_number: d.number ?? null,
@@ -239,6 +259,8 @@ export async function runDocumentPull(admin: SupabaseClient, opts?: { full?: boo
       currency: d.currency ?? "ILS",
       document_date: d.documentDate ?? null,
       pdf_url: d.url?.origin || d.url?.he || null,
+      parent_doc_numbers: parent?.parent_doc_numbers ?? null,
+      parent_relation: parent?.parent_relation ?? null,
       raw: d,
       updated_at: now,
     };

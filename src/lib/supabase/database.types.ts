@@ -439,6 +439,8 @@ export type Database = {
           morning_client_name: string | null
           morning_doc_id: string
           morning_doc_number: string | null
+          parent_doc_numbers: string[] | null
+          parent_relation: string | null
           pdf_url: string | null
           production_id: string | null
           raw: Json | null
@@ -467,6 +469,8 @@ export type Database = {
           morning_client_name?: string | null
           morning_doc_id: string
           morning_doc_number?: string | null
+          parent_doc_numbers?: string[] | null
+          parent_relation?: string | null
           pdf_url?: string | null
           production_id?: string | null
           raw?: Json | null
@@ -495,6 +499,8 @@ export type Database = {
           morning_client_name?: string | null
           morning_doc_id?: string
           morning_doc_number?: string | null
+          parent_doc_numbers?: string[] | null
+          parent_relation?: string | null
           pdf_url?: string | null
           production_id?: string | null
           raw?: Json | null
