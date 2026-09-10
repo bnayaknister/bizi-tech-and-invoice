@@ -56,43 +56,92 @@ function MediaView({ link }: { link: string }) {
           textDecoration: "none",
         }}
       >
-        ▶ צפייה
+        ▶ צפייה והורדה בגוגל דרייב
       </a>
     );
   }
   return (
     <div style={{ marginBottom: 12 }}>
+      {/* 4:3 FOR A 16:9 VIDEO, ON PURPOSE. The bars are the point — do not
+          "fix" them away by matching the ratio to the footage.
+
+          `/preview` letterboxes (contain), confirmed by behaviour rather than
+          by reading anything: raising the frame from 16:9 to 4:3 made the
+          vertical reel BIGGER. Under cover it would have cropped more and
+          looked worse. So nothing here is ever cut by the frame.
+
+          WHAT WAS ACTUALLY WRONG. The episode measures 1920x1080 — exactly
+          16:9 — so in a 16:9 frame it filled the frame edge to edge, with no
+          slack anywhere. Google's control bar then sits ON the bottom of the
+          picture, and that is where the burned-in caption lives. At phone
+          width the frame is about 322px (390 screen − 32 page padding − 36 card
+          padding), so the video is ~181px tall and a ~40px control bar covers
+          roughly a fifth of it. Full screen looks fine for the same reason in
+          reverse: the same 40px over ~800px is 5%, and it auto-hides.
+
+          WHY 4:3 FIXES IT. 16:9 is wider than 4:3, so the video is
+          width-limited: it renders at the same ~322x181 either way, and the
+          extra height becomes empty space above and below. The control bar now
+          sits in that empty space instead of over the picture. THE BARS ARE THE
+          PRICE OF A READABLE CAPTION — going back to 16:9 to close them brings
+          the occlusion straight back.
+
+          AND THE RATIO IS THE WRONG LEVER FOR SIZE. A width-limited video does
+          not grow by one pixel when the frame gets taller. The only thing that
+          would actually enlarge it is WIDTH, and width is pinned by the card's
+          maxWidth: 420 in three places. That is a layout change, not a frame
+          change — it is in the backlog, deliberately not done here.
+
+          The reel gets the same frame and is better for it: it is
+          height-limited, so a taller frame makes it larger. One ratio for both,
+          which is also all MediaView can do — it is never told which it is
+          rendering, and no measurement to tell them apart exists. There is no
+          Google API in this project, the page is public and account-less, and a
+          cross-origin iframe reports no height and posts no message; we hold a
+          URL string and drive.ts derives a file id from it. Letting the frame
+          size itself is not available either — with no ratio and no height an
+          iframe collapses to the browser default of 150px. */}
       <iframe
         src={media.embedUrl}
         allow="autoplay; fullscreen"
         allowFullScreen
         style={{
           width: "100%",
-          aspectRatio: "16 / 9",
+          aspectRatio: "4 / 3",
           border: "1px solid rgba(255,255,255,0.14)",
           borderRadius: 12,
           background: "rgba(0,0,0,0.25)",
         }}
       />
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          gap: 8,
-          marginTop: 6,
-        }}
-      >
-        <span style={{ fontSize: 11, color: "#9a94b8" }}>
-          אם הסרטון לא מוצג — פתחו בטאב חדש
-        </span>
+      {/* The way OUT of the embed, and the only one there is.
+          `/preview` is a sealed player: no full screen worth the name on a
+          phone, and no download. Drive's own download button lives on the file
+          page, so the client has to get there — and this is the link that takes
+          them, to media.url, the URL exactly as it was pasted.
+
+          It used to read "אם הסרטון לא מוצג — פתחו בטאב חדש" in 11px grey
+          beside a 12px link: framed as troubleshooting, which is not what a
+          client looking to download is scanning for. Same href, said as the
+          thing you may do rather than the thing to try when something breaks.
+
+          NO second anchor was added: the folder branch above already links to
+          media.url, and a file already had this one. Two links to one address
+          six pixels apart is the confusion, not the fix.
+
+          IT PROMISES OPENING, NEVER DOWNLOADING. Whether a download button
+          appears at all is Drive's sharing permission on that file, which is
+          the owner's setting and not ours — so the wording commits only to
+          what we control. And deliberately NOT ?export=download: that breaks
+          outright on a folder, and on a large file Google answers with its
+          virus-scan interstitial instead of the bytes. */}
+      <div style={{ textAlign: "center", marginTop: 8 }}>
         <a
           href={media.url}
           target="_blank"
           rel="noopener noreferrer"
-          style={{ fontSize: 12, color: "#c9c3e8", textDecoration: "none", whiteSpace: "nowrap" }}
+          style={{ fontSize: 13, color: "#c9c3e8", textDecoration: "underline" }}
         >
-          פתח בטאב חדש ↗
+          פתחו בגוגל דרייב — לצפייה במסך מלא או להורדה ↗
         </a>
       </div>
     </div>
