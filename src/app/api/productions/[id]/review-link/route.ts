@@ -47,12 +47,24 @@ export async function POST(request: Request, { params }: { params: { id: string 
     reelsLink: body.reels_link?.trim() || null,
   });
 
+  // Key additions only (0067 precedent) — no consumer depends on this payload's
+  // shape, and one richer journal line beats a second event type nobody reads.
+  // `carried_*` answers "why does this round already have a transcript"; the
+  // `skipped` list answers the harder question, "why does it NOT" — an
+  // ambiguous carry refuses to guess and names the rounds it could not choose
+  // between, so a human can finish the job the code declined to do.
   await admin.from("events").insert({
     entity_type: "production",
     entity_id: params.id,
     event_type: "client_review_link_created",
     actor_id: user.id,
-    payload: { token_expires_at: result.expiresAt, scope },
+    payload: {
+      token_expires_at: result.expiresAt,
+      scope,
+      carried_transcript_from: result.carried.transcript,
+      carried_audio_from: result.carried.audio,
+      carry_skipped: result.carried.skipped.length ? result.carried.skipped : undefined,
+    },
   });
 
   const showName = prod.podcast_name ?? "הפקה";

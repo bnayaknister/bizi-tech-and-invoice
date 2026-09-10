@@ -185,6 +185,7 @@ export type Database = {
       }
       client_review_links: {
         Row: {
+          audio_carried_from: string | null
           audio_link: string | null
           created_at: string
           created_by: string | null
@@ -207,6 +208,7 @@ export type Database = {
           token: string
         }
         Insert: {
+          audio_carried_from?: string | null
           audio_link?: string | null
           created_at?: string
           created_by?: string | null
@@ -229,6 +231,7 @@ export type Database = {
           token: string
         }
         Update: {
+          audio_carried_from?: string | null
           audio_link?: string | null
           created_at?: string
           created_by?: string | null
@@ -252,6 +255,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "client_review_links_audio_carried_from_fkey"
+            columns: ["audio_carried_from"]
+            isOneToOne: false
+            referencedRelation: "client_review_links"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "client_review_links_created_by_fkey"
             columns: ["created_by"]
             isOneToOne: false
@@ -269,6 +279,7 @@ export type Database = {
       }
       client_review_transcripts: {
         Row: {
+          carried_from_link_id: string | null
           char_count: number | null
           content: string
           created_at: string
@@ -277,6 +288,7 @@ export type Database = {
           source: string
         }
         Insert: {
+          carried_from_link_id?: string | null
           char_count?: number | null
           content: string
           created_at?: string
@@ -285,6 +297,7 @@ export type Database = {
           source: string
         }
         Update: {
+          carried_from_link_id?: string | null
           char_count?: number | null
           content?: string
           created_at?: string
@@ -293,6 +306,13 @@ export type Database = {
           source?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "client_review_transcripts_carried_from_link_id_fkey"
+            columns: ["carried_from_link_id"]
+            isOneToOne: false
+            referencedRelation: "client_review_links"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "client_review_transcripts_created_by_fkey"
             columns: ["created_by"]

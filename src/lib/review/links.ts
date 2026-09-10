@@ -15,7 +15,24 @@ export function generateToken(): string {
 
 const LINK_TTL_DAYS = 14;
 
-export type CreateLinkResult = { token: string; url: string; expiresAt: string };
+// What the mint carried forward from the round(s) it just retired, and what it
+// refused to carry. Returned so the caller can put it in the journal line it
+// already writes (client_review_link_created) rather than inventing a second
+// event — the 0067 precedent: add keys to the existing event, never a new one
+// nobody reads. The MARKERS in the database are the record; this is the log.
+export type CarrySkip = {
+  material: "transcript" | "audio";
+  reason: "ambiguous" | "previous_round_already_answered" | "write_failed";
+  candidates: { id: string; scope: string }[];
+  detail?: string;
+};
+export type CarryReport = {
+  transcript: string | null; // the link id it came from
+  audio: string | null;
+  skipped: CarrySkip[];
+};
+
+export type CreateLinkResult = { token: string; url: string; expiresAt: string; carried: CarryReport };
 
 /**
  * Mint a fresh review link, superseding any previous live one whose scope
@@ -33,13 +50,134 @@ export async function createReviewLink(
   opts: { createdBy: string; baseUrl: string; scope: "episode" | "reels" | "all"; episodeLink?: string | null; reelsLink?: string | null }
 ): Promise<CreateLinkResult> {
   const overlappingScopes = opts.scope === "all" ? ["episode", "reels", "all"] : [opts.scope, "all"];
-  await admin
+  // `.select()` added with the carry-forward (0078): the rows this statement
+  // retires ARE the previous round(s), and asking the database which they were
+  // is the only definition that cannot drift from the supersede rule above. A
+  // second query ordered by created_at would be a second answer to the same
+  // question, and the two would disagree the first time an episode round and a
+  // reels round share a timestamp.
+  const { data: retired } = await admin
     .from("client_review_links")
     .update({ superseded: true })
     .eq("production_id", productionId)
     .in("scope", overlappingScopes)
     .eq("superseded", false)
-    .is("responded_at", null);
+    .is("responded_at", null)
+    .select("id,scope,audio_link");
+
+  const retiredRounds = (retired ?? []) as { id: string; scope: string; audio_link: string | null }[];
+
+  // ══ CARRY-FORWARD (0078) — grafted here, between the supersede and the
+  //    insert, because this is the only point where both sides exist: the old
+  //    rounds are identified and the new row is not yet written.
+  //
+  //    WHAT CARRIES: the transcript and the separate audio file, and nothing
+  //    else. episode_link / reels_link are deliberately NOT carried — they are
+  //    the deliverable under judgement, and a round that re-sends last round's
+  //    video is not a new round at all. The sticky client_review_items row is
+  //    what already keeps a video reachable across rounds (0076), and that is a
+  //    different mechanism with a different meaning. That non-carry is LIVE
+  //    BEHAVIOUR, not an omission, and docs/TICKETS.md:155 spells out why
+  //    "fixing" it would leave clients with no media at all.
+  //
+  //    `source` CARRIES AS-IS and is never rewritten to 'auto'. 'auto' means a
+  //    machine produced this text (0076, on the source column), and a carried
+  //    human paste is still a human paste — relabelling it would tell the future
+  //    transcription job that its own output is sitting there, and it would
+  //    overwrite an hour of someone's corrections.
+  //
+  //    EACH MARKER IS WRITTEN ONLY IF ITS OWN MATERIAL CARRIED. The two are
+  //    resolved independently for the reason 0078 exists: they are edited
+  //    independently, and one shared answer would describe one of them wrongly.
+  const carried: CarryReport = { transcript: null, audio: null, skipped: [] };
+  const asCandidates = (rows: { id: string; scope: string }[]) =>
+    rows.map((r) => ({ id: r.id, scope: r.scope }));
+
+  let carriedTranscript: { content: string; source: string; from: string } | null = null;
+  let carriedAudio: { link: string; from: string } | null = null;
+
+  if (retiredRounds.length) {
+    const { data: prevTranscripts } = await admin
+      .from("client_review_transcripts")
+      .select("link_id,content,source")
+      .in(
+        "link_id",
+        retiredRounds.map((r) => r.id)
+      );
+
+    const scopeOf = new Map(retiredRounds.map((r) => [r.id, r.scope]));
+    const trRows = (prevTranscripts ?? []) as { link_id: string; content: string; source: string }[];
+
+    // ── AMBIGUITY IS A REFUSAL, NOT A TIEBREAK ────────────────────────────
+    // A scope='all' mint retires BOTH a live episode round and a live reels
+    // round. If two of them carry the same kind of material there is no fact
+    // that says which one this round continues — only a rule someone would
+    // have to invent (newest? episode wins?), applied silently, on a client's
+    // transcript. So it carries nothing and NAMES THE CANDIDATES, the same
+    // shape review-materials/route.ts:145-152 uses when two live rounds make
+    // "which round" unanswerable. The technician pastes it in one click; a
+    // wrong transcript on a client's page is not undone in one click.
+    if (trRows.length === 1) {
+      carriedTranscript = { content: trRows[0].content, source: trRows[0].source, from: trRows[0].link_id };
+    } else if (trRows.length > 1) {
+      carried.skipped.push({
+        material: "transcript",
+        reason: "ambiguous",
+        candidates: asCandidates(trRows.map((t) => ({ id: t.link_id, scope: scopeOf.get(t.link_id) ?? "?" }))),
+      });
+    }
+
+    const withAudio = retiredRounds.filter((r) => !!r.audio_link);
+    if (withAudio.length === 1) {
+      carriedAudio = { link: withAudio[0].audio_link as string, from: withAudio[0].id };
+    } else if (withAudio.length > 1) {
+      carried.skipped.push({ material: "audio", reason: "ambiguous", candidates: asCandidates(withAudio) });
+    }
+  } else {
+    // ── THE ONE BLIND SPOT OF THE RULE ABOVE, MADE AUDIBLE ────────────────
+    // The supersede excludes rounds the client already ANSWERED, so a mint
+    // that follows a "needs revisions" reply retires nothing and therefore
+    // carries nothing — precisely the moment a transcript is most likely to be
+    // stale and most worth flagging. Measured 2026-09-10: 65 of 94 rounds were
+    // retired by supersede and only 7 were ever answered, so this is the
+    // minority path — but "nothing happened" must always carry its reason
+    // (0025), so it is recorded rather than left silent. Whether an answered
+    // round should be a carry source is a decision, not a bug, and it is not
+    // taken here.
+    const { data: answered } = await admin
+      .from("client_review_links")
+      .select("id,scope,audio_link")
+      .eq("production_id", productionId)
+      .not("responded_at", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(3);
+    const answeredRounds = (answered ?? []) as { id: string; scope: string; audio_link: string | null }[];
+    if (answeredRounds.length) {
+      const { data: answeredTr } = await admin
+        .from("client_review_transcripts")
+        .select("link_id")
+        .in(
+          "link_id",
+          answeredRounds.map((r) => r.id)
+        );
+      const hasTranscript = ((answeredTr ?? []) as { link_id: string }[]).length > 0;
+      const hasAudio = answeredRounds.some((r) => !!r.audio_link);
+      if (hasTranscript) {
+        carried.skipped.push({
+          material: "transcript",
+          reason: "previous_round_already_answered",
+          candidates: asCandidates(answeredRounds),
+        });
+      }
+      if (hasAudio) {
+        carried.skipped.push({
+          material: "audio",
+          reason: "previous_round_already_answered",
+          candidates: asCandidates(answeredRounds),
+        });
+      }
+    }
+  }
 
   // whether reels is part of this round is now carried by scope (0037);
   // reels_included is still written for back-compat until it's dropped. A
@@ -98,19 +236,62 @@ export async function createReviewLink(
 
   const token = generateToken();
   const expiresAt = new Date(Date.now() + LINK_TTL_DAYS * 24 * 3600_000).toISOString();
-  const { error } = await admin.from("client_review_links").insert({
-    production_id: productionId,
-    token,
-    expires_at: expiresAt,
-    created_by: opts.createdBy,
-    scope: opts.scope,
-    reels_included: reelsIncluded,
-    episode_link: opts.episodeLink ?? null,
-    reels_link: opts.reelsLink ?? null,
-  });
+  // The audio and ITS MARKER go in the same statement, on purpose: an
+  // audio_link that arrives without audio_carried_from is exactly the silent
+  // inheritance 0076 refused to build. They are one fact and they are written
+  // once. This insert is also the last write here allowed to throw (rule 38) —
+  // everything after it runs with the link already minted and the client's URL
+  // already valid.
+  const { data: minted, error } = await admin
+    .from("client_review_links")
+    .insert({
+      production_id: productionId,
+      token,
+      expires_at: expiresAt,
+      created_by: opts.createdBy,
+      scope: opts.scope,
+      reels_included: reelsIncluded,
+      episode_link: opts.episodeLink ?? null,
+      reels_link: opts.reelsLink ?? null,
+      audio_link: carriedAudio?.link ?? null,
+      audio_carried_from: carriedAudio?.from ?? null,
+    })
+    .select("id")
+    .single();
   if (error) throw new Error(error.message);
+  if (carriedAudio) carried.audio = carriedAudio.from;
 
-  return { token, url: `${opts.baseUrl}/r/${token}`, expiresAt };
+  // The transcript CANNOT ride along: its row is keyed by link_id, so the round
+  // has to exist before it can point at one. That makes it a follow-up write,
+  // and a follow-up write must not fail the mint — the technician already has a
+  // URL they may already have sent. A failed carry leaves the round with no
+  // transcript, which is exactly the pre-0078 status quo, visible in the tab,
+  // and now also recorded instead of silent.
+  if (carriedTranscript && minted?.id) {
+    const { error: trErr } = await admin.from("client_review_transcripts").insert({
+      link_id: minted.id as string,
+      content: carriedTranscript.content,
+      source: carriedTranscript.source,
+      // The technician who minted this round, not the author of the original
+      // text: this ROW was created by this mint, and carried_from_link_id is
+      // what says where its content came from. Two columns, two facts, neither
+      // pretending to be the other.
+      created_by: opts.createdBy,
+      carried_from_link_id: carriedTranscript.from,
+    });
+    if (trErr) {
+      carried.skipped.push({
+        material: "transcript",
+        reason: "write_failed",
+        candidates: [{ id: carriedTranscript.from, scope: "—" }],
+        detail: trErr.message,
+      });
+    } else {
+      carried.transcript = carriedTranscript.from;
+    }
+  }
+
+  return { token, url: `${opts.baseUrl}/r/${token}`, expiresAt, carried };
 }
 
 // A priced, still-proposed upsell the client is being quoted on this link

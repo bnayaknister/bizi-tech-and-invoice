@@ -193,9 +193,20 @@ export async function PATCH(request: Request, { params }: { params: { id: string
 
   // ---- write -------------------------------------------------------------
   if (wantsAudio) {
+    // 0078 — EDITING IS TAKING OWNERSHIP, so the carry marker is cleared here,
+    // in the database, and not merely hidden by the drawer. Hiding it would
+    // bring it back on the next open, and the row would go on claiming a
+    // provenance the technician has already overruled.
+    //
+    // It is cleared in BOTH directions and that is deliberate: a new file is
+    // not carried, and a CLEARED audio has nothing left for a marker to be
+    // about — "נגרר מסבב 3.9" attached to no audio at all is a claim about
+    // nothing. Unconditional null is therefore correct for every value of
+    // audioLink, and it is written in the SAME statement as the link so the two
+    // can never disagree.
     const { error } = await admin
       .from("client_review_links")
-      .update({ audio_link: audioLink })
+      .update({ audio_link: audioLink, audio_carried_from: null })
       .eq("id", target.id);
     if (error) return NextResponse.json({ error: `שמירת האודיו נכשלה: ${error.message}` }, { status: 500 });
   }
@@ -214,6 +225,13 @@ export async function PATCH(request: Request, { params }: { params: { id: string
             content: transcript.content,
             source: transcript.source,
             created_by: user.id,
+            // 0078 — same rule as the audio above: this text is now the
+            // technician's, not last round's. It MUST be listed explicitly,
+            // because an upsert only writes the columns it is given — omitting
+            // it would leave the marker standing on text that has been
+            // completely replaced, which is the one state the chip must never
+            // describe.
+            carried_from_link_id: null,
           },
           { onConflict: "link_id" }
         )

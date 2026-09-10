@@ -222,7 +222,7 @@ async function handleGet(
     // reels link can BOTH be live — this is a list, not a single row.
     const { data: linkRows } = await supabase
       .from("client_review_links")
-      .select("id,token,scope,created_at,expires_at,superseded,responded_at,audio_link")
+      .select("id,token,scope,created_at,expires_at,superseded,responded_at,audio_link,audio_carried_from")
       .eq("production_id", params.id)
       .eq("superseded", false)
       .is("responded_at", null)
@@ -237,30 +237,75 @@ async function handleGet(
     // (0076 §3) — the user's own client cannot see it at all, exactly like the
     // review items above (:200).
     const liveIds = (linkRows ?? []).map((r) => r.id as string);
-    let transcriptByLink = new Map<string, { source: string; char_count: number | null }>();
+    let transcriptByLink = new Map<
+      string,
+      { source: string; char_count: number | null; carried_from: string | null }
+    >();
     if (liveIds.length) {
       const { data: trRows } = await createAdminClient()
         .from("client_review_transcripts")
-        .select("link_id,source,char_count")
+        .select("link_id,source,char_count,carried_from_link_id")
         .in("link_id", liveIds);
       transcriptByLink = new Map(
         (trRows ?? []).map((t) => [
           t.link_id as string,
-          { source: t.source as string, char_count: (t.char_count as number | null) ?? null },
+          {
+            source: t.source as string,
+            char_count: (t.char_count as number | null) ?? null,
+            carried_from: (t.carried_from_link_id as string | null) ?? null,
+          },
         ])
       );
     }
 
+    // 0078 — resolve each carry marker to the DATE of the round it points at,
+    // because "נגרר מסבב 3.9" is the whole reason the marker is an id and not a
+    // boolean. The source rounds are SUPERSEDED by definition, so they are not
+    // in linkRows above and need their own lookup. Still the user's own client:
+    // client_review_links_select gates on can_view_stages() with no superseded
+    // clause, the same gate this block already sits behind.
+    //
+    // A marker whose target is gone resolves to null and the drawer renders no
+    // chip — which is exactly what ON DELETE SET NULL was chosen to produce
+    // (0078): the material survives, the claim about it does not.
+    const carryIds = Array.from(
+      new Set(
+        [
+          ...(linkRows ?? []).map((r) => r.audio_carried_from as string | null),
+          ...Array.from(transcriptByLink.values()).map((t) => t.carried_from),
+        ].filter(Boolean) as string[]
+      )
+    );
+    const carriedAt = new Map<string, string>();
+    if (carryIds.length) {
+      const { data: srcRows } = await supabase
+        .from("client_review_links")
+        .select("id,created_at")
+        .in("id", carryIds);
+      for (const s of srcRows ?? []) carriedAt.set(s.id as string, s.created_at as string);
+    }
+
     // same base URL the mint route stamps into the link it hands out
     const origin = getAppBaseUrl(request);
-    reviewLinks = (linkRows ?? []).map((r) => ({
-      id: r.id as string,
-      url: `${origin}/r/${r.token as string}`,
-      scope: (r.scope as string) ?? "all",
-      created_at: r.created_at as string,
-      audio_link: (r.audio_link as string | null) ?? null,
-      transcript: transcriptByLink.get(r.id as string) ?? null,
-    }));
+    reviewLinks = (linkRows ?? []).map((r) => {
+      const tr = transcriptByLink.get(r.id as string) ?? null;
+      const audioFrom = (r.audio_carried_from as string | null) ?? null;
+      return {
+        id: r.id as string,
+        url: `${origin}/r/${r.token as string}`,
+        scope: (r.scope as string) ?? "all",
+        created_at: r.created_at as string,
+        audio_link: (r.audio_link as string | null) ?? null,
+        audio_carried_from_at: audioFrom ? carriedAt.get(audioFrom) ?? null : null,
+        transcript: tr
+          ? {
+              source: tr.source,
+              char_count: tr.char_count,
+              carried_from_at: tr.carried_from ? carriedAt.get(tr.carried_from) ?? null : null,
+            }
+          : null,
+      };
+    });
   }
 
   // production journal (§3, owner 2026-07-24) + disk autocomplete (§2). Both

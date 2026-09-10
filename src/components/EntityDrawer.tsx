@@ -125,7 +125,16 @@ type DrawerData = {
         scope: string;
         created_at: string;
         audio_link?: string | null;
-        transcript?: { source: string; char_count: number | null } | null;
+        // 0078 — the DATE of the round each material was carried from, already
+        // resolved server-side. Null means either "not carried" or "carried
+        // from a round that no longer exists", and the chip is absent for both:
+        // the second is what ON DELETE SET NULL was chosen to produce.
+        audio_carried_from_at?: string | null;
+        transcript?: {
+          source: string;
+          char_count: number | null;
+          carried_from_at?: string | null;
+        } | null;
       }[]
     | null;
   reelsSummary: { count: number } | null;
@@ -164,9 +173,35 @@ const STEP_ORDER: Record<string, number> = { record: 0, edit: 1, deliver: 2 };
 // THE TEXT IS NOT RENDERED until asked for. An hour of speech in a drawer is
 // exactly what the separate table exists to avoid, so the row shows source and
 // length; "הצג" fetches the body.
+// 0078 — "נגרר מסבב 3.9". Day and month only, because the chip sits inside a
+// one-line summary and a technician comparing two rounds of the same episode is
+// never a year apart; the year is appended only when it actually differs, so it
+// is never noise and never missing.
+function carriedLabel(iso: string): string {
+  const d = new Date(iso);
+  const base = `${d.getDate()}.${d.getMonth() + 1}`;
+  return d.getFullYear() === new Date().getFullYear()
+    ? base
+    : `${base}.${String(d.getFullYear()).slice(-2)}`;
+}
+
+// The chip is a STATEMENT ABOUT PROVENANCE, not a status: this text was written
+// for a previous round and may describe a cut the client can no longer see
+// (0076). It disappears the moment the technician edits the material, because
+// editing is taking ownership — and it disappears in the DATABASE, not just on
+// screen, or it would return on the next drawer open.
+function CarriedChip({ at }: { at: string }) {
+  return (
+    <span className="text-[var(--faint)]" title={`נגרר מסבב ${carriedLabel(at)} — ייתכן שמתאר חיתוך קודם`}>
+      {" · "}⟲ נגרר מסבב {carriedLabel(at)}
+    </span>
+  );
+}
+
 export type MaterialsState = {
-  transcript: { source: string; char_count: number | null } | null;
+  transcript: { source: string; char_count: number | null; carried_from_at?: string | null } | null;
   audioLink: string | null;
+  audioCarriedFromAt: string | null;
   // no live round exists to attach materials to — the actions do not open
   noRound: boolean;
   canEdit: boolean;
@@ -177,7 +212,7 @@ export type MaterialsState = {
 };
 
 function ReviewMaterials({ state }: { state: MaterialsState }) {
-  const { transcript, audioLink, noRound, canEdit, busy } = state;
+  const { transcript, audioLink, audioCarriedFromAt, noRound, canEdit, busy } = state;
   // the editingBase pattern (AddonsSection:2029): a dormant control, one piece
   // of state, and the input appears with autoFocus in the same row
   const [editing, setEditing] = useState<"transcript" | "audio" | null>(null);
@@ -283,6 +318,7 @@ function ReviewMaterials({ state }: { state: MaterialsState }) {
                   {(transcript.char_count ?? 0).toLocaleString("he-IL")} תווים · הודבק
                 </span>
               )}
+              {transcript.carried_from_at && <CarriedChip at={transcript.carried_from_at} />}
             </span>
               {/* no "הצג" on a link row: there is no body to unfold, the content
                 IS the URL and char_count is NULL there by design (0076) */}
@@ -389,6 +425,15 @@ function ReviewMaterials({ state }: { state: MaterialsState }) {
           <span className="text-[var(--dim)] flex-1 truncate" dir="ltr">
             🎧 {audioLink.replace(/^https?:\/\//, "")}
           </span>
+          {/* OUTSIDE the dir="ltr" span on purpose: the URL is rendered LTR and
+              truncates, and Hebrew inside that span would both mis-order and be
+              the first thing cut off. shrink-0 keeps the chip when the URL is
+              the long part. */}
+          {audioCarriedFromAt && (
+            <span className="shrink-0">
+              <CarriedChip at={audioCarriedFromAt} />
+            </span>
+          )}
           {canEdit && (
             <button
               className={GHOST}
@@ -1939,6 +1984,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                             // is nothing to read and nothing to write
                             transcript: liveForEpisode[0]?.transcript ?? null,
                             audioLink: liveForEpisode[0]?.audio_link ?? null,
+                            audioCarriedFromAt: liveForEpisode[0]?.audio_carried_from_at ?? null,
                             noRound: liveForEpisode.length === 0,
                             canEdit: data.canEditStages,
                             busy: matBusy,
