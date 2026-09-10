@@ -63,6 +63,12 @@ export type DocRow = {
   // Any code that asks "is this document linked?" by reading job_id alone will
   // say no about a document linked to four.
   bundle_job_ids: string[] | null;
+  // 0075 — the document(s) this one was raised against, parsed once from
+  // Morning's remarks. `parent_relation` is what stops a cancellation being
+  // read as a source: both carry a number, and they mean opposite things.
+  // Null together or set together (documents_parent_pair_chk).
+  parent_doc_numbers: string[] | null;
+  parent_relation: "derived" | "cancellation" | null;
   show_name: string | null;
   cancelled_at: string | null;
   cancel_reason: string | null;
@@ -898,6 +904,40 @@ export default function RegistryClient({
                     <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--rule)] text-[var(--faint)]">
                       {SOURCE_LABEL[r.source]}
                     </span>
+                    {/* 0075's first reader: which document this one was raised
+                        against, off the row already in hand — no query, no
+                        index, which is why no GIN was built.
+
+                        TEXT, NOT A LINK, and not an oversight. The parent
+                        almost always lives in a DIFFERENT TAB — a 320 points at
+                        a 300, i.e. "חשבוניות מס קבלה" pointing into "חשבוניות
+                        עסקה". The search box above already matches on r.number,
+                        but a click that only filled it would leave the current
+                        tab's predicate in place and show ZERO results. Making
+                        it work means switching tabs too, which is navigation
+                        this table has never had. The number is there to be read
+                        and copied; the search finds it.
+
+                        "מבטל" is a different verb on purpose: a cancellation
+                        carries a number in the same slot as a derivation and
+                        means the opposite. The warn colour is the one
+                        "(לא משויך)" already uses, so the distinction reads
+                        before the word does. */}
+                    {r.parent_doc_numbers && r.parent_doc_numbers.length > 0 && (
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--rule)] mr-1 ${
+                          r.parent_relation === "cancellation" ? "text-[var(--warn)]" : "text-[var(--faint)]"
+                        }`}
+                        title={
+                          r.parent_doc_numbers.length > 1
+                            ? `${r.parent_relation === "cancellation" ? "מבטל" : "עבור"} ${r.parent_doc_numbers.join(", ")}`
+                            : undefined
+                        }
+                      >
+                        {r.parent_relation === "cancellation" ? "מבטל" : "עבור"} {r.parent_doc_numbers[0]}
+                        {r.parent_doc_numbers.length > 1 ? ` +${r.parent_doc_numbers.length - 1}` : ""}
+                      </span>
+                    )}
                   </td>
                   <td className="py-2 px-2" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center gap-2">

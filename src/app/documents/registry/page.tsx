@@ -30,7 +30,13 @@ export default async function RegistryPage() {
   // button reverts to its old, over-eager condition. Degrading is correct here;
   // a blank registry is not.
   const [docsRes, { data: settings }] = await Promise.all([
-    docsQuery(`${BASE_COLS},cancelled_at,cancel_reason,archived_at,archive_reason,bundle_job_ids`),
+    // 0075's parent columns ride with the optional set for the same reason
+    // bundle_job_ids does: if that migration were ever unapplied the fallback
+    // below still renders the registry, it just loses the "עבור …" chip.
+    docsQuery(
+      `${BASE_COLS},cancelled_at,cancel_reason,archived_at,archive_reason,bundle_job_ids,` +
+        `parent_doc_numbers,parent_relation`
+    ),
     admin.from("app_settings").select("documents_pulled_at").eq("id", true).maybeSingle(),
   ]);
   const data = docsRes.error ? (await docsQuery(BASE_COLS)).data : docsRes.data;
@@ -333,6 +339,10 @@ export default async function RegistryPage() {
     // a bundled document points at its jobs HERE, not through job_id — a
     // consolidated deal invoice carries job_id NULL and this array full
     bundle_job_ids: (d.bundle_job_ids as string[] | null) ?? null,
+    // 0075 — which document(s) this one was raised against, and in which
+    // direction. Both null together or both set; the DB constraint says so.
+    parent_doc_numbers: (d.parent_doc_numbers as string[] | null) ?? null,
+    parent_relation: (d.parent_relation as DocRow["parent_relation"]) ?? null,
     pending_id: pendingByMorningId.get(d.morning_doc_id as string)?.id ?? null,
     // the queue row's NET, not documents.amount — see the select above
     pending_amount: pendingByMorningId.get(d.morning_doc_id as string)?.amount ?? null,
