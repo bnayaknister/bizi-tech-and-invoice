@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { classifyDriveLink } from "@/lib/review/drive";
+import { displayDate } from "@/lib/dates";
 
 // The client-facing review UI. Mobile-first — it opens from WhatsApp. Two
 // blocks (episode / reels), each independently approved or sent back with a
@@ -395,7 +396,7 @@ export default function ReviewClient({
         <h1 style={{ fontSize: 20, fontWeight: 800 }}>{showName}</h1>
         <p style={{ fontSize: 13, color: "#9a94b8", marginTop: 4 }}>
           {episodeLabel}
-          {recordDate ? ` · ${recordDate}` : ""}
+          {displayDate(recordDate) ? ` · ${displayDate(recordDate)}` : ""}
         </p>
       </div>
 

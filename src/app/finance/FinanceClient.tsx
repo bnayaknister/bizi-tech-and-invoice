@@ -8,6 +8,7 @@ import AssignDocModal from "@/components/AssignDocModal";
 import ShowLinkModal from "./ShowLinkModal";
 import { deriveState, TAB_META, ALL_TABS, type FinanceState } from "@/lib/finance/state";
 import { bundleLineDesc } from "@/lib/documents/bundle";
+import { displayStampDate } from "@/lib/dates";
 
 type DocSlot = { number: string | null; pdf: string | null; manual: boolean | null };
 export type FinanceJob = {
@@ -819,7 +820,9 @@ function HiddenTable({ hidden, onRestore, busy }: { hidden: HiddenJob[]; onResto
             </span>
             <span className="text-[11px] text-[var(--dim)]">סיבה: {h.reason ?? "—"}</span>
             <span className="text-[10px] text-[var(--faint)]">
-              הוסתר ע״י {h.by_name ?? "—"}{h.at ? ` · ${new Date(h.at).toLocaleDateString("he-IL")}` : ""}
+              {/* date only, no time — unchanged from toLocaleDateString; only
+                  the shape and the explicit Israel zone are new */}
+              הוסתר ע״י {h.by_name ?? "—"}{h.at ? ` · ${displayStampDate(h.at)}` : ""}
               {(h.biz_number || h.tax_number) && ` · חשבונית #${h.biz_number || h.tax_number} במורנינג`}
             </span>
           </div>

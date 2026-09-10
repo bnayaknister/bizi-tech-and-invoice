@@ -30,6 +30,7 @@ import ClientCombobox from "@/components/ClientCombobox";
 import ClientNotesModal from "./ClientNotesModal";
 import IconTile, { type IconAccent } from "@/components/IconTile";
 import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
+import { displayDate, displayDateTime, displayLogTime } from "@/lib/dates";
 import { HOURS_STEP, MAX_HOURS, hoursError as validateHours, hoursMissing } from "@/lib/productions/hours";
 
 // entity type -> line icon + tile accent (no emoji, DESIGN.md §12)
@@ -338,8 +339,9 @@ function relativeTime(iso: string): string {
   return days === 1 ? "אתמול" : `לפני ${days} ימים`;
 }
 
+/** the exact moment behind relativeTime's "לפני 3 שעות" — shown as a tooltip */
 function fullTime(iso: string): string {
-  return new Date(iso).toLocaleString("he-IL", { dateStyle: "short", timeStyle: "short" });
+  return displayDateTime(iso) ?? "—";
 }
 
 /** the existing live links, with copy — so nobody re-sends just to get the URL */
@@ -401,12 +403,7 @@ function logHead(e: LogEntry): string {
   return where; // note: header is the track/step it was attached to (may be empty)
 }
 
-function logDateTime(iso: string): string {
-  const d = new Date(iso);
-  const day = `${d.getDate()}.${d.getMonth() + 1}`;
-  const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  return `${day} · ${time}`;
-}
+
 
 const FIVE_MIN = 5 * 60 * 1000;
 
@@ -488,7 +485,7 @@ function JournalSection({
                 <span className="shrink-0 w-4 text-center text-[var(--dim)]">{logIcon(e)}</span>
                 <div className="min-w-0 flex-1">
                   <div className="text-[10px] text-[var(--faint)]">
-                    {logDateTime(e.created_at)}
+                    {displayLogTime(e.created_at) ?? "—"}
                     {e.author ? ` · ${e.author}` : e.kind === "client" ? " · לקוח" : ""}
                     {logHead(e) ? ` · ${logHead(e)}` : ""}
                     {e.edited_at && <span className="italic"> · נערך</span>}
@@ -1738,8 +1735,8 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           className="block w-full text-right text-xs border border-[var(--rule)] rounded px-2 py-1.5 hover:bg-[var(--panel3)]"
                         >
                           {data.type === "job"
-                            ? `🎬 ${(l.record_date as string) ?? "—"} · ${l.podcast_name}${l.guest ? ` · ${l.guest}` : ""}`
-                            : `💰 ${(l.date as string) ?? "—"} · ${l.campaign ?? "—"} · ${
+                            ? `🎬 ${displayDate(l.record_date as string | null) ?? "—"} · ${l.podcast_name}${l.guest ? ` · ${l.guest}` : ""}`
+                            : `💰 ${displayDate(l.date as string | null) ?? "—"} · ${l.campaign ?? "—"} · ${
                                 l.amount != null ? `${NIS.format(l.amount as number)} ₪` : "—"
                               }`}
                         </button>
@@ -1780,7 +1777,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                       {data.history.map((h) => (
                         <div key={h.id} className="text-[11px]">
                           <div className="flex gap-2 text-[var(--faint)]">
-                            <span>{new Date(h.created_at).toLocaleString("he-IL")}</span>
+                            <span>{displayDateTime(h.created_at)}</span>
                             <span>{h.actor}</span>
                             <span>{h.event_type}</span>
                           </div>

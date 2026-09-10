@@ -6,6 +6,7 @@ import Link from "next/link";
 import IconTile from "@/components/IconTile";
 import ClientCombobox from "@/components/ClientCombobox";
 import MorningClientReadonly from "@/components/MorningClientReadonly";
+import { displayDate } from "@/lib/dates";
 
 export type ShowRow = {
   id: string;
@@ -955,7 +956,7 @@ function ShowCard({
                 key={e.id}
                 className="flex items-center gap-3 px-3 py-1.5 text-xs border-b border-[var(--rule)] last:border-b-0"
               >
-                <span className="text-[var(--dim)] w-20 shrink-0">{e.record_date ?? "—"}</span>
+                <span className="text-[var(--dim)] w-20 shrink-0">{displayDate(e.record_date) ?? "—"}</span>
                 <span className="flex-1 truncate">{e.guest || ""}</span>
                 {/* an imported row still sitting on the import default has no
                     real state — it was delivered and billed straight in

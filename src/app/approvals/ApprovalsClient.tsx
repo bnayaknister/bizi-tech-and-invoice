@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import IconTile from "@/components/IconTile";
+import { displayDateTime } from "@/lib/dates";
 
 export type ApprovalRow = {
   id: string;
@@ -78,7 +79,7 @@ export default function ApprovalsClient({ rows }: { rows: ApprovalRow[] }) {
           </div>
           <div className="text-xs text-[var(--dim)]">
             ביקש/ה: {r.requested_by_name} ·{" "}
-            <span className="font-mono">{new Date(r.created_at).toLocaleString("he-IL")}</span>
+            <span className="font-mono">{displayDateTime(r.created_at)}</span>
           </div>
           <div className="mt-2 text-sm">
             <span className="text-[var(--faint)]">סיבה: </span>

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import IconTile from "@/components/IconTile";
+import { displayDateTime } from "@/lib/dates";
 
 export type LastSync = { at: string; source: "cron" | "manual"; created: number };
 
@@ -136,7 +137,7 @@ export default function SettingsClient({
           <div className="text-xs text-[var(--faint)]">
             {lastSync ? (
               <>
-                סנכרון אחרון: <span className="font-mono">{new Date(lastSync.at).toLocaleString("he-IL")}</span>
+                סנכרון אחרון: <span className="font-mono">{displayDateTime(lastSync.at)}</span>
                 {" · "}
                 {lastSync.source === "cron" ? "אוטומטי" : "ידני"}
                 {" · "}

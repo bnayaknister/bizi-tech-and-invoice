@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { displayDateTime } from "@/lib/dates";
 
 // The client's correction notes from the round they last answered, and the one
 // button that closes the loop: "קיבלתי, מטפל" (0071). Until this existed the
@@ -117,13 +118,7 @@ export default function ClientNotesModal({
         {round && (
           <p className="text-[11px] text-[var(--faint)] mb-3">
             נענה:{" "}
-            {new Date(round.responded_at).toLocaleString("he-IL", {
-              day: "numeric",
-              month: "numeric",
-              year: "numeric",
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
+            {displayDateTime(round.responded_at)}
           </p>
         )}
 

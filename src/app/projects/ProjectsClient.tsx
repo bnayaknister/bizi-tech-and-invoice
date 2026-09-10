@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { shortDate } from "@/lib/dates";
+import { displayDate } from "@/lib/dates";
 import { DOC_TYPES, DOC_TYPE_LABEL } from "@/lib/documents/forProduction";
 
 export type ProjectDoc = {
@@ -104,7 +104,7 @@ function DocCell({ docs }: { docs: ProjectDoc[] }) {
               מאוגד
             </span>
           )}
-          {d.date && <div className="text-[10px] text-[var(--ink-faint)]">{shortDate(d.date)}</div>}
+          {d.date && <div className="text-[10px] text-[var(--ink-faint)]">{displayDate(d.date)}</div>}
         </div>
       ))}
     </div>
@@ -118,7 +118,7 @@ function Row({ r }: { r: ProjectRow }) {
   return (
     <tr className={`border-b border-white/5 align-top ${r.cancelled ? "opacity-45" : ""}`}>
       <td className="py-2 pl-3 font-mono text-xs whitespace-nowrap">
-        {r.record_date ? shortDate(r.record_date) : "—"}
+        {r.record_date ? displayDate(r.record_date) : "—"}
       </td>
       <td className="py-2 pl-3">
         <div className={`text-sm ${r.cancelled ? "line-through" : ""}`}>

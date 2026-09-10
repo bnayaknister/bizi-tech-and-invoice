@@ -7,6 +7,7 @@ import AssignDocModal from "@/components/AssignDocModal";
 import NewDocModal from "./NewDocModal";
 import BundleFromShowModal from "@/components/BundleFromShowModal";
 import { MORNING_DOC_NAME, REGISTRY_TAB_LABEL, type RegistryTab } from "@/lib/morning/types";
+import { displayDate, displayDateTime } from "@/lib/dates";
 
 const BILLING_TYPES = [300, 305, 320, 400]; // deal / tax / tax-receipt / receipt — real חיוב, linkable to a job
 const isBilling = (t: number) => BILLING_TYPES.includes(t);
@@ -660,7 +661,7 @@ export default function RegistryClient({
         <div className="flex items-center gap-3">
           {lastPull && canPull && (
             <span className="text-[11px] text-[var(--faint)]">
-              נמשך לאחרונה: {new Date(lastPull).toLocaleString("he-IL")}
+              נמשך לאחרונה: {displayDateTime(lastPull)}
             </span>
           )}
           <button
@@ -899,7 +900,7 @@ export default function RegistryClient({
                   </td>
                   <td className="py-2 px-2 text-[var(--dim)]">{r.show_name ?? "—"}</td>
                   <td className="py-2 px-2 font-mono">{money(r.amount, r.currency)}</td>
-                  <td className="py-2 px-2 font-mono text-[var(--faint)]">{r.document_date ?? "—"}</td>
+                  <td className="py-2 px-2 font-mono text-[var(--faint)]">{displayDate(r.document_date) ?? "—"}</td>
                   <td className="py-2 px-2">
                     <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-[var(--rule)] text-[var(--faint)]">
                       {SOURCE_LABEL[r.source]}
@@ -1407,7 +1408,7 @@ function TaxFromParentModal({
                     {docs.map((d) => (
                       <div key={d.id} className="flex justify-between gap-2 font-mono">
                         <span>#{d.number ?? "—"}</span>
-                        <span className="text-[var(--faint)]">{d.document_date ?? "—"}</span>
+                        <span className="text-[var(--faint)]">{displayDate(d.document_date) ?? "—"}</span>
                         <span>{money(d.pending_amount, d.currency)}</span>
                       </div>
                     ))}

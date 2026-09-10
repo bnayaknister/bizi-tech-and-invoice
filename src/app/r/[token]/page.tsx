@@ -2,6 +2,7 @@ import { cache } from "react";
 import type { Metadata } from "next";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { resolveLink } from "@/lib/review/links";
+import { displayDate } from "@/lib/dates";
 import ReviewClient from "./ReviewClient";
 
 // PUBLIC, account-less review page (screens-spec §9a). It is outside the app
@@ -13,12 +14,6 @@ export const dynamic = "force-dynamic";
 // dedupes the token resolution so the DB is hit once, without touching
 // resolveLink itself.
 const getLinkState = cache(async (token: string) => resolveLink(createAdminClient(), token));
-
-// "2026-08-11" -> "11.08" — the share-preview date format
-function shortDate(recordDate: string | null): string | null {
-  const m = recordDate?.match(/^\d{4}-(\d{2})-(\d{2})$/);
-  return m ? `${m[2]}.${m[1]}` : null;
-}
 
 export async function generateMetadata({ params }: { params: { token: string } }): Promise<Metadata> {
   const state = await getLinkState(params.token);
@@ -41,7 +36,10 @@ export async function generateMetadata({ params }: { params: { token: string } }
   const parts: string[] = [];
   if (episodeIncluded) parts.push("פרק מלא");
   if (reelsIncluded) parts.push(reelCount === 1 ? "ריל אחד" : reelCount > 1 ? `${reelCount} רילז` : "רילז");
-  const date = shortDate(p.record_date);
+  // Full year here, unlike the two dense lists: this string lands in a
+  // WhatsApp preview card that stays in the client's history for months, and
+  // it is the one date on it. Nothing else in the card says which year.
+  const date = displayDate(p.record_date);
   const description = [parts.join(" + "), date].filter(Boolean).join(" · ") || "לצפייה ואישור";
 
   const title = `${p.podcast_name ?? "הפקה"} — לאישור`;

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import IconTile from "@/components/IconTile";
+import { displayDateTime } from "@/lib/dates";
 
 export type UserRow = {
   id: string;
@@ -132,7 +133,7 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
             <div className="text-[11px] text-[var(--faint)]" dir="ltr">{u.email}</div>
             {!u.approved && (
               <div className="text-[11px] text-[var(--faint)]">
-                נרשם: <span className="font-mono">{new Date(u.created_at).toLocaleString("he-IL")}</span>
+                נרשם: <span className="font-mono">{displayDateTime(u.created_at)}</span>
               </div>
             )}
           </div>

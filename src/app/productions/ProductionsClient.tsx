@@ -6,6 +6,7 @@ import { useDrawer } from "@/components/EntityDrawer";
 import ClientNotesModal from "@/components/ClientNotesModal";
 import IconTile from "@/components/IconTile";
 import { STATUS_ORDER, STATUS_LABEL, IN_PROGRESS_STATES, TERMINAL_STATES } from "@/lib/productions/status";
+import { displayDate } from "@/lib/dates";
 
 /** An episode the calendar already produced for this show+day, as the create
  *  modal shows it back: enough to decide without leaving the screen. */
@@ -554,7 +555,7 @@ function ProductionCard({
       </div>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[var(--dim)]">
         {showStatus && <StatusPill status={p.status} />}
-        {p.record_date && <span className="font-mono">{p.record_date}</span>}
+        {p.record_date && <span className="font-mono">{displayDate(p.record_date)}</span>}
         {p.record_time && <span className="font-mono">{p.record_time}</span>}
         {p.studio && <span>{p.studio}</span>}
         {p.guest && <span className="text-[var(--faint)]">· {p.guest}</span>}
@@ -1129,7 +1130,7 @@ function CancelModal({
         <h3 className="font-bold mb-1">ביטול הקלטה</h3>
         <p className="text-xs text-[var(--dim)] mb-3">
           {production.show_name}
-          {production.record_date ? ` · ${production.record_date}` : ""}
+          {production.record_date ? ` · ${displayDate(production.record_date)}` : ""}
         </p>
 
         {issuedDocs && issuedDocs.length > 0 && (

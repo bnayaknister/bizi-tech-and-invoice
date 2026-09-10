@@ -70,9 +70,22 @@ const sheetMoney = (n: number) =>
   "₪" + new Intl.NumberFormat("he-IL", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
 
 /**
- * DD/MM/YYYY — Morning's format on the page. Deliberately not the screen's
- * asILDate (which prints dots): this block is a reproduction, and the two
- * separators are the difference between a facsimile and an approximation.
+ * DD/MM/YYYY — Morning's format on the page. Deliberately not the screen's own
+ * formatter: this block is a reproduction, and the separator is the difference
+ * between a facsimile and an approximation.
+ *
+ * NOT A DUPLICATE OF displayDate (lib/dates.ts), however identical it looks —
+ * examined and kept 2026-09-10, when the screen-wide date unification folded
+ * every other local formatter into that file and stopped here. The shapes
+ * agree today by coincidence: displayDate is what WE decided screens should
+ * show, this is what MORNING prints. They are independent variables, and
+ * merging them would mean the next screen-format change silently restyles a
+ * facsimile that a bookkeeper approves uncorrectable tax documents from.
+ *
+ * Note the pairing with the description block below (:195), which carries our
+ * own authored work date in the OTHER document format (shortDate, dots). Both
+ * formats on one sheet is not an inconsistency — it is what the real PDF does.
+ * The full three-way rule is written out at the top of lib/dates.ts.
  */
 function sheetDate(iso: string | undefined): string {
   if (typeof iso !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "—";

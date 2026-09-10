@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import IconTile from "@/components/IconTile";
-import { shortDate } from "@/lib/dates";
+import { displayDate } from "@/lib/dates";
 import NewMiscModal from "./NewMiscModal";
 
 /** A client the create form may pick. `morningMapped` is the boolean form of
@@ -122,7 +122,7 @@ function Suppliers({ lines }: { lines: SupplierLine[] }) {
             l.supplier_name,
             l.service,
             l.price == null ? "מחיר טרם נקבע" : money(l.price),
-            l.due_date ? `לתשלום ${shortDate(l.due_date)}` : null,
+            l.due_date ? `לתשלום ${displayDate(l.due_date)}` : null,
             l.paid ? "שולם" : "טרם שולם",
           ]
             .filter(Boolean)
@@ -251,7 +251,7 @@ export default function MiscClient({
                     )}
                   </td>
                   <td className="py-2 px-3 text-[var(--dim)]">{r.client_name ?? "—"}</td>
-                  <td className="py-2 px-3 font-mono whitespace-nowrap text-[var(--dim)]">{shortDate(r.work_date)}</td>
+                  <td className="py-2 px-3 font-mono whitespace-nowrap text-[var(--dim)]">{displayDate(r.work_date)}</td>
                   <td className="py-2 px-3 font-mono whitespace-nowrap">{money(r.amount)}</td>
                   <td className="py-2 px-3">
                     <StatusPill status={r.status} />

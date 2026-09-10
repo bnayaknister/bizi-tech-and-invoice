@@ -2,6 +2,7 @@
 
 import { useDrawer } from "@/components/EntityDrawer";
 import type { DormantClient } from "@/modules/radar/alerts";
+import { displayDayMonth } from "@/lib/dates";
 
 // Each row opens the client's own card, not a shared href — the generic
 // alerts list (severity rows with one href each) can't express that, so this
@@ -11,12 +12,12 @@ import type { DormantClient } from "@/modules/radar/alerts";
 
 const NIS = new Intl.NumberFormat("he-IL");
 const money = (n: number) => `${NIS.format(Math.round(n))} ₪`;
-// D.M, no leading zeros (owner example: "12.3", "20.4") — so the reader
-// knows what this alert is about before picking up the phone
-const shortDate = (iso: string) => {
-  const d = new Date(iso);
-  return `${d.getDate()}.${d.getMonth() + 1}`;
-};
+// Year still omitted (owner decision 2026-09-10): this line truncates, carries
+// up to four activities at 11px, and the row's own "לפני N ימים" column
+// already answers how long ago. What changed is the shape — slashes and zero
+// padding like every other date — and that the four values no longer all go
+// through `new Date()`. See displayDayMonth: one of them is a `date` column
+// and the other three are timestamps.
 
 export default function DormantClientsSection({ clients }: { clients: DormantClient[] }) {
   const { openEntity } = useDrawer();
@@ -44,7 +45,7 @@ export default function DormantClientsSection({ clients }: { clients: DormantCli
               <div className="text-[11px] text-[var(--faint)] truncate">{c.shows.join(" · ")}</div>
               <div className="text-[11px] text-[var(--dim)] truncate mt-0.5">
                 {c.activities.length > 0
-                  ? c.activities.map((a) => `${a.label} ${shortDate(a.date)}`).join(" · ")
+                  ? c.activities.map((a) => `${a.label} ${displayDayMonth(a.date)}`).join(" · ")
                   : "אין נתוני פעילות"}
               </div>
             </div>

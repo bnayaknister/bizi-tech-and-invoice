@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import IconTile from "@/components/IconTile";
 import ClientCombobox from "@/components/ClientCombobox";
 import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
+import { displayDate } from "@/lib/dates";
 
 export type MilestoneCard = {
   id: string;
@@ -50,11 +51,7 @@ const MS_STATUS_LABEL: Record<string, string> = { pending: "ממתין", invoice
 
 const NIS = new Intl.NumberFormat("he-IL");
 const money = (n: number | null | undefined) => (n == null ? "—" : `${NIS.format(Math.round(n))} ₪`);
-function heDate(d: string | null): string {
-  if (!d) return "—";
-  const [y, m, day] = d.split("-");
-  return `${Number(day)}.${Number(m)}.${y.slice(2)}`;
-}
+
 
 export default function ContractsClient({
   contracts,
@@ -308,7 +305,7 @@ export default function ContractsClient({
                         {(m.state === "paid" || m.state === "invoiced") && m.invoice_number && (
                           <span className="text-[11px] text-[var(--dim)] font-mono">
                             חשבונית {m.invoice_number}
-                            {m.invoice_date ? ` · ${heDate(m.invoice_date)}` : ""}
+                            {m.invoice_date ? ` · ${displayDate(m.invoice_date)}` : ""}
                           </span>
                         )}
                         {/* a linked job on an open milestone had no trace on
@@ -322,7 +319,7 @@ export default function ContractsClient({
                         {(m.state === "open" || m.state === "overdue") && (
                           <span className="text-[11px] flex items-center gap-1" style={{ color: meta.color }}>
                             {m.is_estimated && <span title="מועד משוער">⚠</span>}
-                            צפי {heDate(m.expected_date)}
+                            צפי {displayDate(m.expected_date) ?? "—"}
                           </span>
                         )}
                         {/* The milestone's amount can be edited after a document
@@ -917,7 +914,7 @@ function LinkJobModal({
                   {j.show_name && <span className="text-[var(--faint)]">{j.show_name}</span>}
                   <div className="flex-1" />
                   <span className="font-mono">{money(j.amount)}</span>
-                  <span className="text-[var(--faint)] font-mono">{j.date ? heDate(j.date) : "—"}</span>
+                  <span className="text-[var(--faint)] font-mono">{j.date ? displayDate(j.date) : "—"}</span>
                 </div>
                 {otherClient && <div className="text-[10px] text-[var(--red)] mt-1">לקוח אחר — לא ניתן לקישור</div>}
               </button>

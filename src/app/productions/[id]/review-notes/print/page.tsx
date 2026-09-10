@@ -1,6 +1,7 @@
 import { getSessionAndProfile } from "@/lib/profile";
 import { createClient } from "@/lib/supabase/server";
 import { parseReelNotes } from "@/lib/review/reelNotes";
+import { displayDate, displayDateTime } from "@/lib/dates";
 import PrintTrigger from "./PrintTrigger";
 
 // The client's correction notes, on paper. A technician who works away from a
@@ -17,19 +18,6 @@ import PrintTrigger from "./PrintTrigger";
 // parseReelNotes, not a second copy of it. Two renderings of the same notes
 // that could disagree would be worse than no print page at all.
 export const dynamic = "force-dynamic";
-
-// Server-rendered, so the timezone must be said out loud: Vercel runs this in
-// UTC (vercel.json pins fra1) and a round answered at 23:08 Israel time would
-// otherwise print as 20:08. Same explicit-timezone rule as
-// documents/accrued/page.tsx:18 and calendar/sync/route.ts:74.
-const ANSWERED_AT = new Intl.DateTimeFormat("he-IL", {
-  timeZone: "Asia/Jerusalem",
-  day: "numeric",
-  month: "numeric",
-  year: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-});
 
 // Paper, not the app's palette. The design tokens are near-black surfaces with
 // light text (globals.css:12-19) — printed, that is a page of ink. Everything
@@ -210,8 +198,8 @@ function Header({
       <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>{podcastName ?? "הפקה"}</h1>
       <p style={{ fontSize: 13, color: "#555555", margin: "6px 0 0" }}>
         הערות הלקוח
-        {recordDate ? ` · הוקלט ${recordDate}` : ""}
-        {answeredAt ? ` · נענה: ${ANSWERED_AT.format(new Date(answeredAt))}` : ""}
+        {displayDate(recordDate) ? ` · הוקלט ${displayDate(recordDate)}` : ""}
+        {answeredAt ? ` · נענה: ${displayDateTime(answeredAt)}` : ""}
       </p>
     </div>
   );

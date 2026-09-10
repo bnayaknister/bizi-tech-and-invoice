@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { displayDate } from "@/lib/dates";
 
 export type AccruedRow = {
   id: string;
@@ -219,7 +220,10 @@ export default function AccruedClient({
                   <div className="font-semibold">{o.client_name}</div>
                   <div className="mt-0.5 text-xs opacity-60">
                     הזמנה {o.doc_number ?? "—"} · {o.lines} פרקים
-                    {o.issued_at ? ` · הונפקה ${o.issued_at.slice(0, 10)}` : ""}
+                    {/* .slice(0,10) unchanged on purpose: issued_at is a
+                        timestamptz and this takes its UTC day, as it always
+                        has. Only the rendering moves — the value does not. */}
+                    {o.issued_at ? ` · הונפקה ${displayDate(o.issued_at.slice(0, 10))}` : ""}
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
@@ -327,7 +331,7 @@ export default function AccruedClient({
                   <div className="min-w-0">
                     <span className="truncate">{r.show_name}</span>
                     <span className="opacity-50">
-                      {r.record_date ? ` · ${r.record_date}` : ""}
+                      {r.record_date ? ` · ${displayDate(r.record_date)}` : ""}
                       {r.guest ? ` · ${r.guest}` : ""}
                     </span>
                     {/* The guest above is read from the PRODUCTION. When the

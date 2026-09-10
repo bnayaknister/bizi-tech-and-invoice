@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Suggestion } from "@/lib/linking";
+import { displayDate } from "@/lib/dates";
 
 export type JobRow = {
   id: string;
@@ -37,11 +38,7 @@ const CONF_STYLE: Record<string, string> = {
   none: "bg-zinc-500/15 text-[var(--dim)] border-[var(--rule)]",
 };
 
-function fmtDate(d: string | null): string {
-  if (!d) return "—";
-  const [y, m, day] = d.split("-");
-  return `${day}.${m}.${y.slice(2)}`;
-}
+
 
 export default function LinkClient({
   jobs,
@@ -175,7 +172,7 @@ export default function LinkClient({
   function prodLine(id: string) {
     const p = prodById[id];
     if (!p) return id;
-    return `${fmtDate(p.date)} · ${p.show}${p.guest ? ` · ${p.guest}` : ""}`;
+    return `${displayDate(p.date) ?? "—"} · ${p.show}${p.guest ? ` · ${p.guest}` : ""}`;
   }
 
   return (
@@ -245,7 +242,7 @@ export default function LinkClient({
                   <span className={`text-[11px] border rounded px-1.5 py-0.5 ${CONF_STYLE[conf]}`}>
                     {CONF_LABEL[conf]}
                   </span>
-                  <span className="text-[var(--dim)] text-xs tabular-nums">{fmtDate(job.date)}</span>
+                  <span className="text-[var(--dim)] text-xs tabular-nums">{displayDate(job.date) ?? "—"}</span>
                   <b>{job.client}</b>
                   <span>{job.campaign ?? "—"}</span>
                   <span className="text-[var(--dim)]">·</span>
@@ -352,7 +349,7 @@ export default function LinkClient({
           {linked.map((job) => (
             <div key={job.id} className="border border-[var(--rule)] rounded p-3 text-sm">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[var(--dim)] text-xs tabular-nums">{fmtDate(job.date)}</span>
+                <span className="text-[var(--dim)] text-xs tabular-nums">{displayDate(job.date) ?? "—"}</span>
                 <b>{job.client}</b>
                 <span>{job.campaign ?? "—"}</span>
                 <span className="text-[var(--dim)]">·</span>
@@ -391,7 +388,7 @@ export default function LinkClient({
               key={job.id}
               className="border border-[var(--rule)] rounded p-3 text-sm flex flex-wrap items-center gap-2"
             >
-              <span className="text-[var(--dim)] text-xs tabular-nums">{fmtDate(job.date)}</span>
+              <span className="text-[var(--dim)] text-xs tabular-nums">{displayDate(job.date) ?? "—"}</span>
               <b>{job.client}</b>
               <span>{job.campaign ?? "—"}</span>
               <span className="text-[var(--dim)]">·</span>

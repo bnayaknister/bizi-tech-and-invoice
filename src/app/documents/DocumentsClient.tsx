@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import ClientCombobox, { type ComboboxClient } from "@/components/ClientCombobox";
 import DocumentPreview from "@/components/DocumentPreview";
-import { todayInIsrael } from "@/lib/dates";
+import { displayDate, todayInIsrael } from "@/lib/dates";
 import { STUDIOS } from "@/lib/calendar/studios";
 import { missingGuestLines } from "@/lib/documents/guestFlag";
 import {
@@ -177,7 +177,7 @@ function RecipientPicker({
 // round-trip.
 const DOC_DATE_MAX_BACKDATE_DAYS = 14;
 
-const asILDate = (iso: string) => iso.split("-").reverse().join(".");
+
 
 function earliestDocDate(todayIL: string) {
   return new Date(Date.parse(`${todayIL}T00:00:00Z`) - DOC_DATE_MAX_BACKDATE_DAYS * 86400_000)
@@ -207,10 +207,10 @@ function DocDateSummary({ docDate, todayIL }: { docDate: string; todayIL: string
       <span className="text-[var(--faint)]">תאריך המסמך: </span>
       {docDate ? (
         <span className="font-bold text-[var(--violet-light)]">
-          {asILDate(docDate)} — נבחר ידנית (ברירת המחדל: היום)
+          {displayDate(docDate)} — נבחר ידנית (ברירת המחדל: היום)
         </span>
       ) : (
-        <span>{asILDate(todayIL)} — יום ההנפקה</span>
+        <span>{displayDate(todayIL)} — יום ההנפקה</span>
       )}
     </div>
   );
@@ -277,7 +277,7 @@ function BackdateConfirm({
         onClick={onConfirm}
         className="w-full border border-[var(--warn)] text-[var(--warn)] text-xs font-bold rounded-xl px-4 py-2 disabled:opacity-40"
       >
-        אני מאשרת — הנפק בתאריך {asILDate(docDate)}
+        אני מאשרת — הנפק בתאריך {displayDate(docDate)}
       </button>
     </div>
   );
@@ -1234,7 +1234,7 @@ export default function DocumentsClient({
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-bold text-sm">{r.client_name}</span>
                         <span className="text-xs text-[var(--dim)]">{r.show_name}</span>
-                        {r.record_date && <span className="text-xs font-mono text-[var(--faint)]">{r.record_date}</span>}
+                        {r.record_date && <span className="text-xs font-mono text-[var(--faint)]">{displayDate(r.record_date)}</span>}
                         <span className="text-sm font-bold">{money(r.amount)}</span>
                         {r.aging && <span className="text-[10px]">{r.aging === "critical" ? "🔴" : "🟡"} {r.age_hours}ש׳</span>}
                         {r.status === "failed" && (
