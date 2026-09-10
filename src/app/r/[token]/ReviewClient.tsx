@@ -149,6 +149,126 @@ function MediaView({ link }: { link: string }) {
   );
 }
 
+// ═══ "חומרים נוספים" — transcript + separate audio (0076) ═══
+//
+// MODULE LEVEL for the same reason Block is (see below): a component declared
+// inside ReviewClient is a new type on every render, and the transcript's
+// open/closed state would reset on every keystroke in a note above it.
+//
+// THE TRANSCRIPT IS COLLAPSED BY DEFAULT, and that is the decision here.
+// This page opens from WhatsApp on a phone, the card is 420px at most, and a
+// pasted transcript is tens of thousands of characters. Rendered open it would
+// push the approve buttons — the only thing the client came for — far below the
+// fold, and pull the whole body over mobile data before anyone asked for it.
+// So: the label states the size, opening is the client's choice, and the opened
+// body is BOUNDED at 45vh with its own scroll. A nested scroll area inside a
+// scrolling page is a real trap, which is why it exists only after an explicit
+// tap and sits in a visibly bordered box rather than bleeding into the page.
+//
+// AUDIO IS A LINK, NOT AN EMBED. A Drive share URL is not a direct media URL,
+// so <audio> cannot play it at all; and MediaView's iframe is pinned to
+// aspectRatio 4/3, which is a video-shaped box for a sound file. The plain
+// anchor is the same branch MediaView already uses for folders and unknown
+// links — known to work. An embed can come later, once someone has actually
+// looked at Drive's audio /preview on a phone.
+function ExtraMaterials({
+  transcript,
+  audioLink,
+}: {
+  transcript: { content: string; source: "pasted" | "link" | "auto"; char_count: number | null } | null;
+  audioLink: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  // 'link' means content holds a URL to a document rather than the text (0076),
+  // so there is nothing to unfold and char_count is NULL there by design
+  const isDoc = transcript?.source === "link";
+
+  const linkStyle: React.CSSProperties = {
+    display: "block",
+    textAlign: "center",
+    border: "1px solid rgba(255,255,255,0.14)",
+    borderRadius: 12,
+    padding: "10px",
+    fontSize: 14,
+    color: "#c9c3e8",
+    textDecoration: "none",
+  };
+
+  return (
+    <div style={card}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+        <span style={{ fontSize: 22 }}>📎</span>
+        <span style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>חומרים נוספים</span>
+      </div>
+      <p style={{ fontSize: 12, color: "#9a94b8", marginBottom: 12 }}>
+        אלה נשלחים אליך יחד עם הפרק — אין צורך לאשר אותם.
+      </p>
+
+      {transcript && (
+        <div style={{ marginBottom: audioLink ? 12 : 0 }}>
+          {isDoc ? (
+            <a href={transcript.content} target="_blank" rel="noopener noreferrer" style={linkStyle}>
+              📄 תמלול הפרק — פתח מסמך ↗
+            </a>
+          ) : (
+            <>
+              <button
+                onClick={() => setOpen((v) => !v)}
+                style={{
+                  ...linkStyle,
+                  width: "100%",
+                  background: "transparent",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <span style={{ flex: 1, textAlign: "right" }}>
+                  📄 תמלול הפרק
+                  {transcript.char_count != null && (
+                    <span style={{ color: "#9a94b8" }}>
+                      {" · "}
+                      {NIS.format(transcript.char_count)} תווים
+                    </span>
+                  )}
+                </span>
+                <span style={{ color: "#9a94b8", fontSize: 13 }}>{open ? "הסתר" : "הצג"}</span>
+              </button>
+              {open && (
+                <div
+                  style={{
+                    marginTop: 8,
+                    maxHeight: "45vh",
+                    overflowY: "auto",
+                    WebkitOverflowScrolling: "touch",
+                    border: "1px solid rgba(255,255,255,0.14)",
+                    borderRadius: 12,
+                    padding: 12,
+                    background: "rgba(0,0,0,0.25)",
+                    fontSize: 13,
+                    lineHeight: 1.7,
+                    color: "#c9c3e8",
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  {transcript.content}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {audioLink && (
+        <a href={audioLink} target="_blank" rel="noopener noreferrer" style={linkStyle}>
+          🎧 קובץ אודיו נפרד — האזנה והורדה בגוגל דרייב
+        </a>
+      )}
+    </div>
+  );
+}
+
 // One deliverable: its player, its approve/revisions pair, and the correction
 // note that appears when the client picks revisions.
 //
@@ -261,6 +381,8 @@ export default function ReviewClient({
   reelsLink,
   addons,
   items = [],
+  transcript = null,
+  audioLink = null,
 }: {
   token: string;
   showName: string;
@@ -276,6 +398,10 @@ export default function ReviewClient({
   // per-deliverable items (0057). Empty → the production predates the items
   // model and the page renders the original track-level layout unchanged.
   items?: ReviewItemView[];
+  // "חומרים נוספים" (0076) — received, not judged. Both optional and both
+  // usually absent; the section does not exist when they are.
+  transcript?: { content: string; source: "pasted" | "link" | "auto"; char_count: number | null } | null;
+  audioLink?: string | null;
 }) {
   const [epChoice, setEpChoice] = useState<Choice>(null);
   const [epNote, setEpNote] = useState("");
@@ -473,6 +599,17 @@ export default function ReviewClient({
           </>
         );
       })()}
+
+      {/* ═══ חומרים נוספים (0076) — RECEIVED, NOT JUDGED ═══
+          Below the approval blocks and above the add-on quote, because it is
+          neither: nothing here has an approve/reject control, and the subtitle
+          says so out loud rather than leaving a client to wonder whether they
+          missed a button.
+
+          NO SECTION AT ALL when both are absent — not an empty heading and not
+          an "אין חומרים" line. Most rounds carry neither, and a permanent empty
+          card on a page whose whole job is one decision is noise. */}
+      {(transcript || audioLink) && <ExtraMaterials transcript={transcript} audioLink={audioLink} />}
 
       {addons.length > 0 && (
         <div style={card}>

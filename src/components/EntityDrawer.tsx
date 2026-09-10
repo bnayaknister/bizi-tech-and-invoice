@@ -116,7 +116,18 @@ type DrawerData = {
   // links still live for this production (Q7) — not superseded, unanswered,
   // unexpired. Scope-aware supersession means there can be two (episode +
   // reels), so pressing send may burn one, both, or none.
-  reviewLinks: { id: string; url: string; scope: string; created_at: string }[] | null;
+  // audio_link + transcript METADATA ride along (0076); the transcript's text
+  // never does — it is fetched by "הצג" from the route that owns it
+  reviewLinks:
+    | {
+        id: string;
+        url: string;
+        scope: string;
+        created_at: string;
+        audio_link?: string | null;
+        transcript?: { source: string; char_count: number | null } | null;
+      }[]
+    | null;
   reelsSummary: { count: number } | null;
   // 0067 / F6 — how this show is priced and how long the session ran. Two
   // stage-tier facts, never a rate and never an amount: the technician is asked
@@ -140,13 +151,283 @@ const STATUS_NEXT: Record<string, string> = { pending: "in_progress", in_progres
 
 const STEP_ORDER: Record<string, number> = { record: 0, edit: 1, deliver: 2 };
 
+
+// ═══ "חומרים נוספים" — transcript + separate audio file (0076) ═══
+//
+// Lives in the EPISODE block only, and that is a decision rather than an
+// omission: client_review_transcripts is keyed by link_id with ONE row per
+// link (0076), so a scope='all' round has exactly one transcript. Offering the
+// action in both blocks would mean the reels editor silently overwrote the
+// episode's. Both actions are about the episode anyway — "הוסף תמלול לפרק",
+// and a separate audio file is the episode's audio-only cut.
+//
+// THE TEXT IS NOT RENDERED until asked for. An hour of speech in a drawer is
+// exactly what the separate table exists to avoid, so the row shows source and
+// length; "הצג" fetches the body.
+export type MaterialsState = {
+  transcript: { source: string; char_count: number | null } | null;
+  audioLink: string | null;
+  // no live round exists to attach materials to — the actions do not open
+  noRound: boolean;
+  canEdit: boolean;
+  busy: boolean;
+  onSaveTranscript: (v: { content: string; source: "pasted" | "link" } | null) => void;
+  onSaveAudio: (v: string | null) => void;
+  onLoadBody: () => Promise<string | null>;
+};
+
+function ReviewMaterials({ state }: { state: MaterialsState }) {
+  const { transcript, audioLink, noRound, canEdit, busy } = state;
+  // the editingBase pattern (AddonsSection:2029): a dormant control, one piece
+  // of state, and the input appears with autoFocus in the same row
+  const [editing, setEditing] = useState<"transcript" | "audio" | null>(null);
+  const [draft, setDraft] = useState("");
+  const [source, setSource] = useState<"pasted" | "link">("pasted");
+  const [body, setBody] = useState<string | null>(null);
+  const [loadingBody, setLoadingBody] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const ROW = "flex items-center gap-1.5 text-[11px]";
+  const GHOST =
+    "text-[11px] text-[var(--faint)] hover:text-[var(--violet-light)] transition-colors";
+  const INPUT =
+    "w-full text-[11px] bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-2.5 py-1.5 outline-none focus:border-[var(--violet-light)]";
+
+  if (!canEdit && !transcript && !audioLink) return null;
+
+  // No round, no actions — and it says why rather than showing a control that
+  // fails on click. There is no draft to fall back on ON PURPOSE: see the
+  // parent. noRound also implies both values are null, since both are read off
+  // the live round.
+  if (noRound) {
+    return canEdit ? (
+      <div className="pt-1.5 mt-1.5 border-t border-[var(--rule)] text-[10px] text-[var(--faint)]">
+        כדי להוסיף תמלול או אודיו, שלח קודם לינק אישור ללקוח.
+      </div>
+    ) : null;
+  }
+
+  return (
+    <div className="space-y-1 pt-1.5 mt-1.5 border-t border-[var(--rule)]">
+      {/* ---- transcript ---- */}
+      {editing === "transcript" ? (
+        <div className="space-y-1">
+          <div className="flex items-center gap-1.5">
+            {(["pasted", "link"] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setSource(s)}
+                className={`text-[10px] rounded-full px-2 py-0.5 border transition-colors ${
+                  source === s
+                    ? "border-[var(--violet-light)] text-[var(--violet-light)]"
+                    : "border-[var(--rule)] text-[var(--faint)]"
+                }`}
+              >
+                {s === "pasted" ? "הדבק טקסט" : "קישור למסמך"}
+              </button>
+            ))}
+            <div className="flex-1" />
+            <button onClick={() => setEditing(null)} className="text-[var(--faint)] px-1">
+              ✕
+            </button>
+          </div>
+          {source === "pasted" ? (
+            <textarea
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder="הדבק כאן את התמלול"
+              rows={5}
+              className={`${INPUT} resize-y`}
+            />
+          ) : (
+            <input
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder="https://…"
+              dir="ltr"
+              className={`${INPUT} text-right`}
+            />
+          )}
+          <div className="flex items-center gap-1.5">
+            {source === "pasted" && draft.trim() && (
+              <span className="text-[9px] text-[var(--faint)]">
+                {draft.trim().length.toLocaleString("he-IL")} תווים
+              </span>
+            )}
+            <div className="flex-1" />
+            <button
+              disabled={busy || !draft.trim()}
+              onClick={() => {
+                state.onSaveTranscript({ content: draft.trim(), source });
+                setEditing(null);
+                setBody(null);
+              }}
+              className="border border-[var(--rule)] rounded px-2 py-1 text-[11px] text-[var(--dim)] hover:bg-[var(--panel3)] disabled:opacity-40"
+            >
+              שמור
+            </button>
+          </div>
+        </div>
+      ) : transcript ? (
+        <div className="space-y-1">
+          <div className={ROW}>
+            <span className="text-[var(--dim)] flex-1 truncate">
+              📄 תמלול
+              {transcript.source === "link" ? (
+                <span className="text-[var(--faint)]"> · קישור למסמך</span>
+              ) : (
+                <span className="text-[var(--faint)]">
+                  {" · "}
+                  {(transcript.char_count ?? 0).toLocaleString("he-IL")} תווים · הודבק
+                </span>
+              )}
+            </span>
+              {/* no "הצג" on a link row: there is no body to unfold, the content
+                IS the URL and char_count is NULL there by design (0076) */}
+            {transcript.source !== "link" && (
+              <button
+                className={GHOST}
+                disabled={loadingBody}
+                onClick={async () => {
+                  if (body !== null) return setBody(null);
+                  setLoadingBody(true);
+                  setBody((await state.onLoadBody()) ?? "");
+                  setLoadingBody(false);
+                }}
+              >
+                {loadingBody ? "טוען…" : body !== null ? "הסתר" : "הצג"}
+              </button>
+            )}
+            {canEdit && (
+              <button
+                className={GHOST}
+                onClick={async () => {
+                  setSource(transcript.source === "link" ? "link" : "pasted");
+                  setDraft(transcript.source === "link" ? "" : ((await state.onLoadBody()) ?? ""));
+                  setEditing("transcript");
+                }}
+              >
+                ערוך
+              </button>
+            )}
+            {canEdit && (
+              <button className={GHOST} onClick={() => setConfirmDelete(true)}>
+                ✕
+              </button>
+            )}
+          </div>
+          {/* deleting an hour of work is not symmetric with clearing a URL */}
+          {confirmDelete && (
+            <div className="rounded-lg px-2 py-1.5 text-[10px] flex items-center gap-1.5" style={{ background: "rgba(244,63,94,0.08)", border: "1px solid rgba(244,63,94,0.35)" }}>
+              <span className="flex-1 text-rose-300">למחוק את התמלול?</span>
+              <button
+                className="text-rose-300 hover:underline"
+                onClick={() => {
+                  state.onSaveTranscript(null);
+                  setConfirmDelete(false);
+                  setBody(null);
+                }}
+              >
+                מחק
+              </button>
+              <button className="text-[var(--faint)]" onClick={() => setConfirmDelete(false)}>
+                ביטול
+              </button>
+            </div>
+          )}
+          {body !== null && (
+            <div
+              className="text-[10px] text-[var(--dim)] whitespace-pre-wrap rounded-lg px-2 py-1.5 overflow-y-auto"
+              style={{ maxHeight: 160, background: "var(--panel)", border: "1px solid var(--rule)" }}
+            >
+              {body || "—"}
+            </div>
+          )}
+        </div>
+      ) : canEdit ? (
+        <button
+          className={GHOST}
+          onClick={() => {
+            setDraft("");
+            setSource("pasted");
+            setEditing("transcript");
+          }}
+        >
+          ＋ הוסף תמלול לפרק
+        </button>
+      ) : null}
+
+      {/* ---- separate audio file ---- */}
+      {editing === "audio" ? (
+        <div className={ROW}>
+          <input
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="https://… קישור לקובץ האודיו"
+            dir="ltr"
+            className={`${INPUT} text-right`}
+          />
+          <button
+            disabled={busy}
+            onClick={() => {
+              state.onSaveAudio(draft.trim() || null);
+              setEditing(null);
+            }}
+            className="border border-[var(--rule)] rounded px-2 py-1 text-[var(--dim)] hover:bg-[var(--panel3)] disabled:opacity-40 shrink-0"
+          >
+            שמור
+          </button>
+          <button onClick={() => setEditing(null)} className="text-[var(--faint)] px-1">
+            ✕
+          </button>
+        </div>
+      ) : audioLink ? (
+        <div className={ROW}>
+          <span className="text-[var(--dim)] flex-1 truncate" dir="ltr">
+            🎧 {audioLink.replace(/^https?:\/\//, "")}
+          </span>
+          {canEdit && (
+            <button
+              className={GHOST}
+              onClick={() => {
+                setDraft(audioLink);
+                setEditing("audio");
+              }}
+            >
+              ערוך
+            </button>
+          )}
+          {canEdit && (
+            <button className={GHOST} onClick={() => state.onSaveAudio(null)}>
+              ✕
+            </button>
+          )}
+        </div>
+      ) : canEdit ? (
+        <button
+          className={GHOST}
+          onClick={() => {
+            setDraft("");
+            setEditing("audio");
+          }}
+        >
+          ＋ הוסף קובץ אודיו נפרד
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 // One workflow line (episode or reels) — its own stage steps, its own client
 // review state. The client's correction text renders INSIDE the block (owner
 // 2026-07-22) so a tech opening the reels line sees "the client asked: …"
 // without hunting. Stage steps advance on tap (record→edit→deliver→back).
 function ProductionTrackBlock({
   icon, title, stages, note, approved, canEdit, onAdvance, tally, onSend, saving, sending, sent,
-  mediaUrl, onMediaChange, onMediaBlur, mediaFields, liveLinks = [],
+  mediaUrl, onMediaChange, onMediaBlur, mediaFields, liveLinks = [], materials,
 }: {
   icon: string;
   title: string;
@@ -180,6 +461,10 @@ function ProductionTrackBlock({
   // live links THIS button would supersede (Q7) — drives the warning line
   // only; the links themselves are listed once, above the whole send area
   liveLinks?: { id: string; url: string; scope: string; created_at: string }[];
+  // 0076 — owned by the parent for the same reason mediaUrl is: the unified
+  // send has to see them without the tech re-entering anything. Episode block
+  // only; see ReviewMaterials.
+  materials?: MaterialsState;
 }) {
   const ordered = [...stages].sort((a, b) => (STEP_ORDER[a.step] ?? 9) - (STEP_ORDER[b.step] ?? 9));
   // TWO different measurements live in this block, and until 2026-08-03 both
@@ -288,6 +573,7 @@ function ProductionTrackBlock({
               className="w-full text-[11px] bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-2.5 py-1.5 text-right outline-none focus:border-[var(--violet-light)]"
             />
           )}
+          {materials && <ReviewMaterials state={materials} />}
           <button
             onClick={() => onSend(mediaUrl.trim() || null)}
             disabled={!!sending}
@@ -550,6 +836,16 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   // saved items once per opened production; typed edits persist on blur.
   const [reelMedia, setReelMedia] = useState<Record<number, string>>({});
   const mediaInitFor = useRef<string | null>(null);
+  // 0076 materials. There is NO draft model, deliberately (owner 2026-09-10):
+  // materials belong to a round, and a round that does not exist cannot carry
+  // them. Holding them client-side instead would be a draft on ONE BROWSER —
+  // paste a transcript in the studio, open the drawer at home, and it is gone
+  // with nobody having said so. That is the same silent loss this feature is
+  // meant to avoid, only postponed by a week. So: no live round, no action.
+  const [matBusy, setMatBusy] = useState(false);
+  const [matPicker, setMatPicker] = useState<
+    { links: { id: string; scope: string }[]; retry: (linkId: string) => void } | null
+  >(null);
   // a client-name edit that Morning must be told about, awaiting confirmation
   const [morningConfirm, setMorningConfirm] = useState<
     { key: string; value: unknown; prev: unknown; changes: Record<string, { from: unknown; to: unknown }> } | null
@@ -585,6 +881,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     setNoteModal(null);
     setEpisodeMedia("");
     setReelMedia({});
+    setMatPicker(null);
     mediaInitFor.current = null;
     setRef(next);
   }, []);
@@ -630,6 +927,43 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     }
     if (Object.keys(map).length) setReelMedia(map);
   }, [ref, data]);
+
+  // 0076 — save transcript / audio onto the live round, or park them.
+  //
+  // `undefined` vs `null` is the same contract the route enforces: a key that
+  // is absent means "leave alone", a key set to null means "clear". Never
+  // collapse the two here or "I changed the audio" deletes the transcript.
+  async function saveMaterials(
+    patch: {
+      transcript?: { content: string; source: "pasted" | "link" } | null;
+      audio_link?: string | null;
+    },
+    linkId?: string
+  ): Promise<boolean> {
+    if (!ref) return false;
+    setMatBusy(true);
+    setError(null);
+    const res = await fetch(`/api/productions/${ref.id}/review-materials`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...patch, ...(linkId ? { link_id: linkId } : {}) }),
+    });
+    setMatBusy(false);
+    const b = await res.json().catch(() => ({}));
+    if (res.status === 409 && Array.isArray(b.links) && b.links.length > 1) {
+      // the route refuses to pick between two live rounds; the UI turns that
+      // refusal into the choice itself rather than an error to read and retry
+      setMatPicker({ links: b.links, retry: (id: string) => void saveMaterials(patch, id) });
+      return false;
+    }
+    if (!res.ok) {
+      setError(b.error ?? "שמירת החומרים נכשלה");
+      return false;
+    }
+    setMatPicker(null);
+    void load(ref, true);
+    return true;
+  }
 
   // persist one item's media link (0057) — display metadata only, so a
   // failure surfaces as the drawer's regular error line and nothing else
@@ -1367,6 +1701,37 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
               <div className="m-3 text-xs text-red-400 border border-red-500/40 rounded px-3 py-2">{error}</div>
             )}
 
+            {/* The route refuses to choose between two live rounds (409). That
+                refusal becomes the choice itself — two buttons that re-send
+                with an explicit link_id — rather than an error the tech has to
+                read, understand and then repeat the whole edit for. */}
+            {matPicker && (
+              <div
+                className="m-3 rounded-xl px-3 py-2.5 text-xs"
+                style={{ background: "rgba(139,92,246,0.08)", border: "1px solid rgba(139,92,246,0.35)" }}
+              >
+                <div className="font-bold mb-1">לאיזה סבב לצרף את החומרים?</div>
+                <div className="text-[11px] text-[var(--dim)] mb-2">
+                  יש שני סבבי ביקורת חיים להפקה — אחד לפרק ואחד לרילז. החומרים נשמרים לסבב אחד בלבד.
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {matPicker.links.map((l) => (
+                    <button
+                      key={l.id}
+                      disabled={matBusy}
+                      onClick={() => matPicker.retry(l.id)}
+                      className="text-[11px] border border-[var(--rule)] rounded-lg px-2.5 py-1 text-[var(--violet-light)] hover:bg-[var(--panel3)] disabled:opacity-40"
+                    >
+                      {l.scope === "episode" ? "לסבב הפרק" : l.scope === "reels" ? "לסבב הרילז" : `לסבב ${l.scope}`}
+                    </button>
+                  ))}
+                  <button onClick={() => setMatPicker(null)} className="text-[11px] text-[var(--faint)] px-1">
+                    ביטול
+                  </button>
+                </div>
+              </div>
+            )}
+
             {data && (
               <div className="p-4 space-y-4">
                 {/* §2 disk tag — always visible at the very top, next to the
@@ -1569,6 +1934,29 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           onMediaChange={setEpisodeMedia}
                           onMediaBlur={() => void saveItemLink("episode", null, episodeMedia)}
                           liveLinks={liveForEpisode}
+                          materials={{
+                            // materials live ON the round; with no round there
+                            // is nothing to read and nothing to write
+                            transcript: liveForEpisode[0]?.transcript ?? null,
+                            audioLink: liveForEpisode[0]?.audio_link ?? null,
+                            noRound: liveForEpisode.length === 0,
+                            canEdit: data.canEditStages,
+                            busy: matBusy,
+                            onSaveTranscript: (v) => void saveMaterials({ transcript: v }),
+                            onSaveAudio: (v) => void saveMaterials({ audio_link: v }),
+                            onLoadBody: async () => {
+                              if (!liveForEpisode[0]) return null;
+                              const r = await fetch(
+                                `/api/productions/${ref.id}/review-materials?link_id=${liveForEpisode[0].id}`
+                              );
+                              const j = await r.json().catch(() => ({}));
+                              if (!r.ok) {
+                                setError(j.error ?? "טעינת התמלול נכשלה");
+                                return null;
+                              }
+                              return (j.transcript?.content as string | undefined) ?? null;
+                            },
+                          }}
                         />
                       )}
                       {reelsShown && (

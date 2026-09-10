@@ -222,12 +222,35 @@ async function handleGet(
     // reels link can BOTH be live — this is a list, not a single row.
     const { data: linkRows } = await supabase
       .from("client_review_links")
-      .select("id,token,scope,created_at,expires_at,superseded,responded_at")
+      .select("id,token,scope,created_at,expires_at,superseded,responded_at,audio_link")
       .eq("production_id", params.id)
       .eq("superseded", false)
       .is("responded_at", null)
       .gt("expires_at", new Date().toISOString())
       .order("created_at", { ascending: false });
+
+    // 0076's transcript, as METADATA ONLY — source and length, never the text.
+    // An hour of speech has no business travelling to a drawer that shows a
+    // one-line summary; the body is fetched on explicit request, by the route
+    // that owns it. Read through the ADMIN client because
+    // client_review_transcripts is revoked with RLS on and zero policies
+    // (0076 §3) — the user's own client cannot see it at all, exactly like the
+    // review items above (:200).
+    const liveIds = (linkRows ?? []).map((r) => r.id as string);
+    let transcriptByLink = new Map<string, { source: string; char_count: number | null }>();
+    if (liveIds.length) {
+      const { data: trRows } = await createAdminClient()
+        .from("client_review_transcripts")
+        .select("link_id,source,char_count")
+        .in("link_id", liveIds);
+      transcriptByLink = new Map(
+        (trRows ?? []).map((t) => [
+          t.link_id as string,
+          { source: t.source as string, char_count: (t.char_count as number | null) ?? null },
+        ])
+      );
+    }
+
     // same base URL the mint route stamps into the link it hands out
     const origin = getAppBaseUrl(request);
     reviewLinks = (linkRows ?? []).map((r) => ({
@@ -235,6 +258,8 @@ async function handleGet(
       url: `${origin}/r/${r.token as string}`,
       scope: (r.scope as string) ?? "all",
       created_at: r.created_at as string,
+      audio_link: (r.audio_link as string | null) ?? null,
+      transcript: transcriptByLink.get(r.id as string) ?? null,
     }));
   }
 

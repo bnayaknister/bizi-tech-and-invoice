@@ -131,8 +131,14 @@ export type ReviewItem = {
   last_note: string | null;
 };
 
+// "חומרים נוספים" (0076) — things the client RECEIVES with the round. Not
+// deliverables: the public page renders them with no approve/reject controls.
+// The BODY travels here, unlike the drawer's payload which carries only source
+// and length — this is the one screen whose job is to show it.
+export type ReviewTranscript = { content: string; source: "pasted" | "link" | "auto"; char_count: number | null };
+
 export type LinkState =
-  | { status: "ok"; link: ReviewLinkRow; production: ReviewProductionRow; addons: ReviewAddon[]; baseAmount: number | null; items: ReviewItem[] }
+  | { status: "ok"; link: ReviewLinkRow; production: ReviewProductionRow; addons: ReviewAddon[]; baseAmount: number | null; items: ReviewItem[]; transcript: ReviewTranscript | null }
   | { status: "missing" }
   | { status: "expired" }
   | { status: "superseded" }
@@ -149,6 +155,7 @@ export type ReviewLinkRow = {
   scope: "episode" | "reels" | "all";
   episode_link: string | null;
   reels_link: string | null;
+  audio_link: string | null;
 };
 
 export type ReviewProductionRow = {
@@ -168,7 +175,7 @@ export type ReviewProductionRow = {
 export async function resolveLink(admin: SupabaseClient, token: string): Promise<LinkState> {
   const { data: link } = await admin
     .from("client_review_links")
-    .select("id,production_id,token,expires_at,responded_at,superseded,reels_included,scope,episode_link,reels_link")
+    .select("id,production_id,token,expires_at,responded_at,superseded,reels_included,scope,episode_link,reels_link,audio_link")
     .eq("token", token)
     .maybeSingle();
   if (!link) return { status: "missing" };
@@ -229,7 +236,23 @@ export async function resolveLink(admin: SupabaseClient, token: string): Promise
     last_note: (r.last_note as string | null) ?? null,
   }));
 
-  return { status: "ok", link: link as ReviewLinkRow, production: production as ReviewProductionRow, addons, baseAmount, items };
+  // the transcript (0076), in its own select for the same reason the items and
+  // the add-ons have theirs: a different table, read only when the link already
+  // resolved. Its own row is optional — most rounds carry none.
+  const { data: trRow } = await admin
+    .from("client_review_transcripts")
+    .select("content,source,char_count")
+    .eq("link_id", link.id)
+    .maybeSingle();
+  const transcript: ReviewTranscript | null = trRow
+    ? {
+        content: trRow.content as string,
+        source: trRow.source as "pasted" | "link" | "auto",
+        char_count: (trRow.char_count as number | null) ?? null,
+      }
+    : null;
+
+  return { status: "ok", link: link as ReviewLinkRow, production: production as ReviewProductionRow, addons, baseAmount, items, transcript };
 }
 
 export type TrackResponse = "approved" | "revisions" | undefined;

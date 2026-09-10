@@ -185,6 +185,7 @@ export type Database = {
       }
       client_review_links: {
         Row: {
+          audio_link: string | null
           created_at: string
           created_by: string | null
           episode_link: string | null
@@ -206,6 +207,7 @@ export type Database = {
           token: string
         }
         Insert: {
+          audio_link?: string | null
           created_at?: string
           created_by?: string | null
           episode_link?: string | null
@@ -227,6 +229,7 @@ export type Database = {
           token: string
         }
         Update: {
+          audio_link?: string | null
           created_at?: string
           created_by?: string | null
           episode_link?: string | null
@@ -260,6 +263,48 @@ export type Database = {
             columns: ["production_id"]
             isOneToOne: false
             referencedRelation: "productions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      client_review_transcripts: {
+        Row: {
+          char_count: number | null
+          content: string
+          created_at: string
+          created_by: string | null
+          link_id: string
+          source: string
+        }
+        Insert: {
+          char_count?: number | null
+          content: string
+          created_at?: string
+          created_by?: string | null
+          link_id: string
+          source: string
+        }
+        Update: {
+          char_count?: number | null
+          content?: string
+          created_at?: string
+          created_by?: string | null
+          link_id?: string
+          source?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "client_review_transcripts_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_review_transcripts_link_id_fkey"
+            columns: ["link_id"]
+            isOneToOne: true
+            referencedRelation: "client_review_links"
             referencedColumns: ["id"]
           },
         ]

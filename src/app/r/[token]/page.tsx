@@ -133,6 +133,8 @@ export default async function ReviewPage({ params }: { params: { token: string }
         reelsLink={state.link.reels_link}
         addons={state.addons}
         items={state.items}
+        transcript={state.transcript}
+        audioLink={state.link.audio_link}
       />
     </Shell>
   );
