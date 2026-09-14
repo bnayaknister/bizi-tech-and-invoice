@@ -1,12 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { todayInIsrael } from "@/lib/dates";
-import {
-  DOC_TYPE_TO_MORNING_CODE,
-  VAT_TYPE_DEFAULT,
-  type MorningDocumentRequest,
-} from "@/lib/morning/types";
+import { billMiscProduction } from "@/lib/misc/workOrder";
 
 // "רדיו ושונות" — one non-podcast job (radio production, sound edit for someone
 // else's recording, a one-off session), its supplier lines, the job it bills,
@@ -178,10 +173,7 @@ export async function POST(request: Request) {
     }
   }
 
-  // ---- 3. the job this order bills ----------------------------------------
-  // No job_productions row: there are no productions, and that absence is the
-  // honest record — the same sentence bundle-from-show:103-104 writes, and 47
-  // of the 94 jobs in this database already live that way.
+  // ---- 3-5. the billing chain: job -> stamp -> work order in the queue -----
   //
   // ⚠️ FROM HERE DOWN, A FAILURE DOES NOT DELETE THE ENTITY (owner decision
   // 2026-09-08). The entity is a record of work that was agreed; the job and
@@ -191,136 +183,53 @@ export async function POST(request: Request) {
   // instead is a row at 'נפתח' with job_id null, which step 6's "צור הזמנת
   // עבודה" button acts on. The response says so explicitly so the screen can
   // tell "created and queued" from "created, billing failed".
-  const { data: job, error: jobErr } = await admin
-    .from("jobs")
-    .insert({
-      client_id: client.id,
-      campaign: name,
-      amount: total,
-      date: workDate, // 0064: jobs.date is the WORK date, not today
-      paid: "לא",
-      legacy: false,
-    })
-    .select("id")
-    .single();
-  if (jobErr || !job) {
-    return NextResponse.json(
-      {
-        ok: true,
-        id: entity.id,
-        job_id: null,
-        billed: false,
-        error: `העבודה נשמרה, אך יצירת ה-job נכשלה: ${jobErr?.message ?? ""}. ניתן ליצור הזמנת עבודה מהמסך`,
-      },
-      { status: 207 }
-    );
-  }
-
-  // ---- 4. stamp the job on the entity, AND the one-job guard --------------
-  // Stamped before the queue insert, not after: job_id is what the retry path
-  // (step 6) reads to decide whether this work is already billed, and a job
-  // that exists while the entity still says job_id null is exactly the state
-  // that lets a second call mint a second job for the same work.
   //
-  // THE GUARD IS THE `is("job_id", null)` PREDICATE, not a read-then-write.
-  // A SELECT followed by an UPDATE has a window between them; this has none —
-  // two concurrent calls cannot both match, so the loser updates zero rows.
-  // Unreachable on this path (the entity was created five statements ago and
-  // nothing else knows its id), and load-bearing the moment step 6 calls the
-  // same code for an existing row. Written now rather than then, because a
-  // guard added later is a guard that has to be remembered.
-  //
-  // AND THE RESULT IS READ, NEVER ASSUMED. `.select()` is what makes "did it
-  // actually match" answerable: PostgREST reports a zero-row UPDATE as success
-  // with no error, so without this the job would be created, left unlinked,
-  // and reported as billed — the precise shape of the bug review/route.ts:217
-  // was written to close ("the bookkeeper saw 'rejected', the row stayed
-  // pending"). Zero rows here means somebody else won the race, so the job we
-  // just made is the duplicate and it is the one that goes.
-  const { data: linked, error: linkErr } = await admin
-    .from("misc_productions")
-    .update({ job_id: job.id, updated_at: new Date().toISOString(), updated_by: user.id })
-    .eq("id", entity.id)
-    .is("job_id", null)
-    .select("id");
-  if (linkErr || !linked?.length) {
-    await admin.from("jobs").delete().eq("id", job.id as string);
+  // The three steps live in lib/misc/workOrder.ts because the button runs the
+  // SAME three, on a row that reached this state rather than one born into it.
+  // Two copies of a Morning payload and a rollback would be two things to keep
+  // in step forever on the path that mints documents — and the rollback bug
+  // that extraction just fixed (an orphaned job, see that file's header) is
+  // what a second copy would have inherited.
+  const billing = await billMiscProduction(admin, {
+    entityId: entity.id as string,
+    clientId: client.id as string,
+    clientName: (client.name as string | null) ?? null,
+    morningClientId: client.morning_client_id as string,
+    name,
+    workDate,
+    amount: total,
+    description: (body.description ?? "").trim() || null,
+    actorId: user.id,
+  });
+
+  if (!billing.ok) {
+    // All four reasons land on the same 207: the entity exists, the billing
+    // does not, and the row is at 'נפתח' with job_id null. `already_billed` is
+    // unreachable on THIS path — the entity was created five statements ago
+    // and nothing else knows its id — and it is the button, not this route,
+    // that can actually meet it.
+    //
+    // The sentence names which step failed, because which one it was decides
+    // whether a retry will work, and the modal surfaces it verbatim as
+    // `detail` rather than paraphrasing it away (NewMiscModal.tsx:126-133).
+    const WHY: Record<typeof billing.reason, string> = {
+      job_failed: "יצירת ה-job נכשלה",
+      link_failed: "קישור ה-job נכשל",
+      already_billed: "כבר קיימת לה הזמנת עבודה",
+      queue_failed: "הוספת ההזמנה לתור נכשלה",
+    };
+    const detail = billing.message ? `: ${billing.message}` : "";
+    // A job the rollback could not remove is reported, not swallowed. It is
+    // invisible on every misc screen, so this line is the only place it is
+    // ever mentioned.
+    const leak = billing.leakedJobId ? ` ⚠️ נותר job יתום ${billing.leakedJobId} — יש למחוק ידנית.` : "";
     return NextResponse.json(
       {
         ok: true,
         id: entity.id,
         job_id: null,
         billed: false,
-        error: linkErr
-          ? `העבודה נשמרה, אך קישור ה-job נכשל: ${linkErr.message}. ניתן ליצור הזמנת עבודה מהמסך`
-          : "העבודה נשמרה, אך כבר קיימת לה הזמנת עבודה — לא נוצרה הזמנה נוספת",
-      },
-      { status: 207 }
-    );
-  }
-
-  // ---- 5. the work order, into the approval queue --------------------------
-  // The description INHERITS: what the operator wrote is what the client will
-  // read, and the 2026-09-07 rule (bundle.ts, "THE ORDER'S OWN WORDING") exists
-  // because rebuilding it cost two manual repairs on 40318.
-  const docTitle =
-    (body.description ?? "").trim() || `הזמנת עבודה — ${client.name ?? ""} ${name}`.trim();
-
-  const payload: MorningDocumentRequest = {
-    type: DOC_TYPE_TO_MORNING_CODE["work_order"],
-    lang: "he",
-    currency: "ILS",
-    vatType: VAT_TYPE_DEFAULT,
-    // issuance date, not the work date — issue.ts re-stamps at the moment it
-    // calls Morning, exactly as buildDocumentPayload documents
-    date: todayInIsrael(),
-    description: docTitle,
-    client: {
-      id: client.morning_client_id as string,
-      name: (client.name as string | null) ?? undefined,
-      add: false, // never auto-create a client in Morning from a document
-    },
-    income: [
-      {
-        description: name,
-        quantity: 1,
-        price: total,
-        currency: "ILS",
-        vatType: VAT_TYPE_DEFAULT,
-      },
-    ],
-  };
-
-  const { data: inserted, error: queueErr } = await admin
-    .from("pending_documents")
-    .insert({
-      doc_type: "work_order",
-      production_id: null,
-      job_id: job.id,
-      client_id: client.id,
-      amount: total,
-      payload,
-      status: "pending",
-    })
-    .select("id")
-    .single();
-  if (queueErr || !inserted) {
-    // roll the job back rather than leave one nothing points at — the same
-    // repair bundle-from-show:158-161 and milestones/[mid]/enqueue:162 make.
-    // The entity and its suppliers stay; job_id goes back to null so the retry
-    // path sees the same state a never-billed row has.
-    await admin.from("jobs").delete().eq("id", job.id as string);
-    await admin
-      .from("misc_productions")
-      .update({ job_id: null, updated_at: new Date().toISOString(), updated_by: user.id })
-      .eq("id", entity.id);
-    return NextResponse.json(
-      {
-        ok: true,
-        id: entity.id,
-        job_id: null,
-        billed: false,
-        error: `העבודה נשמרה, אך הוספת ההזמנה לתור נכשלה: ${queueErr?.message ?? ""}. ניתן ליצור הזמנת עבודה מהמסך`,
+        error: `העבודה נשמרה, אך ${WHY[billing.reason]}${detail}. ניתן ליצור הזמנת עבודה מהמסך${leak}`,
       },
       { status: 207 }
     );
@@ -339,33 +248,16 @@ export async function POST(request: Request) {
       client_order_ref: (body.clientOrderRef ?? "").trim() || null,
       amount: total,
       suppliers: suppliers.length,
-      job_id: job.id,
-      pending_document_id: inserted.id,
-    },
-  });
-
-  // the queue row gets its own event under its own entity, so the document's
-  // log reads the same way every other queued document's does
-  await admin.from("events").insert({
-    entity_type: "pending_document",
-    entity_id: inserted.id,
-    event_type: "document_queued",
-    actor_id: user.id,
-    payload: {
-      doc_type: "work_order",
-      via: "misc_production",
-      misc_production_id: entity.id,
-      job_id: job.id,
-      client_id: client.id,
-      amount: total,
+      job_id: billing.jobId,
+      pending_document_id: billing.pendingDocumentId,
     },
   });
 
   return NextResponse.json({
     ok: true,
     id: entity.id,
-    job_id: job.id,
-    pending_document_id: inserted.id,
+    job_id: billing.jobId,
+    pending_document_id: billing.pendingDocumentId,
     billed: true,
     amount: total,
     suppliers: suppliers.length,

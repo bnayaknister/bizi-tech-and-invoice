@@ -368,6 +368,53 @@ export default function MiscClient({
   const [board, setBoard] = useState<MiscRow[]>(rows);
   useEffect(() => setBoard(rows), [rows]);
 
+  // Which row is mid-billing. One id and not a boolean: it disables every
+  // button on the screen while one is in flight (two work orders queued by an
+  // impatient double-click on two different rows is the same accident as on
+  // one), and still lets the pressed row alone say "יוצר…".
+  const [billingId, setBillingId] = useState<string | null>(null);
+
+  /**
+   * Step 6 — "צור הזמנת עבודה" for a row whose billing never happened.
+   *
+   * ⚠️ NO OPTIMISTIC UPDATE HERE, and that is the difference from moveStatus
+   * above. A drag writes one enum column and reverting is exact. This mints a
+   * JOB and a QUEUED DOCUMENT — the row's `billed` flag is a summary of state
+   * on two other tables, and showing "הזמנת עבודה נוצרה" a moment before it is
+   * true would be the screen asserting something about money it does not yet
+   * know. So it waits, then refreshes from the server, which is also what makes
+   * the new state survive the next render.
+   */
+  async function createWorkOrder(id: string) {
+    if (billingId) return;
+    setBillingId(id);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/misc-productions/${id}/work-order`, { method: "POST" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // 409 is not a breakage — it is "someone already did this", and it
+        // reads as a warning rather than a failure so the operator does not go
+        // looking for something to fix. Everything else is an error.
+        setNotice({
+          tone: res.status === 409 ? "warn" : "err",
+          text: res.status === 409 ? "לא נוצרה הזמנה נוספת." : "יצירת הזמנת העבודה נכשלה.",
+          detail: typeof body.error === "string" ? body.error : undefined,
+        });
+        return;
+      }
+      setNotice({ tone: "ok", text: "נוצרה הזמנת עבודה ונשלחה לאישור." });
+      // The row is server-rendered, and `billed` is derived from job_id there —
+      // without this the confirmation would sit above a row still saying
+      // "טרם חויבה". Same call NewMiscModal makes after a create.
+      router.refresh();
+    } catch {
+      setNotice({ tone: "err", text: "יצירת הזמנת העבודה נכשלה.", detail: "השרת לא נענה" });
+    } finally {
+      setBillingId(null);
+    }
+  }
+
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
 
@@ -556,7 +603,29 @@ export default function MiscClient({
                     {r.billed ? (
                       <span className="text-[var(--cyan)] text-[11px]">הזמנת עבודה נוצרה</span>
                     ) : (
-                      <span className="text-[var(--amber)] text-[11px]">טרם חויבה</span>
+                      <span className="flex items-center gap-2">
+                        <span className="text-[var(--amber)] text-[11px]">טרם חויבה</span>
+                        {/* Step 6. Three conditions, and each answers a
+                            different question: can_edit_money — billing is a
+                            write and the route checks the same flag; status —
+                            cancelled work is not billed, and the board cannot
+                            drag it back out to fix that; job_id — the button
+                            IS the "no order yet" case, and `billed` is exactly
+                            `job_id != null` (page.tsx:176).
+
+                            NOT on the kanban card, deliberately: the card is a
+                            drag surface and a button on it fights onDragStart.
+                            The card still shows "טרם חויבה", which points here. */}
+                        {canEditMoney && r.status !== "בוטל" && (
+                          <button
+                            onClick={() => void createWorkOrder(r.id)}
+                            disabled={billingId !== null}
+                            className="text-[11px] text-[var(--cyan)] border border-[var(--rule)] rounded-lg px-2 py-0.5 hover:bg-[var(--panel3)] disabled:opacity-40 whitespace-nowrap"
+                          >
+                            {billingId === r.id ? "יוצר…" : "צור הזמנת עבודה"}
+                          </button>
+                        )}
+                      </span>
                     )}
                   </td>
                 </tr>
