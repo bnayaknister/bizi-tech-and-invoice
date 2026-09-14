@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import IconTile from "@/components/IconTile";
 import { displayDate } from "@/lib/dates";
@@ -144,6 +144,209 @@ function Suppliers({ lines }: { lines: SupplierLine[] }) {
   );
 }
 
+/**
+ * ═══ THE BOARD (step 5) ═══
+ *
+ * A measured copy of the /productions kanban, not a generic extraction. A
+ * second site is not a justification for an abstraction — the extraction is its
+ * own task, for when there is a third. What is copied is the mechanism; what is
+ * NOT copied is everything that turned out to be about `productions`.
+ *
+ * DRAG IS NATIVE HTML5, no library — the same three points ProductionsClient
+ * uses (:863-874 for the column, :899-901 for the card), and there is no drag
+ * dependency in package.json to copy even if one were wanted. The dragged id
+ * travels in React state and NOT in dataTransfer, exactly as there: one tree,
+ * one state, and nothing to serialise.
+ *
+ * ═══ ⚠️ THREE COLUMNS, NOT FOUR — 'בוטל' IS NOT ON THE BOARD ═══
+ * misc_production_status has four values and this board shows three. That is
+ * the /productions decision applied rather than a value dropped by accident:
+ * STATUS_ORDER there lists nine states and omits 'בוטל' (status.ts:6-16,
+ * "cancelled isn't even on the board"), cancelled rows are filtered off the
+ * board unless a search is active (ProductionsClient.tsx:283-285), and
+ * cancelling is a route of its own that REQUIRES A REASON and returns 409
+ * needs_confirmation when documents were already issued.
+ *
+ * 0074 made the same call for this table from the other direction: it gave
+ * misc_productions cancel_reason and no cancelled_at, on the grounds that "a
+ * single status with a reason is the whole truth". A card dragged silently into
+ * a 'בוטל' column would empty both decisions at once — no reason asked, no
+ * warning that a work order is already in the approval queue, and cancel_reason
+ * left NULL forever on the one row whose entire record of why it ended is that
+ * column.
+ *
+ * So cancelling is not a drag. It will be an explicit action with its own
+ * route; the backlog carries it, with the finding that misc has no equivalent
+ * of the /productions 409 — nothing in the app cancels a queued work order, and
+ * a cancelled job with an open 100 in Morning is precisely what 0063 was built
+ * for on the productions side.
+ *
+ * Cancelled rows stay VISIBLE IN THE TABLE, with their reason beside the name
+ * (:244-249). Off the board is not out of the screen.
+ */
+const BOARD_STATES = ["נפתח", "בעבודה", "הושלם"] as const;
+
+const COLUMN_CAP = 60;
+
+function MiscCard({
+  r,
+  draggable,
+  onDragStart,
+  onDragEnd,
+}: {
+  r: MiscRow;
+  draggable: boolean;
+  onDragStart?: () => void;
+  onDragEnd?: () => void;
+}) {
+  return (
+    <div
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      className={`rounded-xl border border-[var(--rule)] bg-[var(--panel)] p-2.5 ${
+        draggable ? "cursor-grab active:cursor-grabbing" : ""
+      }`}
+    >
+      <div className="text-xs font-medium leading-tight">{r.name}</div>
+      <div className="text-[11px] text-[var(--dim)] mt-0.5">{r.client_name ?? "—"}</div>
+      <div className="flex items-center gap-1.5 mt-1.5 text-[11px]">
+        <span className="font-mono text-[var(--dim)]">{displayDate(r.work_date)}</span>
+        <span className="text-[var(--ink-faint)]">·</span>
+        {/* every viewer here has can_view_money (page.tsx gates on it), so the
+            amount is shown unconditionally — the same reasoning the table uses */}
+        <span className="font-mono">{money(r.amount)}</span>
+        <div className="flex-1" />
+        {r.suppliers.length > 0 && (
+          <span className="text-[var(--ink-faint)] font-mono" title={`${r.suppliers.length} ספקים`}>
+            ⚑{r.suppliers.length}
+          </span>
+        )}
+      </div>
+      {!r.billed && (
+        // the one flag worth a card's space: a job that was recorded and never
+        // billed is the retry point, and it is the column-agnostic fact — a row
+        // can reach 'הושלם' unbilled
+        <div className="text-[10px] text-[var(--amber)] mt-1">טרם חויבה</div>
+      )}
+    </div>
+  );
+}
+
+function MiscKanban({
+  rows,
+  canEdit,
+  dragId,
+  dragOver,
+  setDragId,
+  setDragOver,
+  onDropTo,
+}: {
+  rows: MiscRow[];
+  canEdit: boolean;
+  dragId: string | null;
+  dragOver: string | null;
+  setDragId: (id: string | null) => void;
+  setDragOver: (s: string | null) => void;
+  onDropTo: (id: string, status: string) => void;
+}) {
+  const byStatus = new Map<string, MiscRow[]>();
+  for (const s of BOARD_STATES) byStatus.set(s, []);
+  // Named lookup, so a row in any state that is not a column — 'בוטל' today,
+  // anything a future migration adds — is simply absent from the board rather
+  // than landing in whichever column sorts next to it.
+  for (const r of rows) byStatus.get(r.status)?.push(r);
+
+  return (
+    <>
+      {/* desktop / tablet: the horizontal board with drag between columns */}
+      <div className="hidden sm:block overflow-x-auto pb-4">
+        <div className="flex gap-3 min-w-max">
+          {BOARD_STATES.map((status) => {
+            const items = byStatus.get(status) ?? [];
+            const isOver = dragOver === status;
+            return (
+              <div
+                key={status}
+                onDragOver={(e) => {
+                  if (!canEdit) return;
+                  e.preventDefault();
+                  setDragOver(status);
+                }}
+                onDragLeave={() => dragOver === status && setDragOver(null)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOver(null);
+                  if (dragId) onDropTo(dragId, status);
+                  setDragId(null);
+                }}
+                className={`w-64 shrink-0 rounded-2xl border p-2 transition-colors ${
+                  isOver ? "border-[var(--violet)]" : "border-[var(--rule)]"
+                }`}
+                style={{
+                  background: isOver ? "rgba(139,92,246,0.08)" : "rgba(255,255,255,0.02)",
+                  backdropFilter: "blur(8px)",
+                  WebkitBackdropFilter: "blur(8px)",
+                }}
+              >
+                <div className="flex items-center justify-between px-1.5 py-1.5 mb-1">
+                  <span className="text-[11px] font-bold uppercase tracking-wide" style={{ color: STATUS_TONE[status] }}>
+                    {status}
+                  </span>
+                  <span className="text-[11px] text-[var(--faint)] font-mono">{items.length}</span>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {items.slice(0, COLUMN_CAP).map((r) => (
+                    <MiscCard
+                      key={r.id}
+                      r={r}
+                      draggable={canEdit}
+                      onDragStart={() => setDragId(r.id)}
+                      onDragEnd={() => setDragId(null)}
+                    />
+                  ))}
+                  {items.length > COLUMN_CAP && (
+                    <div className="text-[11px] text-[var(--faint)] text-center py-2">
+                      ועוד {items.length - COLUMN_CAP} — צמצם עם התצוגה הטבלאית
+                    </div>
+                  )}
+                  {items.length === 0 && <div className="text-[11px] text-[var(--faint)] text-center py-3">—</div>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* mobile: a grouped list, no drag. Native HTML5 drag does not fire on
+          touch — the same reason ProductionsClient.tsx:920-925 gives. There the
+          fallback is the drawer's one-tap advance; misc has no drawer yet, so
+          this view is read-only on a phone and says nothing it cannot do. */}
+      <div className="sm:hidden space-y-4 pb-4">
+        {BOARD_STATES.map((status) => {
+          const items = byStatus.get(status) ?? [];
+          if (items.length === 0) return null;
+          return (
+            <section key={status}>
+              <div className="flex items-center gap-2 mb-1.5 px-0.5">
+                <span className="text-[11px] font-bold uppercase tracking-wide" style={{ color: STATUS_TONE[status] }}>
+                  {status}
+                </span>
+                <span className="text-[11px] text-[var(--faint)] font-mono">{items.length}</span>
+              </div>
+              <div className="flex flex-col gap-2">
+                {items.slice(0, COLUMN_CAP).map((r) => (
+                  <MiscCard key={r.id} r={r} draggable={false} />
+                ))}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 export default function MiscClient({
   rows,
   clients,
@@ -156,11 +359,53 @@ export default function MiscClient({
   const router = useRouter();
   const [modalOpen, setModalOpen] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [tab, setTab] = useState<"table" | "kanban">("table");
+
+  // The board writes, so the rows have to be local state and not the prop:
+  // a card must move the instant it is dropped. Re-seeded when the server sends
+  // a new set (a create, or router.refresh()), the same one-liner
+  // ProductionsClient.tsx:210 uses for the same reason.
+  const [board, setBoard] = useState<MiscRow[]>(rows);
+  useEffect(() => setBoard(rows), [rows]);
+
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState<string | null>(null);
 
   // Named states, never a range — the same rule STATUS_TONE follows. 'בוטל' is
   // excluded from "open" by being absent from this list, not by sorting after
   // something.
-  const openCount = rows.filter((r) => r.status === "נפתח" || r.status === "בעבודה").length;
+  const openCount = board.filter((r) => r.status === "נפתח" || r.status === "בעבודה").length;
+
+  /**
+   * Optimistic move with a full revert, copied from ProductionsClient.tsx:229-243
+   * because the shape is the point: the card moves first, and if the server
+   * refuses, the ENTIRE previous list is restored rather than the one row
+   * patched back. Restoring one row would be a second implementation of "what
+   * did it look like before", and the two would disagree the first time a
+   * response arrives out of order.
+   *
+   * The failure is surfaced in the notice box the screen already owns, so a
+   * refused drag reads the same way a refused create does, in the same place.
+   */
+  async function moveStatus(id: string, status: string) {
+    const prev = board;
+    const row = board.find((r) => r.id === id);
+    if (!row || row.status === status) return;
+
+    setBoard((rs) => rs.map((r) => (r.id === id ? { ...r, status } : r)));
+    setNotice(null);
+
+    const res = await fetch(`/api/misc-productions/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setBoard(prev);
+      setNotice({ text: data.error ?? "שינוי הסטטוס נכשל", tone: "err" });
+    }
+  }
 
   return (
     <main className="max-w-6xl mx-auto p-6">
@@ -169,9 +414,38 @@ export default function MiscClient({
           <IconTile icon="productions" accent="violet-light" size={30} iconSize={17} />
           רדיו ושונות
         </h1>
-        {rows.length > 0 && (
+        {/* The view switch, not a second screen: page.tsx already loads every
+            row for the table, and the board needs exactly those rows. A
+            separate route would duplicate the paged read and the
+            can_view_money gate for no new data. */}
+        {board.length > 0 && (
+          <div className="flex rounded-xl border border-[var(--rule)] overflow-hidden">
+            {(
+              [
+                ["table", "טבלה"],
+                ["kanban", "קנבן"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setTab(key)}
+                className={`text-xs px-4 py-1.5 transition-colors ${
+                  tab === key ? "text-white font-bold" : "text-[var(--dim)] hover:bg-[var(--panel3)]"
+                }`}
+                style={
+                  tab === key
+                    ? { background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }
+                    : undefined
+                }
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+        {board.length > 0 && (
           <span className="text-xs text-[var(--faint)]">
-            {rows.length} {rows.length === 1 ? "עבודה" : "עבודות"} · {openCount} פתוחות
+            {board.length} {board.length === 1 ? "עבודה" : "עבודות"} · {openCount} פתוחות
           </span>
         )}
         <div className="flex-1" />
@@ -211,7 +485,7 @@ export default function MiscClient({
         </div>
       )}
 
-      {rows.length === 0 ? (
+      {board.length === 0 ? (
         <div className="text-center text-sm text-[var(--faint)] py-16 border border-dashed border-[var(--rule)] rounded-2xl">
           {/* DESIGN.md §10: an empty screen is an invitation, not "No data" —
               so it names the action when there is one to name. */}
@@ -220,6 +494,22 @@ export default function MiscClient({
             כאן תופענה עבודות שאינן פודקאסט — הפקת רדיו, עריכת סאונד להקלטה של מישהו אחר, סשן חד־פעמי.
           </div>
         </div>
+      ) : tab === "kanban" ? (
+        <MiscKanban
+          rows={board}
+          // can_edit_money and NOT the screen's can_view_money: dragging is
+          // writing, and the PATCH route checks the same flag (route.ts:87-89).
+          // This is the identical distinction page.tsx:196-201 makes for the
+          // "עבודה חדשה" button — a viewer who may read but not write is a real
+          // combination, and a card that appears draggable and 403s is a lie
+          // told by the UI.
+          canEdit={canEditMoney}
+          dragId={dragId}
+          dragOver={dragOver}
+          setDragId={setDragId}
+          setDragOver={setDragOver}
+          onDropTo={(id, status) => void moveStatus(id, status)}
+        />
       ) : (
         <div className="glass-card overflow-x-auto rounded-2xl">
           <table className="w-full text-right text-sm">
@@ -236,7 +526,7 @@ export default function MiscClient({
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {board.map((r) => (
                 <tr key={r.id} className="border-b border-white/5 last:border-0 hover:bg-white/[0.03]">
                   <td className="py-2 px-3">
                     <div className="font-medium">{r.name}</div>
@@ -276,7 +566,7 @@ export default function MiscClient({
         </div>
       )}
 
-      {rows.length > 0 && (
+      {board.length > 0 && (
         <p className="mt-3 text-[11px] text-[var(--ink-faint)]">
           &quot;טרם חויבה&quot; פירושו שהעבודה נרשמה ולא נוצרה לה הזמנת עבודה — מצב תקין, ונקודת הניסיון החוזר אם
           הוספת ההזמנה לתור נכשלה. סכום העבודה הוא מה שהלקוח מחויב; סכומי הספקים הם הוצאה נגדית ואינם מנוכים ממנו כאן.
