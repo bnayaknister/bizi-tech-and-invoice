@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createDocument, MorningError, isDryRun, morningEnv } from "@/lib/morning/client";
 import { DOC_TYPE_TO_MORNING_CODE, type MorningDocumentRequest, type PendingDocType } from "@/lib/morning/types";
 import { upsertDocument } from "@/lib/documents/registry";
+import { findCancelledWork, CANCELLED_WORK_MESSAGE } from "@/lib/documents/cancelledWork";
 import { todayInIsrael } from "@/lib/dates";
 
 // Turning an APPROVED queue row into a real document. This is the only
@@ -395,6 +396,42 @@ export async function issuePendingDocument(
   }
   if (row.status === "issued") {
     return { ok: false, error: "המסמך כבר הונפק", alreadyIssued: true };
+  }
+
+  // ---- iron rule 1b: the work this bills must still exist -----------------
+  // THE LAST WALL, and the reason it is here and not only in the approval
+  // route: this function is the ONLY place in the app that calls Morning, so a
+  // check here covers every caller — including the window the approval route
+  // cannot, between 'approved' being written and the call going out, and
+  // including any future caller that never passes through that route at all.
+  //
+  // It also covers /productions, which looks redundant and is not: cancelling
+  // a production DOES cancel its queue rows, but through a write whose result
+  // is never read (cancel/route.ts:112-121 — no error checked, and PostgREST
+  // calls a zero-row UPDATE a success). See lib/documents/cancelledWork.ts for
+  // the full argument and the measurement.
+  //
+  // A THROWN lookup is a refusal, never a pass. Rule 46: an unreadable link
+  // table must not become a silent pass on an irreversible action — and there
+  // is no more irreversible action in this system than a document reaching
+  // Morning.
+  try {
+    const cancelled = await findCancelledWork(admin, [
+      { id: row.id, production_id: row.production_id, job_id: row.job_id },
+    ]);
+    const hit = cancelled.get(row.id);
+    if (hit) {
+      await admin.from("events").insert({
+        entity_type: "pending_document",
+        entity_id: row.id,
+        event_type: "issue_blocked_work_cancelled",
+        actor_id: actorId,
+        payload: { doc_type: row.doc_type, kind: hit.kind, name: hit.name, status: row.status },
+      });
+      return { ok: false, error: CANCELLED_WORK_MESSAGE };
+    }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "בדיקת ביטול העבודה נכשלה" };
   }
 
   // A document's date is its ISSUANCE date — today, in Israel time — never the

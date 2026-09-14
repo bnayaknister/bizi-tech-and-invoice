@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { findCancelledWork, CANCELLED_WORK_MESSAGE } from "@/lib/documents/cancelledWork";
 import { issuePendingDocument, type PendingRow } from "@/lib/documents/issue";
 import { balanceError } from "@/lib/documents/lineBalance";
 import { todayInIsrael } from "@/lib/dates";
@@ -302,6 +303,59 @@ async function reviewPending(request: Request) {
   }
 
   // ---- approve ------------------------------------------------------------
+  // ---- the work must still exist ------------------------------------------
+  // Refuse the WHOLE request rather than approve the live rows and skip the
+  // cancelled ones — the same rule the reject branch above states: "a partial
+  // rejection reported as success is how the one row that mattered gets lost".
+  // Here the stakes are higher in one direction, because the rows that WOULD
+  // have gone through reach Morning and cannot be taken back.
+  //
+  // This is the readable refusal; it is not the wall. The wall is in
+  // issuePendingDocument, which covers the window between 'approved' and the
+  // call to Morning that this check cannot see. Both, deliberately — the same
+  // reasoning ACTIONABLE_STATUSES gives above for living on the server rather
+  // than in the UI: a check that only one caller performs is a check the next
+  // caller does not inherit.
+  //
+  // A failed lookup refuses too (rule 46). It throws, and the catch answers
+  // 500 — a lookup that cannot say "the work is live" is not permission to
+  // assume it.
+  try {
+    const cancelledWork = await findCancelledWork(
+      admin,
+      rows.map((r) => ({
+        id: r.id,
+        production_id: (r.production_id as string | null) ?? null,
+        job_id: (r.job_id as string | null) ?? null,
+      }))
+    );
+    if (cancelledWork.size) {
+      const names = Array.from(cancelledWork.values())
+        .map((c) => c.name)
+        .filter(Boolean);
+      return NextResponse.json(
+        {
+          error:
+            cancelledWork.size === rows.length
+              ? CANCELLED_WORK_MESSAGE
+              : `${cancelledWork.size} מתוך ${rows.length} המסמכים שנבחרו הם על עבודה שבוטלה. ${CANCELLED_WORK_MESSAGE}`,
+          cancelled_work: Array.from(cancelledWork.entries()).map(([id, c]) => ({
+            id,
+            kind: c.kind,
+            name: c.name,
+          })),
+          ...(names.length ? { names } : {}),
+        },
+        { status: 409 }
+      );
+    }
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "בדיקת ביטול העבודה נכשלה" },
+      { status: 500 }
+    );
+  }
+
   const guardedRows = rows.filter((r) => REQUIRES_CONFIRMATION.includes(r.doc_type as PendingDocType));
   if (guardedRows.length) {
     if (rows.length > 1) {

@@ -7,6 +7,7 @@ import DocumentPreview from "@/components/DocumentPreview";
 import { displayDate, todayInIsrael } from "@/lib/dates";
 import { STUDIOS } from "@/lib/calendar/studios";
 import { missingGuestLines } from "@/lib/documents/guestFlag";
+import { CANCELLED_WORK_BADGE } from "@/lib/documents/cancelledWork";
 import {
   roundAgorot,
   splitAmountIntoUnits,
@@ -38,6 +39,12 @@ export type PendingDocRow = {
   aging: "warning" | "critical" | null;
   client_name: string;
   show_name: string;
+  /**
+   * Set when the episode or the "רדיו ושונות" job this row bills has been
+   * CANCELLED. Computed server-side by the same helper the approval route
+   * enforces with, so the screen cannot offer a button the server refuses.
+   */
+  work_cancelled: { kind: "production" | "misc"; name: string | null } | null;
   record_date: string | null;
   guest: string | null;
   /**
@@ -1585,8 +1592,28 @@ export default function DocumentsClient({
 
                     {canApprove && r.status !== "approved" && (
                       <div className="flex flex-col gap-2 shrink-0">
+                        {/* The row stays VISIBLE and says why, rather than
+                            vanishing from the queue. A row that disappears with
+                            no explanation is the problem page.tsx:26-35 already
+                            names for 'approved' rows ("such a row appeared on NO
+                            screen"). Shape follows GuestHint (:445): a ⚠ line in
+                            var(--warn), beside the row it is about.
+
+                            The button is disabled, not hidden — the disabled
+                            control is what says the action EXISTS and is
+                            refused, where a missing one reads as a bug. The
+                            server refuses it too; this is the courtesy, not the
+                            wall. */}
+                        {r.work_cancelled && (
+                          <div className="text-[10px] text-[var(--warn)] max-w-[9rem] leading-tight">
+                            ⚠ {CANCELLED_WORK_BADGE}
+                            {r.work_cancelled.name && (
+                              <span className="block text-[var(--faint)]">{r.work_cancelled.name}</span>
+                            )}
+                          </div>
+                        )}
                         <button
-                          disabled={busy}
+                          disabled={busy || !!r.work_cancelled}
                           onClick={() => approveOne(r)}
                           className="bg-[var(--signal)] text-white text-xs font-bold rounded-xl px-4 py-1.5 disabled:opacity-40"
                         >

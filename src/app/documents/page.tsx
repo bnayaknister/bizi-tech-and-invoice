@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getSessionAndProfile } from "@/lib/profile";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { findCancelledWork } from "@/lib/documents/cancelledWork";
 import AppHeader from "@/components/AppHeader";
 import DocumentsClient, { type PendingDocRow } from "./DocumentsClient";
 import { isDryRun, morningEnv } from "@/lib/morning/client";
@@ -144,6 +145,24 @@ export default async function DocumentsPage() {
     );
   }
 
+  // Which of these queue rows bill work that has since been CANCELLED. Read
+  // here, once, so the screen shows the same verdict the server will enforce —
+  // the modal must not offer a button the approval route is going to refuse
+  // (the rule page.tsx already follows for parent_gross above).
+  //
+  // A failed lookup THROWS and takes the screen down rather than rendering
+  // every row as approvable: "unreadable" is not "nothing is cancelled", and
+  // this screen's whole job is deciding what reaches Morning. That is the same
+  // choice mustRows makes for the reads that ARE this screen.
+  const cancelledWork = await findCancelledWork(
+    admin,
+    ((data ?? []) as unknown as Array<Record<string, unknown>>).map((r) => ({
+      id: r.id as string,
+      production_id: (r.production_id as string | null) ?? null,
+      job_id: (r.job_id as string | null) ?? null,
+    }))
+  );
+
   const now = Date.now();
   const rows: PendingDocRow[] = (
     (data ?? []) as unknown as Array<Record<string, unknown>>
@@ -160,6 +179,7 @@ export default async function DocumentsPage() {
       age_hours: ageHours,
       aging: ageHours >= 72 ? "critical" : ageHours >= 24 ? "warning" : null,
       client_name: ((r.clients as { name?: string } | null)?.name as string) ?? "—",
+      work_cancelled: cancelledWork.get(r.id as string) ?? null,
       show_name: prod?.podcast_name ?? "—",
       record_date: prod?.record_date ?? null,
       guest: prod?.guest ?? null,

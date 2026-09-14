@@ -27,6 +27,7 @@
  * This is also the first coverage the edit form has ever had.
  */
 import { renderToString } from "react-dom/server";
+import { CANCELLED_WORK_BADGE } from "../src/lib/documents/cancelledWork";
 import React from "react";
 import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
 import DocumentsClient, { GuestHint, type PendingDocRow } from "../src/app/documents/DocumentsClient";
@@ -86,6 +87,19 @@ const bundleRow: PendingDocRow = {
   attempts: 0,
   parent_gross: null,
   parent_gross_error: null,
+  work_cancelled: null,
+};
+
+// The same row, billing work that has since been CANCELLED (2026-09-14). Built
+// here for exactly the reason the header gives for the bundle above: the state
+// cannot be reached in a browser without cancelling real work or writing a fake
+// row into a live money queue, and both are worse than building it in memory.
+// The badge and the disabled button are the only thing standing between the
+// bookkeeper and a document issued against work that will never happen.
+const cancelledRow: PendingDocRow = {
+  ...bundleRow,
+  id: "row-cancelled",
+  work_cancelled: { kind: "misc", name: "הפקת רדיו לגלי צהל" },
 };
 
 const render = (rows: PendingDocRow[]) =>
@@ -126,6 +140,30 @@ check("the collapsed row does NOT leak the guest into a title attribute",
 const hint = (guest: string | null, suggestion: string | null) =>
   renderToString(React.createElement(GuestHint, { guest, suggestion }));
 const strip = (h: string) => h.replace(/<[^>]+>/g, " ");
+
+console.log("\n=== a row billing CANCELLED work cannot be approved ===");
+let cancelledHtml = "";
+check("renders without throwing", (() => {
+  try {
+    cancelledHtml = render([cancelledRow]);
+    return cancelledHtml.length > 0;
+  } catch (e) {
+    console.log("      threw:", (e as Error).message);
+    return false;
+  }
+})());
+check("the badge is visible text, not a title attribute",
+  strip(cancelledHtml).includes(CANCELLED_WORK_BADGE));
+check("the cancelled work is named so she knows WHICH job",
+  strip(cancelledHtml).includes("הפקת רדיו לגלי צהל"));
+// The button must still be PRESENT — a missing control reads as a bug, a
+// disabled one says the action exists and is refused. This asserts both halves
+// at once: the label is there, and the element carrying it is disabled.
+check("the approve button is still rendered", cancelledHtml.includes("אשר"));
+check("...and it is disabled", /<button[^>]*disabled[^>]*>\s*אשר/.test(cancelledHtml));
+// The live row must NOT pick up the badge — a guard that fires on everything
+// is the same bug as one that fires on nothing.
+check("a live row shows no badge", !strip(html).includes(CANCELLED_WORK_BADGE));
 
 console.log("\n=== which lines flag — decided by the REAL missingGuestLines ===");
 const flaggedIdx = missingGuestLines(

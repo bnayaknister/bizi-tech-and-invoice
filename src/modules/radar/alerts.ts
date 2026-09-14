@@ -108,7 +108,7 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const today = new Date();
   const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
 
-  const [jobs, allMilestones, contracts, invoices, productions, stageRollup, jobProds, shows, clients, pendingDocs, clientEvents, paymentEvents] = await Promise.all([
+  const [jobs, allMilestones, contracts, invoices, productions, stageRollup, jobProds, shows, clients, pendingDocs, clientEvents, paymentEvents, miscJobs] = await Promise.all([
     // dismissed (soft-removed) jobs are out of every money surface (0041) — a
     // hidden record must not inflate debt or the VU meter
     fetchAll<{ id: string; amount: number | null; paid: string; invoice_tax: string | null; due_date: string | null; client_id: string | null }>(
@@ -150,8 +150,12 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     fetchAll<{ id: string; normalized_name: string | null; name: string; billing_cadence: string | null; billing_every_n: number | null }>(
       supabase, "clients", "id,normalized_name,name,billing_cadence,billing_every_n"
     ),
-    fetchAll<{ id: string; status: string; created_at: string; doc_type: string; production_id: string | null; client_id: string | null; issued_at: string | null }>(
-      supabase, "pending_documents", "id,status,created_at,doc_type,production_id,client_id,issued_at"
+    // job_id rides along since 2026-09-14: a "רדיו ושונות" work order carries
+    // production_id NULL (0074 keeps that work in its own table), so job_id is
+    // the ONLY link it has and the cancelled-with-work-order alert below was
+    // blind to every one of them without it.
+    fetchAll<{ id: string; status: string; created_at: string; doc_type: string; production_id: string | null; job_id: string | null; client_id: string | null; issued_at: string | null }>(
+      supabase, "pending_documents", "id,status,created_at,doc_type,production_id,job_id,client_id,issued_at"
     ),
     // "any event related to the client" (owner spec 2026-07-22, widening the
     // dormant-client definition) — events logged directly against a client
@@ -169,6 +173,14 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     // (entity_type='job', entity_id=job id), joined to jobs.client_id below.
     fetchAll<{ entity_id: string; created_at: string }>(supabase, "events", "entity_id,created_at", (q) =>
       q.eq("event_type", "job_marked_paid")
+    ),
+    // "רדיו ושונות" work, for the cancelled-with-work-order alert below. Read
+    // through the SERVICE ROLE like everything else here (radar/page.tsx:26) —
+    // misc_productions' RLS is can_view_stages while this screen is
+    // can_view_money, and the two are independent booleans (modules/misc.ts:35
+    // spells out what reading it under RLS would silently cost).
+    fetchAll<{ id: string; status: string; job_id: string | null; name: string }>(
+      supabase, "misc_productions", "id,status,job_id,name"
     ),
   ]);
 
@@ -560,6 +572,28 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     (p) => (p.calendar_removed || p.status === "בוטל") && !p.merged_into && issuedDocProds.has(p.id)
   );
 
+  // ---- 🟡 the same standing reminder for "רדיו ושונות" work (2026-09-14).
+  // A misc work order is written with production_id NULL, so it never entered
+  // issuedDocProds above and the alert was blind to every one of them. Matched
+  // through job_id, which is the only link such a row has.
+  //
+  // Its OWN card rather than more rows in the one above, because the card
+  // carries an href and these two lead to different screens — one link cannot
+  // be right for both. Same severity and the same reason for existing: nothing
+  // is ever deleted in Morning, so an issued document on cancelled work is a
+  // task for a human, standing until they do it.
+  const issuedDocJobs = new Set(
+    pendingDocs
+      .filter((d) => d.status === "issued" && d.doc_type === "work_order" && d.job_id)
+      .map((d) => d.job_id as string)
+  );
+  const cancelledMiscWithWorkOrder = miscJobs.filter(
+    // named, never ranged: 'בוטל' is LAST in misc_production_status, so any
+    // ordinal test sweeps it the wrong way (0074's header, and the third site
+    // to obey it after STATUS_TONE and getMetric)
+    (m) => m.status === "בוטל" && m.job_id && issuedDocJobs.has(m.job_id)
+  );
+
   // ---- 🟡 a document was rejected or failed and NOBODY came back to it
   // (owner 2026-07-29). A rejected/failed queue row whose production is still
   // live (not cancelled, not merged) and has no ISSUED document of the same
@@ -682,6 +716,7 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     { key: "open_commitment", severity: "blue", title: "התחייבות פתוחה", count: openMilestones.length, amount: openCommitment, href: "/contracts" },
     { key: "billing_blocked", severity: "yellow", title: "הפקת לקוח חסומה לחיוב", count: billingBlocked.length, amount: null, href: "/productions" },
     { key: "cancelled_with_work_order", severity: "yellow", title: "הפקה בוטלה אחרי שהונפקה הזמנת עבודה — לסגור במורנינג", count: cancelledWithWorkOrder.length, amount: null, href: "/productions" },
+    { key: "cancelled_misc_with_work_order", severity: "yellow", title: "עבודת רדיו/שונות בוטלה אחרי שהונפקה הזמנת עבודה — לסגור במורנינג", count: cancelledMiscWithWorkOrder.length, amount: null, href: "/misc" },
     { key: "order_not_closed", severity: "yellow", title: "מסמך הונפק על סמך מסמך אב שלא נסגר במורנינג · נכון לסנכרון האחרון", count: orderNotClosed.length, amount: null, href: "/documents/registry" },
     { key: "pending_docs_24h", severity: "yellow", title: "מסמכים ממתינים לאישור מעל 24 שעות", count: pending24.length, amount: null, href: "/documents" },
     { key: "stuck_rejected_doc", severity: "yellow", title: "מסמך נדחה/נכשל ולא טופל", count: stuckDocs.length, amount: null, href: "/documents" },
