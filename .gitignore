@@ -62,3 +62,6 @@ supabase/.temp/
 baseline-*.txt
 new-rows.txt
 seq-*.txt
+
+# local machine markers (git-repo-guard opt-in) — not shared
+.claude/
