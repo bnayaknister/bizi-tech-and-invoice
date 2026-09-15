@@ -375,6 +375,152 @@ export async function suggestJobsForDoc(admin: SupabaseClient, docId: string): P
   return out.sort(byConfidenceThenGap);
 }
 
+/**
+ * The seed-era `invoices.morning_doc_id`, and why the uuid alone never found it.
+ *
+ * 154 of the 203 rows in `invoices` predate the Morning integration: they were
+ * loaded from the owner's spreadsheet and carry a SYNTHETIC id in place of a
+ * Morning uuid. Measured 2026-09-15, and the shape is perfectly uniform —
+ * exactly two families, no third, no variant:
+ *
+ *   biz-<number>.0    89 rows, type 'עסקה', 2025-02-26 → 2026-07-12
+ *   tax-<number>.0    65 rows, type 'מס',   same window
+ *
+ * All 154 are source='manual', all carry job_id NULL, and in ALL 154
+ * `doc_number` holds the same synthetic string rather than the bare number —
+ * which is exactly why nothing found them: a lookup on the real document's
+ * uuid misses, and so does one on `doc_number = '40272'`.
+ *
+ * ⚠️ AND THEY ARE NET. 147 of the 152 that match a pulled document equal its
+ * gross ÷ 1.18; ZERO equal the gross. `linkDocumentToJob` writes
+ * `documents.amount`, which is gross after a pull — so the duplicate it used to
+ * create was not merely a second row for the same bill, it was a second row at
+ * a DIFFERENT number. ₪295 beside ₪250 for one ₪295 invoice.
+ *
+ * This runs in the only direction that matters — from the bare number on a
+ * pulled document TO the synthetic key a seed row might carry — so the shapes
+ * are template literals rather than a parsed regex. Non-numeric input yields no
+ * keys, and such a document is still tested against its Morning uuid.
+ */
+function seedInvoiceKeys(docNumber: string | null): string[] {
+  const n = (docNumber ?? "").trim();
+  if (!n || !/^\d+$/.test(n)) return [];
+  return [`biz-${n}.0`, `tax-${n}.0`];
+}
+
+export type LinkRefusal = { ok: false; error: string };
+export type LinkPreflight = { ok: true } | LinkRefusal;
+
+/**
+ * Everything that must be true BEFORE the first write, decided without making
+ * one. Pure in the sense that matters: it reads, it never writes.
+ *
+ * ═══ WHY THIS IS A SEPARATE FUNCTION AND NOT TWO MORE `if`s ═══
+ * The writes in linkDocumentToJob are four statements with no transaction
+ * around them — the document, the job, the invoices row, the events. A check
+ * that sits between statement one and two cannot refuse; by then
+ * `documents.job_id` is already stamped and there is nothing to return to.
+ * So every gate moves in front of all four, and the function below is barred
+ * from writing so it cannot drift back.
+ *
+ * ═══ THE TWO HOLES IT CLOSES, both measured on live data 2026-09-15 ═══
+ *
+ * 1. THE DEDUPE THAT COULD NOT SEE THE SEED. The invoices guard downstream
+ *    matches on `morning_doc_id` alone, and the historical rows carry
+ *    'biz-40272.0' where the real document carries a uuid. The keys genuinely
+ *    differ, so the unique index does not fire either — and the bookkeeper
+ *    gets two rows for one invoice, at two different amounts (see above).
+ *    Live case: כפיר ארביב, 40272 and 40283.
+ *
+ * 2. THE COLUMN THAT WAS ALREADY SPOKEN FOR. `if (!present(...))` at the job
+ *    patch means a job already carrying a DIFFERENT number silently keeps it,
+ *    while the document is stamped, an invoices row is written, and the call
+ *    returns ok — so the screen says linked and the job still names the other
+ *    document. Live case: 40289 against a job whose invoice_biz is '40283'.
+ *    The SAME number is not a refusal: re-linking a document to the job that
+ *    already names it is a no-op, not a conflict.
+ *
+ * Both refuse rather than repair. A wrong `invoices` row is money counted
+ * twice and an overwritten `invoice_biz` is a document nobody can find again;
+ * neither is something this function can decide correctly on its own, and both
+ * are a minute of a human's time. The refusals say which document and which
+ * number, because "השיוך נכשל" sends somebody to read the code.
+ */
+export async function linkPreflight(
+  admin: SupabaseClient,
+  doc: { morning_doc_id: unknown; morning_doc_number: string | null; type: number },
+  job: { invoice_biz: string | null; invoice_tax: string | null }
+): Promise<LinkPreflight> {
+  const type = doc.type;
+  const isTax = TAX_TYPES.includes(type);
+  const isDeal = type === DEAL_TYPE;
+  const docNumber = (doc.morning_doc_number ?? "").trim() || null;
+
+  // ---- gate 1: an invoices row for this document already exists -----------
+  // Three keys, because the same bill can be recorded under three different
+  // ids: the Morning uuid (what the app writes today), and the two synthetic
+  // shapes the seed used. `doc_number` is searched as well as `morning_doc_id`
+  // because in all 154 seed rows it holds that same synthetic string.
+  //
+  // ⚠️ SCOPED TO THE DOCUMENTS THAT ACTUALLY WRITE ONE. The registry mirror
+  // downstream is gated on `isTax || isDeal`, so a bare קבלה (400) never
+  // creates an invoices row and therefore can never duplicate one. Refusing it
+  // here would be a refusal with no harm behind it — and it would bite for
+  // real: 80053 and 80054 (ידיעות אחרונות) are 400s whose numbers sit in a
+  // seed row, and both would have been blocked for nothing.
+  const morningId = typeof doc.morning_doc_id === "string" ? doc.morning_doc_id : null;
+  const seedKeys = seedInvoiceKeys(docNumber);
+  const keys = isTax || isDeal ? [...(morningId ? [morningId] : []), ...seedKeys] : [];
+
+  if (keys.length) {
+    // Two `.in()` reads rather than one `.or()`: the seed ids carry dots and
+    // hyphens, and a PostgREST `or=` filter is a string the client does not
+    // escape — a value the parser mis-reads comes back as an ERROR, and this
+    // call destructures `data` only, so the gate would pass in silence. The
+    // whole point of this function is to not be silent.
+    const hit = async (column: "morning_doc_id" | "doc_number") =>
+      admin.from("invoices").select("id").in(column, keys).limit(1);
+    const [byId, byNumber] = await Promise.all([hit("morning_doc_id"), hit("doc_number")]);
+
+    // A lookup that CANNOT ANSWER is not evidence that the answer is no — the
+    // principle resolveParentWorkOrderLink states in as many words. Doubt
+    // refuses: the cost of a wrong refusal is a minute, the cost of a missed
+    // one is money counted twice in a registry nobody re-checks.
+    if (byId.error || byNumber.error) {
+      return {
+        ok: false,
+        error: `בדיקת הכפילות מול רישום החיובים נכשלה (${byId.error?.message ?? byNumber.error?.message}) — המסמך לא שויך`,
+      };
+    }
+
+    if (byId.data?.length || byNumber.data?.length) {
+      return {
+        ok: false,
+        error:
+          `למסמך ${docNumber ?? "זה"} כבר קיימת שורת חיוב ישנה, ולכן הוא לא שויך. ` +
+          `כדי לא לספור את אותו סכום פעמיים, הקישור דורש טיפול ידני.`,
+      };
+    }
+  }
+
+  // ---- gate 2: the column this document fills is already spoken for -------
+  // Only the column this document would actually write. A 300 has nothing to
+  // say about invoice_tax, and refusing on it would block a perfectly ordinary
+  // deal invoice for a job whose tax document already went out.
+  const target = isDeal ? job.invoice_biz : isTax ? job.invoice_tax : null;
+  const existing = present(target) ? String(target).trim() : null;
+  if (existing && existing !== docNumber) {
+    return {
+      ok: false,
+      error:
+        `העבודה כבר רשומה על מסמך ${existing}. המסמך ${docNumber ?? "הזה"} לא שויך, ` +
+        `כדי לא להחליף את הרישום הקיים.`,
+    };
+  }
+
+  return { ok: true };
+}
+
 // ---- the single assignment primitive -----------------------------------
 // Links one billing document to one job, in lockstep: the document gets the
 // job (and the job's client, which also lifts it out of the "unmatched" tab),
@@ -410,6 +556,16 @@ export async function linkDocumentToJob(
   const isDeal = type === DEAL_TYPE; // 300 — carries a deal invoice number
   const isPayment = PAYMENT_TYPES.includes(type); // 320/400 — proves payment
   const docNumber = (doc.morning_doc_number as string | null) ?? null;
+
+  // ---- EVERY REFUSAL HAPPENS HERE, before the first write ------------------
+  // The four writes below are not in a transaction, so a check placed between
+  // any two of them cannot refuse — it can only leave half a link behind.
+  const pre = await linkPreflight(
+    admin,
+    { morning_doc_id: doc.morning_doc_id, morning_doc_number: docNumber, type },
+    { invoice_biz: job.invoice_biz as string | null, invoice_tax: job.invoice_tax as string | null }
+  );
+  if (!pre.ok) return pre;
 
   // 1. the document gets the job + the job's client
   await admin
