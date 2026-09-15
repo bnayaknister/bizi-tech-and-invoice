@@ -341,6 +341,17 @@ export default function ContractsClient({
           const openSum = c.milestones
             .filter((m) => m.state === "open" || m.state === "overdue" || m.state === "invoiced")
             .reduce((t, m) => t + m.amount, 0);
+          // ═══ TWO NUMBERS THAT LOOK LIKE ONE, AND ARE NOT ═══
+          //
+          // openSum counts MILESTONES that have been opened and not yet paid.
+          // toCollect is the CONTRACT minus what came in. They differ by exactly
+          // the part of the contract nobody has turned into a milestone yet, and
+          // on "בלי יריה אחת" that is ₪18,500 against an openSum of ₪0 — two
+          // adjacent figures, both correct, that read as a bug unless the gap is
+          // named. So the gap gets its own line and says what it is; when the
+          // milestones cover the contract the two agree and the line is absent.
+          const toCollect = c.total_amount - c.paid_sum;
+          const unmilestoned = toCollect - openSum;
           return (
             <div key={c.id} className="glass-card" style={closed ? { opacity: 0.62 } : undefined}>
               <span className="corner-glow" style={{ ["--glow-color" as string]: closed ? "rgba(148,163,184,0.16)" : "rgba(192,132,252,0.24)" }} />
@@ -370,9 +381,28 @@ export default function ContractsClient({
                   </div>
                   <div className="flex items-center justify-between mt-1.5 text-[11px]">
                     <span className="font-mono text-[var(--green)]">{money(c.paid_sum)} שולם</span>
-                    {openSum > 0 && <span className="font-mono text-[var(--cyan)]">{money(openSum)} התחייבות פתוחה</span>}
+                    {openSum > 0 && (
+                      <span className="font-mono text-[var(--cyan)]" title="אבני דרך שנפתחו וטרם שולמו">
+                        {money(openSum)} התחייבות פתוחה
+                      </span>
+                    )}
+                    {toCollect > 0 && (
+                      <span
+                        className="font-mono text-[var(--dim)]"
+                        title="סכום החוזה פחות מה ששולם — כולל חלקים שטרם פורקו לאבני דרך"
+                      >
+                        {money(toCollect)} נותר לגבות
+                      </span>
+                    )}
                     <span className="font-mono text-[var(--faint)]">{pct}%</span>
                   </div>
+                  {/* the sentence that keeps ₪0 and ₪18,500 from reading as a
+                      contradiction. Shown only when the two really differ. */}
+                  {unmilestoned > 0 && (
+                    <div className="mt-1 text-[11px] text-[var(--faint)]">
+                      {money(unmilestoned)} מסכום החוזה טרם פורקו לאבני דרך — לכן אינם נספרים בהתחייבות הפתוחה
+                    </div>
+                  )}
                 </div>
 
                 {/* milestones */}

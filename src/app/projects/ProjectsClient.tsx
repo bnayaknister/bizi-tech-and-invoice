@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { displayDate } from "@/lib/dates";
 import { DOC_TYPES, DOC_TYPE_LABEL } from "@/lib/documents/forProduction";
+import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
 
 export type ProjectDoc = {
   type: number;
@@ -36,10 +37,39 @@ export type ProjectRow = {
   docs: ProjectDoc[];
 };
 
+/**
+ * A contract milestone, shown in the SAME table as the episodes and separated
+ * from them by a labelled row.
+ *
+ * Not a ProjectRow, and deliberately not made into one. A milestone has no
+ * recording date, no guest, no episode number and no production status — six
+ * of ProjectRow's fields would have to be filled with invented values, which is
+ * the exact category error classify() was written to stop. It is a different
+ * subject that belongs on the same page, so it gets its own shape and its own
+ * renderer.
+ *
+ * `amount` is the ANCHOR DOCUMENT's gross, never the milestone's net: this row
+ * exists to attribute a number that is already inside the month cards above,
+ * and it has to show the number it is attributing.
+ */
+export type MilestoneRow = {
+  id: string;
+  name: string;
+  contract_name: string | null;
+  client_name: string | null;
+  state: MilestoneState;
+  amount: number | null;
+  anchor_date: string | null;
+  /** which month card already holds this money; null for a 305, which sits in neither */
+  counted_in: "incoming" | "billed" | null;
+  docs: ProjectDoc[];
+};
+
 export type MonthBucket = {
   key: string;
   label: string;
   rows: ProjectRow[];
+  milestones: MilestoneRow[];
   summary: {
     expected: number;
     expectedPriced: number;
@@ -108,6 +138,65 @@ function DocCell({ docs }: { docs: ProjectDoc[] }) {
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * The milestone renderer. Same columns, filled only where they mean something.
+ *
+ * The three that do not apply — guest, production status, episode — render an
+ * em dash. That is not a gap to be filled later: a milestone HAS no guest, and
+ * printing anything there would be the invented value this row exists to avoid.
+ * The status column instead carries the milestone's own vocabulary from
+ * MILESTONE_META ("שולם", "חויב — ממתין לתשלום"), which cannot be
+ * mistaken for a production status.
+ */
+function MilestoneTableRow({ m }: { m: MilestoneRow }) {
+  const byType = (t: number) => (m.docs ?? []).filter((d) => d.type === t);
+  // same reasoning as safeBucket: a state this chunk does not know about must
+  // RENDER, not throw. Caught by test_projects_render.tsx on the day this row
+  // was written — indexing MILESTONE_META with an unknown key returns undefined
+  // and reading .color off it takes the whole page down, which is the exact
+  // version-skew crash that suite exists for.
+  const meta = MILESTONE_META[m.state] ?? { label: m.state ?? "—", color: "var(--dim)", dot: "var(--dim)" };
+  const dash = <span className="text-[var(--ink-faint)]">—</span>;
+  return (
+    <tr className="border-b border-white/5 align-top">
+      <td className="py-2 pl-3 font-mono text-xs whitespace-nowrap" title="תאריך המסמך, לא תאריך הקלטה">
+        {m.anchor_date ? displayDate(m.anchor_date) : dash}
+      </td>
+      <td className="py-2 pl-3">
+        <div className="text-sm">
+          {m.name}
+          {m.contract_name && <span className="text-[var(--ink-faint)]"> · {m.contract_name}</span>}
+        </div>
+        <div className="flex items-center gap-1.5 text-[11px] text-[var(--ink-faint)]">
+          {m.client_name ?? dash}
+          <span className="rounded-full bg-[var(--cyan)]/20 px-1.5 py-px text-[10px] text-[var(--cyan)]">
+            אבן דרך
+          </span>
+        </div>
+      </td>
+      <td className="py-2 pl-3 text-xs">{dash}</td>
+      <td className="py-2 pl-3 text-xs whitespace-nowrap" style={{ color: meta.color }}>
+        {meta.label}
+      </td>
+      <td className="py-2 pl-3 font-mono text-xs whitespace-nowrap">
+        {money(m.amount)}
+        {/* which card up top already holds it. A 305 sits in neither, and says
+            nothing rather than claiming a total it is not in. */}
+        {m.counted_in && (
+          <div className="text-[10px] text-[var(--ink-faint)]">
+            {m.counted_in === "incoming" ? "בתוך נכנס" : "בתוך חויב"}
+          </div>
+        )}
+      </td>
+      {DOC_TYPES.map((t) => (
+        <td key={t} className="py-2 pl-3">
+          <DocCell docs={byType(t)} />
+        </td>
+      ))}
+    </tr>
   );
 }
 
@@ -208,6 +297,7 @@ function safeBucket(b: MonthBucket): MonthBucket {
       incoming: s.incoming ?? 0,
       incomingCount: s.incomingCount ?? 0,
     },
+    milestones: b?.milestones ?? [],
   };
 }
 
@@ -406,6 +496,29 @@ export default function ProjectsClient({
                     batch that was never July work. */}
                 {bucket.rows.map((r) => (
                   <Row key={r.id} r={r} />
+                ))}
+                {/* ═══ THE SEPARATOR IS THE POINT, NOT DECORATION ═══
+                    A milestone row carries a contract name where an episode
+                    carries a show, and a document date where an episode carries
+                    a recording date. Dropped into the list unannounced it reads
+                    as one more episode, and the screen lies quietly — which is
+                    worse than the blank it replaces. The label changes the
+                    subject out loud, and the second half states the thing a
+                    reader would otherwise have to work out: this money is
+                    already inside the two cards above. */}
+                {bucket.milestones.length > 0 && (
+                  <tr className="border-b border-white/10 bg-white/[0.03]">
+                    <td colSpan={5 + DOC_TYPES.length} className="px-3 py-2">
+                      <span className="text-xs font-semibold text-[var(--cyan)]">אבני דרך של חוזים</span>
+                      <span className="mr-2 text-[11px] text-[var(--ink-faint)]">
+                        הסכומים כבר בתוך &quot;חויב&quot; ו&quot;נכנס&quot; שלמעלה — מוצגים כאן כדי לראות למי הם שייכים, ואינם
+                        נספרים פעמיים · לפי תאריך המסמך
+                      </span>
+                    </td>
+                  </tr>
+                )}
+                {bucket.milestones.map((m) => (
+                  <MilestoneTableRow key={m.id} m={m} />
                 ))}
               </tbody>
             </table>

@@ -53,10 +53,26 @@ const fullRow = {
   docs: [{ type: 100, number: "10301", date: "2026-08-12", shared: false, cancelled: false, path: "production" }],
 };
 
+// A contract milestone — a second ROW SHAPE in the same table since 2026-09-15,
+// and therefore a second thing a stale chunk can be wrong about. Included in the
+// healthy payload so the renderer is exercised, and knocked out below.
+const fullMilestone = {
+  id: "m1",
+  name: "פרק 1 ו-2",
+  contract_name: "בלי יריה אחת",
+  client_name: "עופר גולן",
+  state: "paid" as const,
+  amount: 5900,
+  anchor_date: "2026-08-14",
+  counted_in: "incoming" as const,
+  docs: [{ type: 320, number: "60197", date: "2026-08-14", shared: false, cancelled: false, path: "job" }],
+};
+
 const fullBucket: MonthBucket = {
   key: "2026-08",
   label: "אוגוסט 2026",
   rows: [fullRow],
+  milestones: [fullMilestone],
   summary: {
     expected: 700,
     expectedPriced: 1,
@@ -90,6 +106,11 @@ check("full payload", () => {
   if (!html.includes("מעקב פרויקטים")) throw new Error("title missing");
   if (!html.includes("10301")) throw new Error("document number missing");
   if (!html.includes("עבודת חוזה")) throw new Error("contract line missing");
+  // the milestone group: its separator, its document, and the line that says
+  // the money is not being counted twice
+  if (!html.includes("אבני דרך של חוזים")) throw new Error("milestone separator missing");
+  if (!html.includes("60197")) throw new Error("milestone document missing");
+  if (!html.includes("אינם נספרים פעמיים")) throw new Error("double-count note missing");
 });
 
 console.log("\n=== the exact crash: a field the payload no longer carries ===");
@@ -110,6 +131,13 @@ for (const f of ARRAY_FIELDS) {
 }
 check("rows undefined", () => render([{ ...fullBucket, rows: undefined }]));
 check("row.docs undefined", () => render([{ ...fullBucket, rows: [{ ...fullRow, docs: undefined }] }]));
+// the milestone array is the newest field on the payload, so it is the one a
+// stale chunk is most likely to be missing
+check("milestones undefined", () => render([{ ...fullBucket, milestones: undefined }]));
+check("milestone.docs undefined", () =>
+  render([{ ...fullBucket, milestones: [{ ...fullMilestone, docs: undefined }] }]));
+check("milestone.state unknown", () =>
+  render([{ ...fullBucket, milestones: [{ ...fullMilestone, state: "אחר" }] }]));
 
 console.log("\n=== whole objects missing ===");
 check("summary undefined", () => render([{ key: "2026-08", label: "אוגוסט 2026", rows: [] }]));

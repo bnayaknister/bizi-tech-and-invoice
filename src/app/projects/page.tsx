@@ -10,7 +10,13 @@ import {
   type ConsolidationLink,
 } from "@/lib/documents/forProduction";
 import AppHeader from "@/components/AppHeader";
-import ProjectsClient, { type BillingClass, type MonthBucket, type ProjectRow } from "./ProjectsClient";
+import { deriveMilestoneState } from "@/lib/finance/milestone";
+import ProjectsClient, {
+  type BillingClass,
+  type MilestoneRow,
+  type MonthBucket,
+  type ProjectRow,
+} from "./ProjectsClient";
 
 export const dynamic = "force-dynamic";
 
@@ -243,7 +249,8 @@ export default async function ProjectsPage() {
   const admin = createAdminClient();
 
   // ---- wave 1: everything that does not depend on an id list ---------------
-  const [productions, showsRes, contractsRes, clientsRes, jobsRes, linksRes, receiptQueueRes] = await Promise.all([
+  const [productions, showsRes, contractsRes, clientsRes, jobsRes, linksRes, receiptQueueRes, milestonesRes] =
+    await Promise.all([
     fetchProductionsInRange(admin),
     // billing_mode and active are both read, and they are NOT interchangeable:
     // billing_mode is a money field (can_edit_money, shows/update/route.ts:19)
@@ -254,13 +261,34 @@ export default async function ProjectsPage() {
     // named so a contract-billed row can say WHICH contract it belongs to
     admin.from("contracts").select("id,name,client_id,show_id,status"),
     admin.from("clients").select("id,name"),
-    admin.from("jobs").select("id,invoice_biz,invoice_tax,dismissed"),
+    // `paid` joined the select for the milestone rows below — deriveMilestoneState
+    // needs it, and the per-episode document resolver never did.
+    admin.from("jobs").select("id,invoice_biz,invoice_tax,paid,dismissed"),
     admin.from("job_productions").select("job_id,production_id"),
     // the ONLY record of which tax invoices a receipt was raised on. A pulled
     // receipt has no such row, and Morning's search response carries no
     // linkedDocumentIds field — hence route 5 in forProduction.ts reaching only
     // receipts we issued ourselves.
     admin.from("pending_documents").select("morning_doc_id,payload").eq("doc_type", "receipt"),
+    // ---- contract milestones -------------------------------------------------
+    // NEW SUBJECT ON THIS SCREEN, and the reason is measured rather than assumed.
+    //
+    // A milestone's documents reach NO row of the table below. All five routes in
+    // resolveProductionDocuments were checked one by one against the live data
+    // (2026-09-15, documents 40325 / 60197 / 10330): production_id is null,
+    // job_id leads to zero job_productions rows, bundle_job_ids likewise,
+    // consolidated_into is null with nothing folded into them, and the only two
+    // receipts in the account link a different pair of invoices. All five
+    // milestone jobs carry zero job_productions rows, and the five "בלי יריה
+    // אחת" productions carry zero documents.
+    //
+    // Meanwhile the money is already in the month totals: those read EVERY
+    // document in range, not the productions' (see the note above monthDocsRes).
+    // ₪5,900 of ספטמבר's ₪18,242.80 "נכנס" is one milestone's 320. So the
+    // gap was never counting — it was ATTRIBUTION: no way to see whose money it is.
+    admin
+      .from("contract_milestones")
+      .select("id,contract_id,name,amount,expected_date,is_estimated,status,job_id"),
   ]);
 
   // merged_into is the one soft-delete mechanism (0019) — a merged duplicate is
@@ -331,6 +359,26 @@ export default async function ProjectsPage() {
         : emptyRes,
       // the month totals are document-anchored and deliberately NOT restricted
       // to these productions — see the summary note in ProjectsClient
+      //
+      // ⚠ BACKLOG, and larger than the milestone rows below it. "כל העסק, לא
+      // רק ההפקות שלמטה" is on the cards as a caveat, and the measurement
+      // says it is a statement about MOST of the money, not a footnote.
+      // Measured 2026-09-15 over documents dated from July, modelling routes 1-3
+      // of resolveProductionDocuments (production_id, job_id → job_productions,
+      // bundle_job_ids → job_productions) — routes 4 and 5 could rescue some, so
+      // read these as an upper bound:
+      //
+      //   300:  27 of 44 reach no production
+      //   305:   3 of  5
+      //   320:  24 of 31
+      //   400:   7 of  7
+      //
+      // The milestone rows added below close this for contract work, which is
+      // one named slice of it. What remains is every other document with no
+      // production anchor — misc/radio work, client-level billing, anything
+      // raised by hand in Morning. Attributing those is a separate piece of
+      // work and probably a different mechanism; recorded here because the gap
+      // is invisible from the screen and the cards read as if it were small.
       fetchAllPages<MonthDoc>((from, to) =>
         admin
           .from("documents")
@@ -391,6 +439,68 @@ export default async function ProjectsPage() {
     }
   }
 
+  // ---- milestone rows: their documents, and the one that anchors them -------
+  //
+  // Read by job_id AND by document number, because the two doors differ. A
+  // milestone the app billed carries job_id on its documents; "מכירת ביפו —
+  // חלק א" (#60166) was raised by hand in Morning and reached us on the pull,
+  // so it is findable only through the number stamped on its job. Bounded by two
+  // numbers per milestone.
+  const msRows = (milestonesRes.data ?? []) as unknown as {
+    id: string;
+    contract_id: string;
+    name: string;
+    amount: number;
+    expected_date: string | null;
+    is_estimated: boolean;
+    status: string;
+    job_id: string | null;
+  }[];
+  const allJobsById = new Map(
+    ((jobsRes.data ?? []) as {
+      id: string;
+      invoice_biz: string | null;
+      invoice_tax: string | null;
+      paid: string | null;
+      dismissed: boolean;
+    }[]).map((j) => [j.id, j])
+  );
+  const present = (v: unknown) => v != null && String(v).trim() !== "";
+  const msJobIds = Array.from(new Set(msRows.map((m) => m.job_id).filter((v): v is string => !!v)));
+  const msDocNumbers = Array.from(
+    new Set(
+      msJobIds
+        .map((id) => allJobsById.get(id))
+        .flatMap((j) => [j?.invoice_biz, j?.invoice_tax])
+        .filter((n): n is string => present(n))
+        .map((n) => String(n).trim())
+    )
+  );
+  const [msByJobRes, msByNumberRes] = await Promise.all([
+    msJobIds.length ? admin.from("documents").select(DOC_SELECT).in("job_id", msJobIds) : emptyRes,
+    msDocNumbers.length
+      ? admin.from("documents").select(DOC_SELECT).in("morning_doc_number", msDocNumbers)
+      : emptyRes,
+  ]);
+  const msDocsById = new Map<string, DocumentRow>();
+  for (const res of [msByJobRes, msByNumberRes]) {
+    for (const d of ((res.data ?? []) as unknown as DocumentRow[])) {
+      if (!d.cancelled_at && !d.archived_at) msDocsById.set(d.id, d);
+    }
+  }
+  const msDocsForJob = new Map<string, DocumentRow[]>();
+  for (const d of Array.from(msDocsById.values())) {
+    // a document can name its job directly or carry it in a bundle — a tax row
+    // built by taxFromParent has job_id null and the job in bundle_job_ids
+    const owners = Array.from(
+      new Set<string>([...(d.job_id ? [d.job_id] : []), ...(d.bundle_job_ids ?? [])])
+    );
+    for (const j of owners) {
+      if (!msJobIds.includes(j)) continue;
+      msDocsForJob.set(j, [...(msDocsForJob.get(j) ?? []), d]);
+    }
+  }
+
   const resolved = resolveProductionDocuments({
     productionIds: prodIds,
     jobLinks,
@@ -441,6 +551,88 @@ export default async function ProjectsPage() {
     };
   });
 
+  // ---- milestone rows -------------------------------------------------------
+  //
+  // THE ANCHOR DOCUMENT decides both the month and the amount, and choosing it
+  // is the whole of this block.
+  //
+  //   paid      → the 320/400. That document IS the proof of payment, and its
+  //               date is the month the money landed in.
+  //   invoiced  → the 300/305. A bill went out; nothing has come in.
+  //   otherwise → NO ROW. An open milestone has no document, therefore no date,
+  //               therefore no month it could honestly belong to. This screen is
+  //               a record of what happened.
+  //
+  // The amount is the DOCUMENT's, not the milestone's: ₪5,900 and not ₪5,000.
+  // The month cards count gross, and a row that attributes a number must show
+  // the number it is attributing. The milestone's own net figure lives on
+  // /contracts, which is where the contract is read.
+  //
+  // document_date and not issued_at, matching the cards exactly (docsIn above).
+  // The two genuinely differ: three documents in the account carry
+  // document_date 31.8 and were issued 2-7.9, #60191 among them — ₪295,000 that
+  // moves between two months depending on the field. document_date is what the
+  // bookkeeper put on the page, and it is also the only one available:
+  // invoices.issued_at exists for 0 of 64 receipts, because a 400 writes no
+  // invoices row at all (registryType returns null for it).
+  const PAYMENT_TYPES = [320, 400];
+  const BILLING_TYPES = [300, 305];
+  const msContractById = new Map(contracts.map((c) => [c.id, c]));
+  const milestoneRows: (MilestoneRow & { month: string })[] = [];
+  for (const m of msRows) {
+    const job = m.job_id ? allJobsById.get(m.job_id) ?? null : null;
+    // a dismissed job is out of every money surface (0041); its milestone has
+    // nothing left to attribute
+    if (job?.dismissed) continue;
+    const state = deriveMilestoneState({
+      status: m.status,
+      expected_date: m.expected_date,
+      is_estimated: m.is_estimated,
+      jobPaid: job?.paid ?? null,
+      jobBilled: present(job?.invoice_biz) || present(job?.invoice_tax),
+    });
+    if (state !== "paid" && state !== "invoiced") continue;
+
+    const docs = (m.job_id ? msDocsForJob.get(m.job_id) ?? [] : []).slice().sort((a, b) =>
+      (a.document_date ?? "").localeCompare(b.document_date ?? "")
+    );
+    const wanted = state === "paid" ? PAYMENT_TYPES : BILLING_TYPES;
+    // newest of the wanted kind — a milestone re-billed after a credit note
+    // should be attributed to the document that actually stands
+    const anchor = docs.filter((d) => wanted.includes(d.type)).pop() ?? null;
+    if (!anchor?.document_date) continue;
+    const month = anchor.document_date.slice(0, 7);
+    if (month < RANGE_START_MONTH) continue;
+
+    const contract = msContractById.get(m.contract_id) ?? null;
+    milestoneRows.push({
+      month,
+      id: m.id,
+      name: m.name,
+      contract_name: contract?.name ?? null,
+      client_name: contract?.client_id ? clientName.get(contract.client_id) ?? null : null,
+      state,
+      amount: anchor.amount ?? null,
+      anchor_date: anchor.document_date,
+      // WHICH card already holds this money. 305 is the honest null: docsIn
+      // counts [300] and [320,400], so a tax invoice sits in neither and a row
+      // claiming otherwise would be inventing a total.
+      counted_in: PAYMENT_TYPES.includes(anchor.type)
+        ? "incoming"
+        : anchor.type === 300
+          ? "billed"
+          : null,
+      docs: docs.map((d) => ({
+        type: d.type,
+        number: d.morning_doc_number,
+        date: d.document_date,
+        shared: false,
+        cancelled: !!d.cancelled_at,
+        path: "job",
+      })),
+    });
+  }
+
   // ---- month buckets ------------------------------------------------------
   const monthDocs = ((monthDocsRes.data ?? []) as unknown as MonthDoc[]).filter(
     (d) => !d.archived_at && !d.cancelled_at
@@ -448,13 +640,34 @@ export default async function ProjectsPage() {
 
   const currentMonth = todayInIsrael().slice(0, 7);
   const monthKeys = Array.from(
-    new Set([...rows.map((r) => r.month), currentMonth].filter((m) => m >= RANGE_START_MONTH))
+    new Set(
+      [...rows.map((r) => r.month), ...milestoneRows.map((r) => r.month), currentMonth].filter(
+        (m) => m >= RANGE_START_MONTH
+      )
+    )
   ).sort();
 
   const buckets: MonthBucket[] = monthKeys.map((key) => {
     const all = rows
       .filter((r) => r.month === key)
       .sort((a, b) => (a.record_date ?? "").localeCompare(b.record_date ?? ""));
+
+    // ═══ MILESTONES LIVE IN THEIR OWN ARRAY, AND THAT IS THE EXCLUSION ═══
+    //
+    // Everything the summary counts is derived from `all` — `billable` drops
+    // internal and cancelled, `perEpisode` is the per-episode denominator,
+    // `expectedTotalRows` is all.length. A milestone put into `all` with a
+    // discriminator would have to be excluded from each of those by hand, and
+    // from the next one somebody adds. Keeping it out of the array entirely
+    // means no filter CAN forget it: the summary cannot see these rows at all.
+    //
+    // They also sort by their own key. A production is placed by record_date —
+    // "what did we record" — and a milestone has no recording; it is placed by
+    // the date of the document that anchors it. One mixed sort over two
+    // different meanings of "date" would order neither correctly.
+    const msForMonth = milestoneRows
+      .filter((r) => r.month === key)
+      .sort((a, b) => (a.anchor_date ?? "").localeCompare(b.anchor_date ?? ""));
 
     // "Expected" counts only work that is actually billable: internal shows are
     // the studio's own podcasts and bill nobody, and a cancelled episode is
@@ -479,6 +692,7 @@ export default async function ProjectsPage() {
       key,
       label: monthLabel(key),
       rows: all,
+      milestones: msForMonth,
       summary: {
         expected: priced.reduce((t, r) => t + (r.price ?? 0), 0),
         expectedPriced: priced.length,
