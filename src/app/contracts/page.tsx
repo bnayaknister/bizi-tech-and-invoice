@@ -207,6 +207,10 @@ export default async function ContractsPage() {
         expected_date: m.expected_date,
         is_estimated: m.is_estimated,
         jobPaid: job?.paid ?? null,
+        // a document number on the job IS the bill going out. Before this arm
+        // existed a milestone with an issued 300 read "פתוח" in cyan while the
+        // very same row printed its invoice number beside it.
+        jobBilled: present(job?.invoice_biz) || present(job?.invoice_tax),
       });
       const invoiceNumber =
         state === "paid" ? job?.invoice_tax ?? job?.invoice_biz ?? null : job?.invoice_biz ?? null;

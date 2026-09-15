@@ -1,4 +1,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { deriveMilestoneState, type MilestoneState } from "@/lib/finance/milestone";
+
+/**
+ * A document number is present. null and "" both mean "no number" — a blank
+ * string is not one, and `!!` would call it one. Same test contracts/page.tsx
+ * and issue.ts make, spelled the same way so the three cannot disagree about
+ * whether a milestone has been billed.
+ */
+const hasDocNumber = (v: unknown) => v != null && String(v).trim() !== "";
 
 export type AlertCounts = {
   paidNoTax: number;
@@ -111,11 +120,15 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const [jobs, allMilestones, contracts, invoices, productions, stageRollup, jobProds, shows, clients, pendingDocs, clientEvents, paymentEvents, miscJobs] = await Promise.all([
     // dismissed (soft-removed) jobs are out of every money surface (0041) — a
     // hidden record must not inflate debt or the VU meter
-    fetchAll<{ id: string; amount: number | null; paid: string; invoice_tax: string | null; due_date: string | null; client_id: string | null }>(
-      supabase, "jobs", "id,amount,paid,invoice_tax,due_date,client_id", (q) => q.eq("dismissed", false)
+    // invoice_biz joined the select on 2026-09-15 for the milestone derivation
+    // below — `paid` alone cannot tell a billed milestone from an untouched one,
+    // and invoice_tax alone misses every milestone that stopped at a 300.
+    fetchAll<{ id: string; amount: number | null; paid: string; invoice_biz: string | null; invoice_tax: string | null; due_date: string | null; client_id: string | null }>(
+      supabase, "jobs", "id,amount,paid,invoice_biz,invoice_tax,due_date,client_id", (q) => q.eq("dismissed", false)
     ),
-    fetchAll<{ id: string; contract_id: string; amount: number; status: string; expected_date: string | null; is_estimated: boolean }>(
-      supabase, "contract_milestones", "id,contract_id,amount,status,expected_date,is_estimated"
+    // job_id likewise — without it a milestone cannot reach its job at all
+    fetchAll<{ id: string; contract_id: string; amount: number; status: string; expected_date: string | null; is_estimated: boolean; job_id: string | null }>(
+      supabase, "contract_milestones", "id,contract_id,amount,status,expected_date,is_estimated,job_id"
     ),
     // only to decide which milestones count — see the filter below
     fetchAll<{ id: string; status: string }>(supabase, "contracts", "id,status"),
@@ -203,12 +216,53 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const activeContracts = new Set(contracts.filter((c) => c.status === "active").map((c) => c.id));
   const milestones = allMilestones.filter((m) => activeContracts.has(m.contract_id));
 
+  // ---- the milestone state, derived from the JOB (owner decision 2026-09-15) --
+  //
+  // All four milestone derivations below used to read `status === 'pending'`
+  // straight off the column. The column is not maintained: no issuance path
+  // advances it (the three /contracts buttons all decline to, by design), so it
+  // said 'pending' about milestones that had been billed and collected. Measured
+  // the day this changed — open commitment was reported as ₪26,500 when ₪21,500
+  // was owed, the ₪5,000 difference being one milestone paid in full six days
+  // earlier. The hub tile computed the same wrong number from the same column
+  // and therefore agreed with the radar while both disagreed with /contracts,
+  // which had been deriving from the job all along.
+  //
+  // deriveMilestoneState is the single rule, shared with /contracts and the
+  // entity drawer. Each alert below now asks for the state its own TITLE
+  // promises rather than for a column value that approximates it.
+  //
+  // ⚠ DECLARED LIMIT — `jobs` above is filtered to dismissed = false, because a
+  // soft-removed job is out of every money surface (0041). A milestone whose job
+  // has been dismissed therefore finds nothing here and falls back to whatever
+  // the column says. That is the quiet direction rather than the loud one: such
+  // a milestone keeps its last stated status instead of silently reverting to
+  // 'open' and re-entering the commitment. Measured 2026-09-15: 0 of 5 milestone
+  // jobs are dismissed, so this branch is unreached today — written down because
+  // the day it is reached, the number moves and nothing else would explain why.
+  const msJobById = new Map(jobs.map((j) => [j.id, j]));
+  const stateOfMilestone = (m: (typeof milestones)[number]): MilestoneState => {
+    const job = m.job_id ? msJobById.get(m.job_id) ?? null : null;
+    return deriveMilestoneState({
+      status: m.status,
+      expected_date: m.expected_date,
+      is_estimated: m.is_estimated,
+      jobPaid: job?.paid ?? null,
+      jobBilled: hasDocNumber(job?.invoice_biz) || hasDocNumber(job?.invoice_tax),
+    });
+  };
+  const milestoneState = new Map(milestones.map((m) => [m.id, stateOfMilestone(m)]));
+  // "still owed" — open, overdue OR invoiced-but-unpaid. Deliberately NOT
+  // `state === 'open'`: openSum on /contracts counts an invoiced milestone as an
+  // open commitment (ContractsClient.tsx), and a bill that went out is still
+  // money not received. Reading 'open' alone would have dropped both remaining
+  // milestones and reported an open commitment of zero.
+  const unpaidMilestone = (m: { id: string }) => milestoneState.get(m.id) !== "paid";
+
   // ---- two numbers (never summed) ----
   const debtJobs = jobs.filter((j) => j.paid === "לא" && j.amount != null);
   const debtToCollect = debtJobs.reduce((s, j) => s + num(j.amount), 0);
-  const openCommitment = milestones
-    .filter((m) => m.status === "pending")
-    .reduce((s, m) => s + num(m.amount), 0);
+  const openCommitment = milestones.filter(unpaidMilestone).reduce((s, m) => s + num(m.amount), 0);
 
   // ---- 4 VU channels, counted from due_date (screens-spec §4) ----
   const vuBuckets = { green: [] as number[], y1: [] as number[], y2: [] as number[], red: [] as number[] };
@@ -267,19 +321,26 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const amountMissing = jobs.filter((j) => j.amount == null);
   const unknownPayment = jobs.filter((j) => j.paid === "לא ידוע");
   const estimatedInvoiceDate = invoices.filter((i) => i.date_is_estimated);
-  const milestoneOverdue = milestones.filter(
-    (m) => m.status === "pending" && m.expected_date && new Date(m.expected_date).getTime() < todayMid && !m.is_estimated
-  );
+  // "עבר מועדה ואין חשבונית" — the title, now literally true. The date and
+  // is_estimated tests live inside deriveMilestoneState, and a milestone that
+  // has been billed returns 'invoiced' before that branch is reached, so it can
+  // no longer be reported as overdue-and-unbilled while carrying an invoice.
+  const milestoneOverdue = milestones.filter((m) => milestoneState.get(m.id) === "overdue");
   const approachingDue = debtJobs.filter((j) => {
     if (!j.due_date) return false;
     const od = overdueDays(j.due_date);
     return od < 0 && od >= -7; // due within the next 7 days
   });
-  const openMilestones = milestones.filter((m) => m.status === "pending");
+  // the COUNT beside openCommitment's amount — same population, or the alert
+  // would report n milestones summing to a total that excludes some of them
+  const openMilestones = milestones.filter(unpaidMilestone);
   // a milestone whose expected date is within the next 14 days — a heads-up
   // to invoice before it slips into the overdue (red) bucket
+  // 'open' and not merely unpaid: this one nags "invoice it before it slips",
+  // so a milestone that has ALREADY been invoiced has nothing to act on and
+  // must stop appearing.
   const milestoneApproaching = milestones.filter((m) => {
-    if (m.status !== "pending" || !m.expected_date) return false;
+    if (milestoneState.get(m.id) !== "open" || !m.expected_date) return false;
     const days = Math.floor((new Date(m.expected_date).getTime() - todayMid) / DAY);
     return days >= 0 && days <= 14;
   });

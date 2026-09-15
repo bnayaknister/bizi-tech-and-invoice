@@ -619,14 +619,27 @@ export default function ContractsClient({
                               </button>
                             )}
                             {/* available on EVERY state: an invoiced or paid
-                                milestone had no action at all until now */}
+                                milestone had no action at all until now.
+
+                                KEPT DELIBERATELY after the state became derived
+                                from the job (2026-09-15). It looks redundant and
+                                is not: "סמן שולם" on /finance operates on a JOB,
+                                and a milestone has none until its first document
+                                is issued — which is the ordinary opening state,
+                                not an edge case. This menu is the only control
+                                that can speak for a milestone nothing else can
+                                see. It moves forward only: the derivation ORs
+                                the column with the job, so a job that says
+                                billed or paid cannot be walked back from here,
+                                and the title says so rather than letting the
+                                operator discover it. */}
                             <select
                               value={m.status}
                               disabled={busyId === m.id}
                               onChange={(e) => setMilestoneStatus(m, e.target.value)}
                               title={
                                 m.job_id
-                                  ? "לאבן דרך זו יש job מקושר — אם ה-job מסומן כשולם, השורה תישאר ירוקה גם אם תחזיר את הסטטוס לאחור"
+                                  ? "מצב אבן הדרך נגזר מה-job: חשבונית שיצאה קובעת חויב, ותשלום קובע שולם. התפריט יכול רק להוסיף — החזרת הסטטוס לאחור לא תשנה שורה שה-job שלה מעיד אחרת"
                                   : undefined
                               }
                               className="text-[11px] border border-[var(--rule)] rounded-lg px-2 py-1 text-[var(--dim)] bg-transparent hover:bg-[var(--panel3)] transition-colors disabled:opacity-40"

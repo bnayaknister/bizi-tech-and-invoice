@@ -381,20 +381,35 @@ async function handleGet(
     // on a Hebrew screen). It now carries the same derived state /contracts
     // shows — which needs is_estimated and the linked job's paid, or a
     // milestone whose job is paid would read "חויב" here and "שולם" there.
+    //
+    // invoice_biz / invoice_tax ride along since 2026-09-15: the state is
+    // derived from the JOB now, and a document number on it means the bill went
+    // out. Reading only `paid` here would put this drawer back where /contracts
+    // used to be — a billed milestone reading "פתוח".
     const jobIds = (data ?? []).map((m) => m.job_id).filter(Boolean) as string[];
     const { data: msJobs } = jobIds.length
-      ? await supabase.from("jobs").select("id,paid").in("id", jobIds)
+      ? await supabase.from("jobs").select("id,paid,invoice_biz,invoice_tax").in("id", jobIds)
       : { data: [] };
-    const paidByJob = new Map((msJobs ?? []).map((j) => [j.id as string, j.paid as string | null]));
-    milestones = (data ?? []).map((m) => ({
-      ...m,
-      state: deriveMilestoneState({
-        status: m.status,
-        expected_date: m.expected_date,
-        is_estimated: m.is_estimated,
-        jobPaid: m.job_id ? paidByJob.get(m.job_id) ?? null : null,
-      }),
-    }));
+    const jobById = new Map(
+      (msJobs ?? []).map((j) => [
+        j.id as string,
+        j as { paid: string | null; invoice_biz: string | null; invoice_tax: string | null },
+      ])
+    );
+    const billed = (v: unknown) => v != null && String(v).trim() !== "";
+    milestones = (data ?? []).map((m) => {
+      const job = m.job_id ? jobById.get(m.job_id) ?? null : null;
+      return {
+        ...m,
+        state: deriveMilestoneState({
+          status: m.status,
+          expected_date: m.expected_date,
+          is_estimated: m.is_estimated,
+          jobPaid: job?.paid ?? null,
+          jobBilled: billed(job?.invoice_biz) || billed(job?.invoice_tax),
+        }),
+      };
+    });
   }
 
   // change history — events RLS is owner-only; mirror that here
