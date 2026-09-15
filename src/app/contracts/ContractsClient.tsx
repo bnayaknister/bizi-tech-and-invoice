@@ -7,6 +7,11 @@ import ClientCombobox from "@/components/ClientCombobox";
 import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
 import { DOC_TYPE_LABEL, RECEIPT_NOTICE } from "@/lib/morning/types";
 import { displayDate } from "@/lib/dates";
+import RecordBilledBody, {
+  type BilledCandidate,
+  type BilledMismatch,
+  type BilledResult,
+} from "./RecordBilledBody";
 
 export type MilestoneCard = {
   id: string;
@@ -110,6 +115,9 @@ export default function ContractsClient({
   const [editDateFor, setEditDateFor] = useState<MilestoneCard | null>(null);
   const [addMsFor, setAddMsFor] = useState<ContractCard | null>(null);
   const [linkJobFor, setLinkJobFor] = useState<{ milestone: MilestoneCard; contract: ContractCard } | null>(null);
+  const [recordBilledFor, setRecordBilledFor] = useState<{ milestone: MilestoneCard; contract: ContractCard } | null>(
+    null
+  );
   const [closeFor, setCloseFor] = useState<ContractCard | null>(null);
   const [showClosed, setShowClosed] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -602,6 +610,32 @@ export default function ContractsClient({
                                 >
                                   רשום מסמך שהונפק
                                 </button>
+                                {/* Its neighbour above RECORDS ONE DOCUMENT BY
+                                    HAND and mints a job carrying that number.
+                                    This one attaches documents the pull ALREADY
+                                    brought into the registry — they exist, they
+                                    carry Morning ids, and the only thing missing
+                                    is which job they belong to.
+
+                                    Only when the milestone has no job: the
+                                    route reuses an existing one, but there is
+                                    nothing to offer here once a job is attached
+                                    — its documents reach it through /finance and
+                                    the registry's own picker. NOT gated on
+                                    client_mapped, and that is the difference
+                                    that justifies the button: nothing here
+                                    reaches Morning, so an unmapped client is
+                                    irrelevant. */}
+                                {!m.job_id && (
+                                  <button
+                                    data-ms-action="record_billed"
+                                    onClick={() => setRecordBilledFor({ milestone: m, contract: c })}
+                                    title="משייך מסמכים שכבר יצאו ממורנינג לאבן הדרך — לא מנפיק דבר"
+                                    className="text-[11px] border border-[var(--rule)] rounded-lg px-2.5 py-1 text-[var(--dim)] hover:bg-[var(--panel3)] transition-colors"
+                                  >
+                                    רשום כחויב
+                                  </button>
+                                )}
                                 <button
                                   onClick={() => setEditDateFor(m)}
                                   className="text-[11px] border border-[var(--rule)] rounded-lg px-2.5 py-1 text-[var(--dim)] hover:bg-[var(--panel3)] transition-colors"
@@ -774,6 +808,18 @@ export default function ContractsClient({
           onClose={() => setLinkJobFor(null)}
           onDone={() => {
             setLinkJobFor(null);
+            router.refresh();
+          }}
+          onError={setError}
+        />
+      )}
+      {recordBilledFor && (
+        <RecordBilledModal
+          milestone={recordBilledFor.milestone}
+          contract={recordBilledFor.contract}
+          onClose={() => setRecordBilledFor(null)}
+          onDone={() => {
+            setRecordBilledFor(null);
             router.refresh();
           }}
           onError={setError}
@@ -1194,6 +1240,150 @@ function LinkJobModal({
   );
 }
 
+// ---------------------------------------------------------------------------
+// "רשום כחויב" — attach documents the pull ALREADY brought into the registry.
+//
+// The counterpart to IssueModal below, and the distinction is the whole reason
+// both exist: that one takes a document NUMBER typed by hand and mints a job
+// carrying it; this one takes documents that exist as rows, with Morning ids and
+// numbers, and supplies the one thing they lack — a job.
+//
+// THE SERVER OWNS EVERY DECISION. The candidate list is the server's
+// (linkPreflight runs per row, so a document offered here is one that can
+// actually be linked), the amount warning is the server's 409 (so the numbers in
+// the sentence are the numbers it compared, never a second calculation), and the
+// per-document outcome is the server's. This container fetches and holds state;
+// RecordBilledBody, which is pure and separately render-tested, draws it.
+function RecordBilledModal({
+  milestone,
+  contract,
+  onClose,
+  onDone,
+  onError,
+}: {
+  milestone: MilestoneCard;
+  contract: ContractCard;
+  onClose: () => void;
+  onDone: () => void;
+  onError: (m: string) => void;
+}) {
+  const router = useRouter();
+  const [loading, setLoading] = useState(true);
+  const [cands, setCands] = useState<BilledCandidate[]>([]);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [mismatch, setMismatch] = useState<BilledMismatch | null>(null);
+  const [ack, setAck] = useState(false);
+  const [result, setResult] = useState<BilledResult | null>(null);
+
+  const load = async (): Promise<BilledCandidate[]> => {
+    const res = await fetch(`/api/contracts/milestones/${milestone.id}/record-billed`);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setErr(body.error ?? "טעינת המסמכים נכשלה");
+      return [];
+    }
+    const list = (body.candidates ?? []) as BilledCandidate[];
+    setCands(list);
+    return list;
+  };
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    load().finally(() => {
+      if (alive) setLoading(false);
+    });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [milestone.id]);
+
+  // Ticking any document ticks its whole CHAIN; unticking removes only the one
+  // clicked. A 300 and the 305 raised on it are one bill, and selecting half of
+  // a chain is almost always a slip — but a deliberate one has to stay possible,
+  // which is why the two directions are not symmetric.
+  const toggle = (c: BilledCandidate) => {
+    setMismatch(null);
+    setAck(false);
+    setErr(null);
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(c.id)) {
+        next.delete(c.id);
+        return next;
+      }
+      for (const o of cands) if (o.chain_id === c.chain_id) next.add(o.id);
+      return next;
+    });
+  };
+
+  async function submit() {
+    setBusy(true);
+    setErr(null);
+    setResult(null);
+    const sent = picked.size;
+    const res = await fetch(`/api/contracts/milestones/${milestone.id}/record-billed`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ document_ids: Array.from(picked), amount_confirmed: ack }),
+    });
+    const body = await res.json().catch(() => ({}));
+    setBusy(false);
+
+    // 207 IS a 2xx, so it has to be tested BEFORE res.ok — otherwise a partial
+    // link closes the modal and reports success.
+    if (res.status === 207) {
+      setResult({ linked: body.linked ?? [], failed: body.failed ?? [], total: sent });
+      // the job now exists and some documents landed: the row behind the modal
+      // is already stale, and the candidate list has shrunk
+      router.refresh();
+      const fresh = await load();
+      setPicked((prev) => new Set(Array.from(prev).filter((id) => fresh.some((c) => c.id === id))));
+      return;
+    }
+    if (res.status === 409 && body.mismatch) {
+      setMismatch(body.mismatch as BilledMismatch);
+      return;
+    }
+    if (!res.ok) {
+      setErr(body.error ?? "הרישום נכשל");
+      return;
+    }
+    onError("");
+    onDone();
+  }
+
+  return (
+    <div className="fixed inset-0 flex items-center justify-center p-4 z-50" style={OVERLAY} onClick={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-lg border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl max-h-[88vh] overflow-y-auto"
+        style={PANEL}
+      >
+        <RecordBilledBody
+          milestoneName={milestone.name}
+          milestoneAmount={milestone.amount}
+          clientName={contract.client_name}
+          loading={loading}
+          candidates={cands}
+          picked={picked}
+          busy={busy}
+          error={err}
+          mismatch={mismatch}
+          ack={ack}
+          result={result}
+          onToggle={toggle}
+          onAck={setAck}
+          onSubmit={submit}
+          onClose={onClose}
+        />
+      </div>
+    </div>
+  );
+}
 function IssueModal({ milestone, onClose, onDone, onError }: { milestone: MilestoneCard; onClose: () => void; onDone: () => void; onError: (m: string) => void }) {
   const [docNumber, setDocNumber] = useState("");
   const [issuedAt, setIssuedAt] = useState(new Date().toISOString().slice(0, 10));

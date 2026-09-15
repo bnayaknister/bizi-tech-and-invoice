@@ -38,7 +38,11 @@ const BILLING_TYPES = [...TAX_TYPES, DEAL_TYPE, RECEIPT_TYPE];
 const AMOUNT_TOL = 2; // shekels
 const AMOUNT_TOL_PCT = 0.01; // or 1%
 const AUTO_DATE_WINDOW = 45; // days — the ONLY place a date cutoff applies (auto-link)
-const VAT = 1.18;
+// Exported for the same reason amountBasis below is: record-billed shows the
+// operator a net figure beside the gross it is comparing, and a second `1.18`
+// written anywhere else is a rate that can drift away from the one the matching
+// engine actually uses. One constant, both callers.
+export const VAT = 1.18;
 const STALE_DAYS = 30; // "not billed" older than this
 
 export type ReconClient = { id: string; name: string | null; morning_client_id: string | null };

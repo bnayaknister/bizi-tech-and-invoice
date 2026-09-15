@@ -593,8 +593,16 @@ export default async function ProjectsPage() {
     });
     if (state !== "paid" && state !== "invoiced") continue;
 
-    const docs = (m.job_id ? msDocsForJob.get(m.job_id) ?? [] : []).slice().sort((a, b) =>
-      (a.document_date ?? "").localeCompare(b.document_date ?? "")
+    // Tie-break on an EQUAL date: a document the month cards actually count
+    // (300 in `billed`, 320/400 in `incoming`) sorts AFTER a 305, so `.pop()`
+    // below picks it. A 300 and the 305 raised on it routinely share a date —
+    // בר ביצוע's 40326 and 50070 are both 2026-09-10 — and without this the
+    // winner was whichever PostgREST happened to return last, so `counted_in`
+    // flipped between "בתוך חויב" and no badge at all between renders.
+    const counted = (t: number) => (t === 305 ? 0 : 1);
+    const docs = (m.job_id ? msDocsForJob.get(m.job_id) ?? [] : []).slice().sort(
+      (a, b) =>
+        (a.document_date ?? "").localeCompare(b.document_date ?? "") || counted(a.type) - counted(b.type)
     );
     const wanted = state === "paid" ? PAYMENT_TYPES : BILLING_TYPES;
     // newest of the wanted kind — a milestone re-billed after a credit note
