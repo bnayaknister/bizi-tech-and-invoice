@@ -1,12 +1,19 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import IconTile from "@/components/IconTile";
 import ClientCombobox from "@/components/ClientCombobox";
 import MorningClientReadonly from "@/components/MorningClientReadonly";
 import { displayDate } from "@/lib/dates";
+import RecordPastBody, {
+  type PastEpisode,
+  type PastJob,
+  type PastMismatch,
+  type BillingMode,
+} from "./RecordPastBody";
+import type { BilledCandidate, BilledResult } from "@/app/contracts/RecordBilledBody";
 
 export type ShowRow = {
   id: string;
@@ -570,6 +577,7 @@ function ShowCard({
   // sides of this division are now filtered — the revenue no longer flows from
   // cancelled or merged rows either — so it is per REAL episode.
   const perEpisode = show.revenue && show.episodes > 0 ? Math.round(show.revenue / show.episodes) : null;
+  const [recordPastFor, setRecordPastFor] = useState<ShowRow | null>(null);
 
   return (
     <div
@@ -949,7 +957,23 @@ function ShowCard({
         )}
 
         <div>
-          <div className="text-xs font-bold mb-1.5">פרקים ({episodes.length})</div>
+          <div className="flex items-center gap-2 mb-1.5">
+            <div className="text-xs font-bold">פרקים ({episodes.length})</div>
+            <div className="flex-1" />
+            {/* Retroactive recording. can_edit_money because it creates a job
+                and links documents; hidden on a show that bills nobody, where
+                there is no billing to record. The route re-checks both. */}
+            {canEditMoney && show.billing_mode !== "none" && (
+              <button
+                data-show-action="record_past"
+                onClick={() => setRecordPastFor(show)}
+                title="רושם הפקה שכבר בוצעה וחויבה — לא נכנס לתור האישורים ולא מנפיק דבר"
+                className="text-[11px] border border-[var(--rule)] rounded-lg px-2.5 py-1 text-[var(--dim)] hover:bg-[var(--panel3)] transition-colors"
+              >
+                הוסף הפקה שכבר בוצעה
+              </button>
+            )}
+          </div>
           <div className="max-h-56 overflow-y-auto border border-[var(--rule)] rounded">
             {episodes.map((e) => (
               <div
@@ -976,6 +1000,195 @@ function ShowCard({
             )}
           </div>
         </div>
+      </div>
+
+      {recordPastFor && (
+        <RecordPastModal
+          show={recordPastFor}
+          onClose={() => setRecordPastFor(null)}
+          onDone={() => {
+            setRecordPastFor(null);
+            onClose();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// "הוסף הפקה שכבר בוצעה" — the retroactive recording modal.
+//
+// The container: it fetches, it holds state, and it delegates every pixel to
+// RecordPastBody, which is pure and separately render-tested.
+//
+// WHY THE ROUTE AND NOT THE ORDINARY BOARD: creating a production the normal
+// way and walking its status fires three mechanisms that each produce a real
+// document or a real duplicate for work finished and invoiced months ago — a
+// queued work order (productions/route.ts:208), a second job at 'הוקלט'
+// (ensure_job_for_production), and a deal invoice at 'אושר_ע"י_לקוח'
+// ([id]/route.ts:125). The route writes the end state directly and touches none
+// of them. The user never sees a status here, which is the point.
+function RecordPastModal({
+  show,
+  onClose,
+  onDone,
+}: {
+  show: ShowRow;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const router = useRouter();
+  const [loading, setLoading] = useState(true);
+  const [episodes, setEpisodes] = useState<PastEpisode[]>([{ record_date: "", title: "" }]);
+  const [mode, setMode] = useState<BillingMode>("job");
+  const [jobs, setJobs] = useState<PastJob[]>([]);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [documents, setDocuments] = useState<BilledCandidate[]>([]);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [mismatch, setMismatch] = useState<PastMismatch | null>(null);
+  const [ack, setAck] = useState(false);
+  const [result, setResult] = useState<BilledResult | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
+
+  const load = async (): Promise<BilledCandidate[]> => {
+    const res = await fetch(`/api/shows/${show.id}/record-past-productions?candidates=1`);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setErr(body.error ?? "טעינת המועמדים נכשלה");
+      return [];
+    }
+    setJobs((body.jobs ?? []) as PastJob[]);
+    const docs = (body.documents ?? []) as BilledCandidate[];
+    setDocuments(docs);
+    return docs;
+  };
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    load().finally(() => {
+      if (alive) setLoading(false);
+    });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [show.id]);
+
+  const clearVerdicts = () => {
+    setMismatch(null);
+    setAck(false);
+    setErr(null);
+  };
+
+  // Ticking a document ticks its whole CHAIN; unticking removes only the one
+  // clicked — the same asymmetry RecordBilledBody uses, and for the same
+  // reason: a 300 and the 305 raised on it are one bill, but a deliberate
+  // half-selection has to stay possible.
+  const toggleDoc = (c: BilledCandidate) => {
+    clearVerdicts();
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(c.id)) {
+        next.delete(c.id);
+        return next;
+      }
+      for (const o of documents) if (o.chain_id === c.chain_id) next.add(o.id);
+      return next;
+    });
+  };
+
+  async function submit() {
+    setBusy(true);
+    setErr(null);
+    setResult(null);
+    const billing =
+      mode === "job"
+        ? { mode: "job" as const, job_id: selectedJobId ?? undefined }
+        : mode === "documents"
+          ? { mode: "documents" as const, document_ids: Array.from(picked), amount_confirmed: ack }
+          : { mode: "none" as const };
+    const sent = picked.size;
+    const res = await fetch(`/api/shows/${show.id}/record-past-productions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ episodes, billing }),
+    });
+    const body = await res.json().catch(() => ({}));
+    setBusy(false);
+
+    // 207 IS a 2xx, so it must be tested BEFORE res.ok — otherwise a partial
+    // link closes the modal and reports success. The productions and the job
+    // already exist at this point; only a document link is missing.
+    if (res.status === 207) {
+      setResult({ linked: body.linked ?? [], failed: body.failed ?? [], total: sent });
+      router.refresh();
+      const fresh = await load();
+      setPicked((prev) => new Set(Array.from(prev).filter((id) => fresh.some((c) => c.id === id))));
+      return;
+    }
+    if (res.status === 409 && body.mismatch) {
+      setMismatch(body.mismatch as PastMismatch);
+      return;
+    }
+    if (!res.ok) {
+      setErr(body.error ?? "הרישום נכשל");
+      return;
+    }
+    if (body.warning) setWarning(body.warning as string);
+    // the card behind this one now has new episodes and a new revenue figure
+    router.refresh();
+    onDone();
+  }
+
+  return (
+    <div
+      className="fixed inset-0 flex items-center justify-center p-4 z-[60]"
+      style={{ background: "rgba(3,2,10,0.66)", backdropFilter: "blur(6px)" }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-lg border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl max-h-[88vh] overflow-y-auto"
+        style={{ background: "rgba(15,13,28,0.92)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}
+      >
+        <RecordPastBody
+          showName={show.name}
+          defaultRate={show.default_rate}
+          loading={loading}
+          episodes={episodes}
+          mode={mode}
+          jobs={jobs}
+          selectedJobId={selectedJobId}
+          documents={documents}
+          picked={picked}
+          busy={busy}
+          error={err}
+          mismatch={mismatch}
+          ack={ack}
+          result={result}
+          warning={warning}
+          onEpisodeChange={(i, patch) =>
+            setEpisodes((prev) => prev.map((e, idx) => (idx === i ? { ...e, ...patch } : e)))
+          }
+          onAddEpisode={() => setEpisodes((prev) => [...prev, { record_date: "", title: "" }])}
+          onRemoveEpisode={(i) => setEpisodes((prev) => prev.filter((_, idx) => idx !== i))}
+          onMode={(m) => {
+            clearVerdicts();
+            setMode(m);
+          }}
+          onSelectJob={(id) => {
+            clearVerdicts();
+            setSelectedJobId(id);
+          }}
+          onToggleDoc={toggleDoc}
+          onAck={setAck}
+          onSubmit={submit}
+          onClose={onClose}
+        />
       </div>
     </div>
   );
