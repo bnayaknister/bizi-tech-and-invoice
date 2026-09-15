@@ -585,6 +585,29 @@ export async function linkDocumentToJob(
   // 3. mirror to the finance registry (invoices) if not already there — only
   //    for actual invoices (deal/tax); a bare קבלה (400) is not an invoice row
   if (job.client_id && (isTax || isDeal)) {
+    // ⚠️ THE SKIP BELOW IS UNREACHABLE TODAY, AND IT IS THE SHAPE THAT CAUSED
+    // THE ONE MISMATCH THE TABLE HAS EVER HELD. Read before removing gate 1.
+    //
+    // When a row already exists for this document, this branch stamps
+    // `documents.job_id` with the NEW job (above, step 1) and leaves the
+    // existing invoices row pointing at the OLD one. The document and its
+    // registry row then name different jobs, and nothing says so.
+    //
+    // That is exactly what happened to 60167 (מכון דווידסון): linked by hand
+    // 2026-07-26, corrected 2026-07-30 by a manual SQL block that moved
+    // `documents` and `jobs` and did not touch `invoices`, and finally
+    // straightened by migration 0085. The symptom was never money — both jobs
+    // were paid and correctly marked — it was `docs.find(d => d.type === "מס")`
+    // at finance/page.tsx:62 returning a foreign document's PDF, because one
+    // job carried two tax rows and the other carried none.
+    //
+    // It cannot happen through this function any more: linkPreflight's gate 1
+    // (see above) looks up the SAME `morning_doc_id`, under the same
+    // `isTax || isDeal` condition, and refuses before the first write — so by
+    // the time control arrives here `existingInv` is always null. The lookup
+    // stays as a belt: it is cheap, and it is the only thing standing between
+    // a future removal of gate 1 and a silently re-opened hole. If gate 1 ever
+    // goes, this skip must become a refusal or an event — never a silence.
     const { data: existingInv } = await admin
       .from("invoices")
       .select("id")
