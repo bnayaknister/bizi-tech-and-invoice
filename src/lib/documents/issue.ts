@@ -819,6 +819,43 @@ export async function issuePendingDocument(
 
     for (const job of jobsData ?? []) {
       const jobPatch = jobPatchForDocument({ docType: row.doc_type, docNumber, job });
+
+      // ⚠️ THE SAME SILENT SKIP AS THE RECEIPT BRANCH BELOW, and it bit first.
+      //
+      // A 320 is an invoice AND a receipt, so it carries two independent
+      // writes: invoice_tax (no condition on paid) and paid (only when paid is
+      // EXACTLY 'לא'). When the second is skipped the first still lands, so the
+      // row looks handled — the job names the tax document — while the money
+      // never moved. Nothing distinguished that from a clean run.
+      //
+      // Measured on 60189 (issued 2026-09-02, five jobs): all five took
+      // invoice_tax='60189' and none took paid, because all five were
+      // 'לא ידוע' from ensure_job_for_production (fixed in 0081). They were
+      // marked by hand six days later, and the only reason the cause was ever
+      // found is that invoice_tax proved the loop had run.
+      //
+      // ONLY a 320 is reported. This loop also serves 300 and 305, and neither
+      // is supposed to move paid at all (a 305 declares a debt — issue.ts:104),
+      // so an event for them would be noise that buries the real one. The check
+      // sits BEFORE the empty-patch continue because a re-issue produces an
+      // empty patch and would otherwise never reach it.
+      if (row.doc_type === "tax_receipt" && !jobPatch.paid) {
+        await admin.from("events").insert({
+          entity_type: "job",
+          entity_id: job.id,
+          event_type: "auto_tax_receipt_paid_not_flipped",
+          actor_id: actorId,
+          payload: {
+            via: "auto_tax_receipt",
+            doc_type: row.doc_type,
+            morning_doc_number: docNumber,
+            morning_doc_id: morningDocId,
+            pending_document_id: row.id,
+            job_paid: job.paid ?? null,
+          },
+        });
+      }
+
       if (!Object.keys(jobPatch).length) continue;
       await admin.from("jobs").update(jobPatch).eq("id", job.id as string);
 
@@ -888,7 +925,43 @@ export async function issuePendingDocument(
         .in("id", receiptJobs);
       for (const job of jobsData ?? []) {
         const jobPatch = jobPatchForDocument({ docType: row.doc_type, docNumber, job });
-        if (!jobPatch.paid) continue;
+
+        // ⚠️ THE SKIP THAT USED TO BE SILENT (2026-09-15).
+        //
+        // jobPatchForDocument flips paid only when job.paid is EXACTLY 'לא'
+        // (issue.ts:107). Every other value falls through to the continue
+        // below and, until this event existed, left no trace at all — the one
+        // branch of four here that wrote nothing.
+        //
+        // That silence cost 16 days on receipt 80063 (issued 2026-08-30): its
+        // job was 'לא ידוע', not 'לא', because ensure_job_for_production never
+        // wrote the column (fixed in 0081) and the default is 'לא ידוע'. The
+        // receipt closed the invoice in Morning, the job stayed unpaid, and
+        // nothing anywhere said why until somebody marked it by hand on 15.9.
+        //
+        // `job_paid` carries the REAL value rather than a verdict, because the
+        // two reasons to land here need opposite answers: 'כן' means another
+        // path got there first and there is nothing to do (receipt 80062, seven
+        // minutes after a manual marking), while anything else means the money
+        // did move and the job does not know it.
+        if (!jobPatch.paid) {
+          await admin.from("events").insert({
+            entity_type: "job",
+            entity_id: job.id,
+            event_type: "auto_receipt_paid_not_flipped",
+            actor_id: actorId,
+            payload: {
+              via: "auto_receipt",
+              doc_type: row.doc_type,
+              morning_doc_number: docNumber,
+              morning_doc_id: morningDocId,
+              pending_document_id: row.id,
+              linked_document_ids: linkedIds,
+              job_paid: job.paid ?? null,
+            },
+          });
+          continue;
+        }
         await admin.from("jobs").update({ paid: jobPatch.paid }).eq("id", job.id as string);
 
         await admin.from("events").insert({

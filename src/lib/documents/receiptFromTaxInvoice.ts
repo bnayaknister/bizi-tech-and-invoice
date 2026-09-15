@@ -383,11 +383,33 @@ export async function createReceiptFromTaxInvoices(
     }
   }
 
-  // NOTE: no jobs gate. registryType (issue.ts) returns null for a receipt, so
-  // issuing one writes no invoices row and stamps nothing on jobs — there is
-  // nothing for bundle_job_ids to carry, and requiring it would refuse perfectly
-  // good receipts. The money side of the job is closed by the payment
-  // reconciliation, which reads 400s from the pull.
+  // NOTE: no jobs gate, and this row carries no job of its own — there is
+  // nothing for bundle_job_ids to hold, and requiring one would refuse
+  // perfectly good receipts.
+  //
+  // ⚠️ THAT IS NOT THE SAME AS "TOUCHES NOTHING", and this comment said so
+  // until 2026-09-15. Two halves, and only the first is true:
+  //
+  //  • NO invoices ROW. registryType (issue.ts:40-44) returns null for a
+  //    receipt, so the registry write at issue.ts:696 is gated shut.
+  //
+  //  • IT DOES STAMP jobs.paid. issue.ts:858-892 is a branch of its own: it
+  //    resolves the jobs through payload.linkedDocumentIds (jobsBehindReceipt,
+  //    issue.ts:130-159), reading job_id and bundle_job_ids off the linked 305
+  //    in BOTH pending_documents and documents, and sets paid = 'כן'.
+  //    Added 2026-08-23 (a6ca635); the sentence here was never updated.
+  //
+  // TWO CONDITIONS, and a receipt that meets neither is silent by design:
+  //   1. the linked 305 must carry a job_id or bundle_job_ids — a 305 pulled
+  //      from Morning and never matched offers none (auto_receipt_no_jobs).
+  //   2. the job's paid must be EXACTLY 'לא' (jobPatchForDocument, issue.ts:107).
+  //      'לא ידוע' does not qualify, and until 0081 that was the value every
+  //      job born from ensure_job_for_production carried — which is why 80063
+  //      left its job unpaid for 16 days (auto_receipt_paid_not_flipped now
+  //      records exactly this).
+  //
+  // When neither holds, the money side is closed by the payment reconciliation
+  // instead, which reads 400s from the pull.
 
   // ---- the payload --------------------------------------------------------
   const { data: clientRow } = localClientIds.length
