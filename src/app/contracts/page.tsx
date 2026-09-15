@@ -3,6 +3,7 @@ import { getSessionAndProfile } from "@/lib/profile";
 import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import { deriveMilestoneState } from "@/lib/finance/milestone";
+import { MORNING_DOC_CODE } from "@/lib/morning/types";
 import ContractsClient, { type ContractCard } from "./ContractsClient";
 
 export const dynamic = "force-dynamic";
@@ -52,6 +53,117 @@ export default async function ContractsPage() {
   // null and "" both mean "no document number" — a blank string is not one.
   const present = (v: unknown) => v != null && String(v).trim() !== "";
 
+  // ---- wave 2: the registry rows behind the numbers stamped on the jobs ----
+  //
+  // WHY THIS READ EXISTS AT ALL — `jobs.invoice_tax` cannot tell 305 from 320.
+  //
+  // issue.ts:101-103 writes that one column for BOTH tax types, so a milestone
+  // that got a חשבונית מס and one that got a חשבונית מס / קבלה are
+  // indistinguishable from the job alone. They need opposite treatment: a 320
+  // already contains the payment and closes the milestone, while a 305 is a
+  // debt still waiting for money and must be able to father a receipt.
+  //
+  // The queue rows in `queued` can classify a tax document — they carry the
+  // doc_type — but only for documents this app issued. Measured 2026-09-15:
+  // ONE of the three milestones holding an invoice_tax (מכירת ביפו "חלק א",
+  // #60166) has zero tax queue rows, because it was raised by hand in Morning
+  // and reached us on the pull. Classifying from the queue alone would leave
+  // that row unexplained — which is the blank row this whole change is fixing.
+  // `documents.type` answers all three, so it leads and the queue row is the
+  // fallback.
+  //
+  // `raw` rides along because the receipt builder's openness gate reads it
+  // (receiptFromTaxInvoice.ts readOpenness) and this screen has to predict that
+  // verdict to decide whether the button is live, disabled, or absent. Bounded
+  // by two numbers per milestone — ten rows today — so it is fetched whole
+  // rather than through a view that would have to be kept in step with the
+  // builder.
+  const milestoneJobs = (milestones ?? [])
+    .map((m) => (m.job_id ? jobById.get(m.job_id) : null))
+    .filter((j): j is NonNullable<typeof j> => !!j);
+  const docNumbers = Array.from(
+    new Set(
+      milestoneJobs
+        .flatMap((j) => [j.invoice_biz, j.invoice_tax])
+        .filter((n): n is string => present(n))
+        .map((n) => String(n).trim())
+    )
+  );
+
+  const [{ data: taxDocs }, { data: liveReceipts }] = await Promise.all([
+    docNumbers.length
+      ? admin
+          .from("documents")
+          .select("id,morning_doc_id,morning_doc_number,type,document_date,cancelled_at,raw")
+          .in("morning_doc_number", docNumbers)
+      : Promise.resolve({ data: [] as unknown[] }),
+    // Every receipt still alive in the queue. NOT filtered by job, and that is
+    // not laziness: createReceiptFromTaxInvoices inserts a 400 with job_id NULL
+    // and no bundle_job_ids (it says so in as many words — "there is nothing for
+    // bundle_job_ids to carry"), so a receipt is unreachable from the milestone's
+    // job by any join. The only thing tying it to its parent is
+    // payload.linkedDocumentIds, which is exactly what the builder's own
+    // idempotency gate matches on. Two rows exist in the whole account today;
+    // reading them all and matching in memory is cheaper than a contains() query
+    // per milestone and uses the same key the server does.
+    admin
+      .from("pending_documents")
+      .select("id,status,payload")
+      .eq("doc_type", "receipt")
+      .in("status", ["pending", "approved", "issued"]),
+  ]);
+
+  type RegistryDoc = {
+    id: string;
+    morning_doc_id: string | null;
+    morning_doc_number: string | null;
+    type: number | null;
+    document_date: string | null;
+    cancelled_at: string | null;
+    raw: unknown;
+  };
+  const docByNumber = new Map<string, RegistryDoc>();
+  for (const d of ((taxDocs ?? []) as unknown as RegistryDoc[])) {
+    if (d.morning_doc_number) docByNumber.set(String(d.morning_doc_number).trim(), d);
+  }
+
+  // the Morning ids already spoken for by a live receipt
+  const receiptedMorningIds = new Set<string>();
+  for (const r of ((liveReceipts ?? []) as { payload: unknown }[])) {
+    const ids = (r.payload as { linkedDocumentIds?: unknown } | null)?.linkedDocumentIds;
+    if (Array.isArray(ids)) for (const v of ids) if (typeof v === "string") receiptedMorningIds.add(v);
+  }
+
+  /**
+   * The receipt verdict, predicted here so the button can be honest before it
+   * is pressed rather than after.
+   *
+   * This MIRRORS the server and does not replace it — createReceiptFromTaxInvoices
+   * re-runs every one of these gates and owns the outcome. What it buys is the
+   * difference between a button that fails and a button that explains: the three
+   * refusal sentences are imported from RECEIPT_NOTICE, so the tooltip and the
+   * error are the same words.
+   *
+   * `awaiting_pull` is the one that will be hit in practice. A document the app
+   * just issued carries the Morning POST response in `raw`, which has no `ref`
+   * and no `amount`, so the receipt cannot be priced until the nightly pull
+   * replaces it. That is a wait measured in hours, and it is stated on the
+   * button instead of being discovered by clicking it.
+   */
+  const receiptVerdict = (raw: unknown): "ready" | "awaiting_pull" | "closed" | "not_allowed" => {
+    if (!raw || typeof raw !== "object") return "awaiting_pull";
+    const rec = raw as Record<string, unknown>;
+    if (!("ref" in rec) || !Array.isArray(rec.ref)) return "awaiting_pull";
+    // the gross is read from the same raw, so a raw without one cannot price a
+    // receipt even when `ref` looks inviting
+    if (rec.amount === null || rec.amount === undefined || !Number.isFinite(Number(rec.amount))) {
+      return "awaiting_pull";
+    }
+    const codes = (rec.ref as unknown[]).map((v) => Number(v)).filter((n) => Number.isFinite(n));
+    if (!codes.length) return "closed";
+    return codes.includes(MORNING_DOC_CODE.receipt) ? "ready" : "not_allowed";
+  };
+
   type QueueRow = {
     id: string;
     doc_type: string;
@@ -98,6 +210,60 @@ export default async function ContractsPage() {
       });
       const invoiceNumber =
         state === "paid" ? job?.invoice_tax ?? job?.invoice_biz ?? null : job?.invoice_biz ?? null;
+
+      // ---- which tax document, and what may still be raised on it ----------
+      const taxNumber = present(job?.invoice_tax) ? String(job!.invoice_tax).trim() : null;
+      const taxDoc = taxNumber ? docByNumber.get(taxNumber) ?? null : null;
+      const taxQueueRow =
+        rows.find((q) => (q.doc_type === "tax_invoice" || q.doc_type === "tax_receipt") && reallyIssued(q)) ?? null;
+
+      // documents.type leads (it answers for pulled documents too); the queue
+      // row is the fallback; null means nobody can say, and a row that cannot
+      // say says nothing rather than guessing.
+      const taxKind: "tax_invoice" | "tax_receipt" | null =
+        taxDoc?.type === MORNING_DOC_CODE.tax_receipt
+          ? "tax_receipt"
+          : taxDoc?.type === MORNING_DOC_CODE.tax_invoice
+            ? "tax_invoice"
+            : taxQueueRow
+              ? (taxQueueRow.doc_type as "tax_invoice" | "tax_receipt")
+              : null;
+
+      // The chain, for a milestone whose buttons are gone: what actually went
+      // out, in the order it went out. Read off rows already in hand.
+      const bizNumber = present(job?.invoice_biz) ? String(job!.invoice_biz).trim() : null;
+      const bizDoc = bizNumber ? docByNumber.get(bizNumber) ?? null : null;
+
+      // A receipt is offered on a 305 and never on anything else. Both doors
+      // the route accepts are supported: `source_id` when the app issued the
+      // 305 and it has a queue row, `document_id` when it was raised by hand in
+      // Morning and only the pull knows about it. One or the other, never both
+      // — the route refuses a request carrying a mix.
+      const isTaxInvoice = taxKind === "tax_invoice";
+      const taxMorningId = taxQueueRow?.morning_doc_id ?? taxDoc?.morning_doc_id ?? null;
+      const alreadyReceipted = !!taxMorningId && receiptedMorningIds.has(taxMorningId);
+      const receiptSourceId =
+        isTaxInvoice && taxQueueRow && taxQueueRow.doc_type === "tax_invoice" ? taxQueueRow.id : null;
+      const receiptDocumentId = isTaxInvoice && !receiptSourceId && taxDoc ? taxDoc.id : null;
+
+      const receiptFacts = {
+        tax_kind: taxKind,
+        tax_doc_number: taxNumber,
+        tax_doc_date: taxDoc?.document_date ?? null,
+        deal_doc_number: bizNumber,
+        deal_doc_date: bizDoc?.document_date ?? null,
+        // null = no receipt button at all (not a 305, or one already exists)
+        receipt_state:
+          !isTaxInvoice || alreadyReceipted || (!receiptSourceId && !receiptDocumentId)
+            ? null
+            : receiptVerdict(taxDoc?.raw ?? null),
+        receipt_source_id: receiptSourceId,
+        receipt_document_id: receiptDocumentId,
+        // a receipt already in the queue, so the screen can say so instead of
+        // offering a button that would answer "כבר קיימת קבלה על סמכו"
+        has_receipt: alreadyReceipted,
+      };
+
       return {
         id: m.id,
         name: m.name,
@@ -133,6 +299,7 @@ export default async function ContractsPage() {
         // the milestone's own amount can be edited afterwards and then the two
         // disagree. Display only; nothing is blocked on it.
         issued_amount: issuedAmount,
+        ...receiptFacts,
       };
     });
     const paidSum = milestoneCards.filter((m) => m.state === "paid").reduce((t, m) => t + m.amount, 0);

@@ -4,6 +4,7 @@ import {
   DOC_TYPE_TO_MORNING_CODE,
   MORNING_DOC_CODE,
   MORNING_DOC_NAME,
+  RECEIPT_NOTICE,
   VAT_TYPE_DEFAULT,
   sourceRemark,
   type MorningDocumentRequest,
@@ -326,21 +327,32 @@ export async function createReceiptFromTaxInvoices(
     // THE difference from taxFromParent: unknown is a refusal, not a warning.
     // A raw without `ref` is a raw without `amount`, and the receipt has no
     // other source for its total.
+    //
+    // The three sentences below moved to RECEIPT_NOTICE (morning/types.ts) so
+    // the contracts screen can put the SAME words on a disabled button instead
+    // of paraphrasing a refusal it can already predict. Behaviour is unchanged
+    // — same statuses, same text, same `<doc>: <reason>` shape.
+    //
+    // Only this builder was rewired. taxFromParent.ts and pullSource.ts carry
+    // two of these sentences verbatim as well, and they are deliberately left
+    // alone: those speak about TAX documents, the duplication predates this
+    // change, and folding a proven production path into a constant named for
+    // receipts would be a rename dressed as a cleanup.
     if (openness.state === "unknown") {
       return {
         ok: false,
         status: 409,
-        error: `${nameOf(r)}: המסמך טרם נמשך ממורנינג. הקבלה תיבנה אחרי הסנכרון הבא.`,
+        error: `${nameOf(r)}: ${RECEIPT_NOTICE.awaiting_pull}`,
       };
     }
     if (openness.state === "closed") {
-      return { ok: false, status: 409, error: `${nameOf(r)}: כבר סגור במורנינג — לא ניתן להנפיק על סמכו` };
+      return { ok: false, status: 409, error: `${nameOf(r)}: ${RECEIPT_NOTICE.closed_in_morning}` };
     }
     if (!openness.allowedCodes.includes(childCode)) {
       return {
         ok: false,
         status: 409,
-        error: `${nameOf(r)}: מורנינג אינה מתירה להנפיק על סמכו ${MORNING_DOC_NAME[childCode]}`,
+        error: `${nameOf(r)}: ${RECEIPT_NOTICE.receipt_not_allowed}`,
       };
     }
 

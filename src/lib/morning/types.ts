@@ -63,6 +63,40 @@ export const MORNING_DOC_NAME: Record<number, string> = {
 };
 
 /**
+ * The four things the app can say about raising a RECEIPT (400) — one copy,
+ * shared by the server that refuses and by the screens that explain.
+ *
+ * Every one of these was already a sentence somewhere: three inside
+ * createReceiptFromTaxInvoices (the refusals it returns) and one on the
+ * registry row (the 320 block). The contracts screen needs the same four
+ * facts, and writing them a second time there is how two phrasings of one
+ * truth start drifting — the registry would say a receipt is never raised on
+ * a 320 while the contracts screen said something almost-but-not-quite that.
+ *
+ * So the builder imports these rather than owning them, and the screens read
+ * them rather than paraphrasing. Changing what the system says about receipts
+ * is one edit, in one place.
+ *
+ * `awaiting_pull` is the one that is easy to mistake for a bug and is not.
+ * `readOpenness` needs `raw.ref`, and `raw` is the Morning POST response until
+ * the nightly pull replaces it with the search item (issue.ts writes
+ * `raw: result`, and MorningDocumentResponse carries no `ref` and no
+ * `amount`). So a 305 issued today cannot father a receipt until tomorrow's
+ * sync — a real constraint on the operator's day, which is why it is stated
+ * on the disabled button and not only in a failed request.
+ */
+export const RECEIPT_NOTICE = {
+  /** a 320 is invoice AND receipt in one — nothing further is ever raised on it */
+  tax_receipt_includes_payment: "חשבונית מס קבלה כוללת את התקבול — לא מונפקת עליה קבלה נוספת",
+  /** the parent exists in Morning but its `raw` has no `ref` yet */
+  awaiting_pull: "המסמך טרם נמשך ממורנינג. הקבלה תיבנה אחרי הסנכרון הבא.",
+  /** `ref` came back empty — Morning has already let something be raised on it */
+  closed_in_morning: "כבר סגור במורנינג — לא ניתן להנפיק על סמכו",
+  /** `ref` is non-empty but does not list 400 */
+  receipt_not_allowed: "מורנינג אינה מתירה להנפיק על סמכו קבלה",
+} as const;
+
+/**
  * The provenance line for a document created ON THE BASIS OF others — e.g.
  * "חשבון עסקה עבור הזמנה 10306". Belongs in `remarks`.
  *

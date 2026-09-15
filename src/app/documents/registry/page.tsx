@@ -3,7 +3,7 @@ import { getSessionAndProfile } from "@/lib/profile";
 import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import RegistryClient, { type DocRow } from "./RegistryClient";
-import { registryTabForType, type PendingDocType } from "@/lib/morning/types";
+import { RECEIPT_NOTICE, registryTabForType, type PendingDocType } from "@/lib/morning/types";
 import { ALLOWED_CHILDREN } from "@/lib/documents/taxFromParent";
 import { mapPullDocToReceiptSource, mapPullDocToSource, type PullDocRow } from "@/lib/documents/pullSource";
 
@@ -274,7 +274,7 @@ export default async function RegistryPage() {
     if (d.type === 320) {
       return {
         buildable: null,
-        build_block: "חשבונית מס קבלה כוללת את התקבול — לא מונפקת עליה קבלה נוספת",
+        build_block: RECEIPT_NOTICE.tax_receipt_includes_payment,
         net_amount: null,
         over_ceiling: null,
       };

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import IconTile from "@/components/IconTile";
 import ClientCombobox from "@/components/ClientCombobox";
 import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
+import { DOC_TYPE_LABEL, RECEIPT_NOTICE } from "@/lib/morning/types";
 import { displayDate } from "@/lib/dates";
 
 export type MilestoneCard = {
@@ -33,6 +34,34 @@ export type MilestoneCard = {
   has_queued_deal_invoice: boolean; // a 300 in flight, not yet issued
   has_queued_tax: boolean; // a 305/320 already in the queue
   issued_amount: number | null; // what the issued parent actually billed
+  // ---- the tax document, told apart ----------------------------------------
+  // `has_tax_document` above is blind: jobs.invoice_tax holds 305 and 320 in one
+  // column (issue.ts:101-103), and the two mean opposite things here. A 320 is
+  // invoice AND receipt, so the milestone is settled and nothing more is raised
+  // on it. A 305 is a debt, and when the money lands it still needs a receipt.
+  // Resolved in page.tsx from documents.type, with the queue row as fallback;
+  // null when neither can say, and a null says nothing rather than guessing.
+  tax_kind: "tax_invoice" | "tax_receipt" | null;
+  tax_doc_number: string | null;
+  tax_doc_date: string | null;
+  deal_doc_number: string | null;
+  deal_doc_date: string | null;
+  /**
+   * The receipt button's whole state, decided on the server.
+   *
+   * null      — no button: not a 305, or a receipt is already queued on it
+   * 'ready'   — live
+   * otherwise — shown DISABLED, carrying the matching RECEIPT_NOTICE sentence
+   *
+   * 'awaiting_pull' is the ordinary one, not an error: a 305 issued today has
+   * only the Morning POST response in `raw`, which has no `ref` and no `amount`,
+   * so the receipt cannot be priced until the nightly pull. Saying that on the
+   * button is the point — the alternative is a live button that fails.
+   */
+  receipt_state: "ready" | "awaiting_pull" | "closed" | "not_allowed" | null;
+  receipt_source_id: string | null; // queue-row door (the app issued the 305)
+  receipt_document_id: string | null; // registry door (raised by hand in Morning)
+  has_receipt: boolean; // a live 400 already links this invoice
 };
 export type ContractCard = {
   id: string;
@@ -48,6 +77,19 @@ export type ContractCard = {
 };
 
 const MS_STATUS_LABEL: Record<string, string> = { pending: "ממתין", invoiced: "חויב", paid: "שולם" };
+
+/**
+ * The disabled receipt button's tooltip, per blocked state. Every sentence comes
+ * from RECEIPT_NOTICE, which is also what createReceiptFromTaxInvoices returns
+ * when the same gate refuses server-side — so the tooltip and the error the
+ * operator would have got by clicking are the same words, not two accounts of
+ * one fact.
+ */
+const RECEIPT_BLOCK: Record<"awaiting_pull" | "closed" | "not_allowed", string> = {
+  awaiting_pull: RECEIPT_NOTICE.awaiting_pull,
+  closed: RECEIPT_NOTICE.closed_in_morning,
+  not_allowed: RECEIPT_NOTICE.receipt_not_allowed,
+};
 
 const NIS = new Intl.NumberFormat("he-IL");
 const money = (n: number | null | undefined) => (n == null ? "—" : `${NIS.format(Math.round(n))} ₪`);
@@ -179,6 +221,54 @@ export default function ContractsClient({
     }
   }
 
+  // The last rung: a receipt (400) on a tax invoice (305) that has been issued
+  // and not yet paid for.
+  //
+  // WHY THIS CALLS /api/documents/receipt AND NOT A MILESTONE ROUTE. Its three
+  // siblings above each post to /api/contracts/milestones/[mid]/..., because
+  // each of them needs something only the milestone knows — its amount, or
+  // which of its parents wins. A receipt needs neither: it is built entirely
+  // from ONE tax invoice, and the server reads the openness, the gross, the
+  // client and the remark out of that invoice's own registry row. The milestone
+  // contributes nothing but the id of a document, so it sends the id of a
+  // document. Adding a fourth milestone route would have been a second door
+  // onto one builder, and the tax route's header already says what that costs.
+  //
+  // ONE SOURCE KIND PER REQUEST — the route refuses a mix outright, so the
+  // server is never asked to choose between two things the operator picked one
+  // of. page.tsx fills exactly one of the two ids.
+  async function enqueueReceipt(m: MilestoneCard) {
+    setBusyId(m.id);
+    setError(null);
+    setNotice(null);
+    try {
+      const body = m.receipt_source_id
+        ? { sourceIds: [m.receipt_source_id] }
+        : { documentIds: [m.receipt_document_id] };
+      const res = await fetch("/api/documents/receipt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // the server's sentence, verbatim — it names the document and the
+        // reason, and both are things this screen would otherwise guess
+        setError(out.error ?? "יצירת הקבלה נכשלה");
+        return;
+      }
+      const src = (out.receipt?.source_numbers ?? []).join(", ");
+      setNotice(
+        `קבלה עבור "${m.name}" על סמך חשבונית מס ${src || m.tax_doc_number || "?"} — נכנסה לתור האישורים. אשרי במסך המסמכים`
+      );
+      router.refresh();
+    } catch {
+      setError("שגיאת רשת");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function setMilestoneStatus(m: MilestoneCard, status: string) {
     setBusyId(m.id);
     const res = await fetch(`/api/contracts/milestones/${m.id}`, {
@@ -289,6 +379,29 @@ export default function ContractsClient({
                 <div className="mt-4 space-y-2">
                   {c.milestones.map((m) => {
                     const meta = MILESTONE_META[m.state];
+                    // A settled milestone has no buttons (the gate below), and
+                    // until now it had no account of itself either — one invoice
+                    // number and nothing about how it got there. The chain IS
+                    // the explanation: what went out, in the order it went out.
+                    const settled = m.state === "paid" || m.state === "invoiced";
+                    const chain = settled
+                      ? [
+                          m.deal_doc_number
+                            ? { label: DOC_TYPE_LABEL.deal_invoice, num: m.deal_doc_number, date: m.deal_doc_date }
+                            : null,
+                          m.tax_doc_number
+                            ? {
+                                // null tax_kind = neither the registry nor the
+                                // queue could name the type. "\u05de\u05e1\u05de\u05da \u05de\u05e1" is what we
+                                // actually know; naming a type we cannot see
+                                // would be the guess this field exists to avoid.
+                                label: m.tax_kind ? DOC_TYPE_LABEL[m.tax_kind] : "\u05de\u05e1\u05de\u05da \u05de\u05e1",
+                                num: m.tax_doc_number,
+                                date: m.tax_doc_date,
+                              }
+                            : null,
+                        ].filter((d): d is { label: string; num: string; date: string | null } => !!d)
+                      : [];
                     return (
                       <div
                         key={m.id}
@@ -302,7 +415,20 @@ export default function ContractsClient({
                           {meta.label}
                         </span>
                         <div className="flex-1" />
-                        {(m.state === "paid" || m.state === "invoiced") && m.invoice_number && (
+                        {/* The chain replaces the lone number when we have it:
+                            "חשבונית 60197" alone says a document exists and
+                            nothing about the 300 it was built on. Falls back to
+                            the old single span when the registry rows are not
+                            there, so a milestone recorded by hand still shows
+                            what it always showed. */}
+                        {chain.length > 0 &&
+                          chain.map((d) => (
+                            <span key={d.num} className="text-[11px] text-[var(--dim)] font-mono">
+                              {d.label} {d.num}
+                              {d.date ? ` · ${displayDate(d.date)}` : ""}
+                            </span>
+                          ))}
+                        {chain.length === 0 && settled && m.invoice_number && (
                           <span className="text-[11px] text-[var(--dim)] font-mono">
                             חשבונית {m.invoice_number}
                             {m.invoice_date ? ` · ${displayDate(m.invoice_date)}` : ""}
@@ -336,6 +462,28 @@ export default function ContractsClient({
                             title="מסמך מס נבנה מהמסמך שיצא, לא מסכום אבן הדרך"
                           >
                             ⚠ הסכום שיצא במסמך ({money(m.issued_amount)}) שונה מסכום אבן הדרך
+                          </span>
+                        )}
+                        {/* WHY A 320 ROW SAYS SOMETHING AND A 305 ROW DOES NOT.
+                            A חשבונית מס קבלה is invoice and receipt in
+                            one, so this milestone is finished and the absent
+                            buttons are correct — but "correct and blank" is what
+                            sent the bookkeeper hunting for a receipt button that
+                            must not exist. The sentence is the one the registry
+                            screen already shows on the same document, imported
+                            rather than retyped. */}
+                        {m.tax_kind === "tax_receipt" && (
+                          <span data-ms-note="tax-receipt-settled" className="basis-full text-[11px] text-[var(--faint)]">
+                            {RECEIPT_NOTICE.tax_receipt_includes_payment}
+                          </span>
+                        )}
+                        {/* The other half of "never go silently dark": once a
+                            receipt is queued the button is gone (page.tsx nulls
+                            receipt_state), and without this line its
+                            disappearance would look like the bug being fixed. */}
+                        {m.has_receipt && (
+                          <span data-ms-note="receipt-exists" className="basis-full text-[11px] text-[var(--faint)]">
+                            קבלה נוצרה על סמך חשבונית מס {m.tax_doc_number ?? ""}
                           </span>
                         )}
                         {canEditMoney && !closed && (
@@ -431,6 +579,44 @@ export default function ContractsClient({
                                   ערוך מועד
                                 </button>
                               </>
+                            )}
+                            {/* THE RECEIPT BUTTON SITS OUTSIDE THE open/overdue
+                                FRAGMENT ABOVE, and that placement is the fix.
+                                Its three siblings belong to a milestone still
+                                being billed; this one belongs to a TAX INVOICE
+                                that has been issued, which is a fact about a
+                                document and not about the milestone's state. A
+                                305 leaves the milestone 'open' today (the status
+                                column does not advance on the app path) but a
+                                milestone marked 'invoiced' by hand would hide
+                                the fragment — and with it the only route to a
+                                receipt this screen has.
+
+                                receipt_state carries the whole decision from the
+                                server: null hides the button, 'ready' lights it,
+                                anything else shows it DISABLED with the reason.
+                                A blocked receipt is never simply absent: the
+                                commonest block is 'awaiting_pull', which is a
+                                wait of hours and not a refusal, and a vanished
+                                button cannot say so. */}
+                            {m.receipt_state && (
+                              <button
+                                data-ms-action="receipt"
+                                onClick={() => enqueueReceipt(m)}
+                                disabled={busyId === m.id || m.receipt_state !== "ready" || !c.client_mapped}
+                                title={
+                                  !c.client_mapped
+                                    ? `הלקוח ${c.client_name ?? ""} לא ממופה למורנינג — אי אפשר להנפיק`
+                                    : m.receipt_state === "ready"
+                                      ? `מכניס קבלה לתור האישורים על סמך ${DOC_TYPE_LABEL.tax_invoice} ${m.tax_doc_number ?? ""} — לא נשלח למורנינג עד לאישור`
+                                      : // the server's own sentence, in the server's own
+                                        // "<document>: <reason>" shape
+                                        `${DOC_TYPE_LABEL.tax_invoice} ${m.tax_doc_number ?? ""}: ${RECEIPT_BLOCK[m.receipt_state]}`
+                                }
+                                className="text-[11px] font-bold rounded-lg px-2.5 py-1 border border-[var(--signal)] text-[var(--signal)] disabled:opacity-40 transition-colors"
+                              >
+                                {busyId === m.id ? "מוסיף לתור…" : "צור קבלה"}
+                              </button>
                             )}
                             {/* available on EVERY state: an invoiced or paid
                                 milestone had no action at all until now */}
