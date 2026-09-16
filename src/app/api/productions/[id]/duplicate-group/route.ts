@@ -19,10 +19,17 @@ async function requireStagesEditor() {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { error: NextResponse.json({ error: "לא מחובר" }, { status: 401 }) } as const;
-  const { data: profile } = await supabase.from("profiles").select("can_edit_stages").eq("id", user.id).single();
+  // can_edit_money rides along for the DELETE below — the row is fetched here
+  // anyway, so the second tier costs no extra query. POST does not read it and
+  // is unchanged: confirm/merge stay stages-tier.
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("can_edit_stages,can_edit_money")
+    .eq("id", user.id)
+    .single();
   if (!profile?.can_edit_stages)
     return { error: NextResponse.json({ error: "אין הרשאת עריכת שלבים" }, { status: 403 }) } as const;
-  return { supabase, user } as const;
+  return { supabase, user, canEditMoney: !!profile.can_edit_money } as const;
 }
 
 async function findDupGroup(
@@ -113,7 +120,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
 export async function DELETE(_request: Request, { params }: { params: { id: string } }) {
   const gate = await requireStagesEditor();
   if ("error" in gate) return gate.error;
-  const { supabase, user } = gate;
+  const { supabase, user, canEditMoney } = gate;
 
   const { data: row, error: rowErr } = await supabase
     .from("productions")
@@ -132,16 +139,78 @@ export async function DELETE(_request: Request, { params }: { params: { id: stri
     return NextResponse.json({ error: "לא ניתן לבטל מיזוג — כבר התחילה עבודה" }, { status: 400 });
   }
 
+  // ---- THE MONEY TIER, AND WHY THIS ROUTE NEEDS ONE ----------------------
+  //
+  // Measured on ליעד הרמן / אוכלי סרטים 28.8 (2026-09-16): migration 0065
+  // merged a manual duplicate away, dismissed its ₪600 job and rejected its
+  // work order — and on 8.9 a technician with no can_edit_money undid it from
+  // this endpoint in one click. The merge itself was NOT reachable from the UI
+  // (findDupGroup above demands a calendar_uid on every member and two distinct
+  // uids; the manual row has none), so the undo was reachable where the merge
+  // was not. That asymmetry is the bug, and this is the half that closes it.
+  //
+  // The test is not "was a migration involved" — that is unknowable from here
+  // and would be the wrong question anyway. It is "did resolving this duplicate
+  // MOVE MONEY": a dismissed job, or a rejected queue row. Those are the two
+  // writes a merge makes outside `productions`, and either one means a person
+  // with money authority decided something that this button is about to
+  // partially reverse.
+  //
+  // A merge with neither — the ordinary calendar-mistake case the button was
+  // built for, two synced rows and nothing billed yet — is untouched and stays
+  // one click for a technician.
+  const admin = createAdminClient();
+  const { data: dupJobLinks } = await admin
+    .from("job_productions")
+    .select("job_id,jobs(id,dismissed)")
+    .eq("production_id", params.id);
+  const dismissedJobIds = ((dupJobLinks ?? []) as unknown as Array<Record<string, unknown>>)
+    .filter((l) => (l.jobs as { dismissed?: boolean } | null)?.dismissed === true)
+    .map((l) => l.job_id as string);
+
+  // Rejected queue rows reached through EITHER anchor. A work order queued at
+  // creation carries production_id; one stamped later (0077) carries job_id.
+  const jobIdsHere = ((dupJobLinks ?? []) as unknown as Array<Record<string, unknown>>).map(
+    (l) => l.job_id as string
+  );
+  const [byProd, byJob] = await Promise.all([
+    admin.from("pending_documents").select("id").eq("production_id", params.id).eq("status", "rejected"),
+    jobIdsHere.length
+      ? admin.from("pending_documents").select("id").in("job_id", jobIdsHere).eq("status", "rejected")
+      : Promise.resolve({ data: [] as { id: string }[] }),
+  ]);
+  const rejectedDocIds = Array.from(
+    new Set([...(byProd.data ?? []), ...(byJob.data ?? [])].map((r) => (r as { id: string }).id))
+  );
+
+  if ((dismissedJobIds.length > 0 || rejectedDocIds.length > 0) && !canEditMoney) {
+    return NextResponse.json(
+      { error: "ביטול המיזוג הזה דורש הרשאת כספים — לכפילות יש עבודה מוסתרת או מסמך שנדחה." },
+      { status: 403 }
+    );
+  }
+
   const { error } = await supabase.from("productions").update({ merged_into: null }).eq("id", params.id);
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
-  const admin = createAdminClient();
   await admin.from("events").insert({
     entity_type: "production",
     entity_id: params.id,
     event_type: "production_merge_undone",
     actor_id: user.id,
-    payload: {},
+    // WHAT THIS UNDO DID NOT UNDO. The update above clears merged_into and
+    // nothing else, so a dismissed job stays dismissed and a rejected work
+    // order stays rejected — the production comes back to the board with its
+    // money side still in the merged state. That was invisible until now: the
+    // payload was `{}`, and reconstructing it on 16.9 took reading two
+    // migrations. Naming it here makes the next re-merge a query, not a dig.
+    payload: {
+      restored_merged_into: false,
+      not_restored: {
+        dismissed_job_ids: dismissedJobIds,
+        rejected_pending_document_ids: rejectedDocIds,
+      },
+    },
   });
 
   return NextResponse.json({ ok: true });
