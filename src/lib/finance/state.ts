@@ -25,6 +25,38 @@ export function deriveState(j: FinanceJobFacts): FinanceState {
   return hasBiz ? "blue" : "purple";
 }
 
+/** The two facts the paid-no-tax rule needs — nothing else is consulted. */
+export type PaidNoTaxFacts = Pick<FinanceJobFacts, "paid" | "invoice_tax">;
+
+/**
+ * "שולם — ואין חשבונית מס": the money came in and no tax document went out.
+ *
+ * THE ONE DEFINITION. Three surfaces ask this question and each used to spell
+ * it itself: the red radar alert (alerts.ts), the hub card's critical count
+ * (alerts.ts, which also forgot `dismissed`), and now /finance?filter=
+ * paid_no_tax. Three spellings of one rule is three chances to disagree about
+ * a red money alert, so there is one function and the call sites import it.
+ *
+ * `present` and not `!j.invoice_tax` — deliberately. A whitespace-only string
+ * is NOT a document number, and the truthiness test called it one: a job
+ * carrying `invoice_tax = ' '` looked closed to the radar while /finance and
+ * deriveState below both called it red. Zero rows are in that shape today
+ * (measured 2026-09-16); the test is written for the day one is.
+ *
+ * ⚠️ INVARIANT: `isPaidNoTax(j) === (deriveState(j) === "red")`, by
+ * construction — both are `paid === 'כן' && !present(invoice_tax)`. The red
+ * tab on /finance and this alert are the same population, and if one of the
+ * two is ever changed alone, the screen and the radar start reporting
+ * different numbers for the same money.
+ *
+ * `dismissed` is NOT tested here: a soft-removed job is out of every money
+ * surface (0041), and that filter belongs to whoever loads the rows — the
+ * radar does it in the query, /finance does it in page.tsx.
+ */
+export function isPaidNoTax(j: PaidNoTaxFacts): boolean {
+  return j.paid === "כן" && !present(j.invoice_tax);
+}
+
 export const TAB_META: Record<
   FinanceState,
   { label: string; short: string; color: string; dot: string; hint: string }

@@ -9,7 +9,20 @@ export const dynamic = "force-dynamic";
 
 const DAY = 86_400_000;
 
-export default async function FinancePage() {
+// The radar's red "שולם — ואין חשבונית מס" alert links here with
+// ?filter=paid_no_tax (alerts.ts). Read on the server and passed down as a
+// prop rather than via useSearchParams, so the client component needs no
+// Suspense boundary — same shape review-notes/print/page.tsx already uses.
+// ONE known value. Anything else is ignored and the screen shows everything:
+// a stale or hand-typed link must not silently hide money.
+const KNOWN_FILTER = "paid_no_tax";
+
+export default async function FinancePage({
+  searchParams,
+}: {
+  searchParams?: { filter?: string };
+}) {
+  const filter = searchParams?.filter === KNOWN_FILTER ? KNOWN_FILTER : null;
   const { user, profile } = await getSessionAndProfile();
   if (!user) redirect("/login");
   if (!profile?.approved) redirect("/pending");
@@ -69,6 +82,13 @@ export default async function FinancePage() {
       campaign: j.campaign,
       amount: j.amount,
       paid: j.paid,
+      // the RAW column, beside the display slot below. `tax.number` falls back
+      // to the invoices registry (`j.invoice_tax ?? taxDoc?.doc_number`), so it
+      // can name a document the job itself does not carry — and isPaidNoTax
+      // asks about the job's own column, exactly as the radar does. Filtering
+      // on the display value would have shown a different set of rows than the
+      // alert that linked here counted.
+      invoice_tax: j.invoice_tax ?? null,
       due_days: dueDays,
       due_estimated: !j.due_date,
       state,
@@ -123,6 +143,7 @@ export default async function FinancePage() {
           rows={rows}
           summary={summary}
           hidden={hidden}
+          initialFilter={filter}
           canEditMoney={profile.can_edit_money}
           canManageUsers={!!profile.can_manage_users}
         />

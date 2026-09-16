@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { deriveMilestoneState, type MilestoneState } from "@/lib/finance/milestone";
+import { isPaidNoTax } from "@/lib/finance/state";
 
 /**
  * A document number is present. null and "" both mean "no number" — a blank
@@ -19,12 +20,35 @@ export type AlertCounts = {
 // Lightweight version for the hub card (step 3). Kept separate from the full
 // radar so the dashboard doesn't pay for the whole engine on every load.
 export async function getAlertCounts(supabase: SupabaseClient): Promise<AlertCounts> {
-  const [paidNoTax, amountMissing, invoiceDateUnknown] = await Promise.all([
-    supabase.from("jobs").select("id", { count: "exact", head: true }).eq("paid", "כן").is("invoice_tax", null),
+  const [paidJobs, amountMissing, invoiceDateUnknown] = await Promise.all([
+    // ---- NOT a head-count, and the two reasons are both corrections --------
+    //
+    // This was `.eq("paid","כן").is("invoice_tax", null)` with head:true, and
+    // it disagreed with the radar's own detector on two counts:
+    //
+    //   1. it never filtered `dismissed`. A soft-removed job (0041) is out of
+    //      every money surface, and the full radar excludes it at the query —
+    //      so the card could report a critical alert for a row the screen
+    //      behind it refuses to show.
+    //   2. `IS NULL` is not the test. isPaidNoTax trims, so `invoice_tax = ''`
+    //      (and whitespace) counts as no document; a NULL check calls a blank
+    //      string a real invoice number.
+    //
+    // PostgREST can express (1) and can just about express `''` with an
+    // `.or()`, but it cannot trim — so the rows come back and isPaidNoTax
+    // decides, which is the whole point: ONE predicate, not a SQL paraphrase
+    // of it. Both variants return 9 today (measured 2026-09-16), so this
+    // changes no number; it removes the two ways they could stop agreeing.
+    //
+    // Cost: `paid='כן'` is 58 rows today against a 1000-row default page, and
+    // grows ~40 a year. Far from the cap, and two columns wide.
+    supabase.from("jobs").select("paid,invoice_tax").eq("paid", "כן").eq("dismissed", false),
     supabase.from("jobs").select("id", { count: "exact", head: true }).is("amount", null),
     supabase.from("invoices").select("id", { count: "exact", head: true }).eq("date_is_estimated", true),
   ]);
-  const paidNoTaxCount = paidNoTax.count ?? 0;
+  const paidNoTaxCount = ((paidJobs.data ?? []) as { paid: string | null; invoice_tax: string | null }[]).filter(
+    isPaidNoTax
+  ).length;
   const amountMissingCount = amountMissing.count ?? 0;
   const invoiceDateUnknownCount = invoiceDateUnknown.count ?? 0;
   return {
@@ -317,7 +341,10 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   });
 
   // ---- other alerts ----
-  const paidNoTax = jobs.filter((j) => j.paid === "כן" && !j.invoice_tax);
+  // the shared predicate (state.ts) — same rule the hub card and the
+  // /finance?filter=paid_no_tax view run, so the three cannot drift apart.
+  // `jobs` is already dismissed=false at the query above.
+  const paidNoTax = jobs.filter(isPaidNoTax);
   const amountMissing = jobs.filter((j) => j.amount == null);
   const unknownPayment = jobs.filter((j) => j.paid === "לא ידוע");
   const estimatedInvoiceDate = invoices.filter((i) => i.date_is_estimated);

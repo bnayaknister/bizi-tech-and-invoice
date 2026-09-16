@@ -6,7 +6,7 @@ import { useDrawer } from "@/components/EntityDrawer";
 import IconTile from "@/components/IconTile";
 import AssignDocModal from "@/components/AssignDocModal";
 import ShowLinkModal from "./ShowLinkModal";
-import { deriveState, TAB_META, ALL_TABS, type FinanceState } from "@/lib/finance/state";
+import { deriveState, isPaidNoTax, TAB_META, ALL_TABS, type FinanceState } from "@/lib/finance/state";
 import { bundleLineDesc } from "@/lib/documents/bundle";
 import { displayStampDate } from "@/lib/dates";
 
@@ -20,6 +20,7 @@ export type FinanceJob = {
   campaign: string | null;
   amount: number | null;
   paid: string | null;
+  invoice_tax: string | null; // the raw jobs column — see `tax` below, which is not it
   due_days: number | null;
   due_estimated: boolean;
   state: FinanceState;
@@ -61,19 +62,28 @@ export default function FinanceClient({
   rows: initial,
   summary,
   hidden,
+  initialFilter,
   canEditMoney,
   canManageUsers,
 }: {
   rows: FinanceJob[];
   summary: FinanceSummary;
   hidden: HiddenJob[];
+  initialFilter: "paid_no_tax" | null;
   canEditMoney: boolean;
   canManageUsers: boolean;
 }) {
   const router = useRouter();
   const { openEntity } = useDrawer();
   const [rows, setRows] = useState(initial);
-  const [tab, setTab] = useState<FinanceState | "hidden">("purple");
+  // the radar's red alert arrives with ?filter=paid_no_tax. It is a VIEW, not
+  // a tab: while it is on, the rows are chosen by isPaidNoTax — the same
+  // predicate that produced the count on the alert — and the tab selection is
+  // out of the way. Picking any tab is how the bookkeeper leaves it, so the
+  // two can never both be steering the table.
+  const [filter, setFilter] = useState<"paid_no_tax" | null>(initialFilter);
+  const filtered = filter === "paid_no_tax";
+  const [tab, setTab] = useState<FinanceState | "hidden">(initialFilter ? "red" : "purple");
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -86,10 +96,21 @@ export default function FinanceClient({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bundleOpen, setBundleOpen] = useState(false);
 
-  // bundling is offered only on the "not billed" tab, to a money user
-  const bundling = tab === "purple" && canEditMoney;
+  // bundling is offered only on the "not billed" tab, to a money user — and
+  // never while the paid-no-tax view is steering the table, where the rows on
+  // screen are not that tab's rows
+  const bundling = !filtered && tab === "purple" && canEditMoney;
+  // leaving the filtered view: drop the query parameter too, so a refresh or a
+  // shared link doesn't put the bookkeeper straight back into it. `replace`
+  // rather than `push` — the filtered view is where she arrived from the
+  // radar, and Back should return there, not toggle the filter off and on.
+  function clearFilter() {
+    setFilter(null);
+    router.replace("/finance", { scroll: false });
+  }
   function selectTab(s: FinanceState | "hidden") {
     setSelected(new Set());
+    if (filter) clearFilter();
     setTab(s);
   }
   function toggleSel(id: string) {
@@ -121,7 +142,10 @@ export default function FinanceClient({
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     return rows
-      .filter((r) => r.state === tab)
+      // isPaidNoTax, not `state === "red"` and not a re-spelling of the rule:
+      // the count in the bar has to be the same population the radar counted,
+      // and the only way to guarantee that is to run its predicate.
+      .filter((r) => (filtered ? isPaidNoTax(r) : r.state === tab))
       .filter((r) =>
         !q
           ? true
@@ -130,13 +154,21 @@ export default function FinanceClient({
             (r.campaign ?? "").toLowerCase().includes(q)
       )
       .sort((a, b) => (a.due_days ?? 1e9) - (b.due_days ?? 1e9));
-  }, [rows, tab, query]);
+  }, [rows, tab, query, filtered]);
 
   function patchRow(id: string, patch: Partial<FinanceJob>) {
     setRows((rs) =>
       rs.map((r) => {
         if (r.id !== id) return r;
         const merged = { ...r, ...patch } as FinanceJob;
+        // the raw column follows the tax slot. Both patches that set `tax`
+        // come back from a server call that stamped jobs.invoice_tax itself
+        // (finance/issue writes it; AssignDocModal goes through
+        // linkDocumentToJob and then refreshes), so this mirrors a write that
+        // already happened rather than predicting one. Without it a job issued
+        // in place would keep its old raw value and stay in the paid-no-tax
+        // view after the invoice went out.
+        if (patch.tax) merged.invoice_tax = patch.tax.number;
         merged.state = deriveState({
           paid: merged.paid,
           invoice_biz: merged.biz.number,
@@ -358,6 +390,23 @@ export default function FinanceClient({
         <div className="mb-3 text-xs text-[var(--green)] border border-[var(--green)] rounded-xl px-3 py-2 flex items-center justify-between">
           <span>{notice}</span>
           <button onClick={() => setNotice(null)} className="text-[var(--faint)]">×</button>
+        </div>
+      )}
+
+      {/* the radar landed here — say so, and give the way out. Same bar shape
+          as the bundle bar below (DESIGN.md §12: no emoji, a colored rule does
+          the work), in red because it is a red alert. */}
+      {filtered && (
+        <div
+          className="mb-3 flex flex-wrap items-center gap-3 rounded-2xl border border-[var(--red)] px-4 py-2.5 text-xs"
+          style={{ background: "color-mix(in srgb, var(--red) 10%, transparent)" }}
+        >
+          <span className="font-bold">
+            מסונן: שולם בלי חשבונית מס · {visible.length} עבודות
+          </span>
+          <button onClick={clearFilter} className="mr-auto text-[var(--dim)] underline">
+            הצג הכל
+          </button>
         </div>
       )}
 
