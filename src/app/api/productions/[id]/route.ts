@@ -21,6 +21,27 @@ const STATUSES = new Set([
   "הופץ",
 ]);
 
+// ---- B10: rolling the board back reopens the client's notes --------------
+//
+// Client approval closes note-writing on the review link. It does so through
+// two INDEPENDENT locks, and until now a rollback on the board reset neither:
+//
+//   1. client_review_links.responded_at — kills that one link (links.ts:364).
+//      DELIBERATE and untouched here: a link answers exactly once, and a new
+//      round has always meant a new link. Rolling back does NOT revive the old
+//      link; the team still sends a fresh one.
+//   2. productions.review_episode_approved / review_reels_approved and
+//      client_review_items.approved — sticky forever. ReviewClient derives
+//      `pending` from them (ReviewClient.tsx:428-429), so an approved block
+//      renders locked ✓ with no buttons and no textarea — on EVERY future
+//      link. That is the bug, and it is what these two sets fix.
+//
+// Both sets are spelled by NAME, never by enum position. `production_status`
+// happens to order אושר_ע"י_לקוח at 8 and הופץ at 9, but a status inserted
+// into the enum later would silently redraw a positional range.
+const APPROVED_OR_LATER = new Set(['אושר_ע"י_לקוח', "הופץ"]);
+const REOPENS_NOTES = new Set(["בעריכה", "נשלח_ללקוח"]);
+
 export async function POST(request: Request, { params }: { params: { id: string } }) {
   const id = params.id;
   const body = (await request.json()) as {
@@ -43,9 +64,75 @@ export async function POST(request: Request, { params }: { params: { id: string 
     if (!STATUSES.has(body.status)) {
       return NextResponse.json({ error: "סטטוס לא מוכר" }, { status: 400 });
     }
-    patch = { status: body.status };
+
+    // The status we are leaving — the only way to tell a rollback from an
+    // ordinary forward move. Read through the USER client, so a row the caller
+    // cannot see reads as null and the update below still answers 404 exactly
+    // as it did before this block existed.
+    const { data: current } = await supabase
+      .from("productions")
+      .select("status")
+      .eq("id", id)
+      .maybeSingle();
+    const approvalReset =
+      !!current && APPROVED_OR_LATER.has(current.status as string) && REOPENS_NOTES.has(body.status);
+
+    // ---- ORDER IS THE CONTRACT: the items reset GATES the status move ------
+    //
+    // `client_review_items` has RLS on with ZERO policies, so only the service
+    // role can touch it — hence the admin client here while the status update
+    // below stays on the user client and keeps its permission wall
+    // (trg_guard_production_stages → can_edit_stages).
+    //
+    // It runs BEFORE the status update on purpose: a failed reset must leave
+    // the board where it was, because a production that reads "בעריכה" while
+    // its items are still locked ✓ is the exact bug this fixes, made silent.
+    //
+    // The two flags on `productions` need no such ordering — they ride in the
+    // SAME update statement as the status, so they land together or not at all.
+    //
+    // ⚠️ The remaining window is items-reset-then-status-failed. It is the safe
+    // direction: nothing on the board changes, and the worst case is that a
+    // future link reopens notes for a production still marked approved.
+    //
+    // NO MONEY MOVES, and that was measured rather than assumed (2026-09-17):
+    // not one DB function mentions review_episode_approved,
+    // review_reels_approved or client_review_items, and client_review_items
+    // carries no trigger at all. The only job-writing trigger on productions,
+    // on_production_approved, fires on `new.status = X and old.status is
+    // distinct from X` for הוקלט and אושר_ע"י_לקוח — a rollback moves AWAY
+    // from both, so neither branch is entered. Nothing here reaches jobs,
+    // documents or pending_documents.
+    if (approvalReset) {
+      const resetAdmin = createAdminClient();
+      const { error: itemsErr } = await resetAdmin
+        .from("client_review_items")
+        .update({ approved: false, approved_at: null })
+        .eq("production_id", id);
+      if (itemsErr) {
+        return NextResponse.json(
+          { error: `איפוס אישור הפריטים נכשל, הסטטוס לא שונה: ${itemsErr.message}` },
+          { status: 500 }
+        );
+      }
+    }
+
+    patch = approvalReset
+      ? {
+          status: body.status,
+          review_episode_approved: false,
+          review_reels_approved: false,
+          // same three the revisions branch clears (links.ts:612-614): an ack
+          // answered the PREVIOUS round, and this is a new one
+          review_ack_at: null,
+          review_ack_by: null,
+          review_ack_link_id: null,
+        }
+      : { status: body.status };
     eventType = "production_status_changed";
-    eventPayload = { to: body.status };
+    eventPayload = approvalReset
+      ? { to: body.status, from: current!.status, approval_reset: true }
+      : { to: body.status };
   } else if (body.hold !== undefined) {
     patch = body.hold.on
       ? {
