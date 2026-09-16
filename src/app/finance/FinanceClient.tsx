@@ -6,7 +6,14 @@ import { useDrawer } from "@/components/EntityDrawer";
 import IconTile from "@/components/IconTile";
 import AssignDocModal from "@/components/AssignDocModal";
 import ShowLinkModal from "./ShowLinkModal";
-import { deriveState, isPaidNoTax, TAB_META, ALL_TABS, type FinanceState } from "@/lib/finance/state";
+import {
+  deriveState,
+  FINANCE_FILTERS,
+  TAB_META,
+  ALL_TABS,
+  type FinanceFilterKey,
+  type FinanceState,
+} from "@/lib/finance/state";
 import { bundleLineDesc } from "@/lib/documents/bundle";
 import { displayStampDate } from "@/lib/dates";
 
@@ -69,21 +76,25 @@ export default function FinanceClient({
   rows: FinanceJob[];
   summary: FinanceSummary;
   hidden: HiddenJob[];
-  initialFilter: "paid_no_tax" | null;
+  initialFilter: FinanceFilterKey | null;
   canEditMoney: boolean;
   canManageUsers: boolean;
 }) {
   const router = useRouter();
   const { openEntity } = useDrawer();
   const [rows, setRows] = useState(initial);
-  // the radar's red alert arrives with ?filter=paid_no_tax. It is a VIEW, not
-  // a tab: while it is on, the rows are chosen by isPaidNoTax — the same
-  // predicate that produced the count on the alert — and the tab selection is
-  // out of the way. Picking any tab is how the bookkeeper leaves it, so the
-  // two can never both be steering the table.
-  const [filter, setFilter] = useState<"paid_no_tax" | null>(initialFilter);
-  const filtered = filter === "paid_no_tax";
-  const [tab, setTab] = useState<FinanceState | "hidden">(initialFilter ? "red" : "purple");
+  // A red radar alert arrives with ?filter=… . It is a VIEW, not a tab: while
+  // it is on, the rows are chosen by the alert's OWN predicate (FINANCE_FILTERS
+  // — the same function that produced the count the bookkeeper clicked) and the
+  // tab selection is out of the way entirely. Picking any tab is how she leaves
+  // it, so the two can never both be steering the table.
+  const [filter, setFilter] = useState<FinanceFilterKey | null>(initialFilter);
+  const activeFilter = filter ? FINANCE_FILTERS[filter] : null;
+  // the tab to fall back to when the filter is cleared. paid_no_tax IS the red
+  // tab's population, so landing there and clearing lands on red. An unpriced
+  // job can sit in any state, so amount_missing has no natural home and keeps
+  // the ordinary default.
+  const [tab, setTab] = useState<FinanceState | "hidden">(initialFilter === "paid_no_tax" ? "red" : "purple");
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -99,7 +110,7 @@ export default function FinanceClient({
   // bundling is offered only on the "not billed" tab, to a money user — and
   // never while the paid-no-tax view is steering the table, where the rows on
   // screen are not that tab's rows
-  const bundling = !filtered && tab === "purple" && canEditMoney;
+  const bundling = !activeFilter && tab === "purple" && canEditMoney;
   // leaving the filtered view: drop the query parameter too, so a refresh or a
   // shared link doesn't put the bookkeeper straight back into it. `replace`
   // rather than `push` — the filtered view is where she arrived from the
@@ -142,10 +153,13 @@ export default function FinanceClient({
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     return rows
-      // isPaidNoTax, not `state === "red"` and not a re-spelling of the rule:
-      // the count in the bar has to be the same population the radar counted,
-      // and the only way to guarantee that is to run its predicate.
-      .filter((r) => (filtered ? isPaidNoTax(r) : r.state === tab))
+      // the alert's own predicate, not a re-spelling of the rule and not a
+      // stand-in like `state === "red"`: the count in the bar has to be the
+      // same population the radar counted, and running its function is the
+      // only way to guarantee that. NOTE it ignores `tab` completely — the
+      // filter overrides the tab, which is what lets one row appear here even
+      // though the tab it belongs to is not the one selected.
+      .filter((r) => (activeFilter ? activeFilter.match(r) : r.state === tab))
       .filter((r) =>
         !q
           ? true
@@ -154,7 +168,7 @@ export default function FinanceClient({
             (r.campaign ?? "").toLowerCase().includes(q)
       )
       .sort((a, b) => (a.due_days ?? 1e9) - (b.due_days ?? 1e9));
-  }, [rows, tab, query, filtered]);
+  }, [rows, tab, query, activeFilter]);
 
   function patchRow(id: string, patch: Partial<FinanceJob>) {
     setRows((rs) =>
@@ -330,7 +344,11 @@ export default function FinanceClient({
         {ALL_TABS.map((s) => {
           const meta = TAB_META[s];
           const isRedWithItems = s === "red" && counts.red.n > 0;
-          const active = tab === s;
+          // no tab is lit while a filter is steering the table. Highlighting
+          // one would claim it chose the rows on screen, and for
+          // amount_missing — whose jobs can sit in ANY state — that claim is
+          // simply false.
+          const active = !activeFilter && tab === s;
           const closedTab = s === "closed";
           return (
             <button
@@ -382,9 +400,14 @@ export default function FinanceClient({
         </button>
       </div>
 
-      <div className="text-[11px] text-[var(--faint)] mb-2">
-        {tab === "hidden" ? "רישומים שהוסתרו — מחוץ לחוב ולמונים, ניתנים לשחזור" : `${TAB_META[tab].short} · ${TAB_META[tab].hint}`}
-      </div>
+      {/* the tab's own subtitle — suppressed while a filter steers, where it
+          would describe a tab that did not choose the rows below it. The bar
+          says what is on screen instead. */}
+      {!activeFilter && (
+        <div className="text-[11px] text-[var(--faint)] mb-2">
+          {tab === "hidden" ? "רישומים שהוסתרו — מחוץ לחוב ולמונים, ניתנים לשחזור" : `${TAB_META[tab].short} · ${TAB_META[tab].hint}`}
+        </div>
+      )}
       {error && <div className="mb-3 text-xs text-[var(--peak)] border border-[var(--peak)] rounded-xl px-3 py-2">{error}</div>}
       {notice && (
         <div className="mb-3 text-xs text-[var(--green)] border border-[var(--green)] rounded-xl px-3 py-2 flex items-center justify-between">
@@ -395,14 +418,18 @@ export default function FinanceClient({
 
       {/* the radar landed here — say so, and give the way out. Same bar shape
           as the bundle bar below (DESIGN.md §12: no emoji, a colored rule does
-          the work), in red because it is a red alert. */}
-      {filtered && (
+          the work). Label and colour come from the filter's own row, so the bar
+          matches the badge that was clicked instead of naming it twice. */}
+      {activeFilter && (
         <div
-          className="mb-3 flex flex-wrap items-center gap-3 rounded-2xl border border-[var(--red)] px-4 py-2.5 text-xs"
-          style={{ background: "color-mix(in srgb, var(--red) 10%, transparent)" }}
+          className="mb-3 flex flex-wrap items-center gap-3 rounded-2xl border px-4 py-2.5 text-xs"
+          style={{
+            borderColor: activeFilter.tone,
+            background: `color-mix(in srgb, ${activeFilter.tone} 10%, transparent)`,
+          }}
         >
           <span className="font-bold">
-            מסונן: שולם בלי חשבונית מס · {visible.length} עבודות
+            מסונן: {activeFilter.label} · {visible.length} עבודות
           </span>
           <button onClick={clearFilter} className="mr-auto text-[var(--dim)] underline">
             הצג הכל
@@ -537,7 +564,7 @@ export default function FinanceClient({
             {visible.length === 0 && (
               <tr>
                 <td colSpan={bundling ? 9 : 8} className="px-3 py-10 text-center text-[var(--faint)] text-sm">
-                  {tab === "red" ? "אין חשבוניות מס חסרות — מצוין." : "אין פריטים בלשונית זו."}
+                  {activeFilter ? "אין עבודות שעונות על הסינון." : tab === "red" ? "אין חשבוניות מס חסרות — מצוין." : "אין פריטים בלשונית זו."}
                 </td>
               </tr>
             )}
@@ -613,7 +640,7 @@ export default function FinanceClient({
         })}
         {visible.length === 0 && (
           <div className="rounded-2xl border border-[var(--rule)] px-3 py-10 text-center text-[var(--faint)] text-sm">
-            {tab === "red" ? "אין חשבוניות מס חסרות — מצוין." : "אין פריטים בלשונית זו."}
+            {activeFilter ? "אין עבודות שעונות על הסינון." : tab === "red" ? "אין חשבוניות מס חסרות — מצוין." : "אין פריטים בלשונית זו."}
           </div>
         )}
       </div>

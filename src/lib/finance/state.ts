@@ -83,6 +83,48 @@ export function isAmountMissing(j: AmountMissingFacts): boolean {
   return j.amount == null;
 }
 
+// ---- the radar's red alerts, as views of /finance -------------------------
+
+/** Everything a filter predicate may consult. FinanceJob satisfies it. */
+export type FinanceFilterFacts = PaidNoTaxFacts & AmountMissingFacts;
+
+/** The `?filter=` values /finance answers to. Nothing else is a filter. */
+export type FinanceFilterKey = "paid_no_tax" | "amount_missing";
+
+/**
+ * The registry behind `/finance?filter=…` — ONE row per red radar alert that
+ * links here, holding the three things the screen needs and nothing else.
+ *
+ * `match` is the alert's own predicate by reference, never a re-spelling: the
+ * count in the filter bar has to be the same population the alert counted, and
+ * pointing at the same function is the only way to guarantee it. `tone` mirrors
+ * the alert's `severity` in alerts.ts (both are "red" today) so the bar and the
+ * badge the bookkeeper clicked are the same colour.
+ *
+ * Adding a filter is adding a row here — the server's validation
+ * (isFinanceFilterKey), the predicate and the bar text all read from it, so
+ * there is no second place to update and no way to ship a key that validates
+ * but has no predicate.
+ */
+export const FINANCE_FILTERS: Record<
+  FinanceFilterKey,
+  { label: string; tone: string; match: (j: FinanceFilterFacts) => boolean }
+> = {
+  paid_no_tax: { label: "שולם בלי חשבונית מס", tone: "var(--red)", match: isPaidNoTax },
+  amount_missing: { label: "חיוב ללא סכום", tone: "var(--red)", match: isAmountMissing },
+};
+
+/**
+ * Is this URL value a filter we serve?
+ *
+ * Everything else — a stale link, a typo, an empty `?filter=` — is NOT a
+ * filter and the screen shows every row. A money screen must never hide rows
+ * because it half-recognised a query string.
+ */
+export function isFinanceFilterKey(v: unknown): v is FinanceFilterKey {
+  return typeof v === "string" && Object.prototype.hasOwnProperty.call(FINANCE_FILTERS, v);
+}
+
 export const TAB_META: Record<
   FinanceState,
   { label: string; short: string; color: string; dot: string; hint: string }

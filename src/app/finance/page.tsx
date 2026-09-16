@@ -2,27 +2,31 @@ import { redirect } from "next/navigation";
 import { getSessionAndProfile } from "@/lib/profile";
 import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
-import { deriveState, type FinanceState } from "@/lib/finance/state";
+import { deriveState, isFinanceFilterKey, type FinanceState } from "@/lib/finance/state";
 import FinanceClient, { type FinanceJob, type FinanceSummary, type HiddenJob } from "./FinanceClient";
 
 export const dynamic = "force-dynamic";
 
 const DAY = 86_400_000;
 
-// The radar's red "שולם — ואין חשבונית מס" alert links here with
-// ?filter=paid_no_tax (alerts.ts). Read on the server and passed down as a
-// prop rather than via useSearchParams, so the client component needs no
-// Suspense boundary — same shape review-notes/print/page.tsx already uses.
-// ONE known value. Anything else is ignored and the screen shows everything:
-// a stale or hand-typed link must not silently hide money.
-const KNOWN_FILTER = "paid_no_tax";
-
 export default async function FinancePage({
   searchParams,
 }: {
   searchParams?: { filter?: string };
 }) {
-  const filter = searchParams?.filter === KNOWN_FILTER ? KNOWN_FILTER : null;
+  // Two red radar alerts link here — "שולם — ואין חשבונית מס"
+  // (?filter=paid_no_tax) and "חיוב ללא סכום" (?filter=amount_missing). The
+  // set of values, their predicates and their bar text all live in ONE place
+  // (FINANCE_FILTERS, state.ts), so a key cannot validate here and then find
+  // no predicate on the client.
+  //
+  // Read on the server and passed down as a prop rather than via
+  // useSearchParams, so the client component needs no Suspense boundary —
+  // the shape review-notes/print/page.tsx already uses.
+  //
+  // Anything unrecognised is ignored and the screen shows everything: a stale
+  // or hand-typed link must not silently hide money.
+  const filter = isFinanceFilterKey(searchParams?.filter) ? searchParams.filter : null;
   const { user, profile } = await getSessionAndProfile();
   if (!user) redirect("/login");
   if (!profile?.approved) redirect("/pending");
