@@ -2,6 +2,12 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { buildDocumentPayload, findBilledEvidenceForJobs } from "@/lib/documents/enqueue";
+import { createDealInvoiceFromWorkOrder } from "@/lib/documents/bundle";
+import {
+  resolveWorkOrdersForJobs,
+  recordParentRefusal,
+  refusalMessage,
+} from "@/lib/documents/parentRef";
 import { DOC_TYPE_LABEL, type PendingDocType } from "@/lib/morning/types";
 
 // Issue a work order or deal invoice straight from the documents registry
@@ -123,6 +129,39 @@ export async function POST(request: Request) {
         { status: 409 }
       );
     }
+  }
+
+  // ---- a deal invoice is raised ON an order, never on a bare job ----------
+  //
+  // Owner rule 2026-09-17, the same one the /finance bundle now follows: a 300
+  // exists to settle an order, so if there is no issued order there is nothing
+  // to settle and nothing to close. Until today this route built a 300 with
+  // production_id NULL and no parent at all — and because issue.ts's linker is
+  // keyed on production_id, that row could not pick one up later either. It was
+  // the last path of the five that closed nothing and printed nothing.
+  //
+  // Delegating rather than adding two lines, for the reason stated at length in
+  // bundle.ts: the invoice must total exactly what the order did, and only the
+  // order's own income lines guarantee that.
+  //
+  // ⚠️ CONSEQUENCE, stated because it is a real behaviour change: `amount` and
+  // `description` from the request body no longer apply to a deal invoice here
+  // — the order's are inherited verbatim. They still apply to a work order,
+  // which is the other half of this route and is untouched.
+  if (docType === "deal_invoice") {
+    const resolved = await resolveWorkOrdersForJobs(admin, [job.id as string]);
+    if (!resolved.ok) {
+      await recordParentRefusal(admin, {
+        actorId: user.id,
+        via: "registry_new_deal_invoice",
+        jobIds: [job.id as string],
+        failures: resolved.failures,
+      });
+      return NextResponse.json({ error: refusalMessage(resolved.failures, 1), status: "no_parent" }, { status: 409 });
+    }
+    const built = await createDealInvoiceFromWorkOrder(admin, resolved.workOrderIds, user.id);
+    if (!built.ok) return NextResponse.json({ error: built.error }, { status: built.status });
+    return NextResponse.json({ ok: true, id: built.id, amount: built.amount, via: "from_work_order" });
   }
 
   const description =

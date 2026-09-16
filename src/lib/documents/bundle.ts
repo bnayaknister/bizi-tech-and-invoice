@@ -4,10 +4,15 @@ import {
   MORNING_DOC_CODE,
   VAT_TYPE_DEFAULT,
   inheritDocDescription,
-  sourceRemark,
   type MorningDocumentRequest,
 } from "@/lib/morning/types";
 import { todayInIsrael } from "@/lib/dates";
+import {
+  buildParentRef,
+  resolveWorkOrdersForJobs,
+  recordParentRefusal,
+  refusalMessage,
+} from "@/lib/documents/parentRef";
 
 // Bundling: several per-episode documents folded into ONE Morning document with
 // a line per episode. Two shapes share this file so redemption (owner spec
@@ -163,62 +168,35 @@ export async function createDealInvoiceBundle(
       error: "כל העבודות חייבות להיות של אותו לקוח מורנינג — הבחירה כוללת יותר מלקוח אחד או לקוח לא ממופה",
     };
   }
-  const morningClientId = Array.from(morningIds)[0] as string;
-  const primaryClient = (clients ?? []).find((c) => c.morning_client_id === morningClientId)!;
+  // The one-Morning-client check above stays: it is cheaper and clearer here
+  // than the same refusal coming back from the delegate, and it names the real
+  // problem ("more than one client") instead of a per-job order failure.
 
-  if (jobs.some((j) => j.amount == null)) {
-    return { ok: false, status: 400, error: "לכל עבודה חייב להיות סכום — השלם אותם קודם" };
+  // ═══ FROM HERE: the orders decide, not the jobs (owner 2026-09-17) ═══
+  //
+  // This function used to build its own income lines from `jobs.amount` and
+  // send no linkedDocumentIds at all — so a /finance bundle closed nothing in
+  // Morning and printed no provenance, the only path of the five still doing
+  // neither. Both halves are now inherited by delegating to
+  // createDealInvoiceFromWorkOrder, which is the behaviour the owner named as
+  // the reference.
+  //
+  // WHY DELEGATE RATHER THAN COPY THE TWO LINES. Amount. The orders were issued
+  // with their own totals, and a job's amount can drift from its order's (an
+  // order edited before issue, a job realigned after). Sending
+  // linkedDocumentIds with a total that disagrees with the parents would ask
+  // Morning to close an order against a different number — behaviour nobody
+  // here has ever observed, and irreversible if it partially closes. Inheriting
+  // the orders' own lines makes the question impossible rather than answered.
+  // Measured 2026-09-17: 18 live job/order pairs, zero drift — so this changes
+  // no number today and closes the door before the first one appears.
+  const resolved = await resolveWorkOrdersForJobs(admin, ids);
+  if (!resolved.ok) {
+    await recordParentRefusal(admin, { actorId, via: "finance_bundle", jobIds: ids, failures: resolved.failures });
+    return { ok: false, status: 409, error: refusalMessage(resolved.failures, ids.length) };
   }
 
-  const ordered = ids.map((id) => jobs.find((j) => j.id === id)!);
-  const total = ordered.reduce((s, j) => s + Number(j.amount), 0);
-
-  const payload: MorningDocumentRequest = {
-    type: DOC_TYPE_TO_MORNING_CODE["deal_invoice"],
-    lang: "he",
-    currency: "ILS",
-    vatType: VAT_TYPE_DEFAULT,
-    date: todayInIsrael(), // issuance date, not the work dates (issue.ts re-stamps)
-    // ordered.length, NOT episodeCount: the noun here is "עבודות" and one job
-    // is one job whatever its line says. This bundle builds its own lines a few
-    // rows below, one per job at quantity 1, so a unit count would answer a
-    // question nobody asked. Deliberately left alone 2026-09-07.
-    description: bundleTitle("חשבון עסקה", primaryClient.name ?? "", ordered.length, "עבודה אחת", "עבודות", "מאוגד"),
-    client: { id: morningClientId, name: (primaryClient.name as string | null) ?? undefined, add: false },
-    income: ordered.map((j) => ({
-      description: bundleLineDesc(j),
-      quantity: 1,
-      price: Number(j.amount),
-      currency: "ILS",
-      vatType: VAT_TYPE_DEFAULT,
-    })),
-  };
-
-  const { data: inserted, error } = await admin
-    .from("pending_documents")
-    .insert({
-      doc_type: "deal_invoice",
-      production_id: null,
-      job_id: null,
-      bundle_job_ids: ids,
-      client_id: primaryClient.id,
-      amount: total,
-      payload,
-      status: "pending",
-    })
-    .select("id")
-    .single();
-  if (error) return { ok: false, status: 400, error: error.message };
-
-  await admin.from("events").insert({
-    entity_type: "pending_document",
-    entity_id: inserted.id,
-    event_type: "document_queued",
-    actor_id: actorId,
-    payload: { doc_type: "deal_invoice", via: "bundle", job_ids: ids, client_id: primaryClient.id, amount: total, lines: ordered.length },
-  });
-
-  return { ok: true, id: inserted.id, amount: total, lines: ordered.length };
+  return createDealInvoiceFromWorkOrder(admin, resolved.workOrderIds, actorId);
 }
 
 /** One issued work-order queue row, as read for conversion. */
@@ -624,8 +602,19 @@ export async function createDealInvoiceFromWorkOrder(
     : { data: null };
   const clientName = ((clientRow?.name as string | null) ?? rows[0].payload?.client?.name ?? "").trim();
 
-  const morningIds = rows.map((r) => r.morning_doc_id as string);
-  const sourceNumbers = rows.map((r) => String(r.morning_doc_number));
+  // parentRef.ts owns both halves now (2026-09-17). Same inputs, same order,
+  // same sourceRemark — this file's behaviour is the one the others were
+  // aligned TO, so any change here would be a regression rather than a fix.
+  const ref = buildParentRef({
+    childType: "deal_invoice",
+    parentCode: MORNING_DOC_CODE.order,
+    parents: rows.map((r) => ({
+      morning_doc_id: r.morning_doc_id as string,
+      morning_doc_number: r.morning_doc_number,
+    })),
+  });
+  const morningIds = ref.linkedDocumentIds;
+  const sourceNumbers = ref.parentNumbers;
 
   // The two halves of "created on the basis of", and they are not the same
   // job: linkedDocumentIds CLOSES the orders in Morning, `remarks` is what the
@@ -636,7 +625,7 @@ export async function createDealInvoiceFromWorkOrder(
   //
   // sourceRemark has taken a LIST since it was written (taxFromParent:604 has
   // always passed N) — the widening only stops truncating it to one.
-  const remark = sourceRemark("deal_invoice", MORNING_DOC_CODE.order, sourceNumbers);
+  const remark = ref.remarks;
 
   // THE ORDER'S OWN WORDING, not a rebuilt title (owner spec 2026-09-07) —
   // WHEN THERE IS ONE ORDER. The rule and its reasoning are taxFromParent's
