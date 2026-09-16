@@ -70,6 +70,16 @@ export type ReconDoc = {
   job_id: string | null;
   production_id: string | null;
   source: string;
+  /**
+   * Optional, and read by `certainBillingMatchForJobs` ALONE (2026-09-16).
+   *
+   * Deliberately NOT consulted by buildEdges: a bundled document already names
+   * the jobs it covers, so it is claimed — but teaching the matching core that
+   * would change which edges exist, and with them `certain`, the auto-link set
+   * and every suggestion on /documents/gaps. This column rides along in the
+   * select so the c2 guard can exclude claimed documents without any of that.
+   */
+  bundle_job_ids?: string[] | null;
 };
 
 // high  = same mapped client + amount match + a UNIQUE 1:1 pairing (safe basis
@@ -304,8 +314,11 @@ export function reconcile(clients: ReconClient[], jobs: ReconJob[], docs: ReconD
 }
 
 async function loadData(admin: SupabaseClient) {
+  // bundle_job_ids joined the list 2026-09-16 for certainBillingMatchForJobs.
+  // A wider SELECT only — nothing else in this file reads the column, so no
+  // edge, no confidence and no `certain` pair moves because of it.
   const DOC_SELECT =
-    "id,morning_doc_number,type,client_id,morning_client_id,morning_client_name,amount,document_date,job_id,production_id,source";
+    "id,morning_doc_number,type,client_id,morning_client_id,morning_client_name,amount,document_date,job_id,production_id,source,bundle_job_ids";
   const [{ data: clients }, { data: jobs }, docs] = await Promise.all([
     admin.from("clients").select("id,name,morning_client_id"),
     // dismissed jobs (0041) are out of reconciliation — a hidden record must
@@ -377,6 +390,113 @@ export async function suggestJobsForDoc(admin: SupabaseClient, docId: string): P
     out.push({ job: j, confidence: "low", amountBasis: basis, dateGapDays: dateGapDays(parseDate(j.date) ?? parseDate(j.due_date), dd) });
   }
   return out.sort(byConfidenceThenGap);
+}
+
+// ---- the c2 guard's evidence (2026-09-16) ------------------------------
+// The billing document types the owner's rule names: "if the job already has a
+// tax document (305/320) — or any live billing document (300/305/320) — a deal
+// invoice does not enter the queue." 400 (קבלה) is NOT here. It rides in
+// buildEdges as payment evidence, and a receipt is not a billing document.
+const C2_TYPES = [DEAL_TYPE, ...TAX_TYPES];
+
+export type CertainBillingMatch = {
+  jobId: string;
+  doc: ReconDoc;
+  amountBasis: AmountBasis;
+  dateGapDays: number;
+};
+
+/**
+ * A live billing document that CERTAINLY belongs to one of these jobs and was
+ * never linked to it. Read-only; it links nothing and writes nothing.
+ *
+ * ═══ WHY THIS EXISTS ═══
+ * findBilledEvidence's rules a/b/c all ask "what is LINKED to this job", and
+ * on 2026-09-16 that turned out to be a question the data cannot answer.
+ * חברת החשמל (job 8a1bcf1c) carried a 300 (40287) and a 305 (50066) sitting in
+ * the registry, both matching on client and on amount to the agora — and both
+ * with job_id NULL, because a document PULLED from Morning is never given one
+ * unless a human presses "שייך מסמך קיים". So all three rules read clean, the
+ * client's approval queued a second 300, and the owner rejected it by hand.
+ * Twice, on 15.9 and again on 16.9.
+ *
+ * ═══ WHY IT REUSES buildEdges RATHER THAN ASKING ITS OWN QUESTION ═══
+ * "Certain" already has exactly one definition in this codebase — same mapped
+ * client, VAT-aware amount, unique 1:1 pairing — and it is the definition the
+ * pull already AUTO-LINKS tax documents on (`certain`, :262). A second, hand
+ * written predicate here would be a second truth about the same word, and the
+ * first drift between them lands on money. So this filters the same edges the
+ * same core builds, and adds only the two things the block needs: the type
+ * list, and the ±45 window `certain` already applies.
+ *
+ * ═══ WHAT IT WILL AND WILL NOT SEE, STATED PLAINLY ═══
+ * buildEdges gates every edge through `jobNeedsDocType`, and for a purple
+ * (not-billed) job that admits 300 and — via PAYMENT_TYPES — 320, but NEVER a
+ * bare 305: a 305 answers a RED job only. So on חברת החשמל this returns 40287
+ * (the 300) and not 50066 (the 305), and that is the correct outcome rather
+ * than a near miss — one certain billing document is all the evidence a block
+ * needs, and widening jobNeedsDocType to feed this guard would rewrite gap1,
+ * gap2 and the auto-link set to serve a caller that only ever says "no".
+ *
+ * Ambiguity never blocks. נטע צמח's three identical ₪708 receipts give every
+ * edge degree > 1, so confidenceOf is "medium" and nothing here fires — the
+ * same rule that keeps them out of the auto-link set.
+ */
+export async function certainBillingMatchForJobs(
+  admin: SupabaseClient,
+  jobIds: string[]
+): Promise<CertainBillingMatch | null> {
+  if (!jobIds.length) return null;
+  const { clients, jobs, docs } = await loadData(admin);
+  return certainBillingMatchIn(clients, jobs, docs, jobIds);
+}
+
+/**
+ * The pure half, split out for the same reason `reconcile` is pure and
+ * `computeReconciliation` is the loader: the decision is testable on rows you
+ * hand it, without a database and without writing one. That is not a
+ * convenience here — the only live instance of the case this guard exists for
+ * was linked by hand on 2026-09-16 at 20:25, seventeen minutes after the
+ * rejection, so the state that produced the bug can now be reached ONLY by
+ * reconstructing it in memory.
+ */
+export function certainBillingMatchIn(
+  clients: ReconClient[],
+  jobs: ReconJob[],
+  docs: ReconDoc[],
+  jobIds: string[]
+): CertainBillingMatch | null {
+  if (!jobIds.length) return null;
+  const wanted = new Set(jobIds);
+
+  const { edges, confidenceOf } = buildEdges(clients, jobs, docs);
+  const docById = new Map(docs.map((d) => [d.id, d]));
+
+  const hits = edges
+    .filter((e) => {
+      if (!wanted.has(e.jobId)) return false;
+      const doc = docById.get(e.docId);
+      if (!doc || !C2_TYPES.includes(doc.type)) return false;
+      // Already claimed by other jobs. buildEdges only knows job_id is null;
+      // a bundle says the same thing in the other column.
+      if ((doc.bundle_job_ids ?? []).length > 0) return false;
+      // The two conditions `certain` adds on top of an edge, unchanged: a
+      // unique 1:1 pairing, and a date we actually know, within ±45.
+      if (confidenceOf(e) !== "high") return false;
+      return e.gap != null && e.gap <= AUTO_DATE_WINDOW;
+    })
+    // closest date first — the same tiebreak byConfidenceThenGap applies once
+    // confidence is equal, and here it always is
+    .sort((a, b) => (a.gap as number) - (b.gap as number));
+
+  const best = hits[0];
+  if (!best) return null;
+  return {
+    jobId: best.jobId,
+    doc: docById.get(best.docId)!,
+    amountBasis: best.basis,
+    dateGapDays: best.gap as number,
+  };
 }
 
 /**

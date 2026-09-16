@@ -8,6 +8,7 @@ import { isDryRun, morningEnv } from "@/lib/morning/client";
 import { DOC_TYPE_TO_MORNING_CODE, requiresPayment, type PendingDocType } from "@/lib/morning/types";
 import { sumParentGross } from "@/lib/documents/parentGross";
 import { buildLineItemText } from "@/lib/documents/enqueue";
+import { displayDayDotMonth } from "@/lib/dates";
 
 export const dynamic = "force-dynamic";
 
@@ -163,6 +164,45 @@ export default async function DocumentsPage() {
     }))
   );
 
+  // ---- was this exact request rejected before? ---------------------------
+  // A rejection leaves no trace that blocks anything — `rejected` is excluded
+  // from both partial unique indexes and from rule (b) of findBilledEvidence,
+  // on purpose: "wrong amount, try again" has to stay possible. The cost is
+  // that a request which comes back looks brand new, and on חברת החשמל the
+  // owner answered the same 300 twice in 32 hours — the second time by
+  // re-deriving from scratch what they had already written down the first.
+  //
+  // So the answer rides on the card. It does NOT block: the reason is shown,
+  // the buttons are untouched, and the decision stays the owner's.
+  //
+  // deal_invoice only. It is the type that re-fires on its own (a client
+  // approval can raise one at any time), and the only one this has happened to.
+  const rejectedJobIds = ((data ?? []) as unknown as Array<Record<string, unknown>>)
+    .filter((r) => r.doc_type === "deal_invoice" && r.job_id)
+    .map((r) => r.job_id as string);
+  const priorRejection = new Map<string, { at: string; reason: string | null }>();
+  if (rejectedJobIds.length) {
+    const { data: priors } = await admin
+      .from("pending_documents")
+      .select("id,job_id,reject_reason,approved_at,created_at")
+      .eq("doc_type", "deal_invoice")
+      .eq("status", "rejected")
+      .in("job_id", rejectedJobIds)
+      // approved_at is when the row was REVIEWED (review/route.ts:242 writes it
+      // on reject too), so newest-first here is newest rejection first.
+      .order("approved_at", { ascending: false, nullsFirst: false });
+    for (const p of (priors ?? []) as unknown as Array<Record<string, unknown>>) {
+      const jid = p.job_id as string;
+      // first writer wins — the list is already newest-first, and the owner
+      // asked for the LAST rejection when there are several.
+      if (priorRejection.has(jid)) continue;
+      priorRejection.set(jid, {
+        at: ((p.approved_at as string | null) ?? (p.created_at as string)) as string,
+        reason: (p.reject_reason as string | null) ?? null,
+      });
+    }
+  }
+
   const now = Date.now();
   const rows: PendingDocRow[] = (
     (data ?? []) as unknown as Array<Record<string, unknown>>
@@ -207,6 +247,14 @@ export default async function DocumentsPage() {
       attempts: (r.attempts as number | null) ?? 0,
       parent_gross: grossByRow.get(r.id as string)?.gross ?? null,
       parent_gross_error: grossByRow.get(r.id as string)?.error ?? null,
+      prior_rejection:
+        r.doc_type === "deal_invoice" && r.job_id
+          ? (() => {
+              const p = priorRejection.get(r.job_id as string);
+              if (!p) return null;
+              return { at_day_month: displayDayDotMonth(p.at), reason: p.reason };
+            })()
+          : null,
     };
   });
 

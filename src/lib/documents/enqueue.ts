@@ -10,6 +10,7 @@ import { roundAgorot } from "@/lib/documents/lineBalance";
 import { shortDate, todayInIsrael } from "@/lib/dates";
 import { SupabaseReadError } from "@/lib/supabase/unwrap";
 import { hasBeenPerformed } from "@/lib/productions/status";
+import { certainBillingMatchForJobs } from "@/lib/documents/reconcile";
 
 // Enqueueing, not issuing. Nothing in this file talks to Morning — it
 // decides whether a document is OWED, builds the exact payload that would
@@ -421,9 +422,34 @@ const present = (v: unknown) => v != null && String(v).trim() !== "";
 
 /** What already proves this production's work has been billed. */
 export type BilledEvidence = {
-  rule: "a" | "b" | "c";
+  rule: "a" | "b" | "c" | "c2";
   jobId: string;
+  /**
+   * The human sentence. Every rule has always had one, every caller that shows
+   * a message reads THIS, and its shape is unchanged — the structured `detail`
+   * below sits beside it rather than replacing it, because the registry route
+   * needs a Hebrew sentence and the event needs fields, and one key cannot be
+   * both without a reader somewhere getting the shape it did not expect.
+   */
   evidence: string;
+  /** The same facts, addressable. Written to the event payload. */
+  detail: {
+    doc_number: string | null;
+    doc_type: number | string | null;
+    amount?: number | null;
+    days_gap?: number | null;
+    /** rule a only — which column carried the number */
+    column?: "invoice_biz" | "invoice_tax";
+    /** rule b only — the queue row's status */
+    queue_status?: string | null;
+  };
+  /**
+   * c2 only. The block left a job with a matching document NOBODY linked, so
+   * the queue went quiet and the gap stayed. Nothing consumes this yet (see the
+   * report on the event's readers) — it is on the event so the gap is
+   * addressable the day a screen asks for it, rather than reconstructed.
+   */
+  needsLink?: boolean;
 };
 
 /**
@@ -483,6 +509,21 @@ export async function findBilledEvidence(
     .select("job_id")
     .eq("production_id", productionId);
   const jobIds = (links ?? []).map((l) => l.job_id as string).filter(Boolean);
+  return findBilledEvidenceForJobs(admin, jobIds);
+}
+
+/**
+ * The same four rules, asked about jobs directly.
+ *
+ * Split out 2026-09-16 so the registry's "+ חשבון עסקה חדש" can ask the
+ * question too. That route starts from a JOB and may have no production at
+ * all, and until now it carried its own narrower copy of rules a and b — two
+ * statements of one rule, and the copy was missing c and c2 entirely.
+ */
+export async function findBilledEvidenceForJobs(
+  admin: SupabaseClient,
+  jobIds: string[]
+): Promise<BilledEvidence | null> {
   if (!jobIds.length) return null;
 
   // ---- a: the job already carries a document number ----------------------
@@ -491,12 +532,14 @@ export async function findBilledEvidence(
     .select("id,invoice_biz,invoice_tax,dismissed")
     .in("id", jobIds);
   for (const j of (jobs ?? []) as { id: string; invoice_biz: string | null; invoice_tax: string | null; dismissed: boolean }[]) {
-    const num = present(j.invoice_biz) ? j.invoice_biz : present(j.invoice_tax) ? j.invoice_tax : null;
-    if (num) {
+    const column = present(j.invoice_biz) ? "invoice_biz" : present(j.invoice_tax) ? "invoice_tax" : null;
+    const num = column === "invoice_biz" ? j.invoice_biz : column === "invoice_tax" ? j.invoice_tax : null;
+    if (column && num) {
       return {
         rule: "a",
         jobId: j.id,
-        evidence: `${present(j.invoice_biz) ? "invoice_biz" : "invoice_tax"}=${num}${j.dismissed ? " (job מוסתר)" : ""}`,
+        evidence: `${column}=${num}${j.dismissed ? " (job מוסתר)" : ""}`,
+        detail: { doc_number: num, doc_type: null, column },
       };
     }
   }
@@ -510,13 +553,13 @@ export async function findBilledEvidence(
   const [byJob, byBundle] = await Promise.all([
     admin
       .from("pending_documents")
-      .select("id,doc_type,morning_doc_number,job_id")
+      .select("id,doc_type,status,morning_doc_number,job_id")
       .in("doc_type", BILLING)
       .in("status", LIVE)
       .in("job_id", jobIds),
     admin
       .from("pending_documents")
-      .select("id,doc_type,morning_doc_number,bundle_job_ids")
+      .select("id,doc_type,status,morning_doc_number,bundle_job_ids")
       .in("doc_type", BILLING)
       .in("status", LIVE)
       .overlaps("bundle_job_ids", jobIds),
@@ -524,6 +567,7 @@ export async function findBilledEvidence(
   for (const r of [...(byJob.data ?? []), ...(byBundle.data ?? [])] as {
     id: string;
     doc_type: string;
+    status: string;
     morning_doc_number: string | null;
     job_id?: string | null;
     bundle_job_ids?: string[] | null;
@@ -535,6 +579,7 @@ export async function findBilledEvidence(
       rule: "b",
       jobId: hit,
       evidence: `${r.doc_type} בתור (${r.morning_doc_number ?? r.id.slice(0, 8)})`,
+      detail: { doc_number: r.morning_doc_number, doc_type: r.doc_type, queue_status: r.status },
     };
   }
 
@@ -570,6 +615,39 @@ export async function findBilledEvidence(
       rule: "c",
       jobId: hit,
       evidence: `מסמך ${d.type} במרשם (${d.morning_doc_number ?? d.id.slice(0, 8)})`,
+      detail: { doc_number: d.morning_doc_number, doc_type: d.type },
+    };
+  }
+
+  // ---- c2: a live billing document that MATCHES but was never linked ------
+  // Rules a, b and c all read a link. This one is the case where no link was
+  // ever made — a document pulled from Morning gets job_id only when a human
+  // presses "שייך מסמך קיים", and on חברת החשמל nobody ever did, so a second
+  // 300 was queued against money already billed. Twice.
+  //
+  // It runs LAST because it is the only rule that reasons rather than reads:
+  // a, b and c state a fact someone recorded, c2 states that the matching
+  // engine considers this document certainly this job's. Whenever a recorded
+  // fact exists, it answers first and c2 is never reached.
+  //
+  // It BLOCKS and does not link. Writing job_id here would turn a guard into
+  // an auto-matcher and put the engine's judgement on the money — the decision
+  // 0087 kept with the bookkeeper. A block costs a rejected queue row that
+  // never existed; a wrong link costs a document attached to the wrong work.
+  const match = await certainBillingMatchForJobs(admin, jobIds);
+  if (match) {
+    const number = match.doc.morning_doc_number ?? match.doc.id.slice(0, 8);
+    return {
+      rule: "c2",
+      jobId: match.jobId,
+      evidence: `מסמך ${match.doc.type} במרשם (${number}) — התאמה ודאית שלא קושרה ל-job`,
+      detail: {
+        doc_number: match.doc.morning_doc_number,
+        doc_type: match.doc.type,
+        amount: match.doc.amount,
+        days_gap: match.dateGapDays,
+      },
+      needsLink: true,
     };
   }
 
@@ -684,6 +762,14 @@ export async function enqueueDocument(
           job_id: billed.jobId,
           evidence: billed.evidence,
           doc_type: docType,
+          // The same facts as fields, added 2026-09-16 alongside the sentence
+          // rather than in place of it — `evidence` keeps the shape every
+          // existing row of this event already has.
+          evidence_detail: billed.detail,
+          // c2 only: blocked, AND the registry document behind the block is
+          // still unlinked. The gap outlives the block and someone has to
+          // close it.
+          ...(billed.needsLink ? { needs_link: true } : {}),
         },
       });
       await setBlockReason(admin, production.id, null);

@@ -68,6 +68,14 @@ export type PendingDocRow = {
   // we cannot know it yet — almost always a parent issued after the last pull.
   parent_gross: number | null;
   parent_gross_error: string | null;
+  /**
+   * deal_invoice only: the LAST time a deal invoice for this same job was
+   * rejected, if it ever was. A rejection blocks nothing by design, so the same
+   * request can come back — this carries the answer the owner already gave, so
+   * it does not have to be derived twice. null when there is no prior
+   * rejection, and `reason` is null when the rejection carried no text.
+   */
+  prior_rejection: { at_day_month: string | null; reason: string | null } | null;
 };
 
 // The four payment methods come from lib/morning/types.ts — the SAME list the
@@ -99,6 +107,20 @@ const TYPE_LABEL: Record<PendingDocType, string> = {
 // the server will refuse.
 const TAX_TYPES: PendingDocType[] = ["tax_invoice", "tax_receipt"];
 const isTax = (t: PendingDocType) => TAX_TYPES.includes(t);
+
+// The owner-approved sentence, exactly (2026-09-16). The quotation marks are
+// part of it and appear ONLY when there is something to quote — a rejection
+// saved with no text reads "נדחה בעבר (15.9)" and stops, rather than showing an
+// empty pair of quotes.
+//
+// Built as a string rather than as JSX so the quote characters are data. In
+// markup they are an escaping question (react/no-unescaped-entities) whose
+// answer would put &quot; between the owner's wording and the screen.
+function priorRejectionText(p: { at_day_month: string | null; reason: string | null }): string {
+  const when = p.at_day_month ? ` (${p.at_day_month})` : "";
+  const reason = p.reason?.trim();
+  return reason ? `נדחה בעבר${when}: "${reason}"` : `נדחה בעבר${when}`;
+}
 
 const money = (n: number | null) =>
   n === null ? "—" : new Intl.NumberFormat("he-IL", { style: "currency", currency: "ILS", maximumFractionDigits: 0 }).format(n);
@@ -1228,6 +1250,19 @@ export default function DocumentsClient({
                       : "border-[var(--rule)]"
                   }`}
                 >
+                  {/* ABOVE everything on the card, including the checkbox: the
+                      answer the owner already gave to this exact request has to
+                      be readable BEFORE the approve button is, or it is not
+                      doing its job. Same colour and same shape as the guest
+                      flag below — both say "read this before you press" — but a
+                      div, not a button: there is nothing to click, only
+                      something to know. It never disables or hides a control. */}
+                  {r.prior_rejection && (
+                    <div className="mb-2 flex items-start gap-1.5 text-[11px] text-[var(--warn)] border border-[var(--warn)] rounded-lg px-2 py-1">
+                      <span>⚠️</span>
+                      <span>{priorRejectionText(r.prior_rejection)}</span>
+                    </div>
+                  )}
                   <div className="flex items-start gap-3">
                     {canApprove && r.status === "pending" && !isTax(r.doc_type) && (
                       <input

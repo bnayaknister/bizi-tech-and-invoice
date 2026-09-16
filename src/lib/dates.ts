@@ -196,6 +196,21 @@ export function displayDayMonth(value: string | null | undefined): string | null
   return `${p.day}/${p.month}`;
 }
 
+// "15.9" from a timestamptz — day, dot, month, NEITHER zero-padded.
+//
+// The one place in the UI that does not use slashes and does not pad, and it is
+// deliberate rather than an oversight: the owner approved the prior-rejection
+// banner's wording as one sentence, "נדחה בעבר (15.9): ...", and it is the way
+// they write a date in the rejection reasons themselves. Kept here rather than
+// inlined so the exception is visible in the file that owns date formatting,
+// with its reason attached. ONE caller — DocumentsClient's prior-rejection
+// banner. Do not reach for it to save two characters somewhere else.
+export function displayDayDotMonth(ts: string | null | undefined): string | null {
+  const p = israelStampParts(ts);
+  if (!p) return null;
+  return `${Number(p.day)}.${Number(p.month)}`;
+}
+
 // "10/09 · 14:30" — a timestamptz in the drawer's event log, where rows are
 // dense and every entry is recent enough that the year says nothing.
 export function displayLogTime(ts: string | null | undefined): string | null {

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { buildDocumentPayload } from "@/lib/documents/enqueue";
+import { buildDocumentPayload, findBilledEvidenceForJobs } from "@/lib/documents/enqueue";
 import { DOC_TYPE_LABEL, type PendingDocType } from "@/lib/morning/types";
 
 // Issue a work order or deal invoice straight from the documents registry
@@ -40,8 +40,11 @@ export async function POST(request: Request) {
   const admin = createAdminClient();
   const { data: job } = await admin
     .from("jobs")
-    // invoice_biz/invoice_tax ride along for the already-issued guard below —
-    // the row is fetched here anyway, so that check costs no extra query.
+    // invoice_biz/invoice_tax used to feed the already-issued guard below; that
+    // guard now lives in findBilledEvidenceForJobs, which reads them itself.
+    // They stay in the select because the payload builder and the failure paths
+    // below read this row, and dropping columns from a shared read to save a
+    // few bytes is how a later edit finds one missing.
     .select("id,client_id,amount,campaign,date,invoice_biz,invoice_tax")
     .eq("id", body.jobId)
     .maybeSingle();
@@ -64,63 +67,62 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "אין סכום ל-job — יש להזין סכום" }, { status: 400 });
   }
 
-  // ---- already ISSUED? (deal_invoice only) --------------------------------
-  // The guard below this one asks "is one already in flight"; this one asks the
-  // stronger, more permanent question — did a document for this job already go
-  // out. It runs FIRST because an issued number outranks a queued row, and it
-  // is free: the job row was fetched above.
+  // ---- already billed? (deal_invoice only) --------------------------------
+  // ONE question, asked in ONE place (2026-09-16). This route used to carry its
+  // own two checks — invoice_biz/invoice_tax on the job, then a live queue row —
+  // which were rules (a) and (b) of findBilledEvidence written a second time.
+  // They were also the WHOLE list: neither one read the registry, so the case
+  // that produced this change — חברת החשמל, a 300 and a 305 sitting unlinked in
+  // `documents` — would have walked through here exactly as it walked through
+  // the client-approval path. Rules (c) and (c2) come for free by asking the
+  // shared function instead.
   //
-  // WHY IT EXISTS. The queue check alone reads pending_documents, and a
-  // document raised by hand in Morning never had a row there. Job 74fc4b21
-  // (ידיעות אחרונות, "מכירת ביפו — חלק ב") carries invoice_biz=40258, issued by
-  // hand and only discovered by the nightly pull — so "+ חשבון עסקה חדש" on it
-  // would have queued a SECOND deal invoice against money already billed.
-  //
-  // BOTH COLUMNS, not invoice_biz alone. This mirrors rule (a) of
-  // findBilledEvidence (enqueue.ts) and its reason holds here unchanged: the
-  // 305-direct path writes only invoice_tax, and four jobs in the table today
-  // have tax with biz null. For those, a deal invoice raised now is a 300 after
-  // the 320 — the very duplicate this guard is for, and a check on invoice_biz
-  // alone would wave it through.
+  // The messages below are the ones this route has always returned, verbatim,
+  // and so is the 409. What the caller sees on a block does not change.
   //
   // deal_invoice ONLY, same reason findBilledEvidence gives: a work order is
   // queued when the production is created, long before any invoice exists, and
   // this test there would block an ordinary re-sync.
   if (docType === "deal_invoice") {
-    // null, and "" — a blank string is not a document number.
-    const present = (v: unknown) => v != null && String(v).trim() !== "";
-    const biz = job.invoice_biz as string | null;
-    const tax = job.invoice_tax as string | null;
-    if (present(biz)) {
+    const billed = await findBilledEvidenceForJobs(admin, [job.id as string]);
+    if (billed) {
+      // Rule (a) keeps its two distinct sentences: "you already have a deal
+      // invoice" and "a tax invoice already went out" call for different next
+      // actions, which is why they were never one message.
+      const num = billed.detail.doc_number ?? "";
+      const message =
+        billed.rule === "a"
+          ? billed.detail.column === "invoice_biz"
+            ? `לג'וב הזה כבר יש חשבון עסקה מספר ${num} — לא ניתן ליצור נוסף`
+            : `לג'וב הזה כבר יצאה חשבונית מס מספר ${num} — לא ניתן ליצור חשבון עסקה בדיעבד`
+          : billed.rule === "b"
+            // The found row's type, not the requested one. In the old narrow
+            // check those were always equal (it filtered on docType); rule (b)
+            // also sees a live tax row, and naming it is what keeps this
+            // sentence true in the case the old check could not reach.
+            ? `כבר קיים ${DOC_TYPE_LABEL[(billed.detail.doc_type as PendingDocType) ?? docType] ?? DOC_TYPE_LABEL[docType]} ל-job הזה (${billed.detail.queue_status ?? ""})`
+            : billed.rule === "c"
+              ? `לג'וב הזה כבר מקושר מסמך חיוב ${num} במרשם — לא ניתן ליצור חשבון עסקה נוסף`
+              : `במרשם יש מסמך חיוב ${num} שמתאים ל-job הזה (אותו לקוח, אותו סכום, הפרש ${billed.detail.days_gap} ימים) ואינו מקושר אליו. יש לשייך אותו ב"גאפים לטיפול" לפני יצירת חשבון עסקה`;
+      return NextResponse.json({ error: message, status: "exists" }, { status: 409 });
+    }
+  } else {
+    // work_order: don't double-queue the same document kind for the same job.
+    // findBilledEvidence deliberately does not cover work orders (they are
+    // queued before any invoice exists), so this check stays exactly as it was.
+    const { data: live } = await admin
+      .from("pending_documents")
+      .select("id,status")
+      .eq("job_id", job.id as string)
+      .eq("doc_type", docType)
+      .in("status", LIVE_STATUSES)
+      .maybeSingle();
+    if (live) {
       return NextResponse.json(
-        { error: `לג'וב הזה כבר יש חשבון עסקה מספר ${biz} — לא ניתן ליצור נוסף`, status: "exists" },
+        { error: `כבר קיים ${DOC_TYPE_LABEL[docType]} ל-job הזה (${live.status})`, status: "exists" },
         { status: 409 }
       );
     }
-    if (present(tax)) {
-      return NextResponse.json(
-        {
-          error: `לג'וב הזה כבר יצאה חשבונית מס מספר ${tax} — לא ניתן ליצור חשבון עסקה בדיעבד`,
-          status: "exists",
-        },
-        { status: 409 }
-      );
-    }
-  }
-
-  // don't double-queue the same document kind for the same job
-  const { data: live } = await admin
-    .from("pending_documents")
-    .select("id,status")
-    .eq("job_id", job.id as string)
-    .eq("doc_type", docType)
-    .in("status", LIVE_STATUSES)
-    .maybeSingle();
-  if (live) {
-    return NextResponse.json(
-      { error: `כבר קיים ${DOC_TYPE_LABEL[docType]} ל-job הזה (${live.status})`, status: "exists" },
-      { status: 409 }
-    );
   }
 
   const description =

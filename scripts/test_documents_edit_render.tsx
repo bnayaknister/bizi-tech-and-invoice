@@ -88,6 +88,9 @@ const bundleRow: PendingDocRow = {
   parent_gross: null,
   parent_gross_error: null,
   work_cancelled: null,
+  // a work_order fixture: the prior-rejection banner is deal_invoice-only, so
+  // null here is the shape the server actually sends for this row
+  prior_rejection: null,
 };
 
 // The same row, billing work that has since been CANCELLED (2026-09-14). Built
