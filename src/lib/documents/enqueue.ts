@@ -422,7 +422,7 @@ const present = (v: unknown) => v != null && String(v).trim() !== "";
 
 /** What already proves this production's work has been billed. */
 export type BilledEvidence = {
-  rule: "a" | "b" | "c" | "c2";
+  rule: "a" | "b" | "c" | "c2" | "d";
   jobId: string;
   /**
    * The human sentence. Every rule has always had one, every caller that shows
@@ -442,6 +442,9 @@ export type BilledEvidence = {
     column?: "invoice_biz" | "invoice_tax";
     /** rule b only — the queue row's status */
     queue_status?: string | null;
+    /** rule d only — the job and production this work was really billed under */
+    kept_job_id?: string | null;
+    kept_production_id?: string | null;
   };
   /**
    * c2 only. The block left a job with a matching document NOBODY linked, so
@@ -509,20 +512,33 @@ export async function findBilledEvidence(
     .select("job_id")
     .eq("production_id", productionId);
   const jobIds = (links ?? []).map((l) => l.job_id as string).filter(Boolean);
-  return findBilledEvidenceForJobs(admin, jobIds);
+  // productionId is handed on so rule (d) can run — it is the one rule that
+  // asks about the PRODUCTION rather than about its jobs. See the note on
+  // `productionId` in the signature below for why the registry path does not
+  // pass one.
+  return findBilledEvidenceForJobs(admin, jobIds, productionId);
 }
 
 /**
- * The same four rules, asked about jobs directly.
+ * The same rules, asked about jobs directly.
  *
  * Split out 2026-09-16 so the registry's "+ חשבון עסקה חדש" can ask the
  * question too. That route starts from a JOB and may have no production at
  * all, and until now it carried its own narrower copy of rules a and b — two
  * statements of one rule, and the copy was missing c and c2 entirely.
+ *
+ * `productionId` is OPTIONAL and gates rule (d) alone. The registry passes
+ * none, and that is the deliberate escape hatch rather than an oversight: (d)
+ * blocks on a merge that a human recorded and may later decide was wrong, so
+ * there has to be one door left. That door is the registry, it is money-tier,
+ * and it opens only after someone un-dismisses the duplicate's job by hand —
+ * a money decision with a name on it, which is exactly the bar (d) is
+ * protecting.
  */
 export async function findBilledEvidenceForJobs(
   admin: SupabaseClient,
-  jobIds: string[]
+  jobIds: string[],
+  productionId?: string
 ): Promise<BilledEvidence | null> {
   if (!jobIds.length) return null;
 
@@ -617,6 +633,134 @@ export async function findBilledEvidenceForJobs(
       evidence: `מסמך ${d.type} במרשם (${d.morning_doc_number ?? d.id.slice(0, 8)})`,
       detail: { doc_number: d.morning_doc_number, doc_type: d.type },
     };
+  }
+
+  // ---- d: this production is a KNOWN duplicate of one already billed ------
+  //
+  // Rules a, b, c and c2 all ask about THIS job. (d) asks the one question
+  // none of them can: was this work already billed under a DIFFERENT job,
+  // because someone decided this production was a duplicate?
+  //
+  // Measured on ליעד הרמן / אוכלי סרטים 28.8 (2026-09-16). 0065 merged the
+  // manual duplicate away and dismissed its ₪600 job; on 8.9 a technician undid
+  // the merge and the production came back to the board in 'נשלח_ללקוח'. All
+  // four earlier rules read clean on it — no invoice on the dismissed job (a),
+  // its work order is a rejected work_order (b), no linked document (c), and
+  // the client's two unlinked documents are ₪1,416 and ₪1,770 so no amount
+  // matches ₪600 (c2). The client is per_episode at ₪600, so one client
+  // approval would have queued a deal invoice for a recording already billed
+  // ₪300 under 40311.
+  //
+  // BEFORE c2, and that ordering is the point: (d) rests on a decision a human
+  // recorded PLUS hard billing evidence on the survivor, while c2 infers a
+  // match from client and amount. When both could fire, the recorded decision
+  // is the better sentence to leave in the log.
+  //
+  // TWO SOURCES, because the merge writes two events and either can be the one
+  // that survives. Payload keys verified against every row in the table
+  // (2026-09-16): production_merged_duplicate — 15 rows, all carry
+  // `merged_into`; job_dismissed — 80 rows, `kept_job_id` on the merge-borne
+  // ones. Neither key is assumed.
+  //
+  // The merge EVENT is the signal, never `productions.merged_into` — the whole
+  // reason this rule exists is a production whose merged_into was cleared while
+  // the billing it caused stayed put. A cleared column is precisely the state
+  // (d) must still see through.
+  if (productionId) {
+    const [mergeEv, dismissEv] = await Promise.all([
+      admin
+        .from("events")
+        .select("payload")
+        .eq("entity_id", productionId)
+        .eq("event_type", "production_merged_duplicate")
+        .order("created_at", { ascending: false })
+        .limit(1),
+      admin
+        .from("events")
+        .select("payload")
+        .in("entity_id", jobIds)
+        .eq("event_type", "job_dismissed")
+        .order("created_at", { ascending: false })
+        .limit(5),
+    ]);
+
+    const keptProductionId =
+      ((mergeEv.data ?? [])[0]?.payload as { merged_into?: string } | undefined)?.merged_into ?? null;
+    const keptJobIdFromEvent =
+      ((dismissEv.data ?? []) as { payload?: { kept_job_id?: string } }[])
+        .map((e) => e.payload?.kept_job_id)
+        .find((v) => present(v)) ?? null;
+
+    if (keptProductionId || keptJobIdFromEvent) {
+      // The surviving jobs: the one the dismissal named, plus whatever the
+      // surviving production carries. Both, because the two events can name
+      // different halves of the same survivor and either may be missing.
+      const survivorJobIds = new Set<string>();
+      if (keptJobIdFromEvent) survivorJobIds.add(keptJobIdFromEvent);
+      if (keptProductionId) {
+        const { data: survLinks } = await admin
+          .from("job_productions")
+          .select("job_id")
+          .eq("production_id", keptProductionId);
+        for (const l of survLinks ?? []) if (l.job_id) survivorJobIds.add(l.job_id as string);
+      }
+      // Never let the survivor set collapse back onto this production's own
+      // jobs — that would make a row evidence against itself.
+      for (const id of jobIds) survivorJobIds.delete(id);
+
+      const survivors = Array.from(survivorJobIds);
+      if (survivors.length) {
+        // "Is the survivor actually billed?" — rules (a) and (c) only, asked
+        // about the other job. NOT the whole function: c2's inference about a
+        // DIFFERENT job is too long a chain to end in a block over here, and a
+        // live queue row (b) is not yet money that moved.
+        const [survJobs, survDocs] = await Promise.all([
+          admin.from("jobs").select("id,invoice_biz,invoice_tax").in("id", survivors),
+          admin
+            .from("documents")
+            .select("id,type,morning_doc_number,job_id")
+            .in("type", [300, 305, 320])
+            .is("cancelled_at", null)
+            .is("archived_at", null)
+            .in("job_id", survivors),
+        ]);
+
+        const billedJob = ((survJobs.data ?? []) as {
+          id: string;
+          invoice_biz: string | null;
+          invoice_tax: string | null;
+        }[]).find((j) => present(j.invoice_biz) || present(j.invoice_tax));
+        const billedDoc = ((survDocs.data ?? []) as {
+          id: string;
+          type: number;
+          morning_doc_number: string | null;
+          job_id: string | null;
+        }[])[0];
+
+        if (billedJob || billedDoc) {
+          const number = billedJob
+            ? present(billedJob.invoice_biz)
+              ? billedJob.invoice_biz
+              : billedJob.invoice_tax
+            : billedDoc.morning_doc_number ?? billedDoc.id.slice(0, 8);
+          const keptJobId = billedJob?.id ?? billedDoc?.job_id ?? survivors[0];
+          return {
+            rule: "d",
+            // The job named is THIS production's own — the row that would have
+            // been billed twice. The survivor's ids live in `detail`.
+            jobId: jobIds[0],
+            evidence: `ההפקה סומנה ככפילות של הפקה שכבר חויבה (${number})`,
+            detail: {
+              doc_number: number ?? null,
+              doc_type: billedDoc?.type ?? null,
+              kept_job_id: keptJobId,
+              kept_production_id: keptProductionId,
+            },
+            needsLink: false,
+          };
+        }
+      }
+    }
   }
 
   // ---- c2: a live billing document that MATCHES but was never linked ------
