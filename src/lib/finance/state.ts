@@ -57,6 +57,32 @@ export function isPaidNoTax(j: PaidNoTaxFacts): boolean {
   return j.paid === "כן" && !present(j.invoice_tax);
 }
 
+/** The one fact the amount-missing rule needs. */
+export type AmountMissingFacts = { amount: number | null };
+
+/**
+ * "חיוב ללא סכום": a job nobody has priced.
+ *
+ * The second 🔴 alert, and the second half of the hub card's criticalTotal —
+ * extracted for the same reason isPaidNoTax was (a1cbf32): the full radar and
+ * the hub card each spelled it, and the card's spelling was missing
+ * `dismissed`. It reported 3 where the radar reported 1, and the two extra
+ * rows were dismissed test productions from 2026-07-29 — a critical alert
+ * pointing at records /finance refuses to show.
+ *
+ * `== null` and not `!j.amount` or `== 0`: an UNPRICED job is the alert. A job
+ * deliberately priced at zero is a decision someone made, and `!0` is true —
+ * the truthiness test would have nagged about it forever. (Zero rows carry
+ * amount = 0 today, measured 2026-09-16.) Loose equality on purpose, so an
+ * absent field reads the same as a null column.
+ *
+ * `dismissed` is NOT tested here, exactly as in isPaidNoTax: it belongs to
+ * whoever loads the rows.
+ */
+export function isAmountMissing(j: AmountMissingFacts): boolean {
+  return j.amount == null;
+}
+
 export const TAB_META: Record<
   FinanceState,
   { label: string; short: string; color: string; dot: string; hint: string }

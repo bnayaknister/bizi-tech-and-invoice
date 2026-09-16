@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { deriveMilestoneState, type MilestoneState } from "@/lib/finance/milestone";
-import { isPaidNoTax } from "@/lib/finance/state";
+import { isAmountMissing, isPaidNoTax } from "@/lib/finance/state";
 
 /**
  * A document number is present. null and "" both mean "no number" — a blank
@@ -20,7 +20,7 @@ export type AlertCounts = {
 // Lightweight version for the hub card (step 3). Kept separate from the full
 // radar so the dashboard doesn't pay for the whole engine on every load.
 export async function getAlertCounts(supabase: SupabaseClient): Promise<AlertCounts> {
-  const [paidJobs, amountMissing, invoiceDateUnknown] = await Promise.all([
+  const [paidJobs, unpricedJobs, invoiceDateUnknown] = await Promise.all([
     // ---- NOT a head-count, and the two reasons are both corrections --------
     //
     // This was `.eq("paid","כן").is("invoice_tax", null)` with head:true, and
@@ -43,13 +43,28 @@ export async function getAlertCounts(supabase: SupabaseClient): Promise<AlertCou
     // Cost: `paid='כן'` is 58 rows today against a 1000-row default page, and
     // grows ~40 a year. Far from the cap, and two columns wide.
     supabase.from("jobs").select("paid,invoice_tax").eq("paid", "כן").eq("dismissed", false),
-    supabase.from("jobs").select("id", { count: "exact", head: true }).is("amount", null),
+    // ---- the same correction, on the other half of criticalTotal ----------
+    //
+    // This was a head-count with NO `dismissed` filter, and it was wrong by
+    // exactly the amount that mattered: 3 against the full radar's 1. The two
+    // extra rows are dismissed test productions ("הפקת טסט שנפתחה בטעות",
+    // both dismissed 2026-07-29) — so the hub card's critical headline was
+    // nagging about records /finance will not even display, and no screen
+    // behind the number could explain it.
+    //
+    // `.is("amount", null)` stays as a NARROWING — it is cheap and exactly
+    // matches isAmountMissing today — but the predicate below is what decides.
+    // ⚠️ If that rule ever widens (counting `amount = 0`, say), this filter
+    // becomes a superset violation and has to widen with it, or the card
+    // silently under-reports. The rule lives in state.ts; this line only
+    // avoids paging jobs that cannot qualify.
+    supabase.from("jobs").select("amount").eq("dismissed", false).is("amount", null),
     supabase.from("invoices").select("id", { count: "exact", head: true }).eq("date_is_estimated", true),
   ]);
   const paidNoTaxCount = ((paidJobs.data ?? []) as { paid: string | null; invoice_tax: string | null }[]).filter(
     isPaidNoTax
   ).length;
-  const amountMissingCount = amountMissing.count ?? 0;
+  const amountMissingCount = ((unpricedJobs.data ?? []) as { amount: number | null }[]).filter(isAmountMissing).length;
   const invoiceDateUnknownCount = invoiceDateUnknown.count ?? 0;
   return {
     paidNoTax: paidNoTaxCount,
@@ -345,7 +360,9 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   // /finance?filter=paid_no_tax view run, so the three cannot drift apart.
   // `jobs` is already dismissed=false at the query above.
   const paidNoTax = jobs.filter(isPaidNoTax);
-  const amountMissing = jobs.filter((j) => j.amount == null);
+  // shared predicate (state.ts), same as paidNoTax above — `jobs` is already
+  // dismissed=false at the query
+  const amountMissing = jobs.filter(isAmountMissing);
   const unknownPayment = jobs.filter((j) => j.paid === "לא ידוע");
   const estimatedInvoiceDate = invoices.filter((i) => i.date_is_estimated);
   // "עבר מועדה ואין חשבונית" — the title, now literally true. The date and
