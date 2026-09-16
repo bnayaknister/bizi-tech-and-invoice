@@ -333,44 +333,127 @@ export type JobOrdersResult =
  * falls back to the raw code rather than to silence: an unfamiliar string on
  * screen is reportable, a missing line is not.
  */
-const FAILURE_TEXT: Record<string, string> = {
-  no_work_order: "לא הונפקה הזמנת עבודה",
-  work_order_not_issued: "הזמנת העבודה עדיין בתור ולא הונפקה",
-  work_order_consolidated: "הזמנת העבודה אוחדה להזמנה מרוכזת",
-  work_order_is_consolidation_parent:
-    "ההזמנה מרוכזת, וחשבון עסקה על חלק מהפרקים שלה אינו נסגר",
-  multiple_issued_work_orders: "יש יותר מהזמנת עבודה מונפקת אחת",
-  work_order_without_morning_id: "ההזמנה לא הגיעה למורנינג",
-  work_order_dry_run: "ההזמנה הונפקה בהרצה יבשה בלבד",
-  work_order_not_in_registry: "ההזמנה טרם נמשכה ממורנינג",
-  work_order_status_unknown: "מצב ההזמנה במורנינג טרם ידוע — יימשך במשיכה הבאה",
-  work_order_closed_in_morning: "הזמנת העבודה כבר סגורה במורנינג",
-  lookup_failed: "קריאת הזמנות העבודה נכשלה",
-  consolidation_lookup_failed: "בדיקת האיגוד נכשלה",
-  registry_lookup_failed: "קריאת המרשם נכשלה",
+/**
+ * Per reason: what went wrong, and what to do about it. Owner-approved
+ * 2026-09-17, and the SECOND half is the one that had to exist.
+ *
+ * The first version ended every refusal with one sentence — "הנפיקי הזמנת
+ * עבודה מהרג'יסטרי" — and for the commonest reason of all that instruction is
+ * actively harmful: when the order is already sitting in the queue waiting for
+ * approval, issuing another one from the registry creates a SECOND order for
+ * the same recording. The advice has to follow the reason, not the refusal.
+ */
+type Failure = { why: string; todo: string };
+
+const FAILURE: Record<string, Failure> = {
+  no_work_order: {
+    why: "לא הונפקה הזמנת עבודה",
+    todo: "להנפיק הזמנת עבודה מהרג'יסטרי",
+  },
+  // ⚠️ the one that must never say "issue one from the registry"
+  work_order_not_issued: {
+    why: "הזמנת העבודה ממתינה לאישור בתור",
+    todo: "לאשר את ההזמנה במסך המסמכים (/documents), לא להנפיק חדשה",
+  },
+  work_order_consolidated: {
+    why: "הזמנת העבודה אוחדה להזמנה מרוכזת",
+    todo: "לחייב דרך ההזמנה המרוכזת, לא דרך העבודה הבודדת",
+  },
+  work_order_is_consolidation_parent: {
+    why: "ההזמנה מרוכזת ומכסה כמה פרקים",
+    todo: "להמיר את ההזמנה המרוכזת כולה מהרג'יסטרי",
+  },
+  multiple_issued_work_orders: {
+    why: "יש יותר מהזמנת עבודה מונפקת אחת",
+    todo: "לברר ידנית איזו הזמנה נכונה לפני חיוב",
+  },
+  work_order_without_morning_id: {
+    why: "ההזמנה לא הגיעה למורנינג",
+    todo: "להנפיק אותה שוב מהתור",
+  },
+  work_order_dry_run: {
+    why: "ההזמנה הונפקה בהרצה יבשה בלבד",
+    todo: "להנפיק אותה באמת מהתור",
+  },
+  work_order_not_in_registry: {
+    why: "ההזמנה טרם נמשכה ממורנינג",
+    todo: "להמתין למשיכה הבאה (05:00)",
+  },
+  work_order_status_unknown: {
+    why: "מצב ההזמנה במורנינג טרם ידוע",
+    todo: "להמתין למשיכה הבאה (05:00) — זה נפתר מעצמו",
+  },
+  work_order_closed_in_morning: {
+    why: "הזמנת העבודה כבר סגורה במורנינג",
+    todo: "ההזמנה כבר הומרה — לחפש את חשבון העסקה הקיים ברג'יסטרי",
+  },
+  // the two the job->order resolver needs, and which used to borrow a
+  // work-order label that said the wrong thing about a job
+  job_without_production: {
+    why: "לעבודה אין הפקה משויכת",
+    todo: "לשייך את העבודה להפקה לפני חיוב",
+  },
+  job_with_multiple_productions: {
+    why: "העבודה משויכת ליותר מהפקה אחת",
+    todo: "לברר ידנית איזו הפקה מחויבת כאן",
+  },
+  lookup_failed: { why: "קריאת הזמנות העבודה נכשלה", todo: "לרענן ולנסות שוב" },
+  consolidation_lookup_failed: { why: "בדיקת האיגוד נכשלה", todo: "לרענן ולנסות שוב" },
+  registry_lookup_failed: { why: "קריאת המרשם נכשלה", todo: "לרענן ולנסות שוב" },
 };
 
+/**
+ * A reason with no entry is a bug in the map above, not in the caller, so it
+ * falls back to the raw code rather than to silence: an unfamiliar string on
+ * screen is reportable, a missing line is not.
+ */
+const failureOf = (reason: string): Failure =>
+  FAILURE[reason] ?? { why: reason, todo: "לפנות לתמיכה עם הקוד הזה" };
+
 export function failureSentence(f: JobOrderFailure): string {
-  const why = FAILURE_TEXT[f.skip_reason] ?? f.skip_reason;
   const num = f.work_order_number ? ` (${f.work_order_number})` : "";
-  return `• ${f.label} — ${why}${num}`;
+  return `\u2022 ${f.label} \u2014 ${failureOf(f.skip_reason).why}${num}`;
 }
 
 /**
- * The whole refusal, as the bookkeeper reads it. Zero documents are created
- * when this is returned — stated first, because "did something go out?" is the
- * question she has while reading it.
+ * The whole refusal, as the bookkeeper reads it. Zero documents were created —
+ * stated first, because "did something go out?" is the question she has while
+ * reading it.
+ *
+ * The instructions are GROUPED and de-duplicated: four jobs blocked for the
+ * same reason produce four failure lines (she needs to know which jobs) but one
+ * instruction (she needs to do one thing). Order follows first appearance, so
+ * the list reads in the same order as the failures above it.
  */
 export function refusalMessage(failures: JobOrderFailure[], total: number): string {
+  const n = failures.length;
+  // "עבודה אחת מתוך 4 אינה עומדת בכך" / "2 מתוך 4 העבודות אינן עומדות בכך"
+  const count =
+    total <= 1
+      ? ""
+      : n === 1
+        ? `\u05e2\u05d1\u05d5\u05d3\u05d4 \u05d0\u05d7\u05ea \u05de\u05ea\u05d5\u05da ${total} \u05d0\u05d9\u05e0\u05d4 \u05e2\u05d5\u05de\u05d3\u05ea \u05d1\u05db\u05da:`
+        : `${n} \u05de\u05ea\u05d5\u05da ${total} \u05d4\u05e2\u05d1\u05d5\u05d3\u05d5\u05ea \u05d0\u05d9\u05e0\u05df \u05e2\u05d5\u05de\u05d3\u05d5\u05ea \u05d1\u05db\u05da:`;
+
   const head =
     total > 1
-      ? `הבנדל לא הונפק — אפס מסמכים נוצרו.\n\nחשבון עסקה מונפק רק על סמך הזמנת עבודה מונפקת. ${failures.length} מתוך ${total} העבודות אינן עומדות בכך:`
-      : "חשבון עסקה לא נוצר.\n\nחשבון עסקה מונפק רק על סמך הזמנת עבודה מונפקת:";
-  const tail =
-    failures.length > 1
-      ? "יש להנפיק להן הזמנת עבודה מהרג'יסטרי, ואז להמיר את כולן יחד."
-      : "יש להנפיק לה הזמנת עבודה מהרג'יסטרי, ואז להמיר אותה לחשבון עסקה.";
-  return [head, "", ...failures.map(failureSentence), "", tail].join("\n");
+      ? `\u05d4\u05d1\u05e0\u05d3\u05dc \u05dc\u05d0 \u05d4\u05d5\u05e0\u05e4\u05e7 \u2014 \u05d0\u05e4\u05e1 \u05de\u05e1\u05de\u05db\u05d9\u05dd \u05e0\u05d5\u05e6\u05e8\u05d5.\n\n\u05d7\u05e9\u05d1\u05d5\u05df \u05e2\u05e1\u05e7\u05d4 \u05de\u05d5\u05e0\u05e4\u05e7 \u05e8\u05e7 \u05e2\u05dc \u05e1\u05de\u05da \u05d4\u05d6\u05de\u05e0\u05ea \u05e2\u05d1\u05d5\u05d3\u05d4 \u05de\u05d5\u05e0\u05e4\u05e7\u05ea.\n${count}`
+      : "\u05d7\u05e9\u05d1\u05d5\u05df \u05e2\u05e1\u05e7\u05d4 \u05dc\u05d0 \u05e0\u05d5\u05e6\u05e8.\n\n\u05d7\u05e9\u05d1\u05d5\u05df \u05e2\u05e1\u05e7\u05d4 \u05de\u05d5\u05e0\u05e4\u05e7 \u05e8\u05e7 \u05e2\u05dc \u05e1\u05de\u05da \u05d4\u05d6\u05de\u05e0\u05ea \u05e2\u05d1\u05d5\u05d3\u05d4 \u05de\u05d5\u05e0\u05e4\u05e7\u05ea:";
+
+  const todos: string[] = [];
+  for (const f of failures) {
+    const t = failureOf(f.skip_reason).todo;
+    if (!todos.includes(t)) todos.push(t);
+  }
+
+  return [
+    head,
+    "",
+    ...failures.map(failureSentence),
+    "",
+    "\u05de\u05d4 \u05dc\u05e2\u05e9\u05d5\u05ea:",
+    ...todos.map((t) => `\u2014 ${t}`),
+  ].join("\n");
 }
 
 /**
@@ -423,7 +506,7 @@ export async function resolveWorkOrdersForJobs(
       failures.push({
         job_id: jobId,
         label: labelOf(jobId),
-        skip_reason: prodIds.length === 0 ? "no_work_order" : "multiple_issued_work_orders",
+        skip_reason: prodIds.length === 0 ? "job_without_production" : "job_with_multiple_productions",
         detail: `productions=${prodIds.length}`,
       });
       continue;

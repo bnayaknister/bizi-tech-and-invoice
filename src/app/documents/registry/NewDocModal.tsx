@@ -14,6 +14,9 @@ type JobHit = {
   amount: number | null;
   date: string | null;
   status: string;
+  /** the ISSUED work order behind this job's production, when there is one */
+  work_order_number: string | null;
+  work_order_amount: number | null;
 };
 
 const TITLES: Record<"work_order" | "deal_invoice", string> = {
@@ -95,7 +98,15 @@ export default function NewDocModal({
       const res = await fetch("/api/documents/enqueue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ docType, jobId: picked.id, amount: amtNum, description: description.trim() || undefined }),
+        // A deal invoice inherits the order's lines verbatim (B14), so sending
+        // an amount or a description here would be sending something the server
+        // is required to ignore. The fields are not rendered for it either —
+        // one rule, stated in both places rather than enforced in one.
+        body: JSON.stringify(
+          docType === "deal_invoice"
+            ? { docType, jobId: picked.id }
+            : { docType, jobId: picked.id, amount: amtNum, description: description.trim() || undefined }
+        ),
       });
       const body = await res.json();
       if (!res.ok) {
@@ -176,20 +187,48 @@ export default function NewDocModal({
                 </div>
               )}
             </div>
-            <label className="block text-[11px] text-[var(--dim)] mb-1">סכום (₪, לפני מע״מ)</label>
-            <input
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              inputMode="decimal"
-              className="w-full bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-xs mb-2 font-mono"
-            />
-            <label className="block text-[11px] text-[var(--dim)] mb-1">תיאור (אופציונלי)</label>
-            <input
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="ברירת מחדל: סוג המסמך · לקוח · קמפיין"
-              className="w-full bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-xs mb-1"
-            />
+            {/* A deal invoice is raised ON the work order and inherits its lines
+                verbatim (B14), so there is nothing here to type. Showing the
+                order and its amount instead of a disabled field: the question
+                she has is "what is about to go out", and the answer is the
+                order's own number and total. A work order still gets both
+                fields — it has no parent to inherit from. */}
+            {docType === "deal_invoice" ? (
+              picked.work_order_number ? (
+                <div className="border border-[var(--rule)] rounded-xl px-3 py-2 mb-1">
+                  <div className="text-[11px] text-[var(--dim)] mb-1">על סמך הזמנת עבודה</div>
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-xs">{picked.work_order_number}</span>
+                    <span className="font-mono text-xs font-bold">{money(picked.work_order_amount)}</span>
+                  </div>
+                  <div className="text-[10px] text-[var(--faint)] mt-1">
+                    הסכום והפירוט נלקחים מההזמנה ואינם ניתנים לעריכה
+                  </div>
+                </div>
+              ) : (
+                <div className="text-[11px] text-[var(--warn)] border border-[var(--warn)] rounded-xl px-3 py-2 mb-1">
+                  ⚠️ לעבודה הזאת אין הזמנת עבודה מונפקת — לא ניתן להנפיק חשבון עסקה.
+                  השרת יסביר מה חסר בדיוק.
+                </div>
+              )
+            ) : (
+              <>
+                <label className="block text-[11px] text-[var(--dim)] mb-1">סכום (₪, לפני מע״מ)</label>
+                <input
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  inputMode="decimal"
+                  className="w-full bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-xs mb-2 font-mono"
+                />
+                <label className="block text-[11px] text-[var(--dim)] mb-1">תיאור (אופציונלי)</label>
+                <input
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="ברירת מחדל: סוג המסמך · לקוח · קמפיין"
+                  className="w-full bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-xs mb-1"
+                />
+              </>
+            )}
           </>
         )}
 

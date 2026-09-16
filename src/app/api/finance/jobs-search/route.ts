@@ -22,7 +22,8 @@ export async function GET(request: Request) {
   if (q.length < 2) return NextResponse.json({ jobs: [] });
 
   const admin = createAdminClient();
-  const [{ data: jobs }, { data: clients }, { data: links }, { data: prods }, { data: shows }] = await Promise.all([
+  const [{ data: jobs }, { data: clients }, { data: links }, { data: prods }, { data: shows }, { data: orders }] =
+    await Promise.all([
     admin
       .from("jobs")
       .select("id,client_id,campaign,amount,date,paid,invoice_biz,invoice_tax")
@@ -31,12 +32,35 @@ export async function GET(request: Request) {
     admin.from("job_productions").select("job_id,production_id"),
     admin.from("productions").select("id,show_id,podcast_name,guest,record_date"),
     admin.from("shows").select("id,name"),
+    // The ISSUED work order behind each production — added 2026-09-17 so the
+    // registry's "+ חשבון עסקה חדש" can SHOW what it is about to issue instead
+    // of offering an amount field the server now ignores (B14). One more read
+    // on a route that already loads five; no filtering by job, because the
+    // caller filters afterwards anyway.
+    admin
+      .from("pending_documents")
+      .select("production_id,morning_doc_number,amount")
+      .eq("doc_type", "work_order")
+      .eq("status", "issued"),
   ]);
 
   const clientName = new Map((clients ?? []).map((c) => [c.id as string, c.name as string]));
   const clientMapped = new Map((clients ?? []).map((c) => [c.id as string, !!c.morning_client_id]));
   const showName = new Map((shows ?? []).map((s) => [s.id as string, s.name as string]));
   const prodById = new Map((prods ?? []).map((p) => [p.id as string, p]));
+  // production -> its issued order. A production with two issued orders is
+  // refused downstream by resolveParentWorkOrderLink; here the first is shown,
+  // and the refusal still fires on submit — the screen never promises what the
+  // server will not do.
+  const orderByProd = new Map<string, { number: string | null; amount: number | null }>();
+  for (const o of orders ?? []) {
+    const pid = o.production_id as string | null;
+    if (!pid || orderByProd.has(pid)) continue;
+    orderByProd.set(pid, {
+      number: (o.morning_doc_number as string | null) ?? null,
+      amount: (o.amount as number | null) ?? null,
+    });
+  }
   const prodByJob = new Map<string, string>();
   for (const l of links ?? []) if (!prodByJob.has(l.job_id as string)) prodByJob.set(l.job_id as string, l.production_id as string);
 
@@ -63,6 +87,8 @@ export async function GET(request: Request) {
           amount: (j.amount as number | null) ?? null,
           date: (j.date as string | null) ?? null,
           status: TAB_META[state].label,
+          work_order_number: prod ? orderByProd.get(prod.id as string)?.number ?? null : null,
+          work_order_amount: prod ? orderByProd.get(prod.id as string)?.amount ?? null : null,
         },
       };
     })
