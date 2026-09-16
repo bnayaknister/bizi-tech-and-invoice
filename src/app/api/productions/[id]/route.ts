@@ -36,11 +36,43 @@ const STATUSES = new Set([
 //      renders locked ✓ with no buttons and no textarea — on EVERY future
 //      link. That is the bug, and it is what these two sets fix.
 //
-// Both sets are spelled by NAME, never by enum position. `production_status`
-// happens to order אושר_ע"י_לקוח at 8 and הופץ at 9, but a status inserted
-// into the enum later would silently redraw a positional range.
-const APPROVED_OR_LATER = new Set(['אושר_ע"י_לקוח', "הופץ"]);
-const REOPENS_NOTES = new Set(["בעריכה", "נשלח_ללקוח"]);
+// ═══ THE TRIGGER IS THE APPROVAL ITSELF, NOT THE STATUS IT CAME FROM ═══
+//
+// The first version of this gated on the PREVIOUS status being אושר_ע"י_לקוח
+// or הופץ, and it never fired once in production. Measured on חברת חשמל
+// (3f2f5eef, 2026-09-16):
+//
+//   15.9 09:02  the client approved through an EPISODE-SCOPED link. applyResponse
+//               computes approvedAll over the in-scope tracks only (links.ts:602),
+//               so an episode-only link approving its one track IS "all" —
+//               status went to אושר_ע"י_לקוח with the reels still unapproved.
+//   16.9 11:42  dragged to ממתין_לתגובת_לקוח. THAT move left אושר_ע"י_לקוח and
+//               is not a reopen target, so the one status that satisfied the old
+//               condition was spent on a move the fix did not cover.
+//   16.9 12:38  → נשלח_ללקוח · 12:41 → נערך · 12:42 → נשלח_ללקוח.
+//               Every one of these started from a status that was no longer
+//               אושר_ע"י_לקוח, so no reset ran — while
+//               review_episode_approved was, and still is, true.
+//
+// PARTIAL APPROVAL is the general shape: an episode can be approved while the
+// reels are not, and the production then sits anywhere on the board carrying a
+// live approval flag. So the question is no longer "where did it come from"
+// but "does this production still carry an approval that locks the notes" —
+// which is exactly what the client page reads (ReviewClient.tsx:428-429).
+//
+// The two locks, and why only one of them is touched:
+//   1. client_review_links.responded_at — kills that one link (links.ts:364).
+//      DELIBERATE and untouched: a link answers exactly once, and a new round
+//      has always meant a new link.
+//   2. productions.review_episode_approved / review_reels_approved and
+//      client_review_items.approved — sticky forever, on EVERY future link.
+//      That is the bug.
+//
+// Spelled by NAME, never by enum position: a status inserted into
+// `production_status` later would silently redraw a positional range.
+// ממתין_לתגובת_לקוח is deliberately NOT here — it means "the link is out and
+// we are waiting", which is not a reopening.
+const REOPENS_NOTES = new Set(["בעריכה", "נערך", "נשלח_ללקוח"]);
 
 export async function POST(request: Request, { params }: { params: { id: string } }) {
   const id = params.id;
@@ -65,17 +97,37 @@ export async function POST(request: Request, { params }: { params: { id: string 
       return NextResponse.json({ error: "סטטוס לא מוכר" }, { status: 400 });
     }
 
-    // The status we are leaving — the only way to tell a rollback from an
-    // ordinary forward move. Read through the USER client, so a row the caller
-    // cannot see reads as null and the update below still answers 404 exactly
-    // as it did before this block existed.
+    // The approval this production still carries. Read through the USER
+    // client, so a row the caller cannot see reads as null and the update
+    // below still answers 404 exactly as it did before this block existed.
+    // `status` rides along for the event payload only — it no longer decides
+    // anything (see the note above REOPENS_NOTES).
     const { data: current } = await supabase
       .from("productions")
-      .select("status")
+      .select("status,review_episode_approved,review_reels_approved")
       .eq("id", id)
       .maybeSingle();
-    const approvalReset =
-      !!current && APPROVED_OR_LATER.has(current.status as string) && REOPENS_NOTES.has(body.status);
+
+    // Only the service role can read client_review_items (RLS on, zero
+    // policies), so it needs the admin client — and it is asked ONLY when the
+    // two production flags are both clear, because either one already settles
+    // the question. A production whose per-item rows were approved while the
+    // track flag stayed false is the reels-approved-one-by-one case.
+    const resetAdmin = createAdminClient();
+    let approvalReset = false;
+    if (current && REOPENS_NOTES.has(body.status)) {
+      approvalReset = !!current.review_episode_approved || !!current.review_reels_approved;
+      if (!approvalReset) {
+        const { data: approvedItem } = await resetAdmin
+          .from("client_review_items")
+          .select("id")
+          .eq("production_id", id)
+          .eq("approved", true)
+          .limit(1)
+          .maybeSingle();
+        approvalReset = !!approvedItem;
+      }
+    }
 
     // ---- ORDER IS THE CONTRACT: the items reset GATES the status move ------
     //
@@ -95,16 +147,16 @@ export async function POST(request: Request, { params }: { params: { id: string 
     // direction: nothing on the board changes, and the worst case is that a
     // future link reopens notes for a production still marked approved.
     //
-    // NO MONEY MOVES, and that was measured rather than assumed (2026-09-17):
-    // not one DB function mentions review_episode_approved,
-    // review_reels_approved or client_review_items, and client_review_items
-    // carries no trigger at all. The only job-writing trigger on productions,
-    // on_production_approved, fires on `new.status = X and old.status is
-    // distinct from X` for הוקלט and אושר_ע"י_לקוח — a rollback moves AWAY
-    // from both, so neither branch is entered. Nothing here reaches jobs,
-    // documents or pending_documents.
+    // NO MONEY MOVES, re-measured against the live catalog on 2026-09-17 after
+    // the condition widened: not one DB function mentions
+    // review_episode_approved, review_reels_approved or client_review_items,
+    // and client_review_items carries no trigger at all. On productions,
+    // guard_client_approval_transition fires only on `new.status =
+    // 'אושר_ע"י_לקוח'` and on_production_approved only on הוקלט or
+    // אושר_ע"י_לקוח — and NONE of the three reopen targets is either of those,
+    // so widening the condition cannot reach jobs, documents or
+    // pending_documents.
     if (approvalReset) {
-      const resetAdmin = createAdminClient();
       const { error: itemsErr } = await resetAdmin
         .from("client_review_items")
         .update({ approved: false, approved_at: null })
