@@ -7,11 +7,11 @@ import {
   VAT_TYPE_DEFAULT,
   docDescriptionLabel,
   inheritDocDescription,
-  sourceRemark,
   type MorningDocumentRequest,
   type PendingDocType,
 } from "@/lib/morning/types";
 import { todayInIsrael } from "@/lib/dates";
+import { buildParentRef } from "@/lib/documents/parentRef";
 import { fetchPullSources, type OverCeilingInfo } from "@/lib/documents/pullSource";
 
 // The generic parent -> tax-child builder (owner spec 2026-08-06). Creates ONE
@@ -595,13 +595,24 @@ export async function createTaxFromParents(
   // so by this point every source has lines. Same guard as that gate.
   const income = rows.flatMap((r) => r.payload!.income ?? []);
   const amount = rows.reduce((sum, r) => sum + Number(r.amount ?? 0), 0);
-  const sourceNumbers = rows.map((r) => String(r.morning_doc_number));
+  // parentRef.ts owns both halves (2026-09-17): same rows, same order,
+  // same sourceRemark. `morningIds` above stays where it is — it is read
+  // by gates long before this point — and is asserted equal below.
+  const ref = buildParentRef({
+    childType: variant,
+    parentCode: DOC_TYPE_TO_MORNING_CODE[parentType],
+    parents: rows.map((r) => ({
+      morning_doc_id: r.morning_doc_id as string,
+      morning_doc_number: r.morning_doc_number,
+    })),
+  });
+  const sourceNumbers = ref.parentNumbers;
 
   // The two halves of "created on the basis of", and they do different jobs:
   // linkedDocumentIds CLOSES the parents in Morning, remarks is what the client
   // reads on the page. Morning fills the remark itself only for documents
   // raised in its own UI — through the API it leaves it null (bundle.ts:302).
-  const remark = sourceRemark(variant, DOC_TYPE_TO_MORNING_CODE[parentType], sourceNumbers);
+  const remark = ref.remarks;
   if (!remark) {
     // unreachable: every number was checked above. Refuse rather than send a
     // document that names no parent.

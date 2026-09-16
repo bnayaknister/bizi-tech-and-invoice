@@ -6,13 +6,13 @@ import {
   MORNING_DOC_NAME,
   RECEIPT_NOTICE,
   VAT_TYPE_DEFAULT,
-  sourceRemark,
   type MorningDocumentRequest,
   type PendingDocType,
 } from "@/lib/morning/types";
 import { childRule } from "@/lib/documents/taxFromParent";
 import { mapPullDocToReceiptSource, type PullDocRow } from "@/lib/documents/pullSource";
 import { todayInIsrael } from "@/lib/dates";
+import { buildParentRef } from "@/lib/documents/parentRef";
 
 // The last rung of the chain: a receipt (400) raised on a tax invoice (305).
 //
@@ -417,12 +417,23 @@ export async function createReceiptFromTaxInvoices(
     : { data: null };
   const clientName = ((clientRow?.name as string | null) ?? rows[0].payload?.client?.name ?? "").trim();
 
-  const sourceNumbers = rows.map((r) => String(r.morning_doc_number));
+  // parentRef.ts owns both halves (2026-09-17): same rows, same order,
+  // same sourceRemark. `morningIds` above stays where it is — it is read
+  // by gates long before this point — and is asserted equal below.
+  const ref = buildParentRef({
+    childType: RECEIPT_VARIANT,
+    parentCode: DOC_TYPE_TO_MORNING_CODE[PARENT_VARIANT],
+    parents: rows.map((r) => ({
+      morning_doc_id: r.morning_doc_id as string,
+      morning_doc_number: r.morning_doc_number,
+    })),
+  });
+  const sourceNumbers = ref.parentNumbers;
 
   // linkedDocumentIds closes the invoice in Morning; remarks is what the client
   // reads on the page. Morning fills the remark itself only for documents raised
   // in its own UI — through the API it leaves it null.
-  const remark = sourceRemark(RECEIPT_VARIANT, DOC_TYPE_TO_MORNING_CODE[PARENT_VARIANT], sourceNumbers);
+  const remark = ref.remarks;
   if (!remark) {
     // unreachable: every number was checked above
     return { ok: false, status: 500, error: "לא ניתן לבנות את הערת המקור" };

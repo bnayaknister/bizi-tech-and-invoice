@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { buildParentRef } from "@/lib/documents/parentRef";
 import { findCancelledWork, CANCELLED_WORK_MESSAGE } from "@/lib/documents/cancelledWork";
 import { issuePendingDocument, type PendingRow } from "@/lib/documents/issue";
 import { balanceError } from "@/lib/documents/lineBalance";
@@ -14,7 +15,6 @@ import {
   paymentMethodsSentence,
   relabelDocDescription,
   requiresPayment,
-  sourceRemark,
   type MorningDocumentRequest,
   type MorningPaymentRow,
   type PendingDocType,
@@ -535,11 +535,19 @@ async function reviewPending(request: Request) {
         const complete = lookup.length > 0 && lookup.every((p) => p.found && !!p.number && p.type !== null);
         const parentCodes = Array.from(new Set(lookup.map((p) => p.type).filter((t): t is number => t !== null)));
         if (complete && parentCodes.length === 1) {
-          newRemark = sourceRemark(
-            body.tax_variant,
-            parentCodes[0],
-            lookup.map((p) => p.number)
-          );
+          // Through parentRef.ts since 2026-09-17 — the same call it always
+          // made, now spelled in the one place that spells it. The validation
+          // above is NOT moved: it is this route's own (every parent found,
+          // numbered, and of a single type), and the shared builder takes
+          // parents a caller has already vouched for.
+          newRemark = buildParentRef({
+            childType: body.tax_variant,
+            parentCode: parentCodes[0],
+            parents: lookup.map((p) => ({
+              morning_doc_id: p.morning_doc_id,
+              morning_doc_number: p.number,
+            })),
+          }).remarks;
         }
       }
 
