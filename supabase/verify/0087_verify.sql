@@ -1,5 +1,11 @@
 -- 0087 — שאילתת אימות. קריאה בלבד, אפס כתיבה. להריץ אחרי החלת 0087.
 --
+-- ⚠️ הקובץ הזה אינו מיגרציה ואינו מוחל על המסד. הוא יושב ב-supabase/verify/
+-- ולא ב-supabase/migrations/ — כלל 50.
+--
+-- ההרצה הראשונה, 16.9, נכשלה על סוגר חסר ב-spot_checks (שני `)` במקום
+-- שלושה): json_build_object נסגר, אבל תת-השאילתה שעוטפת אותו לא. תוקן.
+--
 -- כל שורה כאן היא אחד הקנרי שהמיגרציה כבר בדקה בתוך הבלוק. הקובץ הזה קיים
 -- כדי שהבעלים יוכל לראות את אותם מספרים בעיניו, בלי להאמין להודעת NOTICE
 -- שאולי לא הודפסה.
@@ -73,7 +79,7 @@ select
                           where id in ('4ccf3682-9f1c-46e1-b809-7601c7151669',
                                        'e1cb88cc-1882-4db4-be8e-375ac7b73802',
                                        '8394b49f-27ac-462f-847b-e0a6e4bb19ae')
-                            and dismissed = false and paid = 'כן')) as spot_checks,
+                            and dismissed = false and paid = 'כן'))) as spot_checks,
 
   (select json_agg(json_build_object('event', t, 'n', n) order by t)
      from (select event_type t, count(*) n from public.events
