@@ -117,10 +117,39 @@ export async function POST(request: Request, { params }: { params: { id: string 
 // Undo a merge (the other "iron rule" undo case) — only while the merged-
 // away production itself never left 'pending'. `params.id` here is the
 // ABSORBED production's id (surfaced on the survivor's card as "מוזג לכאן").
+//
+// ═══ MONEY TIER, ALWAYS — owner decision 2026-09-16 ═══
+//
+// Undoing a merge is not a technician action in any case. A technician who
+// merged by mistake goes to the owner.
+//
+// This REPLACES the conditional tier of 45b5c2a, which asked whether THIS
+// duplicate had a dismissed job or a rejected queue row and demanded money
+// permission only then. The owner read that and drew the line higher, and the
+// simpler rule is also the more honest one: the conditional version protected
+// the money a merge had ALREADY moved, and had nothing to say about the money
+// the un-merge is about to let flow — a production returning to the board can
+// reach client approval and queue a fresh invoice, which is exactly how
+// ליעד הרמן 28.8 ended up one click from being billed twice. Every merge in
+// the table so far carried a dismissed job anyway (measured 16.9: 3 of 3), so
+// the conditional branch was drawing a distinction the data never made.
+//
+// FIRST, before reading the row or its stages: the answer to "may I do this at
+// all" must not depend on what the row happens to contain.
+//
+// The MERGE itself (POST above) is unchanged and stays stages-tier — a
+// technician resolving a calendar duplicate is the case that button exists for.
 export async function DELETE(_request: Request, { params }: { params: { id: string } }) {
   const gate = await requireStagesEditor();
   if ("error" in gate) return gate.error;
   const { supabase, user, canEditMoney } = gate;
+
+  if (!canEditMoney) {
+    return NextResponse.json(
+      { error: "ביטול מיזוג זמין רק למנהלי כספים. פנה לבעלים." },
+      { status: 403 }
+    );
+  }
 
   const { data: row, error: rowErr } = await supabase
     .from("productions")
@@ -139,26 +168,15 @@ export async function DELETE(_request: Request, { params }: { params: { id: stri
     return NextResponse.json({ error: "לא ניתן לבטל מיזוג — כבר התחילה עבודה" }, { status: 400 });
   }
 
-  // ---- THE MONEY TIER, AND WHY THIS ROUTE NEEDS ONE ----------------------
+  // ---- WHAT THIS UNDO IS ABOUT TO LEAVE BEHIND ---------------------------
   //
-  // Measured on ליעד הרמן / אוכלי סרטים 28.8 (2026-09-16): migration 0065
-  // merged a manual duplicate away, dismissed its ₪600 job and rejected its
-  // work order — and on 8.9 a technician with no can_edit_money undid it from
-  // this endpoint in one click. The merge itself was NOT reachable from the UI
-  // (findDupGroup above demands a calendar_uid on every member and two distinct
-  // uids; the manual row has none), so the undo was reachable where the merge
-  // was not. That asymmetry is the bug, and this is the half that closes it.
-  //
-  // The test is not "was a migration involved" — that is unknowable from here
-  // and would be the wrong question anyway. It is "did resolving this duplicate
-  // MOVE MONEY": a dismissed job, or a rejected queue row. Those are the two
-  // writes a merge makes outside `productions`, and either one means a person
-  // with money authority decided something that this button is about to
-  // partially reverse.
-  //
-  // A merge with neither — the ordinary calendar-mistake case the button was
-  // built for, two synced rows and nothing billed yet — is untouched and stays
-  // one click for a technician.
+  // Read for the AUDIT TRAIL only — the permission question was settled at the
+  // top of this function and no longer depends on any of it. The update below
+  // clears merged_into and nothing else, so a dismissed job stays dismissed and
+  // a rejected work order stays rejected: the production comes back to the
+  // board with its money side still in the merged state. That was invisible
+  // until now (the payload was `{}`), and reconstructing it on 16.9 took
+  // reading two migrations.
   const admin = createAdminClient();
   const { data: dupJobLinks } = await admin
     .from("job_productions")
@@ -183,13 +201,6 @@ export async function DELETE(_request: Request, { params }: { params: { id: stri
     new Set([...(byProd.data ?? []), ...(byJob.data ?? [])].map((r) => (r as { id: string }).id))
   );
 
-  if ((dismissedJobIds.length > 0 || rejectedDocIds.length > 0) && !canEditMoney) {
-    return NextResponse.json(
-      { error: "ביטול המיזוג הזה דורש הרשאת כספים — לכפילות יש עבודה מוסתרת או מסמך שנדחה." },
-      { status: 403 }
-    );
-  }
-
   const { error } = await supabase.from("productions").update({ merged_into: null }).eq("id", params.id);
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
@@ -198,12 +209,8 @@ export async function DELETE(_request: Request, { params }: { params: { id: stri
     entity_id: params.id,
     event_type: "production_merge_undone",
     actor_id: user.id,
-    // WHAT THIS UNDO DID NOT UNDO. The update above clears merged_into and
-    // nothing else, so a dismissed job stays dismissed and a rejected work
-    // order stays rejected — the production comes back to the board with its
-    // money side still in the merged state. That was invisible until now: the
-    // payload was `{}`, and reconstructing it on 16.9 took reading two
-    // migrations. Naming it here makes the next re-merge a query, not a dig.
+    // What this undo did NOT undo (gathered above) — naming it here makes the
+    // next re-merge a query rather than a dig through migrations.
     payload: {
       restored_merged_into: false,
       not_restored: {

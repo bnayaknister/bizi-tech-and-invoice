@@ -67,11 +67,15 @@ export default function ProductionsClient({
   board,
   isTech,
   canEditStages,
+  canEditMoney,
   shows,
 }: {
   board: BoardProduction[];
   isTech: boolean;
   canEditStages: boolean;
+  /** Undoing a merge is money-tier, always (owner 2026-09-16). Nothing else on
+   *  this screen reads it — it gates exactly one button. */
+  canEditMoney: boolean;
   shows: { id: string; name: string }[];
 }) {
   const { openEntity } = useDrawer();
@@ -377,7 +381,7 @@ export default function ProductionsClient({
           onSplitAsk={setSplitFor}
           onUndoSplit={undoSplit}
           onDupAction={dupAction}
-          onUnmerge={unmerge}
+          onUnmerge={canEditMoney ? unmerge : undefined}
         />
       ) : (
         <Kanban
@@ -397,7 +401,7 @@ export default function ProductionsClient({
           onSplitAsk={setSplitFor}
           onUndoSplit={undoSplit}
           onDupAction={dupAction}
-          onUnmerge={unmerge}
+          onUnmerge={canEditMoney ? unmerge : undefined}
         />
       )}
 
@@ -506,7 +510,7 @@ function ProductionCard({
   onSplitAsk: (p: BoardProduction) => void;
   onUndoSplit: (id: string) => void;
   onDupAction: (id: string, action: "confirm" | "merge") => void;
-  onUnmerge: (id: string) => void;
+  onUnmerge?: (id: string) => void;
 }) {
   const heldDays = daysSince(p.on_hold_since);
   const ip = p.in_progress[0];
@@ -630,7 +634,13 @@ function ProductionCard({
       {p.absorbed.length > 0 && (
         <div className="mt-1 text-[10px] text-[var(--faint)]">
           מוזגו לכאן {p.absorbed.length}
-          {canEditStages && (
+          {/* Money-tier, always (owner 2026-09-16) — a technician who merged by
+              mistake goes to the owner. `onUnmerge` arrives undefined for anyone
+              without can_edit_money, so the absence of the handler IS the
+              permission: no second copy of the rule to drift from the server's.
+              The server refuses it either way (duplicate-group DELETE); this
+              only keeps a button off the card that would always answer 403. */}
+          {onUnmerge && (
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -743,7 +753,7 @@ function TodayView({
   onSplitAsk: (p: BoardProduction) => void;
   onUndoSplit: (id: string) => void;
   onDupAction: (id: string, action: "confirm" | "merge") => void;
-  onUnmerge: (id: string) => void;
+  onUnmerge?: (id: string) => void;
 }) {
   const today = todayISO();
   const attention = rows.filter((p) => p.needs_attention);
@@ -840,7 +850,7 @@ function Kanban({
   onSplitAsk: (p: BoardProduction) => void;
   onUndoSplit: (id: string) => void;
   onDupAction: (id: string, action: "confirm" | "merge") => void;
-  onUnmerge: (id: string) => void;
+  onUnmerge?: (id: string) => void;
 }) {
   const byStatus = useMemo(() => {
     const m = new Map<string, BoardProduction[]>();

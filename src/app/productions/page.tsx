@@ -284,6 +284,7 @@ export default async function ProductionsPage() {
           board={board}
           isTech={profile.role === "tech"}
           canEditStages={profile.can_edit_stages}
+          canEditMoney={profile.can_edit_money}
           shows={(shows ?? [])
             .filter((s) => s.active)
             .map((s) => ({ id: s.id, name: s.name }))
