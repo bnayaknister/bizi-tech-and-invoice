@@ -147,7 +147,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     // direction: nothing on the board changes, and the worst case is that a
     // future link reopens notes for a production still marked approved.
     //
-    // NO MONEY MOVES, re-measured against the live catalog on 2026-09-17 after
+    // NO MONEY MOVES, re-measured against the live catalog on 2026-09-16 after
     // the condition widened: not one DB function mentions
     // review_episode_approved, review_reels_approved or client_review_items,
     // and client_review_items carries no trigger at all. On productions,
