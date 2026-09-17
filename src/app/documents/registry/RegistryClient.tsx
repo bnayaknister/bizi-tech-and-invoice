@@ -125,11 +125,32 @@ export type DocRow = {
 
 export type ChildAction = "deal_invoice" | "tax" | "receipt";
 
+// The row-level labels, and the deal-invoice one SAYS ITS SCOPE (owner
+// decision 2026-09-17). It read "צור חשבון עסקה", one suffix away from the
+// bar's "צור חשבון עסקה מאוגד (3)" — two buttons on one screen, near-identical
+// names, opposite scopes. On 17.9 the row button was pressed twice with a
+// selection live (10304 out of 10303/10304/10305, and 10334 for a client who
+// had moved to monthly billing the night before), and each time it billed the
+// one order it sat on.
 const CHILD_ACTION_LABEL: Record<ChildAction, string> = {
-  deal_invoice: "צור חשבון עסקה",
+  deal_invoice: "צור חשבון עסקה — הזמנה זו בלבד",
   tax: "צור חשבונית מס",
   receipt: "צור קבלה",
 };
+
+/**
+ * How many income lines the document just created carries, in words.
+ *
+ * "שורה אחת" rather than "1 שורות": this phrase exists to tell the operator
+ * the SCOPE of what she just made, and on 2026-09-17 a bare 1 inside a plural
+ * sentence was read past twice. One is the number that means something went
+ * wrong when three were expected, so it is the one that gets spelled out.
+ */
+function lineCountText(lines: unknown): string {
+  const n = Number(lines);
+  if (!Number.isFinite(n)) return "מספר שורות לא ידוע";
+  return n === 1 ? "שורה אחת" : `${n} שורות`;
+}
 
 const CHILD_ACTION_ENDPOINT: Record<"tax" | "receipt", string> = {
   tax: "/api/documents/tax",
@@ -305,6 +326,20 @@ export default function RegistryClient({
    * "I clicked and nothing appeared".
    */
   const [bundleResult, setBundleResult] = useState<Notice | null>(null);
+  /**
+   * A ROW action's own result, shown in the cell the button sits in.
+   *
+   * The same fix `6032f9a` made for the bundling bar, now for its neighbour —
+   * and the reason is the same one, proven again on 2026-09-17. The row button
+   * wrote to `msg`, which renders above the tabs (:690); the operator's eyes
+   * were on the row. So the one sentence that named the scope,
+   * "(שורה אחת)", was printed a screen away from the click that needed it, and
+   * a deal invoice that should have covered three orders read as done.
+   *
+   * Keyed by row id: a result belongs to the row it came from, and a second
+   * click elsewhere must not leave the first row's answer lying under it.
+   */
+  const [rowResult, setRowResult] = useState<{ id: string; notice: Notice } | null>(null);
   const [assignDoc, setAssignDoc] = useState<DocRow | null>(null);
   const [cancelDoc, setCancelDoc] = useState<DocRow | null>(null);
   const [newDoc, setNewDoc] = useState<"work_order" | "deal_invoice" | null>(null);
@@ -341,6 +376,7 @@ export default function RegistryClient({
     if (busy || !r.pending_id) return;
     setBusy(r.id);
     setMsg(null);
+    setRowResult(null);
     try {
       const res = await fetch("/api/documents/convert", {
         method: "POST",
@@ -351,12 +387,24 @@ export default function RegistryClient({
       // the status rides along when the body was not JSON (a 500 HTML page):
       // "היצירה נכשלה" alone tells the bookkeeper nothing she can report
       if (!res.ok) throw new Error(j.error ?? `היצירה נכשלה (${res.status})`);
-      say(
-        `חשבון עסקה על סמך הזמנה ${r.number ?? ""} (${j.deal_invoice?.lines ?? "?"} שורות) — נכנס לתור לאישור`
-      );
+      // WHERE THE ACTION HAPPENED, not the page notice above the tabs — the
+      // same correction 6032f9a made for the bundle bar. This sentence is the
+      // only place the SCOPE of what was just created is stated, and on
+      // 2026-09-17 it was stated where nobody was looking.
+      //
+      // "(1 שורות)" became "(שורה אחת)" in the same breath: the number that
+      // mattered was 1 against an expected 3, and a bare digit in a plural
+      // phrase is the easiest thing on a screen to read past.
+      setRowResult({
+        id: r.id,
+        notice: {
+          tone: "ok",
+          text: `חשבון עסקה על סמך הזמנה ${r.number ?? ""} (${lineCountText(j.deal_invoice?.lines)}) — נכנס לתור לאישור`,
+        },
+      });
       router.refresh();
     } catch (e) {
-      fail(e instanceof Error ? e.message : "שגיאה");
+      setRowResult({ id: r.id, notice: { tone: "err", text: e instanceof Error ? e.message : "שגיאה" } });
     } finally {
       setBusy(null);
     }
@@ -562,6 +610,37 @@ export default function RegistryClient({
     (r) => r.pending_id && selected.has(r.pending_id) && rowSelectable(r)
   );
 
+  /**
+   * Is a selection live that this row's own button would contradict?
+   *
+   * True when any row OTHER than this one is ticked. That is the whole rule,
+   * and it covers both cases the owner named (2026-09-17): two or more ticked
+   * always includes another row, so every row button goes dark; exactly one
+   * ticked and it is THIS row leaves this button alone, because the bar does
+   * not appear below two and the row button is then the only way to act.
+   *
+   * WHY AT ALL: the row button never read `selected`. With 10303/10304/10305
+   * ticked, the bar offered "צור חשבון עסקה מאוגד (3)" above the table while
+   * three live "צור חשבון עסקה" buttons sat in the rows themselves — same verb,
+   * opposite scope, no warning. One click billed 10304 alone and locked it
+   * behind has_live_deal_child, which put the correct path behind a rejection.
+   *
+   * The action has to MATCH: a selection is for one bundled action (the tab
+   * decides which), and a row's other actions are unrelated to it. On the
+   * deal-invoice tab a tax selection must not dim "צור קבלה" — that button has
+   * no bundled counterpart to be confused with.
+   */
+  const contradictsSelection = (r: DocRow, action: ChildAction): boolean =>
+    selectMode &&
+    action === bundleAction &&
+    selectedRows.some((x) => x.pending_id !== r.pending_id);
+
+  /** The sentence a dimmed row button carries, in the tab's own noun. */
+  const bundleInsteadText = (): string =>
+    `נבחרו ${selectedRows.length} ${
+      bundleAction === "deal_invoice" ? "הזמנות" : "חשבונות עסקה"
+    } — השתמשי בכפתור המאוגד למעלה`;
+
   function toggleSelected(pendingId: string) {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -579,6 +658,16 @@ export default function RegistryClient({
   useEffect(() => {
     setSelected(new Set());
   }, [rows, tab]);
+
+  // A row result is deliberately NOT cleared on `rows`: the action itself calls
+  // router.refresh(), so clearing on a new `rows` would erase the answer in the
+  // same tick it was written — which is the bug this whole change exists to
+  // close, reproduced one level down. It is cleared on a tab switch, where the
+  // row it belongs to is no longer on screen, and at the start of the next row
+  // action.
+  useEffect(() => {
+    setRowResult(null);
+  }, [tab]);
 
   // how many non-billing (quotes/orders/credits) are hidden in the unassigned tab
   const hiddenNonBilling = useMemo(
@@ -1061,14 +1150,46 @@ export default function RegistryClient({
                                   of the 249 work orders here are closed, and a
                                   button on those is an invitation to a 409. */}
                               {canPull && r.child_actions.includes("deal_invoice") && o.open && r.pending_id && !r.has_live_deal_child && (
-                                <button
-                                  onClick={() => convertToDealInvoice(r)}
-                                  disabled={busy === r.id}
-                                  className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--signal)] disabled:opacity-40"
-                                  title="נכנס לתור האישורים, לא מונפק מיד"
+                                contradictsSelection(r, "deal_invoice") ? (
+                                  /* A selection is live and this button would
+                                     act against it. Dark, with the reason
+                                     VISIBLE beside it and not only in a
+                                     tooltip — the 40258 lesson, and the shape
+                                     the two other dark states in this cell
+                                     already use. */
+                                  <span title={bundleInsteadText()}>
+                                    <button
+                                      disabled
+                                      className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule)] text-[var(--faint)] opacity-50 cursor-not-allowed"
+                                    >
+                                      {CHILD_ACTION_LABEL.deal_invoice}
+                                    </button>
+                                    <span className="text-[10px] text-[var(--warn)] inline-block align-middle mr-1.5">
+                                      {bundleInsteadText()}
+                                    </span>
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={() => convertToDealInvoice(r)}
+                                    disabled={busy === r.id}
+                                    className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--signal)] disabled:opacity-40"
+                                    title="נכנס לתור האישורים, לא מונפק מיד"
+                                  >
+                                    {CHILD_ACTION_LABEL.deal_invoice}
+                                  </button>
+                                )
+                              )}
+                              {/* the row action's own answer, where the click
+                                  happened (owner decision 2026-09-17) */}
+                              {rowResult?.id === r.id && (
+                                <div
+                                  className={`text-[10px] mt-1 ${
+                                    rowResult.notice.tone === "err" ? "text-[var(--peak)]" : "text-[var(--green)]"
+                                  }`}
                                 >
-                                  {CHILD_ACTION_LABEL.deal_invoice}
-                                </button>
+                                  <span className="font-bold">{rowResult.notice.tone === "err" ? "✕ " : "✓ "}</span>
+                                  {rowResult.notice.text}
+                                </div>
                               )}
                               {/* already converted, and the child has not been
                                   issued in Morning yet — so the order still
@@ -1110,17 +1231,43 @@ export default function RegistryClient({
                                 </span>
                               )}
                               {action && canPull && r.buildable && o.open && (
-                                <button
-                                  onClick={() => setChildDoc({ rows: [r], action })}
-                                  className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--signal)]"
-                                  title={
-                                    r.buildable === "raw"
-                                      ? "נבנה מהמסמך שנמשך ממורנינג — נכנס לתור האישורים, לא מונפק מיד"
-                                      : "נכנס לתור האישורים, לא מונפק מיד"
-                                  }
-                                >
-                                  {CHILD_ACTION_LABEL[action]}
-                                </button>
+                                /* The SAME trap, one tab over: on the
+                                   חשבונות עסקה tab the bar offers
+                                   "צור חשבונית מס מאוגדת (N)" while every row
+                                   keeps a live "צור חשבונית מס". Nothing here
+                                   read the selection either, and the outcome
+                                   would be the same — one 305 raised on one
+                                   parent, the rest left behind. Found by
+                                   survey on 2026-09-17, not by an incident.
+                                   `receipt` is untouched: it has no bundled
+                                   counterpart, so it cannot contradict a
+                                   selection (contradictsSelection compares the
+                                   actions). */
+                                contradictsSelection(r, action) ? (
+                                  <span title={bundleInsteadText()}>
+                                    <button
+                                      disabled
+                                      className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule)] text-[var(--faint)] opacity-50 cursor-not-allowed"
+                                    >
+                                      {CHILD_ACTION_LABEL[action]}
+                                    </button>
+                                    <span className="text-[10px] text-[var(--warn)] inline-block align-middle mr-1.5">
+                                      {bundleInsteadText()}
+                                    </span>
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={() => setChildDoc({ rows: [r], action })}
+                                    className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--signal)]"
+                                    title={
+                                      r.buildable === "raw"
+                                        ? "נבנה מהמסמך שנמשך ממורנינג — נכנס לתור האישורים, לא מונפק מיד"
+                                        : "נכנס לתור האישורים, לא מונפק מיד"
+                                    }
+                                  >
+                                    {CHILD_ACTION_LABEL[action]}
+                                  </button>
+                                )
                               )}
                               {/* the dark button carries its reason — the
                                   server's own message, VISIBLE beside it, not
