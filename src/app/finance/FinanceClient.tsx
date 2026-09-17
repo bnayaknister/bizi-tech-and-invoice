@@ -14,6 +14,7 @@ import {
   type FinanceFilterKey,
   type FinanceState,
 } from "@/lib/finance/state";
+import { dueDateApplies } from "@/lib/finance/overdue";
 import { bundleLineDesc } from "@/lib/documents/bundle";
 import { displayStampDate } from "@/lib/dates";
 
@@ -58,7 +59,28 @@ export type HiddenJob = {
 const NIS = new Intl.NumberFormat("he-IL");
 const money = (n: number | null | undefined) => (n == null ? "—" : `${NIS.format(Math.round(n))} ₪`);
 
-function dueLabel(days: number | null): { text: string; color: string } {
+/**
+ * The due-date cell. Takes the ROW, not the day count — B11.
+ *
+ * It used to take `due_days` alone and could therefore only describe the
+ * calendar: a job paid in July still read "באיחור 60 יום" in September,
+ * because nothing on this path had ever asked whether the money arrived. The
+ * number was right and the sentence was a lie.
+ *
+ * `dueDateApplies` (lib/finance/overdue.ts) is deliberately built on
+ * deriveState rather than on `paid` directly, so any future reader inherits
+ * one definition of "settled" instead of spelling a second one. A settled job
+ * gets the same dash a job with no due date gets: the column is about money
+ * owed, and this one owes none.
+ *
+ * All three call sites (table, mobile card, CSV) go through here, which is why
+ * the signature change is the whole fix.
+ */
+function dueLabel(r: FinanceJob): { text: string; color: string } {
+  if (!dueDateApplies({ paid: r.paid, invoice_biz: r.biz.number, invoice_tax: r.invoice_tax })) {
+    return { text: "—", color: "var(--faint)" };
+  }
+  const days = r.due_days;
   if (days == null) return { text: "—", color: "var(--faint)" };
   if (days < 0) return { text: `באיחור ${Math.abs(days)} יום`, color: "var(--red)" };
   if (days === 0) return { text: "היום", color: "var(--amber)" };
@@ -288,7 +310,7 @@ export default function FinanceClient({
         r.show_name ?? "",
         r.campaign ?? "",
         r.amount ?? "",
-        dueLabel(r.due_days).text,
+        dueLabel(r).text,
         r.paid ?? "",
         r.biz.number ?? "",
         r.tax.number ?? "",
@@ -480,7 +502,7 @@ export default function FinanceClient({
           </thead>
           <tbody>
             {visible.map((r) => {
-              const due = dueLabel(r.due_days);
+              const due = dueLabel(r);
               return (
                 <tr
                   key={r.id}
@@ -579,7 +601,7 @@ export default function FinanceClient({
       {tab !== "hidden" && (
       <div className="sm:hidden space-y-2">
         {visible.map((r) => {
-          const due = dueLabel(r.due_days);
+          const due = dueLabel(r);
           return (
             <div
               key={r.id}
