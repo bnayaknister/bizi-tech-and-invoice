@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { displayDate } from "@/lib/dates";
 import { DOC_TYPES, DOC_TYPE_LABEL } from "@/lib/documents/forProduction";
 import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
+import { countByMonth, type EmptyReason, type Stuck } from "@/lib/projects/stuck";
 
 export type ProjectDoc = {
   type: number;
@@ -35,6 +36,17 @@ export type ProjectRow = {
   cancelled: boolean;
   price: number | null;
   docs: ProjectDoc[];
+  /**
+   * Where this project's money chain stopped, if it did (owner spec
+   * 2026-09-17). Usually empty; one entry per document that is stuck, or one
+   * for a production that was never billed at all.
+   */
+  stuck: Stuck[];
+  /**
+   * Why the document columns are blank, when blank is the expected state.
+   * null means a dash is the honest answer — something really is missing.
+   */
+  empty_reason: EmptyReason | null;
 };
 
 /**
@@ -120,8 +132,35 @@ const PATH_NOTE: Record<string, string> = {
   receipt: "קבלה — דרך חשבונית המס שעליה נבנתה",
 };
 
-function DocCell({ docs }: { docs: ProjectDoc[] }) {
-  if (!docs?.length) return <span className="text-[var(--ink-faint)]">—</span>;
+/**
+ * One document column.
+ *
+ * The empty-cell label (owner spec 2026-09-17) replaces the dash ONLY where the
+ * blank is expected: a monthly client mid-month, an every_n bundle still
+ * filling, a contract show, a silenced one. A dash survives wherever a document
+ * really is missing, which is the whole point — before this, "—" meant both
+ * "nothing is due yet" and "something went wrong" and the screen could not tell
+ * the bookkeeper which.
+ *
+ * Deliberately NOT on the 100 column: a work order is the start of the chain,
+ * not a step in it, and "חודשי · ייצא בסוף החודש" printed under it would be
+ * describing the wrong document.
+ *
+ * And NOT on a stuck row at all. The label's whole claim is "this blank is
+ * expected"; on a row the rule has just raised a hand about, the blank is the
+ * problem. חתונמיות' July episodes are the live case — they would have read
+ * "מצטבר · 0 מתוך 6", which is true of the CURRENT bundle and beside the point
+ * for an episode that was never enqueued into one.
+ */
+function DocCell({ docs, emptyReason }: { docs: ProjectDoc[]; emptyReason?: EmptyReason | null }) {
+  if (!docs?.length) {
+    if (emptyReason) {
+      return (
+        <span className="text-[10px] text-[var(--ink-faint)] leading-tight">{emptyReason.text}</span>
+      );
+    }
+    return <span className="text-[var(--ink-faint)]">—</span>;
+  }
   return (
     <div className="space-y-1">
       {docs.map((d, i) => (
@@ -200,12 +239,33 @@ function MilestoneTableRow({ m }: { m: MilestoneRow }) {
   );
 }
 
+/**
+ * The stuck highlight.
+ *
+ * --amber, and chosen against the other three the palette already speaks:
+ * --red is errors and overdue debt, --green is "open / fine", --cyan is
+ * declared "info / open commitment (never debt)". A stuck chain is none of
+ * those — it is work that needs a hand, which is exactly what --warn (= amber)
+ * already means everywhere else in the app. A soft inset bar on the leading
+ * edge, a low glow, and 5% of the colour behind the row: visible while
+ * scanning, and nowhere near the weight of a red error.
+ */
+const STUCK_ROW: React.CSSProperties = {
+  boxShadow: "inset 3px 0 0 var(--amber), 0 0 20px -8px var(--amber)",
+  background: "color-mix(in srgb, var(--amber) 5%, transparent)",
+};
+
 function Row({ r }: { r: ProjectRow }) {
   // same reasoning as safeBucket: a row from a payload shape this chunk
   // does not know about must render, not throw
   const byType = (t: number) => (r.docs ?? []).filter((d) => d.type === t);
+  const stuck = (r.stuck ?? []).length > 0;
   return (
-    <tr className={`border-b border-white/5 align-top ${r.cancelled ? "opacity-45" : ""}`}>
+    <tr
+      className={`border-b border-white/5 align-top ${r.cancelled ? "opacity-45" : ""}`}
+      style={stuck ? STUCK_ROW : undefined}
+      title={stuck ? r.stuck.map((s) => s.sentence).join(" · ") : undefined}
+    >
       <td className="py-2 pl-3 font-mono text-xs whitespace-nowrap">
         {r.record_date ? displayDate(r.record_date) : "—"}
       </td>
@@ -250,7 +310,7 @@ function Row({ r }: { r: ProjectRow }) {
       </td>
       {DOC_TYPES.map((t) => (
         <td key={t} className="py-2 pl-3">
-          <DocCell docs={byType(t)} />
+          <DocCell docs={byType(t)} emptyReason={t === 100 || stuck ? null : r.empty_reason} />
         </td>
       ))}
     </tr>
@@ -279,7 +339,7 @@ function safeBucket(b: MonthBucket): MonthBucket {
   return {
     key: b?.key ?? "",
     label: b?.label ?? "",
-    rows: b?.rows ?? [],
+    rows: (b?.rows ?? []).map((r) => ({ ...r, stuck: r?.stuck ?? [], empty_reason: r?.empty_reason ?? null })),
     summary: {
       expected: s.expected ?? 0,
       expectedPriced: s.expectedPriced ?? 0,
@@ -301,21 +361,98 @@ function safeBucket(b: MonthBucket): MonthBucket {
   };
 }
 
+/**
+ * The once-a-day key. Per user, so two people on one machine each get their
+ * own first look, and per DAY rather than per session — the notice is a
+ * morning briefing, not a nag.
+ */
+const SEEN_KEY = (userId: string) => `bizi:stuck-seen:${userId}`;
+
+/**
+ * Every localStorage touch is wrapped, and none of them decides anything but
+ * whether a notice shows.
+ *
+ * A private window, cleared site data, or a browser set to block storage makes
+ * the accessor THROW rather than return null — which would take the whole
+ * screen down on a page whose job is to render money. The fallback is
+ * deliberate in both directions: read failure shows the notice (better twice
+ * than never), write failure shows it again tomorrow.
+ */
+function seenToday(userId: string, today: string): boolean {
+  try {
+    return window.localStorage.getItem(SEEN_KEY(userId)) === today;
+  } catch {
+    return false;
+  }
+}
+function markSeen(userId: string, today: string) {
+  try {
+    window.localStorage.setItem(SEEN_KEY(userId), today);
+  } catch {
+    /* storage unavailable — the notice simply returns tomorrow */
+  }
+}
+
 export default function ProjectsClient({
   buckets,
   initialMonth,
+  userId,
+  today,
 }: {
   buckets: MonthBucket[];
   initialMonth: string;
+  userId: string;
+  today: string;
 }) {
   const [month, setMonth] = useState(initialMonth);
   const safe = useMemo(() => (buckets ?? []).map(safeBucket), [buckets]);
   const bucket = useMemo(() => safe.find((b) => b.key === month) ?? null, [safe, month]);
 
+  // ---- the stuck chains, across EVERY month ------------------------------
+  // Not the selected bucket: the notice is about the business, and a project
+  // that stalled in July is exactly the one nobody is looking at in September.
+  const stuckRows = useMemo(
+    () => safe.flatMap((b) => (b.rows ?? []).filter((r) => (r.stuck ?? []).length > 0).map((r) => ({ ...r, month: b.key, label: b.label }))),
+    [safe]
+  );
+  const stuckByMonth = useMemo(
+    () => countByMonth(safe.flatMap((b) => (b.rows ?? []).map((r) => ({ month: b.label, stuck: r.stuck ?? [] })))),
+    [safe]
+  );
+  const [notice, setNotice] = useState(false);
+  const [detail, setDetail] = useState(false);
+
+  // Once a day, and only when there is something to say. Runs in an effect
+  // because localStorage does not exist during the server render — reading it
+  // in the initial state would throw on the server and hydrate-mismatch on the
+  // client.
+  useEffect(() => {
+    if (!stuckRows.length) return;
+    if (seenToday(userId, today)) return;
+    setNotice(true);
+  }, [stuckRows.length, userId, today]);
+
+  function dismissNotice() {
+    markSeen(userId, today);
+    setNotice(false);
+  }
+
   const s = bucket?.summary;
 
   return (
     <main className="mx-auto max-w-[1400px] px-4 py-8" dir="rtl">
+      {notice && (
+        <StuckNotice
+          months={stuckByMonth}
+          onDetail={() => {
+            dismissNotice();
+            setDetail(true);
+          }}
+          onClose={dismissNotice}
+        />
+      )}
+      {detail && <StuckDetail rows={stuckRows} onClose={() => setDetail(false)} />}
+
       <div className="mb-1 flex items-baseline justify-between gap-3">
         <h1 className="text-2xl font-semibold">מעקב פרויקטים</h1>
         <a href="/finance" className="text-sm text-[var(--violet)] hover:underline">
@@ -530,5 +667,133 @@ export default function ProjectsClient({
         </>
       )}
     </main>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// the stuck windows (owner spec 2026-09-17)
+// ---------------------------------------------------------------------------
+
+// The panel values every other modal in the app uses — contracts, finance,
+// productions, and since 17.9 the two on /documents. Not `bg-[var(--bg)]`:
+// that variable does not exist in this project and renders transparent.
+const MODAL_OVERLAY: React.CSSProperties = { background: "rgba(3,2,10,0.66)", backdropFilter: "blur(6px)" };
+const MODAL_PANEL: React.CSSProperties = {
+  background: "rgba(15,13,28,0.94)",
+  backdropFilter: "blur(24px)",
+  WebkitBackdropFilter: "blur(24px)",
+};
+
+/**
+ * The once-a-day notice: one line per month that holds a stuck chain.
+ *
+ * The counts are of DISTINCT things stuck, not of rows showing them — see
+ * countByMonth. One bundled 300 reaches four of כפיר ארביב's episodes, and
+ * counting rows would announce four stalled projects where two documents are
+ * waiting.
+ */
+function StuckNotice({
+  months,
+  onDetail,
+  onClose,
+}: {
+  months: { month: string; count: number }[];
+  onDetail: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={MODAL_OVERLAY} onClick={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md rounded-2xl border border-[var(--rule2)] p-5 shadow-2xl"
+        style={MODAL_PANEL}
+      >
+        <h2 className="mb-3 text-sm font-bold">פרויקטים שדורשים בדיקה</h2>
+        <div className="mb-4 space-y-1.5 text-sm">
+          {months.map((m) => (
+            <div key={m.month}>
+              בחודש <span className="font-bold">{m.month}</span> יש{" "}
+              <span className="font-bold" style={{ color: "var(--amber)" }}>
+                {m.count}
+              </span>{" "}
+              פרויקטים שדורשים בדיקה כי לא קודמו
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={onDetail}
+            className="flex-1 rounded-xl bg-[var(--signal)] px-4 py-2 text-xs font-bold text-white"
+          >
+            לפירוט הפרויקטים
+          </button>
+          <button onClick={onClose} className="flex-1 rounded-xl border border-[var(--rule)] px-4 py-2 text-xs">
+            סגור
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The detail window: every stuck project, with the one sentence that says
+ * where it stopped and a way to go and look at it.
+ *
+ * The link goes to the REGISTRY and carries the document number, because that
+ * is the screen where the next action lives — issuing the missing child. A
+ * project stuck for never having been billed has no document to name, so it
+ * links to the accrual queue instead, which is where its work order should
+ * have been.
+ */
+function StuckDetail({
+  rows,
+  onClose,
+}: {
+  rows: (ProjectRow & { month: string; label: string })[];
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={MODAL_OVERLAY} onClick={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[var(--rule2)] p-5 shadow-2xl"
+        style={MODAL_PANEL}
+      >
+        <h2 className="mb-1 text-sm font-bold">פירוט הפרויקטים שדורשים בדיקה</h2>
+        <p className="mb-4 text-[11px] text-[var(--ink-faint)]">
+          {rows.length} פרויקטים שהשרשרת שלהם נעצרה. לכל אחד — איפה בדיוק היא נעצרה.
+        </p>
+        <div className="space-y-3">
+          {rows.map((r) =>
+            (r.stuck ?? []).map((st, i) => (
+              <div
+                key={`${r.id}-${i}`}
+                className="rounded-xl border border-[var(--rule)] p-3"
+                style={{ boxShadow: "inset 3px 0 0 var(--amber)" }}
+              >
+                <div className="text-sm font-medium">
+                  {r.client_name ?? "—"}
+                  <span className="text-[var(--ink-faint)]"> · {r.show_name ?? r.podcast_name}</span>
+                </div>
+                <div className="mt-0.5 text-[11px] text-[var(--ink-faint)]">
+                  הוקלט {r.record_date ? displayDate(r.record_date) : "—"} · {r.label}
+                </div>
+                <div className="mt-1.5 text-xs leading-relaxed">{st.sentence}</div>
+                <a
+                  href={st.docNumber ? `/documents/registry?q=${encodeURIComponent(st.docNumber)}` : "/documents/accrued"}
+                  className="mt-1.5 inline-block text-[11px] text-[var(--violet)] hover:underline"
+                >
+                  {st.docNumber ? `פתחי את ${st.docNumber} במרשם ←` : "לתור הצבירה ←"}
+                </a>
+              </div>
+            ))
+          )}
+        </div>
+        <button onClick={onClose} className="mt-4 w-full rounded-xl border border-[var(--rule)] px-4 py-2 text-xs">
+          סגור
+        </button>
+      </div>
+    </div>
   );
 }

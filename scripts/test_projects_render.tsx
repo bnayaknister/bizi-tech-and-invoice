@@ -51,6 +51,11 @@ const fullRow = {
   cancelled: false,
   price: 700,
   docs: [{ type: 100, number: "10301", date: "2026-08-12", shared: false, cancelled: false, path: "production" }],
+  // the stuck fields (2026-09-17). An empty array and a null are the ordinary
+  // case — this row is not stuck — and they are spelled out rather than left
+  // off so the suite keeps proving the payload shape the screen is handed.
+  stuck: [],
+  empty_reason: null,
 };
 
 // A contract milestone — a second ROW SHAPE in the same table since 2026-09-15,
@@ -97,6 +102,8 @@ const render = (buckets: unknown, initialMonth = "2026-08") =>
     React.createElement(ProjectsClient, {
       buckets: buckets as MonthBucket[],
       initialMonth,
+      userId: "ZTEST-user",
+      today: "2026-09-17",
     })
   );
 

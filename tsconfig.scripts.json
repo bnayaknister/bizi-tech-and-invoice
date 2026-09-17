@@ -1,0 +1,16 @@
+{
+  "//": [
+    "Running the .tsx suites under tsx/esbuild.",
+    "",
+    "tsconfig.json sets jsx:'preserve' because Next compiles JSX itself. tsx",
+    "honours that, falls back to the CLASSIC runtime, and emits",
+    "React.createElement into component files that (correctly, for Next) never",
+    "import React — so every render in scripts/test_projects_render.tsx died on",
+    "'React is not defined' and the suite reported 15 failures no matter what",
+    "the code did. It had been failing that way silently; found 2026-09-17.",
+    "",
+    "Run:  npx tsx --tsconfig tsconfig.scripts.json scripts/test_projects_render.tsx"
+  ],
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "jsx": "react-jsx" }
+}

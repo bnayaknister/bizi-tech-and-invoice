@@ -106,6 +106,14 @@ export type DocumentRow = {
   bundle_job_ids: string[] | null;
   cancelled_at: string | null;
   archived_at: string | null;
+  /**
+   * Morning's document status, when the caller selected it. Only 0 is OPEN —
+   * see parentOpenness in the registry, which is the one place that vocabulary
+   * is written down. Optional because the simulation and several callers build
+   * rows by hand and have no such field; a resolver that required it would
+   * break them for a value it does not itself use.
+   */
+  status?: number | null;
 };
 
 export type JobRow = { id: string; invoice_biz: string | null; invoice_tax: string | null };

@@ -11,6 +11,13 @@ import {
 } from "@/lib/documents/forProduction";
 import AppHeader from "@/components/AppHeader";
 import { deriveMilestoneState } from "@/lib/finance/milestone";
+import {
+  emptyReasonFor,
+  stuckFor,
+  termsUnconfigured,
+  type Cadence as StuckCadence,
+  type PaymentTerms as StuckPaymentTerms,
+} from "@/lib/projects/stuck";
 import ProjectsClient, {
   type BillingClass,
   type MilestoneRow,
@@ -211,7 +218,7 @@ async function fetchProductionsInRange(admin: ReturnType<typeof createAdminClien
 }
 
 const DOC_SELECT =
-  "id,morning_doc_id,morning_doc_number,type,amount,document_date,pdf_url,production_id,job_id,bundle_job_ids,cancelled_at,archived_at";
+  "id,morning_doc_id,morning_doc_number,type,amount,document_date,pdf_url,production_id,job_id,bundle_job_ids,cancelled_at,archived_at,status";
 
 /**
  * Page any query whose result is not bounded by an id list.
@@ -260,7 +267,10 @@ export default async function ProjectsPage() {
     admin.from("shows").select("id,name,default_rate,billing_mode,active,client_id"),
     // named so a contract-billed row can say WHICH contract it belongs to
     admin.from("contracts").select("id,name,client_id,show_id,status"),
-    admin.from("clients").select("id,name"),
+    // billing_cadence / billing_every_n / payment_terms joined for the stuck
+    // rule and the empty-cell labels (2026-09-17). payment_terms is only ever
+    // used to ASK public.due_date_for — never to compute a date here.
+    admin.from("clients").select("id,name,billing_cadence,billing_every_n,payment_terms"),
     // `paid` joined the select for the milestone rows below — deriveMilestoneState
     // needs it, and the per-episode document resolver never did.
     admin.from("jobs").select("id,invoice_biz,invoice_tax,paid,dismissed"),
@@ -301,6 +311,16 @@ export default async function ProjectsPage() {
   const showById = new Map((showsRes.data ?? []).map((s) => [s.id as string, s]));
   const contracts = (contractsRes.data ?? []) as unknown as ContractRow[];
   const clientName = new Map((clientsRes.data ?? []).map((c) => [c.id as string, c.name as string]));
+  // the whole client row — the stuck rule needs cadence, every_n and terms, and
+  // reading them off a second map keeps clientName doing the one thing it did
+  const clientById = new Map(
+    ((clientsRes.data ?? []) as {
+      id: string;
+      billing_cadence: string | null;
+      billing_every_n: number | null;
+      payment_terms: string | null;
+    }[]).map((c) => [c.id, c])
+  );
 
   // A dismissed job is hidden from every money surface (0041: wrong/duplicate/
   // irrelevant). Its documents must not surface through it either, or a
@@ -517,17 +537,165 @@ export default async function ProjectsPage() {
     addonsByProduction.set(a.production_id, arr);
   }
 
+  // The last billing document each client received, for the every_n counter.
+  // Read off `documents` rather than the queue: a bundle raised by hand in
+  // Morning closes an accrual just as a redeemed one does, and the counter has
+  // to start from whichever came last.
+  const lastBillingDocByClient = new Map<string, string>();
+  for (const d of Array.from(docsById.values())) {
+    if (![300, 305, 320].includes(d.type) || d.cancelled_at) continue;
+    const cid = (d as unknown as { client_id?: string | null }).client_id ?? "";
+    const dt = d.document_date ?? "";
+    if (!cid || !dt) continue;
+    if (dt > (lastBillingDocByClient.get(cid) ?? "")) lastBillingDocByClient.set(cid, dt);
+  }
+
+  // ════ the stuck chain (owner spec 2026-09-17) ════════════════════════════
+  //
+  // Three reads and one rule. The rule itself is in lib/projects/stuck.ts; what
+  // happens here is gathering the facts it cannot derive — which documents are
+  // open, which productions have a queue row, which clients bill on a rhythm,
+  // and the ONE thing that must not be computed in TypeScript at all: the due
+  // date.
+
+  // Which productions hold a live accrual/queue row. "לא נכנסה לתור הצבירה" is
+  // a different failure from "waiting its turn", and this is what separates
+  // them — the owner's rule ג.
+  const { data: queueRows } = prodIds.length
+    ? await admin
+        .from("pending_documents")
+        .select("production_id,status")
+        .in("production_id", prodIds)
+        .in("status", ["accrued", "pending"])
+    : { data: [] as { production_id: string | null; status: string }[] };
+  const inQueueProd = new Set(
+    ((queueRows ?? []) as { production_id: string | null }[]).map((r) => r.production_id).filter(Boolean) as string[]
+  );
+
+  // Every job of a production, dismissed ones INCLUDED — the opposite of the
+  // `jobs` list above, and deliberately so. A production whose only jobs were
+  // dismissed is out of the rule (0041: a dismissed job is out of every money
+  // surface), and to know that we have to be able to see them.
+  const allJobsByProduction = new Map<string, { dismissed: boolean }[]>();
+  for (const l of (linksRes.data ?? []) as { job_id: string; production_id: string }[]) {
+    const j = allJobsById.get(l.job_id);
+    if (!j) continue;
+    allJobsByProduction.set(l.production_id, [
+      ...(allJobsByProduction.get(l.production_id) ?? []),
+      { dismissed: !!j.dismissed },
+    ]);
+  }
+
+  const todayIL = todayInIsrael();
+  const clientOf = (id: string | null) => (id ? clientById.get(id) ?? null : null);
+
+  // ---- the due dates, from the DATABASE ------------------------------------
+  //
+  // ⚠️ THE ONE RULE OF THIS BLOCK: no due date is calculated here. Migration
+  // 0089 exists so public.due_date_for(base, terms) is the single source
+  // (decision יב), and this asks it.
+  //
+  // One call per DISTINCT (document date, terms) pair, not per document: the
+  // candidates are open 300/305 rows belonging to episodes on screen — 27 open
+  // billing documents exist in the whole account today — and they collapse to a
+  // handful of pairs. Clients with unconfigured terms are skipped entirely;
+  // NO_TERMS_DAYS answers for them and there is nothing to ask.
+  const duePairs = new Map<string, { base: string; terms: string }>();
+  for (const p of inRange) {
+    const terms = (clientOf(p.client_id)?.payment_terms as StuckPaymentTerms) ?? null;
+    if (termsUnconfigured(terms)) continue;
+    for (const r of resolved.get(p.id) ?? []) {
+      if (r.type !== 300 && r.type !== 305) continue;
+      if (r.cancelled || !r.date) continue;
+      if (docsById.get(r.id)?.status !== 0) continue;
+      duePairs.set(`${r.date}|${terms}`, { base: r.date, terms: terms as string });
+    }
+  }
+  const dueByPair = new Map<string, string | null>();
+  await Promise.all(
+    Array.from(duePairs.entries()).map(async ([key, { base, terms }]) => {
+      const { data } = await admin.rpc("due_date_for", { base, terms });
+      dueByPair.set(key, (data as string | null) ?? null);
+    })
+  );
+
+  /** The stuck verdict for one production, and why its cells may be blank. */
+  function judge(p: ProdRow, billing: BillingClass, hasDocs: boolean) {
+    const client = clientOf(p.client_id);
+    const terms = (client?.payment_terms as StuckPaymentTerms) ?? null;
+    const cadence = (client?.billing_cadence as StuckCadence) ?? null;
+    const everyN = (client?.billing_every_n as number | null) ?? null;
+
+    // How many of this client's episodes have accrued since the last billing
+    // document. ONE definition, two readers — the "מצטבר · X מתוך N" label and
+    // the every_n rule read the same number, so the label can never say the
+    // bundle is half full beside a row claiming it overflowed.
+    const lastBilled = lastBillingDocByClient.get(p.client_id ?? "") ?? "";
+    const accrued = inRange
+      .filter(
+        (x) =>
+          x.client_id === p.client_id &&
+          !x.cancelled_at &&
+          (x.record_date ?? "") > lastBilled &&
+          (resolved.get(x.id) ?? []).length === 0
+      )
+      .sort((a, b) => (a.record_date ?? "").localeCompare(b.record_date ?? ""));
+    const accruedCount = accrued.length;
+    const bundleCompletedOn =
+      everyN && accruedCount >= everyN ? accrued[everyN - 1].record_date ?? null : null;
+
+    const jobsOfProd = allJobsByProduction.get(p.id) ?? [];
+    const stuck = stuckFor({
+      billing,
+      internal: p.kind === "internal",
+      cancelled: !!p.cancelled_at,
+      allJobsDismissed: jobsOfProd.length > 0 && jobsOfProd.every((j) => j.dismissed),
+      recordDate: p.record_date,
+      cadence,
+      everyN,
+      accruedCount,
+      bundleCompletedOn,
+      terms,
+      inQueue: inQueueProd.has(p.id),
+      productionId: p.id,
+      today: todayIL,
+      docs: (resolved.get(p.id) ?? []).map((r) => ({
+        id: r.id,
+        type: r.type,
+        number: r.number,
+        date: r.date,
+        status: docsById.get(r.id)?.status ?? null,
+        cancelled: r.cancelled,
+        dbDueDate: r.date && terms ? dueByPair.get(`${r.date}|${terms}`) ?? null : null,
+      })),
+    });
+    const emptyReason = emptyReasonFor({
+      billing,
+      internal: p.kind === "internal",
+      cadence,
+      everyN,
+      accruedCount,
+      recordMonth: (p.record_date ?? "").slice(0, 7) || null,
+      currentMonth: todayIL.slice(0, 7),
+      hasDocs,
+    });
+    return { stuck, empty_reason: emptyReason };
+  }
+
   // ---- rows ---------------------------------------------------------------
   const rows: (ProjectRow & { month: string })[] = inRange.map((p) => {
     const show = showById.get(p.show_id ?? "");
     const base = effectiveBase(p, show ? { default_rate: show.default_rate as number | null } : null);
     const price = productionTotal(base, approvedAddonTotal(addonsByProduction.get(p.id) ?? []));
+    // hoisted out of the literal below: `judge` needs the same verdict the row
+    // shows, and classifying twice is how the cell and the rule drift apart
+    const billing = classify(
+      show as { billing_mode?: string | null; active?: boolean | null } | undefined,
+      price
+    );
     return {
       month: israelMonthKey(p.record_date, p.created_at),
-      billing: classify(
-        show as { billing_mode?: string | null; active?: boolean | null } | undefined,
-        price
-      ),
+      billing,
       contract_name: resolveContractName(p, show as { client_id?: string | null } | undefined, contracts),
       id: p.id,
       record_date: p.record_date,
@@ -548,6 +716,7 @@ export default async function ProjectsPage() {
         cancelled: d.cancelled,
         path: d.path,
       })),
+      ...judge(p, billing, (resolved.get(p.id) ?? []).length > 0),
     };
   });
 
@@ -739,7 +908,12 @@ export default async function ProjectsPage() {
   return (
     <div className="min-h-screen">
       <AppHeader profile={profile} />
-      <ProjectsClient buckets={buckets} initialMonth={initialMonth ?? RANGE_START_MONTH} />
+      <ProjectsClient
+        buckets={buckets}
+        initialMonth={initialMonth ?? RANGE_START_MONTH}
+        userId={user.id}
+        today={todayIL}
+      />
     </div>
   );
 }
