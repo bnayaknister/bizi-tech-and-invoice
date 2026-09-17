@@ -59,6 +59,12 @@ supabase/.temp/
 # not one a .gitignore change could have prevented. See docs/BACKLOG-V1b.md.)
 *.sql
 !supabase/migrations/*.sql
+# ...and the verify queries beside them. Rule 50 sends every migration's
+# verification here, and until 2026-09-17 the negation above did not reach the
+# folder — so each one was ignored by default and survived only if somebody
+# remembered `git add -f`. 0087_verify.sql is tracked; nothing guaranteed the
+# next one would be. Same failure mode as the missing 0052, same one-line cure.
+!supabase/verify/*.sql
 baseline-*.txt
 new-rows.txt
 seq-*.txt
