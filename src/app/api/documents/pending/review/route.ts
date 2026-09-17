@@ -11,6 +11,7 @@ import {
   DOC_TYPE_LABEL,
   DOC_TYPE_TO_MORNING_CODE,
   MORNING_DOC_CODE,
+  chequeFieldsMissing,
   isAllowedPaymentMethod,
   paymentMethodsSentence,
   relabelDocDescription,
@@ -871,6 +872,16 @@ async function checkPaymentShape(
     if (!Number.isFinite(amount)) {
       return { ok: false, status: 400, error: `שורת תקבול ${i + 1}: סכום לא תקין` };
     }
+    // `null`, `undefined` and "" are MISSING, and they are checked before the
+    // arithmetic below because `Number(null)` is 0 — a finite number, and worse,
+    // a REAL Morning code (ניכוי במקור). Left to the isFinite test alone, a row
+    // that simply never chose a method would have been refused with a sentence
+    // about withholding tax, sending the bookkeeper to look for a problem that
+    // is not there. The picker now opens with no method selected (2026-09-17),
+    // so "missing" stopped being a theoretical state the moment it defaulted.
+    if (p?.type === null || p?.type === undefined || String(p.type).trim() === "") {
+      return { ok: false, status: 400, error: `שורת תקבול ${i + 1}: חסר אמצעי תשלום` };
+    }
     if (!Number.isFinite(Number(p?.type))) {
       return { ok: false, status: 400, error: `שורת תקבול ${i + 1}: חסר אמצעי תשלום` };
     }
@@ -903,6 +914,25 @@ async function checkPaymentShape(
         error:
           `שורת תקבול ${i + 1}: אמצעי תשלום ${methodCode} אינו נתמך. ` +
           `האמצעים הנתמכים: ${paymentMethodsSentence()}.`,
+      };
+    }
+    // ---- the cheque fields -------------------------------------------------
+    // Morning declares all four REQUIRED for a cheque (PaymentRowRequest in the
+    // official OpenAPI spec: "required when using cheques" on each of them),
+    // and on 2026-09-16 it proved it — a 320 for ₪1,500 came back as
+    // "נא למלא את פרטי הצ׳ק בשורת התקבול" because the modal had no such fields
+    // to offer at all. The screen now collects them and disables the button
+    // without them; this is the same rule on the side of the line that matters,
+    // since issue.ts sends this payload to Morning verbatim.
+    //
+    // The refusal is OURS and it costs nothing: an incomplete cheque leaves the
+    // row 'pending' and re-approvable, where Morning's own refusal spends an
+    // attempt and marks it 'failed'.
+    if (chequeFieldsMissing(p)) {
+      return {
+        ok: false,
+        status: 400,
+        error: `שורת תקבול ${i + 1}: תקבול בצ׳ק מחייב מס׳ צ׳ק, בנק, סניף ומס׳ חשבון`,
       };
     }
     if (!p?.date || !/^\d{4}-\d{2}-\d{2}$/.test(String(p.date))) {

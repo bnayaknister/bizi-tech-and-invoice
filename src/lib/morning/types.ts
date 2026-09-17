@@ -438,6 +438,34 @@ export type MorningPaymentRow = {
   currency: string;
   currencyRate: number;
   description?: string;
+  // ---- cheque (type 2) only -----------------------------------------------
+  // Four fields, and Morning declares all four REQUIRED for a cheque. Verified
+  // 2026-09-17 against `PaymentRowRequest` in the official OpenAPI spec this
+  // file already cites at the top — each of the four carries the words
+  // "(required when using cheques)" in its own description.
+  //
+  // Second, independent reading: all 19 cheque lines in the owner's books.
+  // They do NOT come back as fields — the pull collapses them into the one
+  // `description` string MORNING ITSELF composes, e.g.
+  //     "מס' צ'ק 781 / בנק 20 / סניף 429 / מס' חשבון 600008"   (doc 60177)
+  // which is exactly why they must be sent as four fields and `description`
+  // must be left alone. Compose that sentence here and it would be printed
+  // twice, or printed instead of Morning's own.
+  //
+  // STRINGS, not numbers, and that is the whole reason the type says so: a
+  // branch is "008" and a cheque number may be "0042". Number would eat the
+  // leading zeros and print a different cheque than the one in the drawer.
+  //
+  // `bankName` is Morning's name for the field; the books fill it with the
+  // bank NUMBER (20 = מזרחי, 12 = הפועלים), which is what the screen asks for.
+  /** cheque number. "מס׳ צ׳ק" on the screen */
+  chequeNum?: string;
+  /** bank. the books write the bank number here, not a name */
+  bankName?: string;
+  /** branch */
+  bankBranch?: string;
+  /** account number */
+  bankAccount?: string;
 };
 
 /**
@@ -479,6 +507,84 @@ export function isAllowedPaymentMethod(code: number): boolean {
 /** The methods named the way the books name them, for an error message. */
 export function paymentMethodsSentence(): string {
   return PAYMENT_METHODS.map((m) => `${m.label} (${m.code})`).join(", ");
+}
+
+/**
+ * Morning's code for a cheque. Named because two files branch on it and a bare
+ * `2` in a condition says nothing about why.
+ */
+export const CHEQUE_METHOD_CODE = 2;
+
+/**
+ * The four cheque fields, as {key on the payment row, label on the screen}.
+ *
+ * ONE list, two enforcers — the same arrangement PAYMENT_METHODS has and for
+ * the same reason: the modal renders its inputs from this, the review route
+ * refuses a cheque missing any of them by reading this, and adding or renaming
+ * a field is one edit rather than two that can drift apart.
+ *
+ * The labels are Morning's own words, lifted from the sentence it composes on
+ * a pulled cheque line ("מס' צ'ק 781 / בנק 20 / סניף 429 / מס' חשבון 600008"),
+ * so the screen asks for a thing by the name the document will print.
+ */
+export const CHEQUE_FIELDS: readonly { key: "chequeNum" | "bankName" | "bankBranch" | "bankAccount"; label: string }[] = [
+  { key: "chequeNum", label: "מס׳ צ׳ק" },
+  { key: "bankName", label: "בנק" },
+  { key: "bankBranch", label: "סניף" },
+  { key: "bankAccount", label: "מס׳ חשבון" },
+];
+
+/**
+ * Is this payment row a cheque that is missing any of its four fields?
+ *
+ * Deliberately a `trim()` test and nothing more. No digits-only rule, no length
+ * rule: the screen does not block characters either, and a validator stricter
+ * than the thing it guards would refuse a cheque Morning would have accepted.
+ * Empty is the only state that is certainly wrong — and it is the exact state
+ * that produced "נא למלא את פרטי הצ׳ק בשורת התקבול" on 2026-09-16.
+ */
+export function chequeFieldsMissing(row: Partial<MorningPaymentRow>): boolean {
+  if (Number(row.type) !== CHEQUE_METHOD_CODE) return false;
+  return CHEQUE_FIELDS.some((f) => !String(row[f.key] ?? "").trim());
+}
+
+/**
+ * The payment row of a PREVIOUS attempt, off a queue row's stored payload.
+ *
+ * This is what lets the approval modal REOPEN on the method that was actually
+ * chosen instead of defaulting to one (owner decision 2026-09-17). The review
+ * route writes the approved payment block back to the row before issuing, so a
+ * row that came back 'failed' still carries the bookkeeper's own last answer —
+ * and re-presenting it as העברה בנקאית, one click from being issued, was the
+ * worst thing on that screen.
+ *
+ * There is at most one row: the modal builds exactly one line (a document with
+ * withholding cannot be issued from this screen at all — see the note beside
+ * PAYMENT_METHODS), so reading `[0]` is not a simplification, it is the shape.
+ *
+ * Returns null when there is nothing to restore — the common case, a first
+ * approval, and the one that must leave the picker empty rather than guess.
+ *
+ * Lives here rather than in the screen so a verification script can run the
+ * real function without importing a React component.
+ */
+export function priorPayment(
+  payload: Record<string, unknown> | null | undefined
+): Partial<MorningPaymentRow> | null {
+  const rows = (payload as { payment?: unknown } | null | undefined)?.payment;
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  const first = rows[0];
+  if (!first || typeof first !== "object") return null;
+  const p = first as Partial<MorningPaymentRow>;
+  return Number.isFinite(Number(p.type)) ? p : null;
+}
+
+/** The four cheque fields off a previous attempt, as the form's string map. */
+export function priorChequeFields(p: Partial<MorningPaymentRow> | null): Record<string, string> {
+  if (!p || Number(p.type) !== CHEQUE_METHOD_CODE) return {};
+  const out: Record<string, string> = {};
+  for (const f of CHEQUE_FIELDS) out[f.key] = String(p[f.key] ?? "");
+  return out;
 }
 
 export type MorningDocumentRequest = {

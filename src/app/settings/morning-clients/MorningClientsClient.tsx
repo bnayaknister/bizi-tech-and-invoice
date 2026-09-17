@@ -303,7 +303,19 @@ export default function MorningClientsClient() {
       {/* shared-mapping warning — awareness, not a block */}
       {pendingShared && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
-          <div className="bg-[var(--bg)] border border-[var(--rule)] rounded-2xl p-5 max-w-md w-full">
+          {/* `--bg` is not a variable this project defines (globals.css has
+              --bg-base / --bg-panel / --bg-elevated and no bare --bg), so this
+              panel was painting itself with an invalid declaration and coming
+              out transparent. Same bug, same day, as the two approval modals on
+              /documents — fixed with the values every other modal already uses. */}
+          <div
+            style={{
+              background: "rgba(15,13,28,0.94)",
+              backdropFilter: "blur(24px)",
+              WebkitBackdropFilter: "blur(24px)",
+            }}
+            className="border border-[var(--rule)] rounded-2xl p-5 max-w-md w-full"
+          >
             <h3 className="font-bold text-sm mb-2">לקוח מורנינג משותף</h3>
             <p className="text-sm mb-3">
               לקוח זה כבר משויך ל<span className="font-bold">{pendingShared.sharedWith.join(", ")}</span>. שתי

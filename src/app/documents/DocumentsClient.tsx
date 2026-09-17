@@ -15,9 +15,14 @@ import {
   unitSplitError,
 } from "@/lib/documents/lineBalance";
 import {
+  CHEQUE_FIELDS,
+  CHEQUE_METHOD_CODE,
   DOC_TYPE_TO_MORNING_CODE,
   MORNING_DOC_CODE,
   PAYMENT_METHODS,
+  chequeFieldsMissing,
+  priorChequeFields,
+  priorPayment,
   relabelDocDescription,
   requiresPayment,
   type MorningDocumentRequest,
@@ -714,6 +719,27 @@ function livePreview(
   return { payload: { ...base, description, client, income }, amount };
 }
 
+/**
+ * The modal panel's surface.
+ *
+ * Both modals on this screen used to paint themselves `bg-[var(--bg)]` — and
+ * `--bg` IS NOT DEFINED anywhere in the project. globals.css declares
+ * --bg-base / --bg-panel / --bg-elevated and no bare --bg, so the declaration
+ * was invalid, the background fell back to transparent, and the approval modal
+ * for a TAX DOCUMENT rendered on top of the page it was covering — the preview
+ * behind it reading straight through the fields. Reported 2026-09-17 with the
+ * words "production" overlapping "תוכנית".
+ *
+ * These are the values every other modal in the app already uses (contracts,
+ * finance, productions), copied rather than re-invented so the screens keep
+ * looking like one app.
+ */
+const MODAL_PANEL: React.CSSProperties = {
+  background: "rgba(15,13,28,0.94)",
+  backdropFilter: "blur(24px)",
+  WebkitBackdropFilter: "blur(24px)",
+};
+
 export default function DocumentsClient({
   rows,
   canApprove,
@@ -740,10 +766,19 @@ export default function DocumentsClient({
   // arrived and cannot be taken back, so it is chosen on purpose, never by
   // leaving the selector alone
   const [taxVariant, setTaxVariant] = useState<"tax_receipt" | "tax_invoice">("tax_invoice");
-  // the payment block, for the types that declare money actually moved
-  const [payMethod, setPayMethod] = useState<number>(4);
+  // the payment block, for the types that declare money actually moved.
+  //
+  // `null` = nothing chosen, and it is the ONLY opening state (owner decision
+  // 2026-09-17). It used to open on 4 (העברה בנקאית), which meant a document
+  // could be issued by a method nobody picked — silently, with no error, on a
+  // document that cannot be taken back. That is worse than the cheque bug it
+  // was found beside: the cheque at least failed loudly.
+  const [payMethod, setPayMethod] = useState<number | null>(null);
   const [payAmount, setPayAmount] = useState<string>("");
   const [payDate, setPayDate] = useState<string>("");
+  // the four cheque fields, shown only for method 2. Strings, always: a branch
+  // is "008" and a number would print "8".
+  const [cheque, setCheque] = useState<Record<string, string>>({});
   // Manual DOCUMENT date (owner spec 2026-09-02). "" = the default, today —
   // deliberately the opposite initialisation from payDate: payDate starts at
   // today because a payment date is REQUIRED, docDate starts empty because
@@ -963,7 +998,19 @@ export default function DocumentsClient({
       // the amount defaults to the parent's gross — the exact figure the server
       // will compare against — and the date to today, editable backwards because
       // money usually arrives before anyone gets to this screen
-      setPayMethod(4);
+      //
+      // THE METHOD IS NOT DEFAULTED, it is RESTORED (owner decision 2026-09-17).
+      // The row's stored payload holds the payment block of the previous
+      // attempt, because the gate writes it back before issuing
+      // (review/route.ts, `update({ payload: gate.payload })`). On "נסה שוב"
+      // that is the bookkeeper's own last answer, and it is the only honest
+      // thing to reopen with: a failed cheque came back as העברה בנקאית, one
+      // click from being issued by a method nobody chose. With nothing stored —
+      // a first approval — the picker stays empty and the button stays disabled
+      // until someone chooses.
+      const prior = priorPayment(r.payload);
+      setPayMethod(prior ? Number(prior.type) : null);
+      setCheque(priorChequeFields(prior));
       setPayAmount(r.parent_gross !== null ? String(r.parent_gross) : "");
       setPayDate(new Date().toISOString().slice(0, 10));
       // a date chosen for the previous document must never survive into the
@@ -1696,21 +1743,41 @@ export default function DocumentsClient({
         // do not offer the button at all
         const grossUnknown = needsPayment && confirming.parent_gross === null;
         const paidNum = Number(payAmount);
+        // A cheque carries four more fields, and all four are required — the
+        // same predicate the review route refuses on, imported rather than
+        // rewritten so the button and the server can never disagree about what
+        // "filled in" means.
+        const chequeIncomplete =
+          payMethod !== null && chequeFieldsMissing({ type: payMethod, ...cheque });
         const paymentReady =
           !needsPayment ||
-          (!grossUnknown && Number.isFinite(paidNum) && paidNum > 0 && /^\d{4}-\d{2}-\d{2}$/.test(payDate));
-        const paymentRows = needsPayment
-          ? [{
-              type: payMethod,
-              date: payDate,
-              // verified on all 278 payment lines in the account: these two are
-              // always the same number
-              price: paidNum,
-              amount: paidNum,
-              currency: "ILS",
-              currencyRate: 1,
-            }]
-          : undefined;
+          (!grossUnknown &&
+            // no default method any more: nothing chosen is not ready
+            payMethod !== null &&
+            !chequeIncomplete &&
+            Number.isFinite(paidNum) &&
+            paidNum > 0 &&
+            /^\d{4}-\d{2}-\d{2}$/.test(payDate));
+        const paymentRows =
+          needsPayment && payMethod !== null
+            ? [{
+                type: payMethod,
+                date: payDate,
+                // verified on all 278 payment lines in the account: these two are
+                // always the same number
+                price: paidNum,
+                amount: paidNum,
+                currency: "ILS",
+                currencyRate: 1,
+                // Cheque only, and trimmed. On every other method the four keys
+                // are ABSENT rather than empty — Morning is given the fields a
+                // cheque has and nothing else, exactly as the 238 bank-transfer
+                // lines in the books look.
+                ...(payMethod === CHEQUE_METHOD_CODE
+                  ? Object.fromEntries(CHEQUE_FIELDS.map((f) => [f.key, (cheque[f.key] ?? "").trim()]))
+                  : {}),
+              }]
+            : undefined;
 
         // ---- the document date (owner spec 2026-09-02) ----
         // The field, its rules and its confirmation panel are shared with the
@@ -1730,7 +1797,7 @@ export default function DocumentsClient({
 
         return (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
-          <div className="bg-[var(--bg)] border border-[var(--rule)] rounded-2xl p-5 max-w-md w-full max-h-[88vh] overflow-y-auto">
+          <div style={MODAL_PANEL} className="border border-[var(--rule)] rounded-2xl p-5 max-w-md w-full max-h-[88vh] overflow-y-auto">
             <h3 className="font-bold text-sm mb-3">{isReceipt ? "אישור הנפקת קבלה" : "אישור הנפקת מסמך מס"}</h3>
             <div className="text-sm space-y-1 mb-4">
               <div>
@@ -1788,10 +1855,22 @@ export default function DocumentsClient({
                     <label className="block">
                       <span className="text-[var(--faint)] text-[11px]">אמצעי</span>
                       <select
-                        value={payMethod}
-                        onChange={(e) => setPayMethod(Number(e.target.value))}
+                        value={payMethod === null ? "" : String(payMethod)}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setPayMethod(v === "" ? null : Number(v));
+                          // switching away from a cheque drops its fields: they
+                          // would not be sent anyway, and leaving them behind
+                          // means a switch back silently restores numbers that
+                          // belong to a decision already undone
+                          if (Number(v) !== CHEQUE_METHOD_CODE) setCheque({});
+                        }}
                         className="w-full mt-1 bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-sm"
                       >
+                        {/* the empty option is the opening state and stays in
+                            the list, so "nothing chosen" remains reachable
+                            rather than becoming a one-way door */}
+                        <option value="">בחר אמצעי</option>
                         {PAYMENT_METHODS.map((m) => (
                           <option key={m.code} value={m.code}>
                             {m.label}
@@ -1799,6 +1878,39 @@ export default function DocumentsClient({
                         ))}
                       </select>
                     </label>
+
+                    {/* ---- the cheque fields (owner spec 2026-09-17) ----
+                        Morning requires all four and says so in its own spec;
+                        without them it refuses the document, which is how a
+                        ₪1,500 320 spent an attempt on 2026-09-16. They render
+                        only for method 2 — every other method sends none. */}
+                    {payMethod === CHEQUE_METHOD_CODE && (
+                      <div className="space-y-2 border border-[var(--rule)] rounded-xl p-3">
+                        {CHEQUE_FIELDS.map((f) => (
+                          <label key={f.key} className="block">
+                            <span className="text-[var(--faint)] text-[11px]">{f.label}</span>
+                            <input
+                              value={cheque[f.key] ?? ""}
+                              onChange={(e) => setCheque((c) => ({ ...c, [f.key]: e.target.value }))}
+                              // numeric keypad on a phone, and nothing more: no
+                              // character filtering. A field that silently eats
+                              // what was typed is worse than one that accepts a
+                              // cheque exactly as it is printed.
+                              inputMode="numeric"
+                              className="w-full mt-1 bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-sm font-mono"
+                            />
+                          </label>
+                        ))}
+                        <p className="text-[10px] text-[var(--faint)] leading-relaxed">
+                          כפי שמופיע על הצ׳ק. מורנינג מרכיבה מהם את שורת התקבול.
+                        </p>
+                        {chequeIncomplete && (
+                          <p className="text-[11px] text-[var(--peak)] leading-relaxed">
+                            יש למלא את כל ארבעת פרטי הצ׳ק: מס׳ צ׳ק, בנק, סניף ומס׳ חשבון
+                          </p>
+                        )}
+                      </div>
+                    )}
                     <label className="block">
                       <span className="text-[var(--faint)] text-[11px]">סכום שהתקבל (ברוטו)</span>
                       <input
@@ -1892,7 +2004,7 @@ export default function DocumentsClient({
         const dateIssue = docDateIssue(docDate, todayIL);
         return (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
-          <div className="bg-[var(--bg)] border border-[var(--rule)] rounded-2xl p-5 max-w-md w-full max-h-[88vh] overflow-y-auto">
+          <div style={MODAL_PANEL} className="border border-[var(--rule)] rounded-2xl p-5 max-w-md w-full max-h-[88vh] overflow-y-auto">
             <h3 className="font-bold text-sm mb-1">שליחת המסמך במייל</h3>
             <div className="text-xs text-[var(--faint)] mb-3">
               {recipientFor.client_name} · {TYPE_LABEL[recipientFor.doc_type]}
