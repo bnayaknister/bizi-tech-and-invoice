@@ -79,21 +79,39 @@ $$;
 -- אותה פונקציה. create or replace על הפונקציה מספיק, ו-drop/create מיותר של
 -- הטריגר היה חלון שבו העמודה אינה מחושבת.
 
--- ── שער: אף שורת jobs קיימת אינה משנה את ה-due_date שלה ───────────────────
+-- ── שער: הפונקציה מחזירה בדיוק מה שה-case הישן החזיר, על כל שורת jobs ─────
+--
+-- ⚠️ ההשוואה היא ישן-מול-חדש על אותו בסיס, ולא מול העמודה השמורה. זו אינה
+-- קפדנות פחותה אלא השאלה הנכונה: ההרצה המדומה של 17.9 נכשלה על 4 שורות
+-- כשהשוותה מול העמודה, ואף אחת מהן לא נגעה ל-0089 — לשלוש מהן `date` ריק,
+-- כלומר הבסיס הוא current_date וערך שנכתב ב-12.7 לעולם לא ישווה לחישוב של
+-- היום; ולרביעית (07faca02, וואי 360, ₪8,000) תנאי התשלום של הלקוח שונו
+-- אחרי שהשורה נכתבה, והטריגר יורה על date ועל client_id בלבד.
+--
+-- שתי התופעות קדמו ל-0089, והיא אינה גורמת להן ואינה מתקנת אותן. שער
+-- שהיה נופל עליהן היה חוסם ריפקטור טהור בגלל נתון ישן.
 do $guard$
 declare
   v_bad int;
   v_total int;
 begin
-  select count(*), count(*) filter (
-           where j.due_date is distinct from public.due_date_for(coalesce(j.date, current_date), c.payment_terms))
+  select count(*), count(*) filter (where
+           case c.payment_terms
+             when 'net_30' then coalesce(j.date, current_date) + 30
+             when 'net_60' then coalesce(j.date, current_date) + 60
+             when 'eom_30' then (date_trunc('month', coalesce(j.date, current_date)) + interval '1 month - 1 day')::date + 30
+             when 'eom_60' then (date_trunc('month', coalesce(j.date, current_date)) + interval '1 month - 1 day')::date + 60
+             when 'eom_90' then (date_trunc('month', coalesce(j.date, current_date)) + interval '1 month - 1 day')::date + 90
+             else coalesce(j.date, current_date)
+           end
+           is distinct from public.due_date_for(coalesce(j.date, current_date), c.payment_terms))
     into v_total, v_bad
     from public.jobs j
     left join public.clients c on c.id = j.client_id;
   if v_bad > 0 then
-    raise exception '0089 עצרה: % מתוך % שורות jobs היו מקבלות due_date שונה. הריצי את supabase/verify/0089_dryrun.sql וקראי את הפירוט.', v_bad, v_total;
+    raise exception '0089 עצרה: % מתוך % שורות jobs מקבלות מהפונקציה ערך שונה מה-case של 0002. הריצי את supabase/verify/0089_dryrun.sql וקראי את הפירוט.', v_bad, v_total;
   end if;
-  raise notice '0089: % שורות jobs, אפס הפרשים.', v_total;
+  raise notice '0089: % שורות jobs, אפס הפרשים בין הישן לחדש.', v_total;
 end $guard$;
 
 -- ── שובל האודיט ───────────────────────────────────────────────────────────

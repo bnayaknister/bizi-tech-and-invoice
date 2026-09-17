@@ -34,6 +34,8 @@ declare
   v_jobs_total int := 0;
   v_jobs_bad   int := 0;
   v_jobs_rep   text := '';
+  v_stale      int := 0;
+  v_stale_rep  text := '';
   v_msg     text;
   r         record;
 begin
@@ -89,21 +91,54 @@ begin
   v_cases := v_cases + 1;
   perform public.due_date_for(null, 'eom_60');
 
-  -- ── מבחן 4: כל שורות jobs הקיימות יוצאות זהות ──────────────────────────
+  -- ── מבחן 4: כל שורת jobs קיימת — ישן מול חדש על אותו בסיס בדיוק ────────
+  --
+  -- ⚠️ זה המבחן הנכון, והגרסה הראשונה שלו הייתה שגויה. היא השוותה את העמודה
+  -- השמורה מול חישוב מחדש, ונכשלה על 4 שורות — ואף אחת מהן לא בגלל 0089:
+  -- ל-3 מהן date ריק, כלומר הבסיס הוא current_date, וערך שנכתב ב-12.7 לעולם
+  -- לא ישווה לחישוב של היום. השאלה שמיגרציה צריכה לענות עליה היא "האם
+  -- הפונקציה מחזירה בדיוק מה שה-case הישן החזיר", ועליה בלבד.
   for r in
-    select j.id, j.date, j.due_date as stored, c.payment_terms,
-           public.due_date_for(coalesce(j.date, current_date), c.payment_terms) as recomputed
+    select j.id, coalesce(j.date, current_date) as base, c.payment_terms as terms,
+           case c.payment_terms
+             when 'net_30' then coalesce(j.date, current_date) + 30
+             when 'net_60' then coalesce(j.date, current_date) + 60
+             when 'eom_30' then (date_trunc('month', coalesce(j.date, current_date)) + interval '1 month - 1 day')::date + 30
+             when 'eom_60' then (date_trunc('month', coalesce(j.date, current_date)) + interval '1 month - 1 day')::date + 60
+             when 'eom_90' then (date_trunc('month', coalesce(j.date, current_date)) + interval '1 month - 1 day')::date + 90
+             else coalesce(j.date, current_date)
+           end as old_val,
+           public.due_date_for(coalesce(j.date, current_date), c.payment_terms) as new_val
       from public.jobs j
       left join public.clients c on c.id = j.client_id
   loop
     v_jobs_total := v_jobs_total + 1;
-    if r.stored is distinct from r.recomputed then
+    if r.old_val is distinct from r.new_val then
       v_jobs_bad := v_jobs_bad + 1;
       if v_jobs_bad <= 12 then
-        v_jobs_rep := v_jobs_rep || format(E'\n    job %s  date=%s terms=%s  שמור=%s מחושב=%s',
-                                           left(r.id::text, 8), r.date, r.payment_terms, r.stored, r.recomputed);
+        v_jobs_rep := v_jobs_rep || format(E'\n    job %s  base=%s terms=%s  ישן=%s חדש=%s',
+                                           left(r.id::text, 8), r.base, r.terms, r.old_val, r.new_val);
       end if;
     end if;
+  end loop;
+
+  -- ── מבחן 5: מידע בלבד, אינו מפיל — עמודות due_date שהתיישנו ────────────
+  -- הטריגר יורה על date ועל client_id בלבד. שינוי payment_terms אצל הלקוח
+  -- אינו מרענן את ה-jobs שלו, ושורה עם date ריק קפאה על current_date של יום
+  -- הכתיבה. שני הדברים קדמו ל-0089, ו-0089 אינה נוגעת באף אחד מהם.
+  for r in
+    select j.id, j.date, j.due_date as stored, c.payment_terms as terms,
+           public.due_date_for(coalesce(j.date, current_date), c.payment_terms) as recomputed
+      from public.jobs j
+      left join public.clients c on c.id = j.client_id
+     where j.due_date is distinct from public.due_date_for(coalesce(j.date, current_date), c.payment_terms)
+  loop
+    v_stale := v_stale + 1;
+    v_stale_rep := v_stale_rep || format(E'\n    job %s  date=%s terms=%s  שמור=%s לפי-התנאים=%s%s',
+                                         left(r.id::text, 8), coalesce(r.date::text, '(ריק)'), r.terms,
+                                         r.stored, r.recomputed,
+                                         case when r.date is null then '   [date ריק — קפא על current_date של יום הכתיבה]'
+                                              else '   ⚠ תנאי התשלום השתנו אחרי כתיבת השורה' end);
   end loop;
 
   -- ── הדוח ────────────────────────────────────────────────────────────────
@@ -119,8 +154,9 @@ begin
   v_msg := format(
     E'✅ 0089 DRY RUN OK — אפס הפרשים. גולגל, שום דבר לא נכתב.\n'
     '  %s מקרים (6 ערכי terms × 14 תאריכים, ועוד terms=NULL ובסיס ריק) — כולם זהים ללוגיקה של 0002\n'
-    '  %s שורות jobs — כולן מקבלות בדיוק את ה-due_date שהן נושאות היום\n'
-    '  אפשר להריץ את supabase/migrations/0089_due_date_for.sql',
-    v_cases, v_jobs_total);
+    '  %s שורות jobs — הפונקציה מחזירה בדיוק מה שה-case הישן מחזיר, על אותו בסיס\n'
+    '  אפשר להריץ את supabase/migrations/0089_due_date_for.sql\n'
+    '\n  ℹ️ מידע בלבד, קדם ל-0089 ואינו נוגע בה — %s שורות נושאות due_date מיושן:%s',
+    v_cases, v_jobs_total, v_stale, coalesce(nullif(v_stale_rep, ''), ' אין'));
   raise exception '%', v_msg;
 end $dry$;

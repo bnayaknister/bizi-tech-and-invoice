@@ -46,18 +46,36 @@ select
   -- 8. terms ריק מחזיר את הבסיס, כמו ה-else של 0002
   (public.due_date_for('2026-08-13', null) = '2026-08-13')                            as null_terms_is_base,
 
-  -- 9. אף שורת jobs לא זזה — הפונקציה מחזירה בדיוק את מה שהעמודה נושאת
+  -- 9. הפונקציה מחזירה על כל שורת jobs בדיוק את מה שה-case של 0002 החזיר.
+  --    ⚠️ ישן מול חדש על אותו בסיס — לא מול העמודה השמורה. ראה את ההערה
+  --    בשער שבמיגרציה: 4 שורות נושאות due_date מיושן מסיבות שקדמו ל-0089.
   (select count(*) = 0 from public.jobs j
      left join public.clients c on c.id = j.client_id
-    where j.due_date is distinct from public.due_date_for(coalesce(j.date, current_date), c.payment_terms))
-                                                                                      as jobs_unchanged,
+    where case c.payment_terms
+            when 'net_30' then coalesce(j.date, current_date) + 30
+            when 'net_60' then coalesce(j.date, current_date) + 60
+            when 'eom_30' then (date_trunc('month', coalesce(j.date, current_date)) + interval '1 month - 1 day')::date + 30
+            when 'eom_60' then (date_trunc('month', coalesce(j.date, current_date)) + interval '1 month - 1 day')::date + 60
+            when 'eom_90' then (date_trunc('month', coalesce(j.date, current_date)) + interval '1 month - 1 day')::date + 90
+            else coalesce(j.date, current_date)
+          end
+          is distinct from public.due_date_for(coalesce(j.date, current_date), c.payment_terms))
+                                                                                      as jobs_old_equals_new,
 
   -- 10. הטריגר עדיין במקומו, על אותם אירועים ועל אותה פונקציה
   (select count(*) = 1 from pg_trigger t
      join pg_class  cl on cl.oid = t.tgrelid
      join pg_proc   pr on pr.oid = t.tgfoid
     where cl.relname = 'jobs' and t.tgname = 'trg_compute_due_date'
-      and pr.proname = 'compute_due_date' and t.tgenabled = 'O')                      as trigger_intact;
+      and pr.proname = 'compute_due_date' and t.tgenabled = 'O')                      as trigger_intact,
+
+  -- 11. ℹ️ מידע בלבד, לא בדיקה: כמה שורות נושאות due_date מיושן. קדם ל-0089.
+  --     צפוי 4 (שלוש עם date ריק שקפאו על current_date של 12.7, ואחת —
+  --     07faca02, וואי 360, ₪8,000 — שתנאי התשלום שלה שונו אחרי הכתיבה).
+  (select count(*) from public.jobs j
+     left join public.clients c on c.id = j.client_id
+    where j.due_date is distinct from public.due_date_for(coalesce(j.date, current_date), c.payment_terms))
+                                                                                      as stale_due_dates_preexisting;
 
 -- ── בדיקה חיה: הטריגר באמת עובר דרך הפונקציה החדשה ────────────────────────
 -- כותב ומגלגל. אפס שורות נשארות.
