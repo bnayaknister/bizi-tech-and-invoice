@@ -753,6 +753,17 @@ function StuckDetail({
   rows: (ProjectRow & { month: string; label: string })[];
   onClose: () => void;
 }) {
+  // ONE number across both windows (owner, 2026-09-18). The notice counts
+  // distinct things stuck and this header used to count rows, so the same
+  // moment read "6 פרויקטים" and then "8 פרויקטים" one click apart. Both were
+  // true — כפיר ארביב's two documents reach four episodes — and to the person
+  // reading them that is simply a contradiction, which is the worse outcome on
+  // a screen whose whole job is to be trusted about money.
+  //
+  // The LIST below is untouched and still shows every row, because a row is
+  // the thing she acts on: the two כפיר ארביב episodes are two projects to
+  // look at even though one document is holding both.
+  const stuckCount = new Set(rows.flatMap((r) => (r.stuck ?? []).map((s) => s.key))).size;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={MODAL_OVERLAY} onClick={onClose}>
       <div
@@ -762,7 +773,7 @@ function StuckDetail({
       >
         <h2 className="mb-1 text-sm font-bold">פירוט הפרויקטים שדורשים בדיקה</h2>
         <p className="mb-4 text-[11px] text-[var(--ink-faint)]">
-          {rows.length} פרויקטים שהשרשרת שלהם נעצרה. לכל אחד — איפה בדיוק היא נעצרה.
+          {stuckCount} פרויקטים שהשרשרת שלהם נעצרה. לכל אחד — איפה בדיוק היא נעצרה.
         </p>
         <div className="space-y-3">
           {rows.map((r) =>
