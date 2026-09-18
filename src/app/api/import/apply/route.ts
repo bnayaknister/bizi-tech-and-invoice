@@ -76,7 +76,8 @@ export async function POST(request: Request) {
       // that arrives already paid + tax-invoiced never touches public.jobs —
       // it's closed history, same as its siblings (0015/0016 backfill).
       if (row.archiveDestined) {
-        const clientId = nameLookup.get(norm(clientName));
+        // job import: the lookup is the client map (see buildNameLookup)
+        const clientId = (nameLookup as Map<string, string>).get(norm(clientName));
         if (!clientId) { applied.skipped++; continue; }
         const { error } = await admin.rpc("insert_archive_job", {
           p_job: {
@@ -116,13 +117,25 @@ export async function POST(request: Request) {
   return NextResponse.json({ ok: true, kind, applied });
 }
 
+// P9 (2026-09-18): for a production import the lookup now carries the show's
+// BILLING DECLARATION, not just its id. buildInsert needs billing_mode and
+// client_id to derive `kind` the same way the calendar sync does — see the
+// note there. The map is still keyed by normalised name/alias and still
+// resolves to one show; only the value grew.
+type ShowLookup = { id: string; billing_mode: string | null; client_id: string | null };
+
 async function buildNameLookup(admin: ReturnType<typeof createAdminClient>, kind: ImportKind) {
   if (kind === "production") {
-    const { data } = await admin.from("shows").select("id,name,aliases");
-    const byName = new Map<string, string>();
+    const { data } = await admin.from("shows").select("id,name,aliases,billing_mode,client_id");
+    const byName = new Map<string, ShowLookup>();
     for (const s of data ?? []) {
-      byName.set(norm(s.name), s.id);
-      for (const a of (s.aliases as string[] | null) ?? []) byName.set(norm(a), s.id);
+      const entry: ShowLookup = {
+        id: s.id,
+        billing_mode: (s.billing_mode as string | null) ?? null,
+        client_id: (s.client_id as string | null) ?? null,
+      };
+      byName.set(norm(s.name), entry);
+      for (const a of (s.aliases as string[] | null) ?? []) byName.set(norm(a), entry);
     }
     return byName;
   }
@@ -145,11 +158,16 @@ function buildInsert(
   kind: ImportKind,
   values: Record<string, string | number | null>,
   externalId: string,
-  nameLookup: Map<string, string>,
+  // production → ShowLookup (id + billing declaration); job → the client id.
+  // buildNameLookup returns one or the other, keyed by `kind`.
+  nameLookup: Map<string, ShowLookup> | Map<string, string>,
   clientName: string,
   paidRaw: string
 ): Record<string, unknown> | null {
   if (kind === "production") {
+    const show = (nameLookup as Map<string, ShowLookup>).get(
+      norm(String(values.podcast_name ?? ""))
+    );
     // new work from today — legacy=false, enters the automation chain.
     // 6 stages are created by trg_create_default_stages on insert.
     return {
@@ -159,8 +177,31 @@ function buildInsert(
       studio: values.studio,
       episode_no: values.episode_no,
       notes: values.notes,
-      show_id: nameLookup.get(norm(String(values.podcast_name ?? ""))) ?? null,
-      kind: "internal", // owner marks it 'client' when it should bill
+      show_id: show?.id ?? null,
+      // P9 (owner decision 2026-09-18). Was a hard-coded `kind: "internal"`
+      // with the note "owner marks it 'client' when it should bill" — the one
+      // creation path in the app that ignored the show's billing declaration
+      // entirely. The rule below is the SAME expression the calendar sync uses
+      // (api/calendar/sync/route.ts:289); the two intake paths now agree.
+      //
+      // client_id rides along for the same reason the sync writes it
+      // (sync/route.ts:296): ensure_job_for_production copies prod.client_id
+      // onto the job it creates, so kind='client' without a client would mint
+      // the first client-less job in the books. Measured 2026-09-18: 0 of 103
+      // jobs carry a null client_id, and the column is nullable — nothing
+      // would have raised.
+      //
+      // ⚠️ This does NOT make an import bill anything. A new row lands at the
+      // column default 'עתיד_להתחיל', and 0061 refuses to create a job in that
+      // status (it writes job_skipped_not_recorded instead). A job appears only
+      // when a human advances the status, one row at a time.
+      kind:
+        show?.billing_mode === "contract"
+          ? "contract"
+          : show?.billing_mode === "per_episode" && show.client_id
+            ? "client"
+            : "internal",
+      client_id: show?.client_id ?? null,
       legacy: false,
       external_id: externalId,
     };
@@ -169,7 +210,7 @@ function buildInsert(
   // so for a brand-new job resolve it from the CSV's לקוח column by name.
   // Jobs whose client doesn't resolve are surfaced as skipped, never created
   // client-less.
-  const clientId = nameLookup.get(norm(clientName));
+  const clientId = (nameLookup as Map<string, string>).get(norm(clientName));
   if (!clientId) return null;
   return {
     date: values.date,
