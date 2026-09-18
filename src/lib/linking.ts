@@ -16,6 +16,10 @@ export type ProductionLite = {
   record_date: string | null;
   guest: string | null;
   client_id: string | null;
+  // 🔵 the episode ORDINAL. Present on 336 of 787 productions (measured
+  // 2026-09-18), so it decides a minority of rows and is never required —
+  // when it is absent the engine falls back to exactly what it did before.
+  episode_no: number | null;
 };
 
 export type ShowLite = { id: string; name: string; aliases: string[] };
@@ -42,7 +46,63 @@ export type Suggestion = {
   // When it exceeds the productions that exist in the window, work was done
   // but never entered — the אפרת לקט *2 hole, surfaced instead of swallowed.
   expectedEpisodes: number | null;
+  // 🔴 P12 (owner 2026-09-18) — the three fields the PRE-TICK decision reads.
+  // The suggestion itself is unchanged in spirit: the engine still names its
+  // best candidate. What changed is that naming one no longer ticks its box.
+  //
+  // ambiguous: a second show scored within 0.1 of the winner. It already
+  // downgraded `confidence`, but it is surfaced here so shouldPreTick can say
+  // so out loud rather than inferring it from the grade.
+  ambiguous: boolean;
+  // amountOutlier: the job is too big to be one episode — see
+  // SINGLE_PRODUCTION_CEILING. The second safety net, behind the contract gate.
+  amountOutlier: boolean;
+  // episodeMatch: the ordinal that decided the pick, when one did. Non-null
+  // means the campaign named an episode and exactly one production in the
+  // window carried that episode_no — the strongest signal the engine has.
+  episodeMatch: number | null;
 };
+
+/**
+ * 🔴 The amount guard (owner decision 2026-09-18, P12 §2).
+ *
+ * Measured over the 54 jobs linked to exactly ONE production: min ₪250,
+ * median ₪600, p90 ₪1,270, p99 ₪4,873, max ₪8,000 — and that max is a lone
+ * outlier, the second-highest being ₪2,100. ₪10,000 is the round number above
+ * the single observed outlier, ~16× the median.
+ *
+ * Applied PER PRODUCTION (`amount ÷ max(1, expectedEpisodes)`) so a genuine
+ * multi-episode job is judged on its per-episode price: "אפרת לקט*4" at
+ * ₪8,000 reads as ₪2,000 an episode and passes, as it should.
+ *
+ * ⚠️ This is a net, not a gate. On the live data it flags NOTHING today: the
+ * contract gate removes the ₪250,000 ביפו row before this is consulted. It
+ * exists for the next job of that shape that arrives without a contract_id.
+ */
+export const SINGLE_PRODUCTION_CEILING = 10000;
+export const AMOUNT_OUTLIER_NOTE = "סכום חריג להפקה בודדת — לבדוק";
+
+function isAmountOutlier(amount: number | null, expectedEpisodes: number | null): boolean {
+  if (amount === null || amount === undefined) return false;
+  return amount / Math.max(1, expectedEpisodes ?? 1) > SINGLE_PRODUCTION_CEILING;
+}
+
+/**
+ * 🔴 Whether the UI may pre-tick this suggestion's checkbox.
+ *
+ * Before P12 the screen ticked whatever `suggested` carried, at every grade
+ * including `low` — so a guess decided by nothing but date proximity arrived
+ * looking exactly like a certainty, and `Enter` approved it. On the live data
+ * that was 16 of 22 rows pre-ticked with ZERO of them graded `high`.
+ *
+ * Three conditions, all required. `confidence === "high"` already implies
+ * `!ambiguous` (ambiguity downgrades the grade), but both are tested because
+ * the rule the owner approved names both, and a future change to the grading
+ * must not silently loosen this.
+ */
+export function shouldPreTick(s: Suggestion): boolean {
+  return s.suggested.length > 0 && s.confidence === "high" && !s.ambiguous && !s.amountOutlier;
+}
 
 const WINDOW_DAYS = 30;
 const GENERIC = new Set([
@@ -61,6 +121,25 @@ function parseExpectedEpisodes(campaign: string): number | null {
   if (before) return Number(before[1]);
   if (/פרקים\s*\d+\s*\+\s*\d+/.test(campaign)) return 2;
   return null;
+}
+
+/**
+ * 🔵 "פרק N" — the ORDINAL, deliberately separate from parseExpectedEpisodes
+ * above, which reads a COUNT. That confusion is precisely F13's bug: "פרק 8"
+ * is episode eight, not eight episodes, and the count parser cannot tell them
+ * apart because `פרק`/`פרקים` sit in GENERIC and a bare number is dropped by
+ * tokens() — the episode number was invisible to the engine on both sides.
+ *
+ * Refuses anything that is not a single unambiguous ordinal:
+ *   "2 פרקים"    → count, not an ordinal        → null
+ *   "פרקים 8+9"  → a range                      → null
+ *   "פרק 1 ו-2"  → covers two episodes, not one → null
+ */
+function parseEpisodeOrdinal(campaign: string): number | null {
+  if (/פרקים/.test(campaign)) return null;
+  if (/פרק\s*\d+\s*ו-?\s*\d/.test(campaign)) return null;
+  const m = campaign.match(/פרק\s*(\d+)/);
+  return m ? Number(m[1]) : null;
 }
 
 function norm(s: string | null | undefined): string {
@@ -133,6 +212,8 @@ export function suggestForJob(
   const campToks = tokens(campaign);
   const multiEpisode = MULTI_RE.test(campaign);
   const expectedEpisodes = parseExpectedEpisodes(campaign);
+  const episodeOrdinal = parseEpisodeOrdinal(campaign);
+  const amountOutlier = isAmountOutlier(job.amount, expectedEpisodes);
 
   const byShow = new Map<string, ProductionLite[]>();
   const clientShowIds = new Set<string>();
@@ -174,6 +255,7 @@ export function suggestForJob(
   const none = (note: string): Suggestion => ({
     jobId: job.id, confidence: "none", showId: null,
     suggested: [], windowCandidates: [], note, multiEpisode, expectedEpisodes,
+    ambiguous: false, amountOutlier, episodeMatch: null,
   });
 
   if (cands.length) {
@@ -184,6 +266,33 @@ export function suggestForJob(
       cands[1].campScore >= top.campScore &&
       cands[1].win.length > 0 === top.win.length > 0;
     const guests = top.win.filter(guestHit);
+    // 🔵 F13 — the episode number outranks date proximity.
+    //
+    // The old tiebreak was `picked[0]`, and with no guest hit `picked` was
+    // top.win sorted by |date distance|: the nearest recording won, full stop.
+    // That is how "פרק 8" of חתונמיות was offered the 7.7 production (which is
+    // episode 7, and another job's target) instead of the 9.7 one.
+    //
+    // An episode hit is checked FIRST and beats both the guest signal and the
+    // date tiebreak, because it names the episode outright rather than
+    // inferring it. Only a UNIQUE hit counts — two productions carrying the
+    // same episode_no is a data problem, not a decision.
+    const epHits =
+      episodeOrdinal === null ? [] : top.win.filter((p) => p.episode_no === episodeOrdinal);
+    if (epHits.length === 1) {
+      return {
+        jobId: job.id,
+        confidence: ambiguous ? "medium" : "high",
+        showId: top.show.id,
+        suggested: [epHits[0].id],
+        windowCandidates: top.win.map((p) => p.id),
+        note:
+          `מספר פרק תואם (${episodeOrdinal})` +
+          (ambiguous ? `; תוכנית לא חד-משמעית (גם: ${cands[1].show.name})` : ""),
+        multiEpisode, expectedEpisodes,
+        ambiguous, amountOutlier, episodeMatch: episodeOrdinal,
+      };
+    }
 
     if (guests.length || top.win.length) {
       const picked = guests.length ? guests : top.win;
@@ -214,6 +323,7 @@ export function suggestForJob(
         suggested: [picked[0].id],
         windowCandidates: top.win.map((p) => p.id),
         note, multiEpisode, expectedEpisodes,
+        ambiguous, amountOutlier, episodeMatch: null,
       };
     }
     if (top.score >= 0.7) {
@@ -239,6 +349,7 @@ export function suggestForJob(
           ? "אורח בקמפיין תואם הפקה יחידה"
           : `אורח תואם ${globalGuests.length} הפקות`,
       multiEpisode, expectedEpisodes,
+      ambiguous: false, amountOutlier, episodeMatch: null,
     };
   }
 

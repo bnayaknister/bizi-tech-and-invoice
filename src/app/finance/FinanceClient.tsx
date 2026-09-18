@@ -94,6 +94,7 @@ export default function FinanceClient({
   initialFilter,
   canEditMoney,
   canManageUsers,
+  unlinkedCount,
 }: {
   rows: FinanceJob[];
   summary: FinanceSummary;
@@ -101,6 +102,8 @@ export default function FinanceClient({
   initialFilter: FinanceFilterKey | null;
   canEditMoney: boolean;
   canManageUsers: boolean;
+  /** rows waiting in /finance/link's "לקישור" tab; 0 hides the button */
+  unlinkedCount: number;
 }) {
   const router = useRouter();
   const { openEntity } = useDrawer();
@@ -334,12 +337,24 @@ export default function FinanceClient({
           <IconTile icon="finance" accent="rose" size={30} iconSize={17} />
           כספים
         </h1>
-        <button
-          onClick={() => router.push("/documents/registry")}
-          className="text-xs font-bold rounded-xl px-4 py-1.5 border border-[var(--rule2)]"
-        >
-          מסמכים →
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Restored 2026-09-18 (P12 §3). Hidden at 0 on purpose: the button
+              appearing IS the signal that something is waiting. */}
+          {unlinkedCount > 0 && (
+            <button
+              onClick={() => router.push("/finance/link")}
+              className="text-xs font-bold rounded-xl px-4 py-1.5 border border-[var(--violet)]/50 text-[var(--violet-light)] hover:bg-[var(--panel3)] transition-colors"
+            >
+              🔗 קישור חיובים להפקות · {unlinkedCount} ממתינים
+            </button>
+          )}
+          <button
+            onClick={() => router.push("/documents/registry")}
+            className="text-xs font-bold rounded-xl px-4 py-1.5 border border-[var(--rule2)]"
+          >
+            מסמכים →
+          </button>
+        </div>
       </div>
 
       {/* summary cards — glass + corner orbs */}

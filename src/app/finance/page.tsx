@@ -37,8 +37,10 @@ export default async function FinancePage({
   const [{ data: jobs }, { data: clients }, { data: links }, { data: prods }, { data: shows }, { data: invoices }, { data: staff }] =
     await Promise.all([
       admin
+        // manual_only + contract_id are here only to count the "לקישור" tab
+        // for the header button — they do not take part in any pipeline state.
         .from("jobs")
-        .select("id,client_id,date,campaign,amount,invoice_biz,invoice_tax,paid,due_date,notes,dismissed,dismiss_reason,dismissed_by,dismissed_at"),
+        .select("id,client_id,date,campaign,amount,invoice_biz,invoice_tax,paid,due_date,notes,dismissed,dismiss_reason,dismissed_by,dismissed_at,manual_only,contract_id"),
       admin.from("clients").select("id,name,payment_terms"),
       admin.from("job_productions").select("job_id,production_id"),
       admin.from("productions").select("id,show_id,podcast_name"),
@@ -139,6 +141,22 @@ export default async function FinancePage({
       tax_number: j.invoice_tax ?? null,
     }));
 
+  // 🔴 The "לקישור" counter for the header button.
+  //
+  // /finance/link HAD a button here. It was added with the screen (632cdde,
+  // 15.7) onto the finance ModulePlaceholder, and deleted three days later by
+  // 3e888f0 (18.7) together with that placeholder — collateral damage, not a
+  // decision: the commit that removed it does not mention it. For two months
+  // the screen's only inbound link was a conditional line inside the entity
+  // drawer, and the events table shows zero human use in that window.
+  //
+  // The predicate is the "לקישור" tab's own filter (LinkClient), contract gate
+  // included, so the number on the button is the number of rows behind it.
+  const linkedJobIds = new Set((links ?? []).map((l) => l.job_id));
+  const unlinkedCount = (jobs ?? []).filter(
+    (j) => !j.manual_only && !j.contract_id && !linkedJobIds.has(j.id)
+  ).length;
+
   return (
     <div className="min-h-screen">
       <AppHeader profile={profile} />
@@ -150,6 +168,7 @@ export default async function FinancePage({
           initialFilter={filter}
           canEditMoney={profile.can_edit_money}
           canManageUsers={!!profile.can_manage_users}
+          unlinkedCount={unlinkedCount}
         />
       </main>
     </div>

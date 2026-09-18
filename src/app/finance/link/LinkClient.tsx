@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { Suggestion } from "@/lib/linking";
+import { AMOUNT_OUTLIER_NOTE, shouldPreTick, type Suggestion } from "@/lib/linking";
 import { displayDate } from "@/lib/dates";
 
 export type JobRow = {
@@ -14,6 +14,17 @@ export type JobRow = {
   manualOnly: boolean;
   linked: string[]; // production ids
   suggestion: Suggestion | null;
+  // 🔴 P12 — the contract gate. A job that belongs to a contract is billed by
+  // MILESTONE, never per episode: contract_milestones.job_id points back at it
+  // and it carries zero job_productions rows BY DESIGN (the projects screen
+  // states the same thing at projects/page.tsx:288). The "לקישור" tab read
+  // that deliberate absence as an open task and offered episodes to link.
+  //
+  // The gate is applied HERE and not in the page query on purpose: filtering
+  // the query would also empty the "מקושרים" and "חיובים כלליים" tabs, and
+  // "מכירת ביפו חלק א" — a contract job wrongly flagged manual_only — could
+  // then never be un-flagged, because its undo button lives in that tab.
+  hasContract: boolean;
 };
 
 export type ProductionOption = {
@@ -68,7 +79,7 @@ export default function LinkClient({
   const unlinked = useMemo(
     () =>
       jobs
-        .filter((j) => !j.manualOnly && j.linked.length === 0 && !skipped[j.id])
+        .filter((j) => !j.manualOnly && !j.hasContract && j.linked.length === 0 && !skipped[j.id])
         .sort(
           (a, b) =>
             CONF_ORDER[a.suggestion?.confidence ?? "none"] -
@@ -79,11 +90,26 @@ export default function LinkClient({
   );
   const linked = useMemo(() => jobs.filter((j) => j.linked.length > 0), [jobs]);
   const manual = useMemo(() => jobs.filter((j) => j.manualOnly), [jobs]);
+  // Contract jobs the gate removed from "לקישור" that land in no other tab
+  // either (not linked, not manual_only). They are NOT silently dropped — the
+  // header says how many there are and where they are actually managed.
+  const gatedContract = useMemo(
+    () => jobs.filter((j) => j.hasContract && !j.manualOnly && j.linked.length === 0),
+    [jobs]
+  );
 
   const focused = tab === "unlinked" ? unlinked[focusIdx] ?? null : null;
 
+  // 🔴 P12 — the pre-tick rule. `selections[job.id]` is what the user has
+  // touched and always wins; the fallback is where the old bug lived, because
+  // it handed back `suggestion.suggested` at EVERY grade including `low`. A
+  // guess decided by nothing but date proximity arrived with its box ticked
+  // and `Enter` bound to approve it. Now the engine's pick is still shown and
+  // still one click away — it just no longer arrives pre-approved unless
+  // shouldPreTick() says it earned that.
   function selectedFor(job: JobRow): string[] {
-    return selections[job.id] ?? job.suggestion?.suggested ?? [];
+    if (selections[job.id]) return selections[job.id];
+    return job.suggestion && shouldPreTick(job.suggestion) ? job.suggestion.suggested : [];
   }
 
   function toggle(jobId: string, prodId: string, base: string[]) {
@@ -182,6 +208,15 @@ export default function LinkClient({
         <span className="text-xs text-[var(--dim)]">
           {unlinked.length} לקישור · {linked.length} מקושרים · {manual.length} כלליים
         </span>
+        {gatedContract.length > 0 && (
+          <a
+            href="/contracts"
+            className="text-xs text-[var(--dim)] underline decoration-dotted hover:text-[var(--violet-light)]"
+            title="עבודות חוזה מחויבות באבני דרך ולא לפי פרק — הן אינן נכנסות ללשונית לקישור"
+          >
+            {gatedContract.length} עבודות חוזה · מנוהלות בחוזים ←
+          </a>
+        )}
         <div className="flex-1" />
         <span className="text-xs text-[var(--dim)]">Enter=אשר · Esc=דלג · ↑↓=ניווט</span>
       </div>
@@ -247,6 +282,14 @@ export default function LinkClient({
                   <span>{job.campaign ?? "—"}</span>
                   <span className="text-[var(--dim)]">·</span>
                   <span className="tabular-nums">{job.amount != null ? `${NIS.format(job.amount)} ₪` : "—"}</span>
+                  {/* 🔴 P12 — the amount net. Red, not amber: the amber badges
+                      beside it report missing WORK, this one reports that the
+                      suggestion itself is probably the wrong shape. */}
+                  {s?.amountOutlier && (
+                    <span className="text-[11px] text-rose-400 border border-rose-500/40 rounded px-1.5 py-0.5 font-bold">
+                      🔴 {AMOUNT_OUTLIER_NOTE}
+                    </span>
+                  )}
                   {s?.expectedEpisodes != null && s.expectedEpisodes > s.windowCandidates.length ? (
                     <span className="text-[11px] text-amber-400 border border-amber-500/40 rounded px-1.5 py-0.5 font-bold">
                       🟡 החיוב מכסה {s.expectedEpisodes} הפקות — במערכת קיימות רק{" "}

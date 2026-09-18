@@ -16,13 +16,18 @@ export default async function LinkJobsPage() {
   const supabase = createClient();
   const [jobsRes, linksRes, prodsRes, showsRes, clientsRes] = await Promise.all([
     supabase
+      // contract_id rides along for the P12 gate. It is deliberately NOT a
+      // `.is("contract_id", null)` filter here: the other two tabs must keep
+      // showing contract jobs — see the JobRow.hasContract note in LinkClient.
       .from("jobs")
-      .select("id,client_id,date,campaign,amount,manual_only")
+      .select("id,client_id,date,campaign,amount,manual_only,contract_id")
       .order("date", { ascending: true }),
     supabase.from("job_productions").select("job_id,production_id"),
     supabase
+      // episode_no: F13 — the engine could not see the episode number because
+      // this select never asked for it.
       .from("productions")
-      .select("id,show_id,record_date,guest,client_id")
+      .select("id,show_id,record_date,guest,client_id,episode_no")
       .order("record_date", { ascending: false }),
     supabase.from("shows").select("id,name,aliases"),
     supabase.from("clients").select("id,name"),
@@ -64,7 +69,7 @@ export default async function LinkJobsPage() {
 
   const suggestions: Record<string, Suggestion> = {};
   for (const j of jobs) {
-    if (j.manual_only || linkedProductionsByJob[j.id]) continue;
+    if (j.manual_only || j.contract_id || linkedProductionsByJob[j.id]) continue;
     suggestions[j.id] = suggestForJob(
       j,
       j.client_id ? clientName[j.client_id] ?? "" : "",
@@ -80,6 +85,7 @@ export default async function LinkJobsPage() {
     campaign: j.campaign,
     amount: j.amount,
     manualOnly: j.manual_only,
+    hasContract: j.contract_id != null,
     linked: linkedProductionsByJob[j.id] ?? [],
     suggestion: suggestions[j.id] ?? null,
   }));
