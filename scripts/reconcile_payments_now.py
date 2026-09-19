@@ -53,6 +53,14 @@ clients = {c["id"]: c["name"] for c in requests.get(rest("clients?select=id,name
 
 em = f"paynow-{uuid.uuid4().hex[:8]}@bizi-test.local"; pw = f"Test-{uuid.uuid4().hex}!A1"
 uid = requests.post(f"{U}/auth/v1/admin/users", headers=A, json={"email": em, "password": pw, "email_confirm": True}).json()["id"]
+# ⚠️ חולשה ידועה — הסקריפט מנפיק לעצמו את ההרשאה שאמורה להגן על המסלול.
+# ‎/api/finance/reconcile-payments מוגן ב-can_edit_money, וזו ההגנה היחידה שיש
+# לו: אין לו קורא בשום מסך, ואין לו תצוגה מקדימה. השורה הבאה יוצרת משתמש זמני
+# ונותנת לו בדיוק את ההרשאה הזו — כלומר מי שמריץ את הסקריפט אינו צריך להיות
+# מורשה כספים, הכלי מייצר את ההרשאה עבורו. בהמשך הקובץ הפעולות מיוחסות לבעלים
+# והמשתמש נמחק, כך שגם העקבה של מי שבאמת הריץ אינה נשמרת.
+# זה מתועד ולא מתוקן כאן: התיקון הוא מסך אישור באפליקציה עם תצוגה מקדימה לפני
+# הקישור — F14 שלב ב'. עד אז שער האישור המוקלד שלמטה הוא מה שעומד במקום.
 requests.patch(rest(f"profiles?id=eq.{uid}"), headers={**A, "Prefer": "return=representation"}, json={"name": "ZTESTPAYNOW", "approved": True, "role": "bookkeeper", "can_view_money": True, "can_edit_money": True})
 td = requests.post(f"{U}/auth/v1/token?grant_type=password", headers={"apikey": AN, "Content-Type": "application/json"}, json={"email": em, "password": pw}).json()
 sess = {"access_token": td["access_token"], "token_type": "bearer", "expires_in": 3600, "expires_at": int(time.time()) + 3600, "refresh_token": td["refresh_token"], "user": td["user"]}
@@ -61,6 +69,21 @@ ck = {CN: "base64-" + base64.urlsafe_b64encode(json.dumps(sess).encode()).decode
 try:
     d0, n0, r0, rc0 = debt_and_red()
     print(f"BEFORE:  debt={d0:,.0f} ({n0} unpaid) · VU-red(>60d)={r0:,.0f} ({rc0} jobs)")
+
+    print("\n" + "=" * 70)
+    print("⚠️  עצור וקרא לפני שתמשיך.")
+    print("=" * 70)
+    print("הפעולה הבאה מריצה את מנוע התשלומים על המסד החי:")
+    print("  · היא מקשרת מסמכי תשלום (קבלה / מס-קבלה) לעבודות.")
+    print("  · היא מסמנת את אותן עבודות כ\"שולם\" — כלומר החוב על המסך יורד.")
+    print("  · ההתאמה נשענת על לקוח וסכום בלבד. אין לה חלון תאריכים.")
+    print("  · אין תצוגה מקדימה — היא מקשרת את כל ההתאמות מיד, בלולאה.")
+    print("  · הפעולה אינה הפיכה: אין כפתור ביטול ואין פונקציית ניתוק.")
+    print("    תיקון של קישור שגוי דורש שאילתה ידנית במסד, ובעבר גם מיגרציה.")
+    print("=" * 70)
+    if input('להמשך הקלד את המילה "לקשר" (כל קלט אחר יבטל): ').strip() != "לקשר":
+        print("בוטל. לא בוצע שום קישור ושום סימון.")
+        raise SystemExit(0)
 
     resp = requests.post(f"{APP}/api/finance/reconcile-payments", cookies=ck, timeout=120).json()
     print(f"\nreconcile-payments: marked {resp.get('paid')} jobs paid")

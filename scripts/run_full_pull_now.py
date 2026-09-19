@@ -63,6 +63,14 @@ else:
 
 em = f"fullpull-{uuid.uuid4().hex[:8]}@bizi-test.local"; pw = f"Test-{uuid.uuid4().hex}!A1"
 uid = requests.post(f"{U}/auth/v1/admin/users", headers=A, json={"email": em, "password": pw, "email_confirm": True}).json()["id"]
+# ⚠️ חולשה ידועה — הסקריפט מנפיק לעצמו את ההרשאה שאמורה להגן על המסלול.
+# ‎/api/finance/reconcile-payments (שלב [3] למטה) מוגן ב-can_edit_money, וזו
+# ההגנה היחידה שיש לו: אין לו קורא בשום מסך, ואין לו תצוגה מקדימה. השורה הבאה
+# יוצרת משתמש זמני ונותנת לו בדיוק את ההרשאה הזו — כלומר מי שמריץ את הסקריפט
+# אינו צריך להיות מורשה כספים, הכלי מייצר את ההרשאה עבורו. בהמשך הקובץ הפעולות
+# מיוחסות לבעלים והמשתמש נמחק, כך שגם העקבה של מי שבאמת הריץ אינה נשמרת.
+# זה מתועד ולא מתוקן כאן: התיקון הוא מסך אישור באפליקציה עם תצוגה מקדימה לפני
+# הקישור — F14 שלב ב'. עד אז שער האישור המוקלד בשלב [3] הוא מה שעומד במקום.
 requests.patch(rest(f"profiles?id=eq.{uid}"), headers={**A, "Prefer": "return=representation"},
                json={"name": "ZTESTFULLPULL", "approved": True, "role": "bookkeeper", "can_view_money": True, "can_edit_money": True})
 td = requests.post(f"{U}/auth/v1/token?grant_type=password", headers={"apikey": AN, "Content-Type": "application/json"},
@@ -83,11 +91,26 @@ try:
                          json={"full": True}, timeout=600).json()
     print("    summary:", json.dumps(pull, ensure_ascii=False))
 
-    print("\n[3] payment engine  POST /api/finance/reconcile-payments …")
-    pay = requests.post(f"{APP}/api/finance/reconcile-payments", cookies=ck, timeout=300).json()
-    print(f"    marked {pay.get('paid')} jobs paid")
-    for it in pay.get("items", []):
-        print(f"      ✓ {it['amount']}₪ <- receipt #{it['docNumber']}")
+    print("\n" + "=" * 70)
+    print("⚠️  עצור וקרא לפני שלב [3].")
+    print("=" * 70)
+    print("השלב הבא מריץ את מנוע התשלומים על המסד החי:")
+    print("  · הוא מקשר מסמכי תשלום (קבלה / מס-קבלה) לעבודות.")
+    print("  · הוא מסמן את אותן עבודות כ\"שולם\" — כלומר החוב על המסך יורד.")
+    print("  · ההתאמה נשענת על לקוח וסכום בלבד. אין לה חלון תאריכים.")
+    print("  · אין תצוגה מקדימה — הוא מקשר את כל ההתאמות מיד, בלולאה.")
+    print("  · הפעולה אינה הפיכה: אין כפתור ביטול ואין פונקציית ניתוק.")
+    print("    תיקון של קישור שגוי דורש שאילתה ידנית במסד, ובעבר גם מיגרציה.")
+    print("המשיכה של שלב [1] כבר בוצעה ואינה מושפעת מהבחירה כאן.")
+    print("=" * 70)
+    if input('להמשך הקלד את המילה "לקשר" (כל קלט אחר ידלג על השלב): ').strip() == "לקשר":
+        print("\n[3] payment engine  POST /api/finance/reconcile-payments …")
+        pay = requests.post(f"{APP}/api/finance/reconcile-payments", cookies=ck, timeout=300).json()
+        print(f"    marked {pay.get('paid')} jobs paid")
+        for it in pay.get("items", []):
+            print(f"      ✓ {it['amount']}₪ <- receipt #{it['docNumber']}")
+    else:
+        print("\n[3] דולג. לא בוצע שום קישור ושום סימון.")
 
     # re-attribute anything the temp user created, then report after-state
     requests.patch(rest(f"events?actor_id=eq.{uid}"), headers=A, json={"actor_id": OWNER})
