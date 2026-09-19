@@ -105,10 +105,33 @@ select
       and not t.tgisinternal)                                                         as trg_0089_intact,
 
   -- 12. כלל 49 — ה-ACL הוא מה שהוצהר. הפונקציה החדשה נושאת EXECUTE ל-PUBLIC
-  --     כמו כל פונקציות הטריגר האחרות בסכימה, ו-due_date_for לא זזה.
-  --     ⚠️ due_date_for נבדקת מול המצב **המדוד** (postgres, authenticated,
-  --     service_role) ולא מול ההצהרה השגויה של 0089 — ראה הערת התיקון
-  --     בראש המיגרציה. הבדיקה כאן היא שהיא לא זזה, לא שהיא "נכונה".
+  --     כמו כל פונקציות הטריגר האחרות בסכימה (compute_due_date,
+  --     guard_client_money_columns, guard_job_money_columns,
+  --     on_production_approved, ensure_job_for_production — נמדדו, כולן
+  --     public_exec=true), ו-due_date_for לא זזה.
+  --
+  --     🔴 תיקון עובדתי ל-0089 ול-0091, נמדד על המסד החי 19.9.
+  --     שניהם מצהירים ש-due_date_for "מוגבלת ל-service_role בלבד". היא אינה.
+  --     ה-ACL בפועל:
+  --         postgres=X/postgres | authenticated=X/postgres | service_role=X/postgres
+  --     ה-`revoke all ... from public` של 0089 הסיר את רשומת PUBLIC
+  --     (`=X/postgres`) — ורק אותה. הגרנט ל-authenticated מעולם לא הגיע
+  --     מ-PUBLIC: הוא נולד מ-ALTER DEFAULT PRIVILEGES של Supabase, שמעניק
+  --     EXECUTE על כל פונקציה חדשה ל-anon/authenticated/service_role ברגע
+  --     היצירה, ו-revoke from public אינו נוגע בגרנטים מפורשים לתפקידים.
+  --     (anon אכן נעלמה — היא קיבלה רק את PUBLIC. authenticated לא.)
+  --
+  --     ⚠️ ההשלכה: אפסית, ולכן זה תיקון הצהרה ולא באג אבטחה. due_date_for היא
+  --     IMMUTABLE, אינה SECURITY DEFINER, אינה נוגעת בשום טבלה ואינה קוראת
+  --     auth.uid() — אריתמטיקה טהורה על date ו-enum. authenticated שיקרא לה
+  --     יקבל חשבון תאריכים, לא נתון.
+  --
+  --     ⚠️ ההצהרה לא תוקנה בקבצי המיגרציה עצמם, במכוון: שניהם כבר הוחלו
+  --     (0089 ב-17.9, 0091 ב-19.9 11:13), ושורות ה-schema_ledger שלהם במסד
+  --     נושאות את הנוסח המקורי. עריכת קובץ מיגרציה שהוחל הייתה יוצרת פער
+  --     שקט בין הדיסק למסד. התיקון חי כאן, והבדיקה למטה אוכפת את המצב
+  --     **המדוד** ולא את ההצהרה: היא שואלת "האם due_date_for לא זזה", ולא
+  --     "האם היא service_role בלבד".
   (select (p.proacl is null or exists (select 1 from unnest(p.proacl::text[]) a where a like '=X%'))
      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and p.proname = 'refresh_jobs_due_date_on_terms_change') as fn_acl_as_declared,

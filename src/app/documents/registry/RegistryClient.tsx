@@ -469,14 +469,25 @@ export default function RegistryClient({
     }
   }
 
+  /**
+   * The TAB BADGES — how many rows live in each tab. Population = the whole
+   * tab, deliberately: a badge answers "how much is waiting in there", and it
+   * has to keep answering that while you look at a filtered view of it.
+   *
+   * ⚠️ A `total` in shekels used to be accumulated here too, and it was the
+   * number printed under the table — against a count that had been filtered.
+   * It is GONE rather than merely unused: a money accumulator that nobody
+   * reads is the thing the next person re-wires into a label, which is
+   * exactly how this bug was born. The sum under the table comes from
+   * `shownTotals` below, off `shown`, and there is no second source to pick.
+   */
   const counts = useMemo(() => {
-    const c: Record<string, { n: number; total: number }> = {};
-    for (const t of TAB_ORDER) c[t] = { n: 0, total: 0 };
+    const c: Record<string, number> = {};
+    for (const t of TAB_ORDER) c[t] = 0;
     for (const r of rows) {
       // cancelled / archived docs live only in their own quiet tab
       const key = r.archived_at ? "archived" : r.cancelled_at ? "cancelled" : r.client_id ? r.tab : "unmatched";
-      c[key].n++;
-      c[key].total += r.amount ?? 0;
+      c[key]++;
     }
     return c;
   }, [rows]);
@@ -514,6 +525,51 @@ export default function RegistryClient({
     });
     return list;
   }, [rows, tab, q, sort, showNonBilling]);
+
+  /**
+   * THE SUM OF WHAT IS ON SCREEN. Derived from `shown` — the very array the
+   * table maps over — so the count and the sum can never describe two
+   * different populations again.
+   *
+   * ═══ WHAT WAS WRONG, measured on live data 2026-09-19 ═══
+   * The line under the controls read `{shown.length} · {counts[tab].total}`.
+   * `shown.length` is filtered; `counts[tab].total` is the whole tab. On the
+   * unassigned tab at its DEFAULT state that sentence said
+   *   "8 מסמכים · ₪217,207"
+   * where ₪217,207 is all 29 rows — the 8 billing documents are ₪12,838. A
+   * factor of 17, in the one place on the screen that names an amount of
+   * money, on the tab whose entire job is "what has nobody dealt with yet".
+   *
+   * ⚠️ It was never only the "הצג גם הצעות/הזמנות" toggle. The search box
+   * filters `shown` in EVERY tab and the old total followed it in none of
+   * them: typing two characters on חשבוניות עסקה dropped the list to a
+   * handful of rows and left ₪995,263 sitting under it. The toggle is simply
+   * the case that is wrong with no input at all, which is why it was the one
+   * somebody noticed.
+   *
+   * ⚠️ GROUPED BY CURRENCY, and not for symmetry. `money(x, "ILS")` was
+   * hard-coded here while every other amount on this screen passes
+   * `r.currency`. Three USD documents exist (DB STUDIO, $200 each) and all
+   * three are archived, so the ארכיון tab was adding $600 into a total
+   * wearing a ₪ sign. Summing across currencies is not a rounding error, it
+   * is an invented number — so each currency gets its own term, and a tab
+   * with one currency (every tab but ארכיון today) renders exactly as before.
+   *
+   * Sorted by descending magnitude so the main currency leads. An empty list
+   * yields `[]`, and the render below turns that into a plain zero rather
+   * than an empty string — "0 מסמכים · " with nothing after it reads like a
+   * number that failed to load.
+   */
+  const shownTotals = useMemo(() => {
+    const by = new Map<string, number>();
+    for (const r of shown) {
+      const cur = r.currency || "ILS";
+      by.set(cur, (by.get(cur) ?? 0) + (r.amount ?? 0));
+    }
+    // Array.from and not [...by.entries()] — tsconfig targets below es2015 and
+    // spreading a MapIterator needs downlevelIteration (TS2802).
+    return Array.from(by.entries()).sort((a, b) => b[1] - a[1]);
+  }, [shown]);
 
   /**
    * May this row join a bundled tax document?
@@ -794,7 +850,7 @@ export default function RegistryClient({
           const label =
             t === "unmatched" ? "לא משויך" : t === "cancelled" ? "מבוטלים" : t === "archived" ? "ארכיון" : REGISTRY_TAB_LABEL[t];
           const c = counts[t];
-          if (c.n === 0 && t !== tab) return null; // hide empty tabs, keep the active one
+          if (c === 0 && t !== tab) return null; // hide empty tabs, keep the active one
           const active = tab === t;
           return (
             <button
@@ -802,9 +858,9 @@ export default function RegistryClient({
               onClick={() => setTab(t)}
               className={`text-xs rounded-xl px-3 py-1.5 ${
                 active ? "bg-[var(--signal)] text-white font-bold" : "border border-[var(--rule)] text-[var(--dim)]"
-              } ${t === "unmatched" && c.n > 0 ? "border-[var(--warn)]" : ""}`}
+              } ${t === "unmatched" && c > 0 ? "border-[var(--warn)]" : ""}`}
             >
-              {label} {c.n > 0 && <span className="opacity-80">({c.n})</span>}
+              {label} {c > 0 && <span className="opacity-80">({c})</span>}
             </button>
           );
         })}
@@ -858,7 +914,10 @@ export default function RegistryClient({
           </button>
         )}
         <span className="text-[var(--faint)] shrink-0">
-          {shown.length} מסמכים · {money(counts[tab].total, "ILS")}
+          {shown.length} מסמכים ·{" "}
+          {shownTotals.length === 0
+            ? money(0, "ILS")
+            : shownTotals.map(([cur, sum]) => money(sum, cur)).join(" · ")}
         </span>
       </div>
 
