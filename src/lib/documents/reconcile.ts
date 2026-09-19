@@ -602,8 +602,12 @@ export async function linkPreflight(
     // escape — a value the parser mis-reads comes back as an ERROR, and this
     // call destructures `data` only, so the gate would pass in silence. The
     // whole point of this function is to not be silent.
+    // `morning_doc_id` and `doc_number` ride along with the id so the refusal
+    // below can say WHICH of the three keys matched. Selecting only `id` made
+    // the two very different situations downstream indistinguishable, and the
+    // single message that covered both was true of neither.
     const hit = async (column: "morning_doc_id" | "doc_number") =>
-      admin.from("invoices").select("id").in(column, keys).limit(1);
+      admin.from("invoices").select("id,morning_doc_id,doc_number").in(column, keys).limit(1);
     const [byId, byNumber] = await Promise.all([hit("morning_doc_id"), hit("doc_number")]);
 
     // A lookup that CANNOT ANSWER is not evidence that the answer is no — the
@@ -617,12 +621,45 @@ export async function linkPreflight(
       };
     }
 
-    if (byId.data?.length || byNumber.data?.length) {
+    // ═══ THE REFUSAL, AND WHY IT IS TWO SENTENCES AND NOT ONE ═══════════════
+    // `keys` holds THREE ids: the document's real Morning uuid, and the two
+    // synthetic seed shapes. So this gate fires in two situations that have
+    // nothing to do with each other, and until 2026-09-19 it said the same
+    // words about both:
+    //
+    //   (a) a SEED row matched — `biz-<n>.0` / `tax-<n>.0`. The document is
+    //       historical, loaded from the owner's spreadsheet before the July
+    //       2026 cutover, and it needs a targeted migration (0083, 0092).
+    //       Measured 2026-09-19: 108 live documents are in this state.
+    //   (b) the REAL uuid matched — the document is already recorded in the
+    //       app, on some job. Nothing historical about it.
+    //
+    // Calling (b) "ישנה" / "היסטורי" would be a plain lie, and the operator
+    // would go looking for a spreadsheet that has nothing to do with it. The
+    // gate's behaviour is unchanged — it refuses in exactly the same cases —
+    // only what it says about them.
+    const blocking = byId.data?.[0] ?? byNumber.data?.[0] ?? null;
+    if (blocking) {
+      const matched = [blocking.morning_doc_id, blocking.doc_number].filter(
+        (v): v is string => typeof v === "string"
+      );
+      const bySeed = matched.some((v) => seedKeys.includes(v));
+      const n = docNumber ?? "זה";
       return {
         ok: false,
-        error:
-          `למסמך ${docNumber ?? "זה"} כבר קיימת שורת חיוב ישנה, ולכן הוא לא שויך. ` +
-          `כדי לא לספור את אותו סכום פעמיים, הקישור דורש טיפול ידני.`,
+        error: bySeed
+          ? // ⚠️ "כ-110" is a DATED estimate, measured 2026-09-19 (108), and it
+            // is deliberately approximate: its job is to tell the operator
+            // "this is a category, not your mistake", and being off by a few
+            // costs nothing. T21 holds the live figure; re-measure there, not
+            // here — a live COUNT on every refusal would buy precision nobody
+            // is reading for.
+            `מסמך ${n} הוא מסמך היסטורי מלפני המעבר למערכת (יולי 2026), והוא לא שויך. ` +
+            `קיים לו רישום חיוב ישן מגיליון האקסל, ושיוך עכשיו היה סופר את אותו סכום פעמיים. ` +
+            `זה לא באג ואין צורך לנסות שוב — מסמכים כאלה דורשים טיפול נפרד. יש עוד כ-110 כמותו.`
+          : `מסמך ${n} כבר רשום במערכת על עבודה אחרת, ולכן הוא לא שויך. ` +
+            `שיוך נוסף היה יוצר רישום שני לאותו חיוב. ` +
+            `יש לבדוק לאיזו עבודה הוא שייך לפני שמשייכים אותו מחדש.`,
       };
     }
   }
