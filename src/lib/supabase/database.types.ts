@@ -139,6 +139,51 @@ export type Database = {
           },
         ]
       }
+      client_morning_ids: {
+        Row: {
+          client_id: string
+          created_at: string
+          created_by: string | null
+          is_primary: boolean
+          morning_client_id: string
+          morning_name: string | null
+          note: string | null
+        }
+        Insert: {
+          client_id: string
+          created_at?: string
+          created_by?: string | null
+          is_primary?: boolean
+          morning_client_id: string
+          morning_name?: string | null
+          note?: string | null
+        }
+        Update: {
+          client_id?: string
+          created_at?: string
+          created_by?: string | null
+          is_primary?: boolean
+          morning_client_id?: string
+          morning_name?: string | null
+          note?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "client_morning_ids_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_morning_ids_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       client_review_items: {
         Row: {
           approved: boolean
@@ -1761,6 +1806,13 @@ export type Database = {
       can_manage_users: { Args: never; Returns: boolean }
       can_view_money: { Args: never; Returns: boolean }
       can_view_stages: { Args: never; Returns: boolean }
+      due_date_for: {
+        Args: {
+          base: string
+          terms: Database["public"]["Enums"]["payment_terms"]
+        }
+        Returns: string
+      }
       ensure_job_for_production: {
         Args: { p_id: string; p_reason: string }
         Returns: string

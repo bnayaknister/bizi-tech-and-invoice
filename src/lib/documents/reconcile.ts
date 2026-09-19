@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { deriveState } from "@/lib/finance/state";
 import { PAYMENT_TYPES } from "@/lib/morning/types";
+import { loadMorningIdsByClient } from "@/lib/clients/morningIds";
 
 // The reconciliation engine — the systematic bridge between "what happened"
 // (documents that exist in Morning) and "what the system knows" (jobs and
@@ -45,7 +46,21 @@ const AUTO_DATE_WINDOW = 45; // days — the ONLY place a date cutoff applies (a
 export const VAT = 1.18;
 const STALE_DAYS = 30; // "not billed" older than this
 
-export type ReconClient = { id: string; name: string | null; morning_client_id: string | null };
+/**
+ * `morning_client_ids` is F10 (0094): a client can own several Morning ids, and
+ * a document billed to any of them belongs to that client.
+ *
+ * ⚠️ OPTIONAL, and that is deliberate. `reconcile` is a pure function and the
+ * offline scripts and tests hand it ReconClient rows they build themselves —
+ * those keep working, and fall back to the single column below. A required
+ * field here would have broken every caller that is not the loader.
+ */
+export type ReconClient = {
+  id: string;
+  name: string | null;
+  morning_client_id: string | null;
+  morning_client_ids?: string[] | null;
+};
 export type ReconJob = {
   id: string;
   client_id: string | null;
@@ -162,7 +177,13 @@ function makeKeyResolvers(clients: ReconClient[]) {
     if (j.client_id) {
       keys.push("cid:" + j.client_id);
       const c = clientById.get(j.client_id);
-      if (c?.morning_client_id) keys.push("mid:" + c.morning_client_id);
+      // F10: EVERY Morning id the client owns, not just the primary — a
+      // document billed to an alias has to share a key with this client's
+      // jobs or it can never be matched to them. Falls back to the single
+      // column when `morning_client_ids` is absent, which is how the pure
+      // callers (scripts, tests) keep working unchanged.
+      const mids = c?.morning_client_ids ?? (c?.morning_client_id ? [c.morning_client_id] : []);
+      for (const mid of mids ?? []) if (mid) keys.push("mid:" + mid);
     }
     return keys;
   };
@@ -319,7 +340,7 @@ async function loadData(admin: SupabaseClient) {
   // edge, no confidence and no `certain` pair moves because of it.
   const DOC_SELECT =
     "id,morning_doc_number,type,client_id,morning_client_id,morning_client_name,amount,document_date,job_id,production_id,source,bundle_job_ids";
-  const [{ data: clients }, { data: jobs }, docs] = await Promise.all([
+  const [{ data: clients }, { data: jobs }, docs, morningIdsByClient] = await Promise.all([
     admin.from("clients").select("id,name,morning_client_id"),
     // dismissed jobs (0041) are out of reconciliation — a hidden record must
     // not get auto-matched or suggested
@@ -338,9 +359,26 @@ async function loadData(admin: SupabaseClient) {
       const plain = await admin.from("documents").select(DOC_SELECT);
       return plain.data ?? [];
     })(),
+    loadMorningIdsByClient(admin),
   ]);
+  // F10 (0094): attach every Morning id each client owns. `buildEdges` turns
+  // them into `mid:` keys, which is what lets a document billed to an alias
+  // share a key with that client's jobs.
+  //
+  // ⚠️ MEASURED BEFORE SHIPPING, on live data 2026-09-19: widening these keys
+  // changes which edges exist, and `autoReconcile` links `certain` with no
+  // human in the loop. The measurement ran the real engine twice — today's map
+  // and the alias map — and `certain`, `certainPaymentMatches` and the c2
+  // guard were all 0 → 0. The three documents the map newly resolves are all
+  // type 100, and `buildEdges` only builds edges from BILLING_TYPES, so none
+  // of them can form an edge at all. Re-measure before widening this further.
+  const withIds = ((clients ?? []) as ReconClient[]).map((c) => ({
+    ...c,
+    morning_client_ids: morningIdsByClient.get(c.id) ?? null,
+  }));
+
   return {
-    clients: (clients ?? []) as ReconClient[],
+    clients: withIds,
     jobs: (jobs ?? []) as ReconJob[],
     docs: (docs ?? []) as ReconDoc[],
   };

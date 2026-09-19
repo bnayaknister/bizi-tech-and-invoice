@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { loadMorningIdMap } from "@/lib/clients/morningIds";
 
 // Back-fill client_id on registry documents whose Morning client IS mapped to
 // one of ours, but that were pulled BEFORE that mapping existed (owner spec
@@ -24,17 +25,13 @@ export async function backfillDocumentClients(
   // mapping screen (see the three call sites above), so a retired row that
   // slipped back into a mapping would be handed documents in that very
   // request, without waiting for a pull.
-  const { data: clients } = await admin
-    .from("clients")
-    .select("id,morning_client_id")
-    .not("morning_client_id", "is", null)
-    .is("merged_into", null)
-    .order("name");
-  const byMorning = new Map<string, string>();
-  for (const c of clients ?? []) {
-    const m = c.morning_client_id as string;
-    if (!byMorning.has(m)) byMorning.set(m, c.id as string);
-  }
+  // F10: one client can own several Morning ids since 0094, and the map now
+  // lives in `loadMorningIdMap`. The warning above still applies to it word
+  // for word — this is the caller that runs the instant a client is mapped on
+  // the mapping screen, so the `merged_into` exclusion is carried inside the
+  // module rather than left to each call site to remember. The name-order
+  // first-wins tie-break moved with it, unchanged.
+  const byMorning = await loadMorningIdMap(admin);
 
   // don't resurrect archived history: an archived doc stays archived even if its
   // client later gets mapped (restore is manual). archived_at ships in 0045 — if

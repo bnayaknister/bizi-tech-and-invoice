@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { searchDocuments } from "@/lib/morning/client";
 import { autoReconcile } from "@/lib/documents/reconcile";
+import { loadMorningIdMap } from "@/lib/clients/morningIds";
 import { backfillDocumentClients } from "@/lib/documents/backfill";
 import { mustRows, type QueryResult } from "@/lib/supabase/unwrap";
 import { parseParentLink } from "@/lib/documents/parentLink";
@@ -200,16 +201,13 @@ export async function runDocumentPull(admin: SupabaseClient, opts?: { full?: boo
   // time. The marker meant to take a row out of service is what put it first
   // in line. 14 documents moved before anyone noticed. A retired row must
   // never be a resolution target, whatever it is called.
-  const { data: clients } = await admin
-    .from("clients")
-    .select("id,morning_client_id")
-    .not("morning_client_id", "is", null)
-    .is("merged_into", null)
-    .order("name");
-  const clientByMorning = new Map<string, string>();
-  for (const c of clients ?? []) {
-    if (!clientByMorning.has(c.morning_client_id as string)) clientByMorning.set(c.morning_client_id as string, c.id as string);
-  }
+  // F10: the map moved to `client_morning_ids` (0094) so one client can own
+  // several Morning ids. `loadMorningIdMap` carries BOTH rules this block used
+  // to spell inline — the `merged_into` exclusion described above, and the
+  // order-by-name first-wins tie-break that decides `2b73787f` between גל אורן
+  // and גל אורן לרנר. Neither changes here; they moved, and the module is now
+  // the only place either is written.
+  const clientByMorning = await loadMorningIdMap(admin);
 
   // one lookup (chunked in-lists): what we already hold for these ids, so we
   // don't downgrade an 'app' source or drop an already-resolved client
