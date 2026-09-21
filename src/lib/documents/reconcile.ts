@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { deriveState } from "@/lib/finance/state";
 import { PAYMENT_TYPES } from "@/lib/morning/types";
@@ -249,7 +250,17 @@ function buildEdges(clients: ReconClient[], jobs: ReconJob[], docs: ReconDoc[]) 
   const confidenceOf = (e: Edge): Confidence =>
     (degJob.get(e.jobId) ?? 0) === 1 && (degDoc.get(e.docId) ?? 0) === 1 ? "high" : "medium";
 
-  return { edges, confidenceOf, unlinkedDocs };
+  // The same two counters confidenceOf reads, handed out rather than only
+  // compared (2026-09-21, F14 stage B). `certainPaymentMatches` carries them
+  // into the fingerprint the approval screen shows, so a pair is signed with
+  // the uniqueness it was judged on and not merely with the verdict.
+  // Additive: confidenceOf is untouched and no caller's behaviour moves.
+  const degreesOf = (e: Edge): { job: number; doc: number } => ({
+    job: degJob.get(e.jobId) ?? 0,
+    doc: degDoc.get(e.docId) ?? 0,
+  });
+
+  return { edges, confidenceOf, degreesOf, unlinkedDocs };
 }
 
 // candidates sorted by confidence then closest date (the best on top)
@@ -875,29 +886,200 @@ export async function autoReconcile(admin: SupabaseClient): Promise<{ linked: nu
 // has any other candidate. Proof of payment is strong, and this business bills
 // months after recording, so date is NOT gated here — only strict uniqueness
 // (a client+amount that fits >1 job/doc, like גל אורן's twin ₪1,200 jobs, is
-// excluded and left for the bookkeeper to pick). Marking paid is money, so this
-// is never run unattended on a cron — only via the manual reconcile-payments
-// endpoint (can_edit_money).
-export type PaymentMatch = { job: ReconJob; doc: ReconDoc; amountBasis: AmountBasis; dateGapDays: number | null };
+// excluded and left for the bookkeeper to pick). Marking paid is money, so
+// nothing links these unattended: the list below is PROPOSED to a human on
+// /api/finance/payment-matches and linked one explicitly named pair at a time
+// by linkPaymentPairs (F14 stage B, owner decision 2026-09-21). There is no
+// longer any code path that links a payment without a list of pairs in hand.
+export type PaymentMatch = {
+  job: ReconJob;
+  doc: ReconDoc;
+  amountBasis: AmountBasis;
+  dateGapDays: number | null;
+  // The two edge degrees confidenceOf weighed. Always 1/1 for a match that is
+  // in this list — that IS what "high" means — and carried anyway, because the
+  // fingerprint below signs the reasoning and not only the verdict.
+  jobDegree: number;
+  docDegree: number;
+};
 export function certainPaymentMatches(clients: ReconClient[], jobs: ReconJob[], docs: ReconDoc[]): PaymentMatch[] {
   const jobById = new Map(jobs.map((j) => [j.id, j]));
   const docById = new Map(docs.map((d) => [d.id, d]));
-  const { edges, confidenceOf } = buildEdges(clients, jobs, docs);
+  const { edges, confidenceOf, degreesOf } = buildEdges(clients, jobs, docs);
   return edges
     .filter((e) => PAYMENT_TYPES.includes(docById.get(e.docId)!.type) && confidenceOf(e) === "high")
-    .map((e) => ({ job: jobById.get(e.jobId)!, doc: docById.get(e.docId)!, amountBasis: e.basis, dateGapDays: e.gap }));
+    .map((e) => {
+      const deg = degreesOf(e);
+      return {
+        job: jobById.get(e.jobId)!,
+        doc: docById.get(e.docId)!,
+        amountBasis: e.basis,
+        dateGapDays: e.gap,
+        jobDegree: deg.job,
+        docDegree: deg.doc,
+      };
+    });
 }
 
-export async function reconcileCertainPayments(
+/** The loader half, so a caller that only wants the proposals writes nothing. */
+export async function computePaymentMatches(admin: SupabaseClient): Promise<PaymentMatch[]> {
+  const { clients, jobs, docs } = await loadData(admin);
+  return certainPaymentMatches(clients, jobs, docs);
+}
+
+/**
+ * A signature over the facts the operator's decision rested on, recomputed at
+ * confirm time and compared (F14 stage B).
+ *
+ * ═══ WHAT IT IS FOR, STATED HONESTLY ═══
+ * It is a STALENESS check, not an authorization one. A can_edit_money caller
+ * can read the current fingerprint off the GET at any time, so it stops no one
+ * who is allowed to be here — the allowed-set gate in linkPaymentPairs is the
+ * protection. This turns "the row silently stopped qualifying" into a sentence
+ * the bookkeeper can read.
+ *
+ * ═══ WHICH FIELD ACTUALLY DISCRIMINATES, AND WHICH IS FOR LATER ═══
+ * Most of the drift this guards against removes the pair from the allowed set
+ * outright, and that gate fires FIRST — a doc that got a job_id, a job marked
+ * paid by hand, a second matching document arriving on a pull all fail there,
+ * never here. What reaches the comparison is the narrow case the set still
+ * admits: AN AMOUNT THAT MOVED AND STAYED INSIDE THE TOLERANCE (AMOUNT_TOL /
+ * AMOUNT_TOL_PCT). ₪1,200 edited to ₪1,205 is still an edge, still unique,
+ * still "high" — and it is no longer the row the operator approved.
+ * The two degrees are always 1/1 today for exactly the reason stated on the
+ * type above, so they discriminate NOTHING right now. They are signed anyway:
+ * if confidenceOf is ever loosened to admit a degree-2 pairing, every
+ * fingerprint issued under the old rule stops validating instead of passing in
+ * silence. That is the whole reason they are in here — do not "simplify" them
+ * out on the grounds that they are constant.
+ */
+export function paymentMatchFingerprint(m: PaymentMatch): string {
+  // A canonical string, "|"-joined: every field is a uuid, an integer, a fixed
+  // decimal or one of two Hebrew words, so none of them can contain the
+  // separator and no escaping is needed. `toFixed(2)` rather than String():
+  // 1200 and 1200.0 are the same amount and must not be two signatures.
+  const amt = (v: number | null) => (v == null ? "-" : Number(v).toFixed(2));
+  const canonical = [
+    m.doc.id,
+    m.job.id,
+    amt(m.doc.amount),
+    amt(m.job.amount),
+    String(m.doc.type),
+    m.job.paid ?? "-",
+    String(m.jobDegree),
+    String(m.docDegree),
+  ].join("|");
+  return createHash("sha256").update(canonical, "utf8").digest("hex").slice(0, 16);
+}
+
+// ---- the confirmed-pairs writer (F14 stage B) --------------------------
+export type PaymentPairInput = { docId: string; jobId: string; fingerprint: string };
+export type PaymentPairResult = {
+  docId: string;
+  jobId: string;
+  docNumber: string | null;
+  amount: number | null;
+} & (
+  | { ok: true; state: "red-closed" | "linked" | "paid" }
+  | { ok: false; reason: "not_in_set" | "stale" | "link_refused"; error: string }
+);
+
+/**
+ * Link exactly the pairs the operator approved — no more, and never the whole
+ * list (owner decision 2026-09-21; there is no "approve all").
+ *
+ * ═══ ONE loadData FOR THE WHOLE REQUEST, AND THE SET COMES FROM THE REAL
+ *     FUNCTION ═══
+ * ⚠️ RULE 55. The allowed set is `certainPaymentMatches` itself, called on the
+ * rows this function loaded — NOT a narrower question asked of the database
+ * here. `confidenceOf` counts degrees over the graph built on ALL
+ * BILLING_TYPES and the narrowing to PAYMENT_TYPES happens last; a "cheaper"
+ * confirm-time query that asked only about payment documents would build a
+ * narrow graph, manufacture a fake `high`, and approve the pair PRECISELY when
+ * it is dangerous. The cost of loading everything once is the price of the
+ * only definition of "certain" this codebase has.
+ *
+ * ═══ WHY EVERY PAIR GETS ITS OWN RESULT ═══
+ * linkDocumentToJob's four writes are not in a transaction (see its header),
+ * so N pairs are N independent links and a failure on pair 3 leaves pairs 1
+ * and 2 linked and marked paid. Reporting that batch as "failed" would tell
+ * the bookkeeper the opposite of what is on the books. So nothing aborts the
+ * loop, a throw is caught per pair, and the caller reports row by row.
+ *
+ * Two pairs in one request can never share a document or a job — both degrees
+ * are 1 for everything in the set. The same pair sent twice is not deduped: the
+ * second is refused by linkDocumentToJob with "המסמך כבר משויך ל-job", which
+ * is the honest answer rather than a silent skip.
+ */
+export async function linkPaymentPairs(
   admin: SupabaseClient,
-  actorId: string
-): Promise<{ paid: number; items: { jobId: string; docNumber: string | null; amount: number | null }[] }> {
+  actorId: string,
+  pairs: PaymentPairInput[]
+): Promise<PaymentPairResult[]> {
   const { clients, jobs, docs } = await loadData(admin);
   const matches = certainPaymentMatches(clients, jobs, docs);
-  const items: { jobId: string; docNumber: string | null; amount: number | null }[] = [];
-  for (const m of matches) {
-    const res = await linkDocumentToJob(admin, { docId: m.doc.id, jobId: m.job.id, actorId, auto: false });
-    if (res.ok) items.push({ jobId: m.job.id, docNumber: m.doc.morning_doc_number, amount: m.doc.amount });
+  const allowed = new Map(matches.map((m) => [`${m.doc.id}|${m.job.id}`, m]));
+  const docById = new Map(docs.map((d) => [d.id, d]));
+  const jobById = new Map(jobs.map((j) => [j.id, j]));
+
+  const out: PaymentPairResult[] = [];
+  for (const p of pairs) {
+    const doc = docById.get(p.docId) ?? null;
+    const job = jobById.get(p.jobId) ?? null;
+    const base = {
+      docId: p.docId,
+      jobId: p.jobId,
+      docNumber: doc?.morning_doc_number ?? null,
+      amount: doc?.amount ?? null,
+    };
+    const match = allowed.get(`${p.docId}|${p.jobId}`);
+
+    if (!match) {
+      // Say WHICH way it left the set. The rows are already in hand, so naming
+      // the cause costs nothing — and "אינו התאמה ייחודית" sends somebody
+      // hunting when the real answer is "somebody linked it an hour ago".
+      // loadData drops cancelled/archived documents and dismissed jobs
+      // entirely, so an absent row is its own (different) answer.
+      let error: string;
+      if (!doc) error = `המסמך אינו זמין יותר (בוטל, אורכב, או נמחק) — לא בוצע קישור`;
+      else if (!job) error = `העבודה אינה זמינה יותר (בוטלה או הוסרה) — לא בוצע קישור`;
+      else if (doc.job_id)
+        error = `מסמך ${doc.morning_doc_number ?? "זה"} כבר שויך לעבודה מאז שהרשימה הוצגה — לא בוצע קישור`;
+      else if (job.paid !== "לא")
+        error = `העבודה כבר מסומנת כשולמה מאז שהרשימה הוצגה — לא בוצע קישור`;
+      else
+        error =
+          `הזוג אינו התאמה ייחודית יותר — נמצאו מסמך או עבודה נוספים של אותו לקוח באותו סכום. ` +
+          `לא בוצע קישור; יש לרענן את הרשימה ולבחור מחדש.`;
+      out.push({ ...base, ok: false, reason: "not_in_set", error });
+      continue;
+    }
+
+    if (paymentMatchFingerprint(match) !== p.fingerprint) {
+      out.push({
+        ...base,
+        ok: false,
+        reason: "stale",
+        error:
+          `המצב השתנה מאז שהרשימה הוצגה — פרטי הזוג אינם זהים למה שהוצג על המסך. ` +
+          `לא בוצע קישור; יש לרענן את הרשימה ולבדוק שוב לפני אישור.`,
+      });
+      continue;
+    }
+
+    try {
+      const res = await linkDocumentToJob(admin, { docId: p.docId, jobId: p.jobId, actorId, auto: false });
+      if (res.ok) out.push({ ...base, ok: true, state: res.state });
+      else out.push({ ...base, ok: false, reason: "link_refused", error: res.error });
+    } catch (e) {
+      // A throw here must not take the rows already written down with it.
+      out.push({
+        ...base,
+        ok: false,
+        reason: "link_refused",
+        error: `הקישור נכשל: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
   }
-  return { paid: items.length, items };
+  return out;
 }

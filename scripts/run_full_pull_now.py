@@ -6,8 +6,11 @@ Runs the REAL code path against a running dev server:
   1. POST /api/documents/sync {full:true} — unbounded pull of every Morning
      document (no date window). This also runs backfill + autoReconcile at its
      tail, so auto-matching re-runs over the newly-arrived old documents.
-  2. POST /api/finance/reconcile-payments — the payment engine, so any now-
-     present receipt/מס-קבלה marks its unpaid job paid.
+  2. GET /api/finance/payment-matches — REPORT ONLY: how many receipts /
+     מס-קבלה now sit as certain matches against an unpaid job, waiting for a
+     human to approve them on the screen. Links nothing, marks nothing paid.
+     (Before F14 stage B this step POSTed the payment engine and linked the
+     whole list in a loop. It no longer can — see the comment at that step.)
 
 A temp bookkeeper is only the trigger; events + invoice rows are re-attributed
 to the OWNER afterwards and the temp user is removed (test-data-cleanup-rule).
@@ -63,14 +66,14 @@ else:
 
 em = f"fullpull-{uuid.uuid4().hex[:8]}@bizi-test.local"; pw = f"Test-{uuid.uuid4().hex}!A1"
 uid = requests.post(f"{U}/auth/v1/admin/users", headers=A, json={"email": em, "password": pw, "email_confirm": True}).json()["id"]
-# ⚠️ חולשה ידועה — הסקריפט מנפיק לעצמו את ההרשאה שאמורה להגן על המסלול.
-# ‎/api/finance/reconcile-payments (שלב [3] למטה) מוגן ב-can_edit_money, וזו
-# ההגנה היחידה שיש לו: אין לו קורא בשום מסך, ואין לו תצוגה מקדימה. השורה הבאה
-# יוצרת משתמש זמני ונותנת לו בדיוק את ההרשאה הזו — כלומר מי שמריץ את הסקריפט
-# אינו צריך להיות מורשה כספים, הכלי מייצר את ההרשאה עבורו. בהמשך הקובץ הפעולות
-# מיוחסות לבעלים והמשתמש נמחק, כך שגם העקבה של מי שבאמת הריץ אינה נשמרת.
-# זה מתועד ולא מתוקן כאן: התיקון הוא מסך אישור באפליקציה עם תצוגה מקדימה לפני
-# הקישור — F14 שלב ב'. עד אז שער האישור המוקלד בשלב [3] הוא מה שעומד במקום.
+# ⚠️ חולשה ידועה — הסקריפט מנפיק לעצמו הרשאת כספים. השורה הבאה יוצרת משתמש
+# זמני ונותנת לו can_view_money ו-can_edit_money, כלומר מי שמריץ את הסקריפט
+# אינו צריך להיות מורשה כספים — הכלי מייצר את ההרשאה עבורו. בהמשך הקובץ
+# הפעולות מיוחסות לבעלים והמשתמש נמחק, כך שגם העקבה של מי שבאמת הריץ אינה
+# נשמרת. ⚠️ זו חולשה נפרדת והיא לא נסגרה ב-F14 שלב ב׳.
+# מה שכן השתנה: שלב [3] אינו מקשר עוד דבר, ו-POST /api/finance/reconcile-payments
+# אינו מקשר בלי רשימת זוגות מפורשת שאדם אישר — כלומר ההרשאה שמונפקת כאן כבר
+# אינה מספיקה כדי לסמן עבודה כשולמה. שלב [1] (המשיכה) עדיין דורש אותה.
 requests.patch(rest(f"profiles?id=eq.{uid}"), headers={**A, "Prefer": "return=representation"},
                json={"name": "ZTESTFULLPULL", "approved": True, "role": "bookkeeper", "can_view_money": True, "can_edit_money": True})
 td = requests.post(f"{U}/auth/v1/token?grant_type=password", headers={"apikey": AN, "Content-Type": "application/json"},
@@ -91,26 +94,26 @@ try:
                          json={"full": True}, timeout=600).json()
     print("    summary:", json.dumps(pull, ensure_ascii=False))
 
-    print("\n" + "=" * 70)
-    print("⚠️  עצור וקרא לפני שלב [3].")
-    print("=" * 70)
-    print("השלב הבא מריץ את מנוע התשלומים על המסד החי:")
-    print("  · הוא מקשר מסמכי תשלום (קבלה / מס-קבלה) לעבודות.")
-    print("  · הוא מסמן את אותן עבודות כ\"שולם\" — כלומר החוב על המסך יורד.")
-    print("  · ההתאמה נשענת על לקוח וסכום בלבד. אין לה חלון תאריכים.")
-    print("  · אין תצוגה מקדימה — הוא מקשר את כל ההתאמות מיד, בלולאה.")
-    print("  · הפעולה אינה הפיכה: אין כפתור ביטול ואין פונקציית ניתוק.")
-    print("    תיקון של קישור שגוי דורש שאילתה ידנית במסד, ובעבר גם מיגרציה.")
-    print("המשיכה של שלב [1] כבר בוצעה ואינה מושפעת מהבחירה כאן.")
-    print("=" * 70)
-    if input('להמשך הקלד את המילה "לקשר" (כל קלט אחר ידלג על השלב): ').strip() == "לקשר":
-        print("\n[3] payment engine  POST /api/finance/reconcile-payments …")
-        pay = requests.post(f"{APP}/api/finance/reconcile-payments", cookies=ck, timeout=300).json()
-        print(f"    marked {pay.get('paid')} jobs paid")
-        for it in pay.get("items", []):
-            print(f"      ✓ {it['amount']}₪ <- receipt #{it['docNumber']}")
+    # [3] REPORT ONLY (F14 stage B, 2026-09-21). This step used to POST an empty
+    # body to /api/finance/reconcile-payments, which linked every certain
+    # payment match in a loop and marked those jobs paid — inside a routine
+    # whose purpose is a PULL, with no flag and no argument, so every run of
+    # this file reached it. On 2026-09-19 a typed gate (`input()` demanding the
+    # word "לקשר") was put in front of it as a stopgap; it is removed here
+    # because the thing it was standing in for now exists. The endpoint refuses
+    # to link without an explicit list of approved pairs, and approving happens
+    # on the screen. A pull no longer marks anything paid, under any answer to
+    # any prompt.
+    print("\n[3] payment matches  GET /api/finance/payment-matches …")
+    mres = requests.get(f"{APP}/api/finance/payment-matches", cookies=ck, timeout=300)
+    if mres.status_code != 200:
+        print(f"    ⚠️ {mres.status_code}: {mres.text[:200]}")
     else:
-        print("\n[3] דולג. לא בוצע שום קישור ושום סימון.")
+        found = mres.json().get("matches", [])
+        print(f"    נמצאו {len(found)} תשלומים הממתינים לאישור במסך הפערים")
+        for m in found:
+            print(f"      · #{m['docNumber']} ({m['docTypeLabel']}) {m['docAmount']}₪ · {m['clientName']} -> {m['jobLabel']}")
+        print("    לא בוצע שום קישור ושום סימון — אישור נעשה במסך, שורה-שורה.")
 
     # re-attribute anything the temp user created, then report after-state
     requests.patch(rest(f"events?actor_id=eq.{uid}"), headers=A, json={"actor_id": OWNER})

@@ -1,14 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-Group A run (owner instruction 2026-07-27): reconcile the already-paid jobs.
-Hits the real /api/finance/reconcile-payments so autoReconcile's payment
-engine marks every UNIQUE 1:1 payment match (unpaid job + unlinked receipt,
-same client+amount) as paid. Ambiguous matches (client+amount that fit >1 job)
-are deliberately left for Shiri.
+READ ONLY. Prints exactly what the payment engine WOULD link right now, and
+links nothing.
 
-A temp bookkeeper is only the trigger; the resulting events + invoice rows are
-re-attributed to the OWNER afterwards, so the record is honest and the temp
-user is removed cleanly. Reports debt + VU-red (>60d overdue) before/after.
+This file used to be the group-A run (owner instruction 2026-07-27): it POSTed
+an empty body to /api/finance/reconcile-payments, which linked every certain
+payment match in a loop and marked those jobs paid — no preview, no per-row
+decision, no undo. F14 stage B (2026-09-21) split that endpoint in two: the
+proposals now come from GET /api/finance/payment-matches, and the POST refuses
+anything but an explicit list of pairs a human approved. Approving is done on
+the screen, not from here.
+
+So what is left of this script is the thing rule 55 already demanded be run
+before any change to the payment engine: the reconstruction query. Empty = no
+blood, work in peace. Not empty = this is what is about to happen, row by row.
+
+  Run:  python3 scripts/reconcile_payments_now.py
+
+Writes nothing: no link, no mark-paid, no event, no invoices row. The only rows
+it creates are the temp trigger user's, deleted in finally and verified.
 """
 import base64, json, os, sys, time, uuid
 from datetime import datetime, date
@@ -23,7 +33,6 @@ U = os.environ["NEXT_PUBLIC_SUPABASE_URL"]; AN = os.environ["NEXT_PUBLIC_SUPABAS
 APP = os.environ.get("TEST_APP_URL", "http://localhost:3000")
 A = {"apikey": SK, "Authorization": f"Bearer {SK}", "Content-Type": "application/json"}
 ref = U.split("//")[1].split(".")[0]; CN = f"sb-{ref}-auth-token"
-OWNER = "432bc1cc-b71b-4d68-9037-3e6384612510"  # bnayaknister@gmail.com
 
 
 def rest(p): return f"{U}/rest/v1/{p}"
@@ -49,18 +58,15 @@ for _ in range(90):
 else:
     print("dev server never came up"); sys.exit(1)
 
-clients = {c["id"]: c["name"] for c in requests.get(rest("clients?select=id,name"), headers=A).json()}
-
 em = f"paynow-{uuid.uuid4().hex[:8]}@bizi-test.local"; pw = f"Test-{uuid.uuid4().hex}!A1"
 uid = requests.post(f"{U}/auth/v1/admin/users", headers=A, json={"email": em, "password": pw, "email_confirm": True}).json()["id"]
-# ⚠️ חולשה ידועה — הסקריפט מנפיק לעצמו את ההרשאה שאמורה להגן על המסלול.
-# ‎/api/finance/reconcile-payments מוגן ב-can_edit_money, וזו ההגנה היחידה שיש
-# לו: אין לו קורא בשום מסך, ואין לו תצוגה מקדימה. השורה הבאה יוצרת משתמש זמני
-# ונותנת לו בדיוק את ההרשאה הזו — כלומר מי שמריץ את הסקריפט אינו צריך להיות
-# מורשה כספים, הכלי מייצר את ההרשאה עבורו. בהמשך הקובץ הפעולות מיוחסות לבעלים
-# והמשתמש נמחק, כך שגם העקבה של מי שבאמת הריץ אינה נשמרת.
-# זה מתועד ולא מתוקן כאן: התיקון הוא מסך אישור באפליקציה עם תצוגה מקדימה לפני
-# הקישור — F14 שלב ב'. עד אז שער האישור המוקלד שלמטה הוא מה שעומד במקום.
+# ⚠️ חולשה ידועה — הסקריפט מנפיק לעצמו הרשאת כספים.
+# השורה הבאה יוצרת משתמש זמני ונותנת לו can_view_money ו-can_edit_money —
+# כלומר מי שמריץ את הסקריפט אינו צריך להיות מורשה כספים, הכלי מייצר את ההרשאה
+# עבורו, ובסוף מוחק את המשתמש כך שלא נשארת עקבה של מי שבאמת הריץ.
+# ⚠️ זו חולשה נפרדת והיא לא נסגרה ב-F14 שלב ב׳. מה שכן השתנה: הסקריפט הזה אינו
+# כותב עוד דבר, ו-POST /api/finance/reconcile-payments אינו מקשר בלי רשימת
+# זוגות מפורשת — כלומר ההרשאה שמונפקת כאן כבר אינה מספיקה כדי לקשר תשלומים.
 requests.patch(rest(f"profiles?id=eq.{uid}"), headers={**A, "Prefer": "return=representation"}, json={"name": "ZTESTPAYNOW", "approved": True, "role": "bookkeeper", "can_view_money": True, "can_edit_money": True})
 td = requests.post(f"{U}/auth/v1/token?grant_type=password", headers={"apikey": AN, "Content-Type": "application/json"}, json={"email": em, "password": pw}).json()
 sess = {"access_token": td["access_token"], "token_type": "bearer", "expires_in": 3600, "expires_at": int(time.time()) + 3600, "refresh_token": td["refresh_token"], "user": td["user"]}
@@ -68,36 +74,28 @@ ck = {CN: "base64-" + base64.urlsafe_b64encode(json.dumps(sess).encode()).decode
 
 try:
     d0, n0, r0, rc0 = debt_and_red()
-    print(f"BEFORE:  debt={d0:,.0f} ({n0} unpaid) · VU-red(>60d)={r0:,.0f} ({rc0} jobs)")
+    print(f"debt={d0:,.0f} ({n0} unpaid) · VU-red(>60d)={r0:,.0f} ({rc0} jobs)")
 
-    print("\n" + "=" * 70)
-    print("⚠️  עצור וקרא לפני שתמשיך.")
-    print("=" * 70)
-    print("הפעולה הבאה מריצה את מנוע התשלומים על המסד החי:")
-    print("  · היא מקשרת מסמכי תשלום (קבלה / מס-קבלה) לעבודות.")
-    print("  · היא מסמנת את אותן עבודות כ\"שולם\" — כלומר החוב על המסך יורד.")
-    print("  · ההתאמה נשענת על לקוח וסכום בלבד. אין לה חלון תאריכים.")
-    print("  · אין תצוגה מקדימה — היא מקשרת את כל ההתאמות מיד, בלולאה.")
-    print("  · הפעולה אינה הפיכה: אין כפתור ביטול ואין פונקציית ניתוק.")
-    print("    תיקון של קישור שגוי דורש שאילתה ידנית במסד, ובעבר גם מיגרציה.")
-    print("=" * 70)
-    if input('להמשך הקלד את המילה "לקשר" (כל קלט אחר יבטל): ').strip() != "לקשר":
-        print("בוטל. לא בוצע שום קישור ושום סימון.")
-        raise SystemExit(0)
+    resp = requests.get(f"{APP}/api/finance/payment-matches", cookies=ck, timeout=120)
+    if resp.status_code != 200:
+        print(f"GET /api/finance/payment-matches -> {resp.status_code}: {resp.text[:300]}")
+        sys.exit(1)
+    matches = resp.json().get("matches", [])
 
-    resp = requests.post(f"{APP}/api/finance/reconcile-payments", cookies=ck, timeout=120).json()
-    print(f"\nreconcile-payments: marked {resp.get('paid')} jobs paid")
-    for it in resp.get("items", []):
-        cn = clients.get(requests.get(rest(f"jobs?id=eq.{it['jobId']}&select=client_id,campaign"), headers=A).json()[0]["client_id"], "?")
-        print(f"  ✓ {cn}  {it['amount']}₪  <- receipt #{it['docNumber']}")
-
-    # re-attribute the marks to the owner, then drop the temp trigger user
-    requests.patch(rest(f"events?actor_id=eq.{uid}"), headers=A, json={"actor_id": OWNER})
-    requests.patch(rest(f"invoices?issued_by=eq.{uid}"), headers=A, json={"issued_by": OWNER})
-
-    d1, n1, r1, rc1 = debt_and_red()
-    print(f"\nAFTER:   debt={d1:,.0f} ({n1} unpaid) · VU-red(>60d)={r1:,.0f} ({rc1} jobs)")
-    print(f"debt dropped {d0-d1:,.0f} · VU-red dropped {r0-r1:,.0f}")
+    print("\n" + "=" * 78)
+    print(f"payment matches awaiting approval: {len(matches)}")
+    print("=" * 78)
+    if not matches:
+        # The state measured four times on 2026-09-19 and expected to hold.
+        print("אפס התאמות. המנוע לא היה מקשר דבר גם אילו רץ.")
+    for m in matches:
+        print(f"\n  doc #{m['docNumber']} ({m['docTypeLabel']}) {m['docAmount']}₪  {m['docDate']}  · {m['clientName']}")
+        print(f"  ->  job {m['jobLabel']}  {m['jobAmount']}₪  {m['jobDate']}")
+        gap = "תאריך לא ידוע" if m["dateGapDays"] is None else f"{m['dateGapDays']} יום פער"
+        print(f"      {m['amountBasisLabel']} · {gap} · fingerprint {m['fingerprint']}")
+    print("\n" + "=" * 78)
+    print("לא בוצע שום קישור ושום סימון. אישור נעשה במסך, שורה-שורה.")
+    print("=" * 78)
 finally:
     requests.delete(f"{U}/auth/v1/admin/users/{uid}", headers=A)
     left = requests.get(rest("profiles?name=like.*ZTESTPAYNOW*&select=id"), headers=A).json()
