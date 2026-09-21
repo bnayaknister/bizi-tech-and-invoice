@@ -152,7 +152,12 @@ try:
         check("1b. heading present with its count", "תשלומים לאישור (1)" in body, heading.strip())
         check("1c. the seeded document number is on screen", docnum in body)
         check("1d. the client is on screen", "ZTESTBROWSE" in body)
-        check("1e. the intro text is on screen", "שום דבר לא נכתב לפני אישור" in body)
+        # counted, not just present: the paragraph was rendered TWICE from
+        # 21.9 to 22.9 (it sat in both the body and its container) and every
+        # `in` assertion here stayed green through it. Found by eye.
+        check("1e. the intro text is on screen exactly once",
+              body.count("שום דבר לא נכתב לפני אישור") == 1,
+              f"appeared {body.count('שום דבר לא נכתב לפני אישור')} times")
         check("1f. the date-gap explanation is on screen", "ההתאמה לא בודקת תאריכים" in body)
         for col in ["סכום המסמך", "תאריך המסמך", "סכום העבודה", "תאריך העבודה", "פער בימים", "בסיס"]:
             check(f"1g. column '{col}'", col in body)
@@ -185,8 +190,12 @@ try:
         check("3b. job paid=כן", job_state(jid) == "כן", job_state(jid))
         check("3c. document linked to the job", doc_job(did) == jid)
         check("3d. still no page/console errors", errs == [], " · ".join(errs[:3]))
+        # Owner decision 2026-09-22: with nothing left to approve the block
+        # VANISHES, exactly as gap1/gap2/gap3 do — heading and all. It must not
+        # leave a "nothing here" sentence stacked above the global card.
         after = page.inner_text("body")
-        check("3e. the empty sentence is now shown", "אין כרגע תשלומים שממתינים לאישור" in after)
+        check("3e. the whole block is gone — heading included", "תשלומים לאישור" not in after)
+        check("3f. and it left no empty sentence behind", "אין כרגע תשלומים" not in after)
         ctx.close()
 
         # ---- 4. a view-only user sees the list and no button --------------

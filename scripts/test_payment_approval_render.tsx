@@ -82,11 +82,17 @@ const list = (rows: PaymentMatch[], canEdit = true, refused: Record<string, stri
   );
 
 console.log("\n1. the four real states");
-check("empty list renders the owner's empty sentence", () => {
+// Changed 2026-09-22 by owner decision: the block VANISHES when empty, the way
+// gap1/gap2/gap3 do, and its own empty sentence was removed with it — two
+// "nothing here" messages stacked was the thing being fixed. The container
+// returns null; this asserts the body cannot produce one either.
+check("an empty list draws no table and no sentence of its own", () => {
   const html = list([]);
-  assert(html.includes("אין כרגע תשלומים שממתינים לאישור"), "empty sentence missing");
-  assert(html.includes("ולא תקושר לפני אישור"), "empty sentence truncated");
   assert(!html.includes("<table"), "a table was drawn for an empty list");
+  assert(
+    !html.includes("אין כרגע תשלומים"),
+    "the block announced its own emptiness — it must vanish instead, or it stacks above the global card"
+  );
 });
 
 check("one row renders every column", () => {
@@ -111,7 +117,7 @@ check("one row renders every column", () => {
   assert(html.includes("סכום מדויק כולל מע״מ"), "amount basis missing");
 });
 
-check("the explanatory text is present, in full", () => {
+check("the explanatory text is present, in full, and EXACTLY ONCE", () => {
   const html = list([row()]);
   for (const line of [
     "המערכת מצאה מסמכי תשלום",
@@ -120,7 +126,14 @@ check("the explanatory text is present, in full", () => {
     "ההתאמה לא בודקת תאריכים",
     "הפער בימים מוצג בעמודה, לשיקולכם",
   ]) {
-    assert(html.includes(line), `intro line missing: ${line}`);
+    const n = html.split(line).length - 1;
+    assert(n > 0, `intro line missing: ${line}`);
+    // ⚠️ THE COUNT, NOT JUST THE PRESENCE. The paragraph sat in both this body
+    // and its container from 2026-09-21 to 2026-09-22 and rendered twice on
+    // screen. Every assertion here was `includes`, which a duplicate satisfies
+    // exactly as well as a single copy, so the suite stayed green through it
+    // and so did the browser suite. Found by eye. Counting is the fix.
+    assert(n === 1, `intro line rendered ${n} times, expected once: ${line}`);
   }
 });
 
@@ -140,8 +153,10 @@ check("view only: the list is drawn and the button is NOT", () => {
   assert(html.includes("סבטלנה ניקסון"), "the row itself must still be visible");
   assert(!html.includes("אישור — קישור וסימון"), "approve button leaked to a view-only user");
 });
-check("view only on an empty list still shows the empty sentence", () => {
-  assert(list([], false).includes("אין כרגע תשלומים שממתינים לאישור"), "empty sentence missing");
+check("view only on an empty list also draws no table", () => {
+  const html = list([], false);
+  assert(!html.includes("<table"), "a table was drawn for an empty list");
+  assert(!html.includes("אין כרגע תשלומים"), "empty sentence came back");
 });
 
 console.log("\n3. the document number is isolated LTR");

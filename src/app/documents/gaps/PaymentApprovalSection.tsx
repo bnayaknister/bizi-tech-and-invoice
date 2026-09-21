@@ -112,11 +112,10 @@ export function PaymentApprovalBody({
         ההתאמה לא בודקת תאריכים — במכוון, כי החיוב מגיע לפעמים חודשים אחרי ההקלטה. הפער בימים מוצג בעמודה, לשיקולכם.
       </p>
 
-      {rows.length === 0 ? (
-        <div className="text-center text-xs text-[var(--faint)] py-8 border border-dashed border-[var(--rule)] rounded-2xl px-4 leading-relaxed">
-          אין כרגע תשלומים שממתינים לאישור. כשתיכנס קבלה שמתאימה לעבודה פתוחה, היא תופיע כאן — ולא תקושר לפני אישור.
-        </div>
-      ) : (
+      {/* No empty branch: the section never renders without rows (see the
+          container), exactly as the other three blocks vanish rather than each
+          announcing its own emptiness. One global card covers all-empty. */}
+      {rows.length > 0 && (
         <div className="overflow-x-auto border border-[var(--rule)] rounded-2xl">
           <table className="w-full text-[11px] whitespace-nowrap">
             <thead className="text-[var(--faint)] border-b border-[var(--rule)]">
@@ -298,30 +297,39 @@ export default function PaymentApprovalSection({
     }
   }
 
-  if (rows === null) {
-    return (
-      <section className="mb-8">
-        <h2 className="text-sm font-bold mb-2">תשלומים לאישור</h2>
-        <div className="text-xs text-[var(--faint)] py-6 text-center">טוען…</div>
-      </section>
-    );
-  }
+  // ═══ NOTHING TO APPROVE → NOTHING ON SCREEN ═══
+  // The other three blocks are `{vN.length > 0 && <section>}`: they vanish
+  // rather than each announcing its own emptiness, and a single card in
+  // GapsClient says "אין פערים פתוחים" once for all of them. `payCount`
+  // already feeds that card's total, so this block joins that arrangement
+  // instead of stacking a second "nothing here" sentence above it.
+  //
+  // The loading state vanishes too. This list is empty on almost every load
+  // (live count 0, measured five times), so a "טוען…" box that appears and
+  // then removes itself would flicker on every single visit — where the other
+  // three, being server-rendered, never do. The block appears only when it has
+  // something to say.
+  //
+  // An error is the exception and must NOT vanish: a block that failed to load
+  // and shows nothing is indistinguishable from "no payments are waiting",
+  // which is the precise sentence this whole ticket exists to stop the screen
+  // from saying when it isn't true.
+  if (loadErr === null && (rows === null || visible.length === 0)) return null;
 
   return (
     <section className="mb-8">
       <h2 className="text-sm font-bold mb-2 flex items-center gap-2">
-        <span className="text-[var(--green)]">●</span> תשלומים לאישור ({visible.length})
+        {/* --warn, the same token gap2 and gap3 use. Green read as "all fine";
+            this is a block that is asking for a decision. */}
+        <span className="text-[var(--warn)]">●</span> תשלומים לאישור ({visible.length})
       </h2>
 
-      <p className="text-[11px] text-[var(--faint)] mb-3 leading-relaxed">
-        המערכת מצאה מסמכי תשלום (קבלה או חשבונית מס/קבלה) שמתאימים לעבודות שעדיין לא סומנו כשולמו — אותו לקוח, אותו
-        סכום, והתאמה יחידה משני הצדדים.
-        <br />
-        שום דבר לא נכתב לפני אישור. אישור שורה מקשר את המסמך לעבודה ומסמן אותה {"״שולם״"}, ואין לכך כפתור ביטול במסך.
-        <br />
-        ההתאמה לא בודקת תאריכים — במכוון, כי החיוב מגיע לפעמים חודשים אחרי ההקלטה. הפער בימים מוצג בעמודה, לשיקולכם.
-      </p>
-
+      {/* The explanatory paragraph lives in PaymentApprovalBody, NOT here. It
+          was in both until 2026-09-22 and rendered twice on screen; neither
+          suite caught it, because both asserted with `includes` on a substring
+          and a duplicate satisfies that just as well as a single copy. It stays
+          in the body so the owner's exact wording is under the render test —
+          the container cannot be render-tested, it fetches. */}
       {loadErr && (
         <div className="mb-3 text-xs text-[var(--red)] border border-[var(--red)] rounded-xl px-3 py-2">{loadErr}</div>
       )}
