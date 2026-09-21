@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useDrawer } from "@/components/EntityDrawer";
 import { confidenceLabel } from "@/lib/documents/confidence";
 import type { Confidence, AmountBasis } from "@/lib/documents/reconcile";
+import PaymentApprovalSection from "./PaymentApprovalSection";
 
 type Conf = { confidence: Confidence; amountBasis: AmountBasis; dateGapDays: number | null };
 export type DocCandidate = { docId: string; number: string | null; typeLabel: string; amount: number | null; date: string | null } & Conf;
@@ -54,6 +55,9 @@ export default function GapsClient({
   const [doneDocs, setDoneDocs] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // The fourth block loads itself (it reads /api/finance/payment-matches), so
+  // it reports its count up rather than arriving counted like the other three.
+  const [payCount, setPayCount] = useState(0);
 
   async function assign(docId: string, jobId: string, hideKey: { job?: string; doc?: string }) {
     setBusy(docId + jobId);
@@ -82,7 +86,11 @@ export default function GapsClient({
   const v1 = gap1.filter((r) => !doneJobs.has(r.jobId));
   const v2 = gap2.filter((r) => !doneDocs.has(r.docId));
   const v3 = gap3.filter((r) => !doneJobs.has(r.jobId));
-  const total = v1.length + v2.length + v3.length;
+  // Payments count here too. The wording is untouched; the arithmetic has to
+  // include them or the header says "אין כרגע פערים פתוחים" over a payment
+  // waiting to be approved — on the one screen whose whole job is not to say
+  // that.
+  const total = v1.length + v2.length + v3.length + payCount;
 
   return (
     <main className="max-w-4xl mx-auto p-6">
@@ -223,6 +231,9 @@ export default function GapsClient({
           </div>
         </section>
       )}
+
+      {/* Payment matches — proposed by the engine, linked only on approval */}
+      <PaymentApprovalSection canEdit={canEdit} onCount={setPayCount} />
 
       {total === 0 && (
         <div className="text-center text-sm text-[var(--faint)] py-12 border border-dashed border-[var(--rule)] rounded-2xl">

@@ -60,14 +60,15 @@ else:
 
 em = f"paynow-{uuid.uuid4().hex[:8]}@bizi-test.local"; pw = f"Test-{uuid.uuid4().hex}!A1"
 uid = requests.post(f"{U}/auth/v1/admin/users", headers=A, json={"email": em, "password": pw, "email_confirm": True}).json()["id"]
-# ⚠️ חולשה ידועה — הסקריפט מנפיק לעצמו הרשאת כספים.
-# השורה הבאה יוצרת משתמש זמני ונותנת לו can_view_money ו-can_edit_money —
-# כלומר מי שמריץ את הסקריפט אינו צריך להיות מורשה כספים, הכלי מייצר את ההרשאה
-# עבורו, ובסוף מוחק את המשתמש כך שלא נשארת עקבה של מי שבאמת הריץ.
-# ⚠️ זו חולשה נפרדת והיא לא נסגרה ב-F14 שלב ב׳. מה שכן השתנה: הסקריפט הזה אינו
-# כותב עוד דבר, ו-POST /api/finance/reconcile-payments אינו מקשר בלי רשימת
-# זוגות מפורשת — כלומר ההרשאה שמונפקת כאן כבר אינה מספיקה כדי לקשר תשלומים.
-requests.patch(rest(f"profiles?id=eq.{uid}"), headers={**A, "Prefer": "return=representation"}, json={"name": "ZTESTPAYNOW", "approved": True, "role": "bookkeeper", "can_view_money": True, "can_edit_money": True})
+# ⚠️ חולשה ידועה — הסקריפט מנפיק לעצמו הרשאת כספים. השורה הבאה יוצרת משתמש
+# זמני ונותנת לו הרשאה, כלומר מי שמריץ את הסקריפט אינו צריך להיות מורשה כספים,
+# הכלי מייצר את ההרשאה עבורו, ובסוף מוחק את המשתמש כך שלא נשארת עקבה של מי
+# שבאמת הריץ. ⚠️ זו חולשה נפרדת והיא לא נסגרה ב-F14 שלב ב׳.
+# מה שכן צומצם: הסקריפט הזה קורא בלבד, ולכן הוא מנפיק לעצמו can_view_money
+# ותו לא — **בלי can_edit_money**. גם אילו היה מנפיק אותה, היא כבר לא הייתה
+# מספיקה: POST /api/finance/reconcile-payments אינו מקשר בלי רשימת זוגות
+# מפורשת שאדם אישר במסך.
+requests.patch(rest(f"profiles?id=eq.{uid}"), headers={**A, "Prefer": "return=representation"}, json={"name": "ZTESTPAYNOW", "approved": True, "role": "bookkeeper", "can_view_money": True, "can_edit_money": False})
 td = requests.post(f"{U}/auth/v1/token?grant_type=password", headers={"apikey": AN, "Content-Type": "application/json"}, json={"email": em, "password": pw}).json()
 sess = {"access_token": td["access_token"], "token_type": "bearer", "expires_in": 3600, "expires_at": int(time.time()) + 3600, "refresh_token": td["refresh_token"], "user": td["user"]}
 ck = {CN: "base64-" + base64.urlsafe_b64encode(json.dumps(sess).encode()).decode().rstrip("=")}
