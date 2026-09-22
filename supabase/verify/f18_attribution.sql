@@ -7,6 +7,12 @@
 -- migration and must never become one — it is a question, asked repeatedly,
 -- not a change.
 --
+-- ═══ LAST RUN: 2026-09-22 ═══
+-- A2's falsifiable prediction came back 2·1·1·2·2 = 8, exactly as the ledger
+-- had written it. The result is recorded in docs/TICKETS.md (F18) and in the
+-- A2 comment below. Nothing was corrected in the database — the F18 ruling
+-- stands: the history is recorded, never rewritten.
+--
 -- ⚠️ TIMEZONE. created_at is timestamptz and the SQL Editor renders UTC. The
 -- dates recorded in F18's ledger are UTC for that reason. Israel local is
 -- UTC+3 in summer — a run logged at 21:49 UTC is 00:49 the NEXT DAY locally,
@@ -66,11 +72,19 @@ union all
 --   2 pulls  -> test_documents_pull.py (a test, run against the live DB)
 --   1 pull   -> a one-off script
 --
--- F18's ledger predicts, from the git timestamps alone:
+-- F18's ledger predicted, from the git timestamps alone:
 --   53b2e790 (20.7) = 2 · 67b846a6 (26.7) = 1 · 9d09382d (27.7) = 1
 --   dad68133 (23.8) = 2 · 502f1b04 (23.8) = 2      → 8 total
--- If the real counts differ, the ledger's attribution is wrong and should be
--- corrected there. This is the falsifiable half of it.
+--
+-- ✅ RUN AGAINST THE DATABASE 2026-09-22: 2 · 1 · 1 · 2 · 2, exactly as
+-- written above. The prediction was published before the counts were read,
+-- and it held. So the attribution is no longer an inference from timing
+-- alone — the SHAPE of each run corroborates which tool made it:
+--   2 pulls -> 20.7 · 23.8 14:09 · 23.8 14:23 — tests, run against the live
+--              DB (test_documents_pull.py pulls twice per run)
+--   1 pull  -> 26.7 = close_certain_matches.py · 27.7 = run_full_pull_now.py
+-- A future run that returns a different count means either something new has
+-- pulled under a since-deleted user, or the ledger needs correcting.
 select 'A2 · pulls per deleted user',
        'first ' || to_char(min(e.created_at), 'DD.MM HH24:MI') ||
        ' · last ' || to_char(max(e.created_at), 'DD.MM HH24:MI'),
@@ -113,6 +127,9 @@ union all
 -- ordinary work. The one burst that mattered was 2026-07-26 21:49 — 12
 -- document_reconciled + job_marked_paid events in a minute, which git dates to
 -- the first and only run of the old reconcile_payments_now.py.
+-- 12 events = 6 payment links (each link writes two), from that single run in
+-- its ORIGINAL version, against the old endpoint that linked everything in a
+-- loop. Explained, not a mystery — see F18's ledger.
 select 'C · event burst on one name (SKIM, not a finding)',
        array_to_string(array_agg(distinct e.event_type), ', '),
        date_trunc('minute', e.created_at),
