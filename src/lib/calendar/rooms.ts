@@ -85,3 +85,33 @@ export function roomsInTitle(title: string, studios: Studio[]): string[] {
   }
   return found;
 }
+
+/**
+ * The room a show's `default_studio` column preselects — or null.
+ *
+ * Null, deliberately, for all three of these:
+ *   TLV              a real room, recognised everywhere, NOT bookable. A client
+ *                    must never be handed it, so a TLV default preselects
+ *                    nothing rather than falling back to another room.
+ *   NULL             92 of 113 shows carried no default at the 0095 verification
+ *                    (owner's count, 2026-09-22). This is the common case, not
+ *                    the edge one.
+ *   anything else    a spelling 0095 did not normalise, or a value written since.
+ *                    Guessing would preselect the wrong studio, and a preselected
+ *                    wrong answer is worse than an empty select the client must
+ *                    fill in themselves.
+ *
+ * Variants are accepted as well as canonical names, so a row still holding
+ * "גבעון בחוץ" resolves to גבעון גדול exactly as a calendar title would — the
+ * data and the parser agreeing is what 0095 was for.
+ */
+export function bookableRoomForDefault(defaultStudio: string | null | undefined, studios: Studio[]): string | null {
+  const value = (defaultStudio ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!value) return null;
+  for (const s of studios) {
+    if (!s.bookable) continue; // TLV lands here and returns null below
+    const names = [s.canonical, ...s.variants].map((v) => v.replace(/\s+/g, " ").trim().toLowerCase());
+    if (names.includes(value)) return s.canonical;
+  }
+  return null;
+}

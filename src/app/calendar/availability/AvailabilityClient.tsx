@@ -2,17 +2,19 @@
 
 import { useCallback, useEffect, useState } from "react";
 import AvailabilityBody, {
-  type FreeSlot,
   type Refused,
+  type Show,
   type Skipped,
   type UnknownBlock,
 } from "./AvailabilityBody";
+import { monthOf, monthsInWindow, sameMonth, type FreeSlot, type Month } from "./booking";
 
 /**
- * The container: owns the fetch and the step selector, and nothing else.
- * AvailabilityBody holds every sentence and every cell and is pure, so the
- * render suite can reach all of its states (see the note at the top of that
- * file — renderToString runs no effects).
+ * The container: owns the fetch and all six selections, and nothing else.
+ * AvailabilityBody holds every sentence and every cell and is pure.
+ *
+ * `shows` arrives as a prop from the server page, which read it — this component
+ * never queries anything but the availability route.
  */
 
 type Payload = {
@@ -27,19 +29,25 @@ type Payload = {
   skipped: Skipped[];
 };
 
-export default function AvailabilityClient() {
+export default function AvailabilityClient({ shows }: { shows: Show[] }) {
   const [step, setStep] = useState<30 | 90>(30);
   const [data, setData] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [showId, setShowId] = useState<string | null>(shows[0]?.id ?? null);
+  const [room, setRoom] = useState<string | null>(shows[0]?.defaultRoom ?? null);
+  const [date, setDate] = useState<string | null>(null);
+  const [start, setStart] = useState<string | null>(null);
+  const [month, setMonth] = useState<Month | null>(null);
+  const [warningsOpen, setWarningsOpen] = useState(false);
+
   const load = useCallback(async (s: 30 | 90) => {
     setLoading(true);
     setError(null);
-    // ⚠️ the previous answer is DROPPED before the new request, not kept as a
-    // placeholder. Holding it would leave a 30-minute grid on screen while the
-    // 90-minute one loads, or — worse — leave real slots visible if the reload
-    // fails. Availability that is no longer confirmed must not be on screen.
+    // The previous answer is DROPPED before the new request, never kept as a
+    // placeholder: a 30-minute grid left on screen while the 90-minute one loads
+    // is wrong, and slots left visible after a failed reload are worse.
     setData(null);
     try {
       const res = await fetch(`/api/calendar/availability?step=${s}`, { cache: "no-store" });
@@ -59,6 +67,41 @@ export default function AvailabilityClient() {
     void load(step);
   }, [step, load]);
 
+  // The visible month follows the window, not the wall clock: `from` is
+  // tomorrow, so the window's first month is the only sensible opening view.
+  // Re-clamped when the payload changes so a month left over from a previous
+  // step can never sit outside the new window.
+  useEffect(() => {
+    if (!data) return;
+    const months = monthsInWindow(data.fromIsrael, data.toIsrael);
+    setMonth((current) => (current && months.some((m) => sameMonth(m, current)) ? current : monthOf(data.fromIsrael)));
+  }, [data]);
+
+  /** Changing the show re-applies ITS default room, and clears the picks. */
+  const onShowChange = useCallback(
+    (id: string) => {
+      setShowId(id);
+      setRoom(shows.find((s) => s.id === id)?.defaultRoom ?? null);
+      setDate(null);
+      setStart(null);
+    },
+    [shows]
+  );
+
+  /**
+   * Changing the room clears the day AND the hour.
+   *
+   * Both, and that is the point: a day that is free in גבעון is routinely busy
+   * in חשמונאים, and an hour even more so. Keeping either would leave a summary
+   * card asserting a slot that was never free in the newly chosen room — the one
+   * failure on this screen that a client would act on.
+   */
+  const onRoomChange = useCallback((next: string) => {
+    setRoom(next);
+    setDate(null);
+    setStart(null);
+  }, []);
+
   return (
     <AvailabilityBody
       loading={loading}
@@ -71,8 +114,20 @@ export default function AvailabilityClient() {
       roomsRefused={data?.roomsRefused ?? []}
       skipped={data?.skipped ?? []}
       step={step}
-      fetchedAt={data?.fetchedAt ?? null}
+      shows={shows}
+      selectedShowId={showId}
+      selectedRoom={room}
+      selectedDate={date}
+      selectedStart={start}
+      visibleMonth={month}
+      warningsOpen={warningsOpen}
       onStepChange={setStep}
+      onShowChange={onShowChange}
+      onRoomChange={onRoomChange}
+      onDateChange={setDate}
+      onStartChange={setStart}
+      onMonthChange={setMonth}
+      onToggleWarnings={() => setWarningsOpen((v) => !v)}
     />
   );
 }
