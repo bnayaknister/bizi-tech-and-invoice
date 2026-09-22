@@ -5,8 +5,10 @@ No Morning calls. Proves, on an ISOLATED doc:
   1. can_edit_money required (tech 403) on both manual + bulk-count endpoints
   2. manual archive → archived_at/by/reason set + event; restore → cleared + event
   3. GET /api/documents/archive returns a qualifying count (>=1, our fresh doc)
-Self-cleaning. (The real bulk POST on the 277 is exercised by run_archive_now.py
-with before/after verification, since it is a global operation.)
+Self-cleaning. (The real bulk POST was run once on the live 277 on 2026-07-28
+by scripts/run_archive_now.py, a one-off deleted under F18 on 2026-09-22. That
+run is recorded in F18's ledger in docs/TICKETS.md; nothing re-runs it, and the
+bulk endpoint itself is still covered here by its count-only GET.)
 """
 import base64, json, os, sys, time, uuid
 import requests
