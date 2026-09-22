@@ -9,6 +9,7 @@ import { contractsModule } from "@/modules/contracts";
 import { usersModule } from "@/modules/users";
 import { archiveModule } from "@/modules/archive";
 import { settingsModule } from "@/modules/settings";
+import { availabilityModule } from "@/modules/availability";
 import { approvalsModule } from "@/modules/approvals";
 import { documentsModule } from "@/modules/documents";
 import { docRegistryModule } from "@/modules/doc-registry";
@@ -36,6 +37,11 @@ export const MODULES: ModuleDef[] = [
   contractsModule,
   showsModule,
   approvalsModule,
+  // the owner-only cluster, kept contiguous at the end. availability joins it
+  // rather than sitting among the daily work screens: it is an internal check,
+  // read occasionally, and archive/settings keep the last two slots the note
+  // above anchors them to.
+  availabilityModule,
   archiveModule,
   settingsModule,
 ];
