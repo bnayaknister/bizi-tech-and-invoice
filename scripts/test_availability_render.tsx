@@ -39,7 +39,9 @@ import AvailabilityBody, {
   type Skipped,
   type UnknownBlock,
 } from "../src/app/calendar/availability/AvailabilityBody";
-import { monthOf, type FreeSlot, type Month } from "../src/app/calendar/availability/booking";
+import { monthOf, toPickerShows, type FreeSlot, type Month, type ShowRow } from "../src/app/calendar/availability/booking";
+import { bookableRoomForDefault } from "../src/lib/calendar/rooms";
+import { STUDIOS } from "../src/lib/calendar/studios";
 
 let passed = 0;
 let failed = 0;
@@ -483,6 +485,36 @@ console.log("\n=== 13b. the warnings row inflects: one event vs many ===");
   }
   // 11 must still read "11 אירועים" — the guard above must not have banned it
   check("n=11 renders '11 אירועים…' once", countOf(render({ free: SOME_FREE, unknownRoomBlocks: w(11) }), "11 אירועים בלי חדר בכותרת — לא נחסמו"), 1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n=== 13c. the preview picker lists only the shows it is given ===");
+{
+  // The `active` filter itself is a pure function and is asserted in
+  // scripts/test_booking_calendar.ts §8 — it cannot be reached from a render,
+  // because the body receives `shows` already narrowed. What IS assertable here
+  // is the other half of the contract: the body renders exactly the list handed
+  // to it, once each and no more. Feeding it the REAL toPickerShows output over
+  // a mixed active/archived fixture is what joins the two halves.
+  const rows: ShowRow[] = [
+    { id: "a", name: "תוכנית פעילה", default_studio: "גבעון", active: true },
+    { id: "b", name: "תוכנית מארכבת", default_studio: "חשמונאים", active: false },
+    { id: "c", name: "עוד אחת פעילה", default_studio: null, active: true },
+  ];
+  const picker = toPickerShows(rows, (st) => bookableRoomForDefault(st, STUDIOS));
+  check("the filter handed two shows to the body", picker.length, 2);
+
+  const html = render({ free: SOME_FREE, shows: picker, selectedShowId: "a" });
+  check("the archived show appears ZERO times in the markup", countOf(html, "תוכנית מארכבת"), 0);
+  check("each active show is an option exactly once",
+    picker.map((sh) => countOf(html, `>${sh.name}</option>`)), [1, 1]);
+  check("exactly two options in the show picker",
+    (seen(html).match(/<option value="(a|b|c)"/g) ?? []).length, 2);
+  check("the selected show heads the client screen once", countOf(html, ">תוכנית פעילה</p>"), 1);
+  // and if the page ever stopped filtering, this render would show it
+  const unfiltered = render({ free: SOME_FREE, shows: rows.map((r) => ({ id: r.id, name: r.name ?? "—", defaultRoom: null })), selectedShowId: "a" });
+  check("an UNFILTERED list would render the archived name — so the assertion above has teeth",
+    countOf(unfiltered, "תוכנית מארכבת"), 1);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

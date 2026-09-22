@@ -17,7 +17,9 @@ import {
   dowHebrew,
   dayMonth,
   weekdayOf,
+  toPickerShows,
   type FreeSlot,
+  type ShowRow,
 } from "../src/app/calendar/availability/booking";
 import { bookableRoomForDefault } from "../src/lib/calendar/rooms";
 import { STUDIOS } from "../src/lib/calendar/studios";
@@ -220,6 +222,60 @@ console.log("\n=== 7. default_studio -> preselected room ===");
   check("החשמונאים -> חשמונאים", bookableRoomForDefault("החשמונאים", STUDIOS), HASH);
   check("whitespace and case tolerated", bookableRoomForDefault("  tlv  ", STUDIOS), null);
   check("no bookable room is ever TLV", STUDIOS.filter((s) => s.bookable).map((s) => s.canonical).includes("TLV"), false);
+}
+
+console.log("\n=== 8. the owner's podcast picker: active shows only ===");
+{
+  // ⚠️ THIS is where the `active` filter is tested. The page narrows the fetch
+  // with `.eq("active", true)`, and SQL inside a query string cannot be asserted
+  // without a database — F19 is open. toPickerShows restates the same predicate
+  // as a pure function, which is what makes the rule checkable at all.
+  const room = (s: string | null) => bookableRoomForDefault(s, STUDIOS);
+
+  const rows: ShowRow[] = [
+    { id: "a", name: "תוכנית פעילה", default_studio: "גבעון", active: true },
+    { id: "b", name: "תוכנית מארכבת", default_studio: "חשמונאים", active: false },
+  ];
+  const got = toPickerShows(rows, room);
+  check("exactly one show survives", got.length, 1);
+  check("and it is the active one", got.map((s) => s.id), ["a"]);
+  check("the archived show appears zero times", got.filter((s) => s.id === "b").length, 0);
+  check("its name came through", got[0].name, "תוכנית פעילה");
+  check("its default room resolved", got[0].defaultRoom, GIVON);
+
+  // the inverse: an archived show is dropped even when it has everything else right
+  check("an all-archived list yields nothing",
+    toPickerShows(rows.map((r) => ({ ...r, active: false })), room).length, 0);
+  check("an all-active list yields both",
+    toPickerShows(rows.map((r) => ({ ...r, active: true })), room).map((s) => s.id), ["a", "b"]);
+
+  // order is preserved — the query orders by name and the mapping must not resort
+  const ordered: ShowRow[] = [
+    { id: "z", name: "אחרון", default_studio: null, active: true },
+    { id: "m", name: "באמצע", default_studio: "TLV", active: true },
+    { id: "a", name: "ראשון", default_studio: "גבעון גדול", active: true },
+  ];
+  check("input order is preserved", toPickerShows(ordered, room).map((s) => s.id), ["z", "m", "a"]);
+  check("TLV yields no default room", toPickerShows(ordered, room)[1].defaultRoom, null);
+  check("null default_studio yields none", toPickerShows(ordered, room)[0].defaultRoom, null);
+  check("גבעון גדול resolves", toPickerShows(ordered, room)[2].defaultRoom, GIVON_BIG);
+
+  // is_oneoff is NOT consulted: a one-off show that is active must still appear
+  const oneoff: ShowRow[] = [
+    { id: "o", name: "חד-פעמית אך פעילה", default_studio: "גבעון", active: true },
+  ];
+  check("a one-off but ACTIVE show is kept", toPickerShows(oneoff, room).map((s) => s.id), ["o"]);
+
+  // hostile payloads — the 2026-09-15 habit
+  check("null rows", toPickerShows(null, room), []);
+  check("undefined rows", toPickerShows(undefined, room), []);
+  check("empty rows", toPickerShows([], room), []);
+  check("active undefined is dropped, not kept",
+    toPickerShows([{ id: "x", name: "x", default_studio: null, active: undefined as unknown as boolean }], room).length, 0);
+  check("active as the string 'true' is dropped — only a real boolean counts",
+    toPickerShows([{ id: "x", name: "x", default_studio: null, active: "true" as unknown as boolean }], room).length, 0);
+  check("a null name falls back rather than crashing",
+    toPickerShows([{ id: "x", name: null, default_studio: null, active: true }], room)[0].name, "—");
 }
 
 console.log(`\n${failed === 0 ? "✅" : "❌"}  ${passed}/${passed + failed} assertions passed\n`);

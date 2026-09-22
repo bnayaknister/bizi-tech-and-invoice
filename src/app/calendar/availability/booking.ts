@@ -151,3 +151,52 @@ export function monthLabel(m: Month): string {
 export function dayPhrase(dateIsrael: string): string {
   return `יום ${dowHebrew(dateIsrael)} ${dayMonth(dateIsrael)}`;
 }
+
+// ─── the owner's podcast picker ──────────────────────────────────────────────
+
+/** A row as the server selects it. `active` is NOT NULL in the schema. */
+export type ShowRow = {
+  id: string;
+  name: string | null;
+  default_studio: string | null;
+  active: boolean;
+};
+
+/** What the picker needs. `defaultRoom` is null when nothing preselects. */
+export type PickerShow = { id: string; name: string; defaultRoom: string | null };
+
+/**
+ * The shows the owner may preview, and the room each one preselects.
+ *
+ * ═══ WHY THE `active` FILTER LIVES HERE AND NOT ONLY IN THE SQL ═══
+ * The page's query already carries `.eq("active", true)`, which is the house
+ * convention (`api/shows/list/route.ts:32`) and the right place to narrow a
+ * fetch. But a filter inside a SQL string cannot be unit-tested without a
+ * database, and F19 is open. Restating it here as a pure predicate is what
+ * makes the rule assertable at all — and it is the same predicate the calendar
+ * sync already applies in memory (`api/calendar/sync/route.ts:213`,
+ * `.filter((s) => s.active)`), so this is an existing shape rather than a new
+ * one. The two agree by construction; if a future edit drops the `.eq`, this
+ * still holds.
+ *
+ * ⚠️ `is_oneoff` is deliberately NOT consulted. It is a SEPARATE axis — the
+ * /shows screen has three tabs, active / oneoff / all (`ShowsClient.tsx:171`),
+ * and a one-off show can perfectly well be active. Filtering on it would hide
+ * live shows.
+ *
+ * `active` is boolean NOT NULL in the schema, so `=== true` and truthiness
+ * agree; the explicit comparison is there so a row arriving as undefined from
+ * a hand-built payload is dropped rather than kept.
+ */
+export function toPickerShows(
+  rows: ShowRow[] | null | undefined,
+  defaultRoomFor: (studio: string | null) => string | null
+): PickerShow[] {
+  return (rows ?? [])
+    .filter((r) => r?.active === true)
+    .map((r) => ({
+      id: r.id,
+      name: r.name ?? "—",
+      defaultRoom: defaultRoomFor(r.default_studio ?? null),
+    }));
+}
