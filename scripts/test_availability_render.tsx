@@ -331,7 +331,11 @@ console.log("\n=== 9. the preview bar's collapsed warnings row ===");
   check("n=0: the existing sentence once", countOf(none, COPY.warningsEmpty), 1);
   check("n=0: no summary row", countOf(none, "אירועים בלי חדר בכותרת — לא נחסמו"), 0);
   check("n=0: no disclosure control", countOf(none, "aria-expanded"), 0);
-  check("n=1 says '1 אירועים' verbatim, as approved", countOf(render({ free: SOME_FREE, unknownRoomBlocks: [warnings[0]] }), "1 אירועים בלי חדר בכותרת — לא נחסמו"), 1);
+  // n=1 is asserted in 13b, where the singular sentence lives. The earlier
+  // expectation here demanded "1 אירועים…" verbatim — that WAS the approved copy
+  // and is no longer, so it is replaced rather than kept alongside.
+  check("n=1 renders the singular, not the plural template",
+    countOf(render({ free: SOME_FREE, unknownRoomBlocks: [warnings[0]] }), "אירוע אחד בלי חדר בכותרת — לא נחסם"), 1);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -415,6 +419,70 @@ console.log("\n=== 13. month arrows stay inside the window ===");
   check("last month: next arrow disabled", arrowDisabled(last, "חודש הבא"), true);
   check("last month: previous arrow enabled", arrowDisabled(last, "חודש קודם"), false);
   check("both arrows exist in every month", [first, mid, last].map((h) => countOf(h, 'aria-label="חודש')), [2, 2, 2]);
+
+  // ⚠️ DIRECTION, per button. ‹ and › are Bidi_Mirrored, so inside dir="rtl"
+  // they render flipped — each arrow pointed away from the month it goes to.
+  // → and ← are not mirrored. Asserted per aria-label so a future swap of the
+  // two buttons cannot pass by symmetry.
+  const arrowGlyph = (h: string, label: string) => {
+    const i = h.indexOf(`aria-label="${label}"`);
+    if (i < 0) return "missing";
+    const close = h.indexOf(">", i);
+    const end = h.indexOf("</button>", close);
+    return close < 0 || end < 0 ? "missing" : seen(h.slice(close + 1, end)).trim();
+  };
+  check("חודש קודם (right side, RTL) points RIGHT", arrowGlyph(mid, "חודש קודם"), "\u2192");
+  check("חודש הבא (left side, RTL) points LEFT", arrowGlyph(mid, "חודש הבא"), "\u2190");
+  check("the two glyphs differ", arrowGlyph(mid, "חודש קודם") !== arrowGlyph(mid, "חודש הבא"), true);
+  // the mirrored characters must be gone entirely
+  check("zero U+203A (single right angle) anywhere", countOf(mid, "\u203a"), 0);
+  check("zero U+2039 (single left angle) anywhere", countOf(mid, "\u2039"), 0);
+  check("exactly one → and one ← on the screen", [countOf(mid, "\u2192"), countOf(mid, "\u2190")], [1, 1]);
+  // and the labels themselves, once each
+  check("each accessible label once", [countOf(mid, 'aria-label="חודש קודם"'), countOf(mid, 'aria-label="חודש הבא"')], [1, 1]);
+  // direction survives every month, including the ones with a disabled arrow
+  check("direction is stable across months",
+    [first, mid, last].map((h) => `${arrowGlyph(h, "חודש קודם")}${arrowGlyph(h, "חודש הבא")}`),
+    ["\u2192\u2190", "\u2192\u2190", "\u2192\u2190"]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n=== 13b. the warnings row inflects: one event vs many ===");
+{
+  const w = (n: number): UnknownBlock[] =>
+    Array.from({ length: n }, (_, i) => ({
+      uid: `u${i}`, title: `אירוע ${i}`, startIsrael: "2026-09-24 13:00", allDay: false, isSeries: false,
+    }));
+
+  const one = render({ free: SOME_FREE, unknownRoomBlocks: w(1) });
+  check("n=1 singular sentence once", countOf(one, "אירוע אחד בלי חדר בכותרת — לא נחסם"), 1);
+  check("n=1 says נחסם, not נחסמו", countOf(one, "לא נחסמו"), 0);
+  check("n=1 does NOT say '1 אירועים'", countOf(one, "1 אירועים"), 0);
+  check("n=1 has a disclosure control", countOf(one, "aria-expanded"), 1);
+  check("n=1 helper output", warningsSummary(1), "אירוע אחד בלי חדר בכותרת — לא נחסם");
+
+  const two = render({ free: SOME_FREE, unknownRoomBlocks: w(2) });
+  check("n=2 plural sentence once", countOf(two, "2 אירועים בלי חדר בכותרת — לא נחסמו"), 1);
+  check("n=2 does not use the singular", countOf(two, "אירוע אחד"), 0);
+  check("n=2 helper output", warningsSummary(2), "2 אירועים בלי חדר בכותרת — לא נחסמו");
+  check("n=3 helper output", warningsSummary(3), "3 אירועים בלי חדר בכותרת — לא נחסמו");
+
+  const none = render({ free: SOME_FREE, unknownRoomBlocks: w(0) });
+  check("n=0 keeps today's flat sentence, once", countOf(none, COPY.warningsEmpty), 1);
+  check("n=0 has no summary row at all", countOf(none, "בלי חדר בכותרת"), 0);
+  check("n=0 has no disclosure control", countOf(none, "aria-expanded"), 0);
+
+  // The regression that prompted this: never the standalone "1 אירועים".
+  // ⚠️ A plain substring count is WRONG here, and my first version of this
+  // assertion was: "11 אירועים" CONTAINS "1 אירועים", so n=11 failed a guard it
+  // should pass. The digit lookbehind is what makes the claim mean what it says
+  // — the same too-loose-substring class of mistake rule 56 exists for.
+  const bareOne = (h: string) => (seen(h).match(/(?<!\d)1 אירועים/g) ?? []).length;
+  for (const [label, n] of [["n=0", 0], ["n=1", 1], ["n=2", 2], ["n=3", 3], ["n=11", 11], ["n=21", 21], ["n=100", 100]] as const) {
+    check(`${label}: zero occurrences of a standalone "1 אירועים"`, bareOne(render({ free: SOME_FREE, unknownRoomBlocks: w(n) })), 0);
+  }
+  // 11 must still read "11 אירועים" — the guard above must not have banned it
+  check("n=11 renders '11 אירועים…' once", countOf(render({ free: SOME_FREE, unknownRoomBlocks: w(11) }), "11 אירועים בלי חדר בכותרת — לא נחסמו"), 1);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

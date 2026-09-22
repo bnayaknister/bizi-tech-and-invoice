@@ -59,8 +59,21 @@ export const SKIPPED_REASON: Record<string, string> = {
   "zero-length": "אורך אפס",
 };
 
-/** "{n} אירועים בלי חדר בכותרת — לא נחסמו" */
+/**
+ * The collapsed warnings row. Approved copy, 2026-09-22, and it INFLECTS:
+ *
+ *   n = 1   אירוע אחד בלי חדר בכותרת — לא נחסם
+ *   n ≥ 2   {n} אירועים בלי חדר בכותרת — לא נחסמו
+ *
+ * Note that both halves change, not just the noun: the verb goes from נחסם to
+ * נחסמו as well. The singular is a whole separate sentence rather than a
+ * template with a swapped word, which is why it is written out.
+ *
+ * n = 0 never reaches here — the bar renders the flat "אין אירועים…" sentence
+ * with no disclosure control at all.
+ */
 export function warningsSummary(n: number): string {
+  if (n === 1) return "אירוע אחד בלי חדר בכותרת — לא נחסם";
   return `${n} אירועים בלי חדר בכותרת — לא נחסמו`;
 }
 
@@ -241,9 +254,21 @@ export default function AvailabilityBody({
           ) : null}
 
           <div className="space-y-2">
+            {/* ⚠️ THE ARROW GLYPHS MUST NOT BE BIDI-MIRRORED CHARACTERS.
+                This row previously used ‹ and › (U+2039 / U+203A). Both carry
+                Unicode's Bidi_Mirrored property, so inside this dir="rtl"
+                subtree the renderer FLIPS them: "חודש קודם" on the right drew a
+                left-pointing glyph and "חודש הבא" on the left drew a
+                right-pointing one — each arrow pointing away from the month it
+                goes to. The button ORDER was always correct (RTL flex puts the
+                first child on the right); only the characters lied.
+                → and ← (U+2192 / U+2190) have Bidi_Mirrored=0 — verified
+                against unicodedata, 2026-09-22 — so they render as written in
+                either direction. Do not "tidy" them back into angle quotes.
+
+                The arrows walk `months` and nothing else, so a client can never
+                page outside the window. */}
             <div className="flex items-center justify-between gap-2">
-              {/* arrows walk `months` and nothing else, so a client can never
-                  page outside the window */}
               <button
                 type="button"
                 disabled={monthIndex <= 0}
@@ -251,7 +276,7 @@ export default function AvailabilityBody({
                 aria-label="חודש קודם"
                 className="px-2 py-1 text-sm rounded disabled:opacity-30 disabled:cursor-not-allowed"
               >
-                ›
+                →
               </button>
               <span className="text-sm font-semibold">{monthLabel(month)}</span>
               <button
@@ -261,7 +286,7 @@ export default function AvailabilityBody({
                 aria-label="חודש הבא"
                 className="px-2 py-1 text-sm rounded disabled:opacity-30 disabled:cursor-not-allowed"
               >
-                ‹
+                ←
               </button>
             </div>
 
