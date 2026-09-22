@@ -25,6 +25,51 @@ export type CalendarEvent = {
   // real, materialised VEVENT that the sync already handles normally, so it
   // is deliberately left null — it is not the thing we warn about.
   recurrence: Recurrence | null;
+
+  // ═══ ADDITIVE, 2026-09-22 (booking availability, stage 2) ═══
+  // The five fields above are what the sync reads and they are UNCHANGED —
+  // verified byte-for-byte against the live feed by
+  // scripts/verify_parse_unchanged.ts. Everything below is optional and
+  // undefined for every caller that does not ask for it.
+
+  /** DTSTART carried VALUE=DATE — an all-day event. */
+  allDay?: boolean;
+
+  /**
+   * ⚠️ THE REASON THIS FIELD EXISTS — DO NOT DELETE IT AS REDUNDANT.
+   *
+   * An all-day DTSTART is a DATE with NO timezone ("floating"), and
+   * ical.js resolves a floating value in the HOST MACHINE's zone. Measured
+   * 2026-09-22 on `DTSTART;VALUE=DATE:20261026`:
+   *
+   *   on a machine set to Israel time -> toJSDate() = 2026-10-25T22:00:00Z
+   *   getUTCDate() on that instant    -> 25.  THE WRONG DAY.
+   *   on a UTC server (Vercel)        -> 2026-10-26T00:00:00Z
+   *
+   * So `start` above is, for an all-day event, an instant that DEPENDS ON
+   * WHERE THE CODE RUNS, and the date cannot be recovered from it. A
+   * booking screen that blocks "the day of this all-day event" by reading
+   * `start` blocks the wrong day on one of the two machines — silently,
+   * and only for half the year.
+   *
+   * These two carry the literal calendar text instead, so an all-day block
+   * is timezone-free: exactly what the ICS wrote. DTEND is EXCLUSIVE per
+   * RFC 5545, so a one-day event is start=20261026, end=20261027.
+   */
+  startDateOnly?: string; // "YYYY-MM-DD", only when allDay
+  endDateOnly?: string; // "YYYY-MM-DD", exclusive, only when allDay
+
+  /**
+   * Did the VEVENT actually carry DTEND (or DURATION)?
+   *
+   * `end` above cannot answer this. When DTEND is absent, ical.js synthesises
+   * endDate = startDate, so "no end time at all" and "a real zero-length
+   * event" arrive identical (measured 2026-09-22). Both are refused by the
+   * availability path either way — no duration is ever guessed — but the
+   * owner's warning list should say which one it is, and only the raw
+   * property knows.
+   */
+  hasExplicitEnd?: boolean;
 };
 
 // node-ical was tried first but its Temporal polyfill dependency breaks
@@ -61,6 +106,15 @@ function readRecurrence(vevent: ICAL.Component): Recurrence | null {
   };
 }
 
+// The literal calendar date an ICAL.Time names, with no timezone arithmetic
+// anywhere in it — `.year/.month/.day` are the numbers the ICS actually wrote.
+// Going through toJSDate() here would reintroduce exactly the host-timezone
+// bug that startDateOnly exists to avoid.
+function dateOnly(t: ICAL.Time): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${t.year}-${pad(t.month)}-${pad(t.day)}`;
+}
+
 export function parseIcsText(text: string): CalendarEvent[] {
   const jcal = ICAL.parse(text);
   const comp = new ICAL.Component(jcal);
@@ -84,6 +138,12 @@ export function parseIcsText(text: string): CalendarEvent[] {
       // malformed date on this one event — skip its timing, keep the row
     }
 
+    // All-day detection reads the RAW property, never `start` above — see the
+    // warning on startDateOnly for why that instant is untrustworthy here.
+    const rawStart = vevent.getFirstPropertyValue("dtstart") as ICAL.Time | null;
+    const rawEnd = vevent.getFirstPropertyValue("dtend") as ICAL.Time | null;
+    const allDay = rawStart ? rawStart.isDate === true : false;
+
     const location = vevent.getFirstPropertyValue("location");
     out.push({
       uid: String(event.uid),
@@ -92,6 +152,10 @@ export function parseIcsText(text: string): CalendarEvent[] {
       end,
       location: location ? String(location) : null,
       recurrence: readRecurrence(vevent),
+      allDay,
+      hasExplicitEnd: vevent.hasProperty("dtend") || vevent.hasProperty("duration"),
+      ...(allDay && rawStart ? { startDateOnly: dateOnly(rawStart) } : {}),
+      ...(allDay && rawEnd ? { endDateOnly: dateOnly(rawEnd) } : {}),
     });
   }
   return out;
