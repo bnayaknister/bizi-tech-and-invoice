@@ -139,6 +139,122 @@ export type Database = {
           },
         ]
       }
+      booking_links: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          id: string
+          revoked_at: string | null
+          revoked_by: string | null
+          show_id: string
+          token: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          revoked_at?: string | null
+          revoked_by?: string | null
+          show_id: string
+          token: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          revoked_at?: string | null
+          revoked_by?: string | null
+          show_id?: string
+          token?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "booking_links_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "booking_links_revoked_by_fkey"
+            columns: ["revoked_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "booking_links_show_id_fkey"
+            columns: ["show_id"]
+            isOneToOne: false
+            referencedRelation: "shows"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      booking_requests: {
+        Row: {
+          created_at: string
+          decided_at: string | null
+          decided_by: string | null
+          end_at: string
+          id: string
+          link_id: string
+          note: string | null
+          show_id: string
+          start_at: string
+          status: string
+          studio: string
+        }
+        Insert: {
+          created_at?: string
+          decided_at?: string | null
+          decided_by?: string | null
+          end_at: string
+          id?: string
+          link_id: string
+          note?: string | null
+          show_id: string
+          start_at: string
+          status?: string
+          studio: string
+        }
+        Update: {
+          created_at?: string
+          decided_at?: string | null
+          decided_by?: string | null
+          end_at?: string
+          id?: string
+          link_id?: string
+          note?: string | null
+          show_id?: string
+          start_at?: string
+          status?: string
+          studio?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "booking_requests_decided_by_fkey"
+            columns: ["decided_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "booking_requests_link_id_fkey"
+            columns: ["link_id"]
+            isOneToOne: false
+            referencedRelation: "booking_links"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "booking_requests_show_id_fkey"
+            columns: ["show_id"]
+            isOneToOne: false
+            referencedRelation: "shows"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       client_morning_ids: {
         Row: {
           client_id: string
