@@ -182,6 +182,35 @@ export function israelWeekday(dateIsrael: string): number {
   return new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
 }
 
+/**
+ * The Israeli calendar date an instant falls on — "YYYY-MM-DD".
+ *
+ * Through Intl, because this is the one question a UTC server gets wrong on its
+ * own: between Israeli midnight and 02:00/03:00 the UTC date is still the day
+ * before. See ./bookingWindow for what that costs.
+ */
+export function israelDateOf(instant: Date): string {
+  if (!(instant instanceof Date) || Number.isNaN(instant.getTime())) {
+    throw new Error("israelDateOf: תאריך לא תקין");
+  }
+  return new Intl.DateTimeFormat("en-CA", { timeZone: ISRAEL }).format(instant);
+}
+
+/**
+ * `n` days after an Israeli calendar date, as a date string.
+ *
+ * Pure calendar arithmetic on the DATE, never on an instant — adding 86400000
+ * ms across the 25.10 transition lands on the wrong day, and a booking window
+ * that is one day short is not a visible failure.
+ */
+export function addIsraelDays(dateIsrael: string, n: number): string {
+  const [y, mo, d] = parseDateParts(dateIsrael);
+  if (!Number.isInteger(n)) throw new Error("addIsraelDays: n חייב להיות מספר שלם");
+  const shifted = new Date(Date.UTC(y, mo - 1, d + n));
+  const pad = (x: number) => String(x).padStart(2, "0");
+  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`;
+}
+
 /** Every Israeli calendar date in [from, to], inclusive of both ends. */
 export function israelDatesBetween(fromIsrael: string, toIsrael: string): string[] {
   const [fy, fm, fd] = parseDateParts(fromIsrael);
