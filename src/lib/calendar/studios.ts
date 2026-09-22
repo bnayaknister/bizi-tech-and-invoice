@@ -78,7 +78,23 @@ export const STUDIOS: Studio[] = [
     bookable: true,
   },
   { canonical: "חשמונאים", variants: ["חשמונאים", "החשמונאים"], bookable: true },
-  // ⚠️ TLV IS DELIBERATELY ABSENT, PENDING ONE ANSWER — see the note below.
+  {
+    // A real room of the business, used rarely. ⚠️ KNOWN BUT NOT BOOKABLE
+    // (owner, 2026-09-22): it is recognised everywhere a room name is read,
+    // and it is not one of the three rooms a client may book. 0095 leaves its
+    // stored values untouched.
+    //
+    // The risk in naming it here was checked before the line was written:
+    // `isStudioName` compares the GUEST column against these variants and a
+    // match SUPPRESSES the missing-guest warning, so a guest literally named
+    // "TLV" would stop being checked. Queried against the database 2026-09-22
+    // — `lower(btrim(guest)) = 'tlv'` returned ZERO rows. The comparison is
+    // exact after normalising, so "TLV Media" and "מרכז איינגאר יוגה TLV"
+    // were never in scope either way.
+    canonical: "TLV",
+    variants: ["TLV"],
+    bookable: false,
+  },
 ];
 
 /**
@@ -89,34 +105,3 @@ export const STUDIOS: Studio[] = [
  * ⚠️ Not read by anything yet — the booking screen is a later step.
  */
 export const BOOKABLE_STUDIOS: Studio[] = STUDIOS.filter((s) => s.bookable);
-
-/**
- * ═══ PENDING: TLV — a fourth, KNOWN but NOT BOOKABLE room ═══
- *
- * The owner's decision (2026-09-22): TLV is a real room of the business, used
- * rarely, its stored values stay exactly as they are (0095 does not touch
- * them), and it is NOT one of the three rooms open to client booking. Its
- * entry is therefore:
- *
- *   { canonical: "TLV", variants: ["TLV"], bookable: false },
- *
- * ⚠️ WHY IT IS NOT WRITTEN YET. Adding a name here does more than teach the
- * calendar parser — `isStudioName` (lib/documents/guestFlag.ts) compares the
- * GUEST column against these same variants, and a match SUPPRESSES the
- * missing-guest warning on a client-facing document. So a production whose
- * guest is exactly "TLV" would silently stop being checked. That is the exact
- * failure the function's own docstring warns about: "a check that reports
- * 'fine' on the exact shape it exists to catch."
- *
- * The risk is narrow — the comparison is EXACT after normalising, so "TLV
- * Media" or "מרכז איינגאר יוגה TLV" are unaffected — and the evidence so far
- * says it is empty: in the 2026-07-12 snapshot TLV appears only in the studio
- * column, never as a guest. But that snapshot is stale and untracked, so it
- * decides nothing. One read-only query settles it:
- *
- *   select id, podcast_name, guest, record_date from public.productions
- *    where lower(btrim(guest)) = 'tlv';
- *
- * Zero rows → add the entry above as written. Any rows → the owner decides
- * whether that guest is the room or a name, before the line goes in.
- */
