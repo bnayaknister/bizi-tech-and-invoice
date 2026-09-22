@@ -92,6 +92,28 @@ const CASES: Case[] = [
     studio: "גבעון גדול",
     guest: null,
   },
+  {
+    // ⚠️ THE ONE THAT READS BACKWARDS. "גבעון בחוץ" is the SAME ROOM as
+    // גבעון גדול (owner, 2026-09-22) even though it contains "גבעון". Without
+    // its entry in studios.ts the shorter variant would match and this would
+    // come back "גבעון" — the small room, the opposite of the decision.
+    // Migration 0095 moved the one stored row the same way; this case is what
+    // keeps the parser and the data from drifting apart again.
+    name: "גבעון בחוץ is גבעון גדול, NOT גבעון (owner decision)",
+    title: "סדרת חינוך אורח: דנה לוי, גבעון בחוץ",
+    studio: "גבעון גדול",
+    guest: "דנה לוי",
+  },
+  {
+    // "גבעון בוט" with no apostrophe. It already canonicalised correctly
+    // through the bare "גבעון" substring — but only as a PREFIX, leaving
+    // " בוט" in the remainder the guest is read from. Naming the whole phrase
+    // removes the whole phrase, so nothing leaks into the guest slot.
+    name: "גבעון בוט (no apostrophe) is גבעון, and בוט does not leak into the guest",
+    title: "סדרת חינוך אורח: דנה לוי, גבעון בוט",
+    studio: "גבעון",
+    guest: "דנה לוי",
+  },
 
   // ---- canonicalisation of variants ------------------------------------
   {
