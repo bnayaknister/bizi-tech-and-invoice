@@ -41,6 +41,8 @@ export default function AvailabilityClient({ shows }: { shows: Show[] }) {
   const [start, setStart] = useState<string | null>(null);
   const [month, setMonth] = useState<Month | null>(null);
   const [warningsOpen, setWarningsOpen] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const [copyError, setCopyError] = useState<string | null>(null);
 
   const load = useCallback(async (s: 30 | 90) => {
     setLoading(true);
@@ -84,9 +86,53 @@ export default function AvailabilityClient({ shows }: { shows: Show[] }) {
       setRoom(shows.find((s) => s.id === id)?.defaultRoom ?? null);
       setDate(null);
       setStart(null);
+      // The message belongs to the show it was produced for. Leaving
+      // "הקישור הועתק" on screen after switching shows would claim the
+      // clipboard holds THIS show's link when it holds the previous one's.
+      setCopyState("idle");
+      setCopyError(null);
     },
     [shows]
   );
+
+  /**
+   * Ask the server for this show's link and put it on the clipboard.
+   *
+   * ⚠️ THE URL IS NEVER PUT ON SCREEN — see the button's note in
+   * AvailabilityBody. It goes from the response straight to the clipboard and
+   * is not held in state, so a React devtools panel does not show it either.
+   *
+   * The clipboard write is INSIDE the try: navigator.clipboard rejects on an
+   * insecure origin and throws where it does not exist at all, and a silent
+   * failure there would leave the owner pasting whatever was there before —
+   * possibly another show's link.
+   */
+  const onCopyLink = useCallback(async () => {
+    if (!showId) return;
+    setCopyState("idle");
+    setCopyError(null);
+    try {
+      const res = await fetch("/api/booking/links", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ showId }),
+        cache: "no-store",
+      });
+      const body = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
+      if (!res.ok || !body.url) {
+        // The server's sentence verbatim — the no-clean-alias message is
+        // approved copy and tells the owner exactly what to do about it.
+        setCopyError(body.error ?? "לא הצלחתי ליצור קישור");
+        setCopyState("error");
+        return;
+      }
+      await navigator.clipboard.writeText(body.url);
+      setCopyState("copied");
+    } catch {
+      setCopyError("לא הצלחתי להעתיק את הקישור");
+      setCopyState("error");
+    }
+  }, [showId]);
 
   /**
    * Changing the room clears the day AND the hour.
@@ -128,6 +174,9 @@ export default function AvailabilityClient({ shows }: { shows: Show[] }) {
       onStartChange={setStart}
       onMonthChange={setMonth}
       onToggleWarnings={() => setWarningsOpen((v) => !v)}
+      onCopyLink={() => void onCopyLink()}
+      copyState={copyState}
+      copyError={copyError}
     />
   );
 }

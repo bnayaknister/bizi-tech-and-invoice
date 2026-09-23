@@ -43,7 +43,72 @@ export type BusyBlock = {
   allDayDates: string[];
   uid: string;
   title: string;
+  /**
+   * WHERE THIS OCCUPANCY CAME FROM, and it is not decoration.
+   *
+   *   "calendar"  a parsed ICS event. Its room was READ from a title, so it may
+   *               have none — which is why unknownRoomBlocks exists.
+   *   "request"   an APPROVED booking request (0096/0097). Its room is a column
+   *               with a CHECK on it, never a parse, so it always has exactly
+   *               one and can never be "unknown".
+   *
+   * The distinction is load-bearing in two places below: a request block must
+   * never reach the unknown-room warnings (it has nothing to warn about, and a
+   * client's own approved booking listed as "an event we could not read" would
+   * be nonsense), and its `title` must never be shown — see the type note there.
+   */
+  source: "calendar" | "request";
 };
+
+/**
+ * An approved booking request, as occupancy.
+ *
+ * ⚠️ `title` is DELIBERATELY NOT a field here. A request carries a guest name
+ * and a free-text note, and neither may ever reach a screen that another
+ * client can see. Giving this shape a title would put one keystroke between a
+ * refactor and a guest's name on a stranger's calendar. The id is opaque and
+ * is used for nothing but de-duplication.
+ */
+export type ApprovedRequest = {
+  id: string;
+  room: string;
+  start: Date;
+  end: Date;
+};
+
+/**
+ * Approved requests -> busy blocks. Pure, and separate from `toBusyBlocks`
+ * because the two have nothing in common but their output: one parses text it
+ * is not sure about, this one copies two columns it is sure about.
+ *
+ * A row with a missing room, a missing instant, or an end at-or-before its
+ * start is DROPPED rather than blocking. `booking_requests` has CHECK
+ * constraints for exactly those (`booking_requests_range_chk`,
+ * `booking_requests_studio_chk`), so a row like that cannot exist today — the
+ * filter is here so a hand-built array in a test, or a column loosened later,
+ * cannot invent a block that silently closes a studio.
+ */
+export function toRequestBlocks(requests: ApprovedRequest[]): BusyBlock[] {
+  const out: BusyBlock[] = [];
+  for (const r of requests ?? []) {
+    if (!r || typeof r.room !== "string" || r.room.trim() === "") continue;
+    if (!(r.start instanceof Date) || !(r.end instanceof Date)) continue;
+    if (Number.isNaN(r.start.getTime()) || Number.isNaN(r.end.getTime())) continue;
+    if (r.end.getTime() <= r.start.getTime()) continue;
+    out.push({
+      start: r.start,
+      end: r.end,
+      rooms: [r.room],
+      allDay: false,
+      allDayDates: [],
+      uid: `request:${r.id}`,
+      // never rendered; see the type note above
+      title: "",
+      source: "request",
+    });
+  }
+  return out;
+}
 
 export type AvailabilityWindow = {
   /** inclusive, Israel calendar dates, "YYYY-MM-DD" */
@@ -279,7 +344,7 @@ export function toBusyBlocks(
         const all = israelDatesBetween(first, e.endDateOnly);
         dates = all.length > 1 ? all.slice(0, -1) : [first];
       }
-      blocks.push({ start: null, end: null, rooms, allDay: true, allDayDates: dates, uid: e.uid, title: e.title });
+      blocks.push({ start: null, end: null, rooms, allDay: true, allDayDates: dates, uid: e.uid, title: e.title, source: "calendar" });
       continue;
     }
 
@@ -295,7 +360,7 @@ export function toBusyBlocks(
       skipped.push({ uid: e.uid, title: e.title, reason: "zero-length" });
       continue;
     }
-    blocks.push({ start: e.start, end: e.end, rooms, allDay: false, allDayDates: [], uid: e.uid, title: e.title });
+    blocks.push({ start: e.start, end: e.end, rooms, allDay: false, allDayDates: [], uid: e.uid, title: e.title, source: "calendar" });
   }
 
   return { blocks, skipped };
@@ -324,12 +389,31 @@ export function toBusyBlocks(
  *                and it would surface as an unattributed warning forever — a
  *                real room misreported as a mystery. Slots are offered for
  *                `bookable` rooms alone, which is the filter below.
+ * @param approvedRequests  APPROVED booking requests (0096/0097) that overlap
+ *                the window. They block exactly like a calendar event and are
+ *                OPTIONAL — defaulting to [] is what keeps every existing
+ *                caller, and the 127-assertion suite, meaning precisely what
+ *                they meant before.
+ *
+ *                ⚠️ PENDING REQUESTS ARE NOT PASSED HERE, and that is the
+ *                owner's rule rather than an oversight (0096: two pending
+ *                requests for one slot is a normal, frequent state that the
+ *                owner decides between). A pending request that blocked would
+ *                let any visitor holding the link close a studio for everyone
+ *                by clicking three times.
+ *
+ *                An approved request that is ALSO already on the calendar —
+ *                the owner pasted the event after approving — blocks the same
+ *                slot twice, which removes it from `free` exactly once. There
+ *                is nothing to de-duplicate: `free` is what is LEFT, so two
+ *                reasons to remove a slot and one reason produce the same list.
  */
 export function computeAvailability(
   events: CalendarEvent[],
   liveSeries: LiveSeries[],
   knownStudios: Studio[],
-  win: AvailabilityWindow
+  win: AvailabilityWindow,
+  approvedRequests: ApprovedRequest[] = []
 ): AvailabilityResult {
   const rooms = knownStudios.filter((s) => s.bookable);
   const step = win.slotStepMinutes ?? 30;
@@ -340,7 +424,12 @@ export function computeAvailability(
   }
 
   // detection against the WHOLE list, offering against `rooms` — see above
-  const { blocks, skipped: allSkipped } = toBusyBlocks(events, knownStudios);
+  const { blocks: calendarBlocks, skipped: allSkipped } = toBusyBlocks(events, knownStudios);
+  // One list from here down, so a request and an event are indistinguishable to
+  // the grid: there is no second clash loop to keep in step with the first, and
+  // a future change to how overlap is decided cannot apply to one and not the
+  // other.
+  const blocks = calendarBlocks.concat(toRequestBlocks(approvedRequests));
 
   // ---- rooms a live series takes off the market entirely -------------------
   const roomsRefused: RefusedRoom[] = [];
@@ -406,6 +495,10 @@ export function computeAvailability(
     });
   }
   for (const b of blocks) {
+    // a request always has exactly one room and nothing to warn about; it is
+    // excluded by source rather than by "it happens to have a room", so the
+    // guarantee survives a malformed row reaching toRequestBlocks
+    if (b.source === "request") continue;
     if (b.rooms.length > 0) continue;
     if (b.allDay) {
       const inWindow = b.allDayDates.some((d) => d >= win.fromIsrael && d <= win.toIsrael);

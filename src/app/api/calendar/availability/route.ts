@@ -1,10 +1,6 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
-import { parseIcsText } from "@/lib/calendar/parse";
-import { findLiveSeriesInWindow } from "@/lib/calendar/series";
-import { computeAvailability, israelInstant } from "@/lib/calendar/availability";
-import { bookingWindowFor } from "@/lib/calendar/bookingWindow";
-import { STUDIOS } from "@/lib/calendar/studios";
+import { createClient, createTypedClient } from "@/lib/supabase/server";
+import { loadAvailability } from "@/lib/booking/availabilityServer";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET /api/calendar/availability — the internal availability check.
@@ -12,8 +8,14 @@ import { STUDIOS } from "@/lib/calendar/studios";
 //
 // READ ONLY, and in a stronger sense than usual: this route writes nothing
 // anywhere. No table, no `events` row, no calendar. It reads the ICS feed and
-// runs the pure computation over it. The ONLY database call is the session
-// lookup that authorises the caller.
+// the APPROVED booking requests, and runs the pure computation over both.
+//
+// ⚠️ Approved requests were added 23.9 (3ב) and they change what this route
+// MEANS: the owner's preview is no longer "what the calendar says", it is "what
+// a client would be offered". A request the owner approved this morning closes
+// its slot here immediately, before the event has been pasted into the
+// calendar — which is 0096's rule, and the reason the preview is trustworthy
+// at all. Pending requests do not block; see computeAvailability.
 //
 // Owner-only, using the gate that already exists — `profiles.role === "owner"`,
 // the same check as /api/settings/calendar-sync and /api/settings/accountant-email.
@@ -56,53 +58,22 @@ export async function GET(request: Request) {
     );
   }
 
-  const url = process.env.STUDIO_ICS_URL;
-  if (!url) {
-    return NextResponse.json(
-      { error: "STUDIO_ICS_URL לא מוגדר" },
-      { status: 500, headers: { "Cache-Control": "no-store" } }
-    );
-  }
-
-  // The window is computed HERE, from the server's clock, and never accepted
-  // from the caller: "not today" and "at most 8 weeks" are owner rules, not
-  // client preferences.
-  const { fromIsrael, toIsrael } = bookingWindowFor(new Date());
-
   try {
-    // ⚠️ ONE FETCH, DELIBERATELY. The obvious shape here is
-    // `fetchAndParseIcs(url)` for the events plus a second fetch for the raw
-    // text the series gate needs (EXDATE and RECURRENCE-ID never reach
-    // CalendarEvent). Two fetches are two different feeds: the owner moves an
-    // event between them and the busy blocks come from one calendar while the
-    // series refusals come from another. Nothing would error — the screen would
-    // just be quietly incoherent. fetchAndParseIcs is a two-line wrapper over
-    // fetch + parseIcsText, so the text is read once and both derive from it.
-    const icsText = await fetchIcsText(url);
-    const events = parseIcsText(icsText);
+    // ⚠️ THE SAME ASSEMBLY THE PUBLIC ROUTE USES — one feed read, one query for
+    // approved requests, one computation. The owner's preview and the client's
+    // screen must never disagree about what is free, and the only way to
+    // guarantee that is for neither to own the assembly.
+    const loaded = await loadAvailability(createTypedClient(), { now: new Date(), stepMinutes: step });
     const fetchedAt = new Date().toISOString();
-
-    const from = israelInstant(fromIsrael, 0, 0);
-    const to = new Date(israelInstant(toIsrael, 0, 0).getTime() + 86_400_000);
-    const liveSeries = findLiveSeriesInWindow(icsText, from, to, STUDIOS);
-
-    const result = computeAvailability(events, liveSeries, STUDIOS, {
-      fromIsrael,
-      toIsrael,
-      openDays: [0, 1, 2, 3, 4], // Sun–Thu; Friday and Saturday are closed
-      openHour: 9,
-      closeHour: 19,
-      slotMinutes: 90,
-      slotStepMinutes: step,
-    });
+    const result = loaded.result;
 
     return NextResponse.json(
       {
-        fromIsrael,
-        toIsrael,
+        fromIsrael: loaded.fromIsrael,
+        toIsrael: loaded.toIsrael,
         step,
         fetchedAt,
-        rooms: STUDIOS.filter((s) => s.bookable).map((s) => s.canonical),
+        rooms: loaded.rooms,
         // Date objects would serialise to ISO strings anyway; the Israeli
         // wall-clock strings are what the screen shows, so they are what
         // crosses the wire. No timezone maths in the browser.
@@ -127,13 +98,4 @@ export async function GET(request: Request) {
       { status: 502, headers: { "Cache-Control": "no-store" } }
     );
   }
-}
-
-// Read-only fetch of the secret calendar URL, same as fetchAndParseIcs does —
-// never writes to it. Kept local so the single-fetch guarantee above is visible
-// in one place.
-async function fetchIcsText(url: string): Promise<string> {
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) throw new Error(`קריאת יומן נכשלה: ${res.status}`);
-  return res.text();
 }

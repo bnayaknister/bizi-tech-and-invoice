@@ -49,7 +49,12 @@ export async function updateSession(request: NextRequest) {
       // public client review links + their response endpoint — account-less,
       // token is the only credential; must never bounce to /pending
       path.startsWith("/r/") ||
-      path.startsWith("/api/r/");
+      path.startsWith("/api/r/") ||
+      // public client BOOKING links + their two endpoints (3ב) — account-less,
+      // the token is the only credential, and a signed-in-but-unapproved user
+      // must not be bounced to /pending off a link a client sent them
+      path.startsWith("/b/") ||
+      path.startsWith("/api/book/");
     if (!open) {
       const { data: prof } = await supabase.from("profiles").select("approved").eq("id", user.id).maybeSingle();
       if (!prof?.approved) {
