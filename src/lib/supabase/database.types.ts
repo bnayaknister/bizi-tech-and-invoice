@@ -197,6 +197,7 @@ export type Database = {
           decided_at: string | null
           decided_by: string | null
           end_at: string
+          guest: string | null
           id: string
           link_id: string
           note: string | null
@@ -210,6 +211,7 @@ export type Database = {
           decided_at?: string | null
           decided_by?: string | null
           end_at: string
+          guest?: string | null
           id?: string
           link_id: string
           note?: string | null
@@ -223,6 +225,7 @@ export type Database = {
           decided_at?: string | null
           decided_by?: string | null
           end_at?: string
+          guest?: string | null
           id?: string
           link_id?: string
           note?: string | null
