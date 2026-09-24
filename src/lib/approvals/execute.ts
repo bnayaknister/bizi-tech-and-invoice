@@ -1,4 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "@/lib/supabase/database.types";
+import {
+  mergeBookingsInto,
+  showDeleteBlockedByBookings,
+  supabaseMergeOps,
+  SHOW_HAS_BOOKINGS,
+} from "@/lib/booking/showLifecycle";
 
 // The destructive-action executors. These run ONLY from the approval-review
 // route, and ONLY with the service-role (admin) client, and ONLY after a
@@ -31,7 +38,17 @@ export async function executeApproval(
   admin: SupabaseClient,
   action: ApprovalAction,
   entityId: string | null,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  /**
+   * The MANAGER who approved this request — stamped onto `revoked_by` when a
+   * merge revokes the source show's booking links (24.9).
+   *
+   * Optional, and null is a legitimate value rather than a missing one: the
+   * column is nullable, and "a merge revoked this link" is true whether or not
+   * we know who pressed the button. Making it required would have meant
+   * touching every existing call site for a field only one branch reads.
+   */
+  actorId: string | null = null
 ): Promise<ExecResult> {
   switch (action) {
     case "show_archive": {
@@ -51,6 +68,17 @@ export async function executeApproval(
         .eq("show_id", entityId);
       if ((count ?? 0) > 0) {
         return { ok: false, error: `לתוכנית יש ${count} הפקות — אי אפשר למחוק, אפשר לארכב או למזג` };
+      }
+      // ⚠️ the same booking guard as the direct route (24.9). 0096's
+      // link_id RESTRICT is non-deferrable, so a show with requests either
+      // aborts on a raw FK error or loses its decision history — see
+      // showDeleteBlockedByBookings.
+      const bookings = await admin
+        .from("booking_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("show_id", entityId);
+      if (showDeleteBlockedByBookings(bookings.count)) {
+        return { ok: false, error: SHOW_HAS_BOOKINGS };
       }
       const { error } = await admin.from("shows").delete().eq("id", entityId);
       if (error) return { ok: false, error: error.message };
@@ -77,6 +105,16 @@ export async function executeApproval(
       if (aliasErr) return { ok: false, error: aliasErr.message };
       const { error: repointErr } = await admin.from("productions").update({ show_id: targetId }).eq("show_id", sourceId);
       if (repointErr) return { ok: false, error: repointErr.message };
+      // ⚠️ THE BOOKINGS MOVE BEFORE THE DELETE, AND THE DELETE IS SKIPPED IF
+      // THEY DO NOT. There is no transaction here — supabase-js is one request
+      // per statement — so the order is the guarantee: links, then requests,
+      // then the delete, each step leaving a state a re-run can finish. See
+      // mergeBookingsInto.
+      const moved = await mergeBookingsInto(
+        supabaseMergeOps(admin as SupabaseClient<Database>),
+        { sourceId, targetId, userId: actorId }
+      );
+      if (!moved.ok) return { ok: false, error: moved.error };
       const { error: delErr } = await admin.from("shows").delete().eq("id", sourceId);
       if (delErr) return { ok: false, error: delErr.message };
       return { ok: true, detail: { target_aliases: newAliases } };

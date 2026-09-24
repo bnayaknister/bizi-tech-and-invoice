@@ -77,6 +77,10 @@ const MODULE_THEME: Record<string, { card: CardAccent; tile: IconAccent }> = {
   users: { card: "violet", tile: "violet" },
   settings: { card: "violet", tile: "violet" },
   approvals: { card: "rose", tile: "rose" },
+  // cyan like the availability screen it belongs beside, with the lighter tile
+  // so the two are a pair rather than a duplicate — the same device misc uses
+  // to sit next to productions without being mistaken for it
+  bookings: { card: "cyan", tile: "violet-light" },
   archive: { card: "muted", tile: "muted" },
 };
 

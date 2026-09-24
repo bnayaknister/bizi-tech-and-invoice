@@ -104,7 +104,7 @@ export const STATUS_LABEL: Record<string, string> = {
  * that would show a client 06:00 for a recording at 09:00. The same trap
  * bookingWindow.ts documents at length, in its smaller form.
  */
-function israelHHMM(instant: Date): string {
+export function israelHHMM(instant: Date): string {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Jerusalem",
     hour: "2-digit",

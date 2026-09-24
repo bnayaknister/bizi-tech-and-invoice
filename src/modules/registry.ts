@@ -10,6 +10,7 @@ import { usersModule } from "@/modules/users";
 import { archiveModule } from "@/modules/archive";
 import { settingsModule } from "@/modules/settings";
 import { availabilityModule } from "@/modules/availability";
+import { bookingsModule } from "@/modules/bookings";
 import { approvalsModule } from "@/modules/approvals";
 import { documentsModule } from "@/modules/documents";
 import { docRegistryModule } from "@/modules/doc-registry";
@@ -42,6 +43,11 @@ export const MODULES: ModuleDef[] = [
   // read occasionally, and archive/settings keep the last two slots the note
   // above anchors them to.
   availabilityModule,
+  // immediately after זמינות אולפנים, and before archive/settings keep the last
+  // two slots the note above anchors them to: the two screens are one subject
+  // read two ways — what is free, and who asked for it — and bookings is the
+  // one of the pair that carries a real count the owner navigates by.
+  bookingsModule,
   archiveModule,
   settingsModule,
 ];

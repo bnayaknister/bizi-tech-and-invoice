@@ -136,8 +136,17 @@ console.log("\n=== the card did not displace or duplicate anything ===");
   check("availability is registered exactly once", MODULES.filter((m) => m.key === "availability").length, 1);
 
   const keys = MODULES.map((m) => m.key);
+  // ⚠️ WIDENED FROM slice(-3) TO slice(-4) ON 24.9, when bookingsModule joined
+  // the owner-only cluster between availability and archive. The assertion's
+  // INTENT is unchanged and is still what is checked: availability sits inside
+  // the owner-only tail, and archive/settings still hold the last two slots the
+  // registry comment anchors them to. Only the length of the tail moved.
   check("it sits with the owner-only cluster, before archive/settings",
-    keys.slice(-3), ["availability", "archive", "settings"]);
+    keys.slice(-4), ["availability", "bookings", "archive", "settings"]);
+  // said separately, so a future module added to the cluster fails the line
+  // above (which is a deliberate decision to review) without weakening this,
+  // which is the rule the registry comment actually states
+  check("archive and settings still hold the last two slots", keys.slice(-2), ["archive", "settings"]);
 
   // the counts the owner would notice: one card added for an owner, none for
   // anyone else

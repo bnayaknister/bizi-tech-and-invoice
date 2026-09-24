@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createAdminClient, createTypedAdminClient } from "@/lib/supabase/admin";
+import { mergeBookingsInto, supabaseMergeOps } from "@/lib/booking/showLifecycle";
 
 // The one merge in the system: an explicit, rare, two-show merge.
 // No algorithm, no suggestions (owner decision 2026-07-13).
@@ -57,6 +58,27 @@ export async function POST(request: Request) {
     .update({ show_id: targetId })
     .eq("show_id", sourceId);
   if (repointErr) return NextResponse.json({ error: repointErr.message }, { status: 400 });
+
+  // ⚠️ THE BOOKINGS MOVE BEFORE THE DELETE, AND THE DELETE IS SKIPPED IF THEY
+  // DO NOT (24.9). Until now this route did not know booking_links or
+  // booking_requests existed, and 0096's link_id RESTRICT is non-deferrable —
+  // so deleting the source either aborted on a raw FK error or took its
+  // decision history with it.
+  //
+  // 🔴 NOT A TRANSACTION. supabase-js issues one HTTP request per statement, so
+  // these two moves and the DELETE below are three independent statements, and
+  // wrapping them would need a Postgres function (a schema change, which this
+  // stage does not have). The ORDER is the guarantee instead: links, then
+  // requests, then the delete — each stopping point leaves a state that
+  // re-running the merge completes. See mergeBookingsInto.
+  const movedBookings = await mergeBookingsInto(supabaseMergeOps(createTypedAdminClient()), {
+    sourceId,
+    targetId,
+    userId: user.id,
+  });
+  if (!movedBookings.ok) {
+    return NextResponse.json({ error: movedBookings.error }, { status: 400 });
+  }
 
   const { error: deleteErr, count } = await supabase
     .from("shows")

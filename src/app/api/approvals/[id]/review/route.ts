@@ -61,7 +61,10 @@ export async function POST(request: Request, { params }: { params: { id: string 
     admin,
     req.action_type,
     (req.entity_id as string | null) ?? null,
-    (req.payload as Record<string, unknown>) ?? {}
+    (req.payload as Record<string, unknown>) ?? {},
+    // the approving manager — stamped on revoked_by if a merge revokes the
+    // source show's booking links
+    user.id
   );
   if (!result.ok) {
     // the action failed (e.g. a show that still has productions) — leave the

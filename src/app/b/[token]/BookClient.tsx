@@ -132,17 +132,20 @@ export default function BookClient({
         return;
       }
       const r = body.request;
+      // 🔴 EVERY FIELD BELOW COMES FROM `r` — THE SERVER'S ANSWER — AND NOT ONE
+      // FROM THE FORM STATE. That is the fix for the 24.9 bug: a re-send of an
+      // existing slot is answered with the row as it now stands in the
+      // database, so the confirmation, the WhatsApp text and the stored request
+      // cannot say three different things. Reading `guest` (the input) here
+      // instead of `r.guest` is precisely what broke it.
       setSent({ dateIsrael: r.dateIsrael, startIsrael: r.startIsrael, studio: r.studio, guest: r.guest });
-      // Appended locally rather than re-fetched: the row we just created is the
-      // row the server confirmed, and a second round trip could only disagree
-      // with it. A duplicate answer carries the EXISTING id, so the list does
-      // not grow a second copy of the same request.
-      setRequests((prev) =>
-        prev.some((p) => p.id === r.id)
-          ? prev
-          : [
-              ...prev,
-              {
+      // Merged locally rather than re-fetched: the row the server just
+      // confirmed IS the row, and a second round trip could only disagree with
+      // it. A duplicate answer carries the EXISTING id — so it REPLACES that
+      // entry rather than being skipped, or the list would keep showing the
+      // guest name the client just corrected.
+      setRequests((prev) => {
+        const view: RequestView = {
                 id: r.id,
                 // the SAME two helpers myRequests uses on the server — the one
                 // row added in the browser must be formatted by the same code
@@ -154,9 +157,11 @@ export default function BookClient({
                 studio: r.studio,
                 guest: r.guest,
                 statusLabel: "ממתינה לאישור",
-              },
-            ]
-      );
+        };
+        return prev.some((p) => p.id === r.id)
+          ? prev.map((p) => (p.id === r.id ? view : p))
+          : [...prev, view];
+      });
       // The slot is gone for everyone the moment it is approved, and the grid
       // is stale the moment anything is requested. Re-read rather than guess.
       void load();

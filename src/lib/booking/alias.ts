@@ -38,17 +38,37 @@ function containsVariant(text: string, variant: string): boolean {
 }
 
 /**
- * True when `text` names no room at all.
+ * Does this text name a room — any room, any spelling?
  *
  * Tested against the WHOLE studio list, `bookable` included and excluded
  * alike — the same distinction studios.ts exists to protect. TLV is not
  * bookable and a show called "TLV Talks" still cannot carry a clean title,
  * because `extractStudioAndGuest` recognises TLV wherever it appears.
+ *
+ * TWO CALLERS, ONE DEFINITION. `isCleanAlias` below asks it about a show's
+ * name, to decide whether the show may have a booking link at all. The
+ * approval dialog asks it about a GUEST name, to decide whether to warn the
+ * owner that the sync may read the room wrong. The two questions must never
+ * drift apart: a guest the dialog calls safe but the parser finds a room in is
+ * exactly the silent wrong-room production this whole guard exists to prevent.
+ */
+export function namesAnyRoom(text: string | null | undefined, studios: Studio[]): boolean {
+  const t = (text ?? "").replace(/\s+/g, " ").trim();
+  if (t === "") return false;
+  return studios.some((s) => s.variants.some((v) => v.trim() !== "" && containsVariant(t, v)));
+}
+
+/**
+ * True when `text` names no room at all AND is not empty.
+ *
+ * ⚠️ Empty is NOT clean: a show with no name cannot carry a title either, and
+ * `namesAnyRoom("")` is correctly false. The two differ on exactly that input,
+ * which is why this is not simply the negation.
  */
 export function isCleanAlias(text: string | null | undefined, studios: Studio[]): boolean {
   const t = (text ?? "").replace(/\s+/g, " ").trim();
   if (t === "") return false;
-  return !studios.some((s) => s.variants.some((v) => v.trim() !== "" && containsVariant(t, v)));
+  return !namesAnyRoom(t, studios);
 }
 
 /**

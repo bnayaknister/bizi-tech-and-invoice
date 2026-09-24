@@ -112,10 +112,20 @@ async function loadApprovedRequests(
  * `now` is a parameter so the window is testable; the callers pass new Date().
  * The window itself is never accepted from a caller's query string — "not
  * today" and "at most eight weeks" are owner rules, not client preferences.
+ *
+ * ⚠️ `includeApproved: false` ASKS A DIFFERENT QUESTION, and exactly one caller
+ * needs it: the approval route. When the owner approves request X, X itself is
+ * about to become an approved request — and it is already one if they
+ * double-clicked. Asking "is this slot free including approved requests?"
+ * would then answer "no, because of X", and no request could ever be approved.
+ * What the approval must verify is narrower and is the thing the database
+ * cannot check for itself: **is the slot still free IN THE CALENDAR**. The
+ * overlap between two approved requests is 0096's EXCLUDE constraint's job,
+ * and it does it at the moment of the write, where a race cannot slip past.
  */
 export async function loadAvailability(
   admin: SupabaseClient<Database>,
-  opts: { now: Date; stepMinutes: number }
+  opts: { now: Date; stepMinutes: number; includeApproved?: boolean }
 ): Promise<LoadedAvailability> {
   const url = process.env.STUDIO_ICS_URL;
   if (!url) throw new Error("STUDIO_ICS_URL לא מוגדר");
@@ -130,7 +140,8 @@ export async function loadAvailability(
   const icsText = await fetchIcsText(url);
   const events = parseIcsText(icsText);
   const liveSeries = findLiveSeriesInWindow(icsText, windowStart, windowEnd, STUDIOS);
-  const approved = await loadApprovedRequests(admin, windowStart, windowEnd);
+  const approved =
+    opts.includeApproved === false ? [] : await loadApprovedRequests(admin, windowStart, windowEnd);
 
   const result = computeAvailability(
     events,

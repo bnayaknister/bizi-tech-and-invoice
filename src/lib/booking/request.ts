@@ -204,6 +204,41 @@ export function linkRateLimitReached(rowsForLink: ExistingRequest[], now: Date):
   return recent.length >= MAX_REQUESTS_PER_LINK_PER_DAY;
 }
 
+export type DuplicateWrite = { id: string; guest: string | null; note: string | null };
+
+/**
+ * What to write onto a request the client has just re-sent.
+ *
+ * ═══ THE BUG THIS FIXES — found by hand 24.9 ═══
+ * A pending request carried the guest "עידן". The client re-sent the SAME slot
+ * with "יובל EY". `findDuplicatePending` matched, the route returned the
+ * existing row, and the row kept "עידן" — while the confirmation the client
+ * read, and the WhatsApp message they sent the studio, said "יובל EY". The
+ * request and the message about it disagreed, and the owner would have found
+ * out at the recording.
+ *
+ * So a re-send is an EDIT, not a no-op. The client's latest intent wins: it is
+ * the most recent thing they told us, and there is no other way for them to
+ * correct a name — the public page offers no edit control, and 0096 stores no
+ * contact details, so they cannot phone in a correction either.
+ *
+ * ⚠️ THE SLOT IS NOT WRITTEN, only the guest and the note. A re-send that
+ * matched is by definition the same room and the same moment — that is what
+ * made it a duplicate — so re-writing them could only ever be a no-op or a
+ * bug. `status`, `created_at` and the decision columns are untouched for the
+ * same reason: this is still the same request, waiting since the same moment.
+ *
+ * ⚠️ AND IT DOES NOT COUNT AGAINST THE LIMITS. No row is created, so nothing
+ * has been added to the three-pending ceiling or the ten-per-day rate. A client
+ * fixing a typo must not be answered "you have too many requests".
+ */
+export function duplicateWrite(
+  existing: ExistingRequest,
+  incoming: { guest: string | null; note: string | null }
+): DuplicateWrite {
+  return { id: existing.id, guest: incoming.guest, note: incoming.note };
+}
+
 /**
  * The pending request this one would duplicate, or null.
  *

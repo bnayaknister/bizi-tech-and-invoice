@@ -4,6 +4,7 @@ import { resolveBookingLink } from "@/lib/booking/links";
 import { loadAvailability } from "@/lib/booking/availabilityServer";
 import { PUBLIC_SLOT_STEP_MINUTES } from "@/lib/booking/publicView";
 import {
+  duplicateWrite,
   findDuplicatePending,
   linkRateLimitReached,
   LINK_RATE_WINDOW_MS,
@@ -125,6 +126,26 @@ export async function POST(request: Request, { params }: { params: { token: stri
   // being bypassed: returning the existing row is the honest answer.
   const duplicate = findDuplicatePending(pendingForShow, { studio, start: slot.start });
   if (duplicate) {
+    // ⚠️ A RE-SEND IS AN EDIT (bug found by hand 24.9). Returning the existing
+    // row unchanged left the stored guest at "עידן" while the client's own
+    // confirmation and their WhatsApp message said "יובל EY" — the request and
+    // the message about it disagreeing, with nothing to reveal it until the
+    // recording. The latest intent wins; see duplicateWrite for why that is the
+    // only correction channel the client has.
+    const write = duplicateWrite(duplicate, { guest: guest.value, note: note.value });
+    const { error: updErr } = await admin
+      .from("booking_requests")
+      .update({ guest: write.guest, note: write.note })
+      .eq("id", write.id)
+      // re-asserted in the WHERE clause, not trusted from the row we read a
+      // moment ago: an owner who approved or declined it in between must not
+      // have their decision quietly overwritten by a client's retry.
+      .eq("status", "pending");
+    if (updErr) {
+      console.error("book/request: עדכון בקשה כפולה נכשל", updErr);
+      return fail(COPY.generic, 500);
+    }
+
     return NextResponse.json(
       {
         ok: true,
@@ -135,7 +156,9 @@ export async function POST(request: Request, { params }: { params: { token: stri
           dateIsrael: slot.dateIsrael,
           startIsrael: slot.startIsrael,
           endIsrael: slot.endIsrael,
-          guest: guest.value,
+          // the value now IN the row — which is what makes the confirmation and
+          // the WhatsApp text agree with the database again
+          guest: write.guest,
           status: "pending",
         },
       },
