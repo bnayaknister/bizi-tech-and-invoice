@@ -6,8 +6,19 @@ import { useDrawer } from "@/components/EntityDrawer";
 import AssignDocModal from "@/components/AssignDocModal";
 import NewDocModal from "./NewDocModal";
 import BundleFromShowModal from "@/components/BundleFromShowModal";
+import BundleBar from "@/components/BundleBar";
 import { MORNING_DOC_NAME, REGISTRY_TAB_LABEL, type RegistryTab } from "@/lib/morning/types";
 import { displayDate, displayDateTime } from "@/lib/dates";
+import {
+  OPENNESS_TITLE,
+  bundleNet,
+  bundleRequestBody,
+  dealSelectable,
+  isMixedSelection,
+  parentOpenness,
+  sumSourceNet,
+  taxSelectable,
+} from "@/lib/documents/registrySelection";
 
 const BILLING_TYPES = [300, 305, 320, 400]; // deal / tax / tax-receipt / receipt — real חיוב, linkable to a job
 const isBilling = (t: number) => BILLING_TYPES.includes(t);
@@ -199,49 +210,9 @@ function whatsappShareUrl(r: DocRow): string {
   return `https://wa.me/?text=${encodeURIComponent(text)}`;
 }
 
-/**
- * Can this document still father a tax document?
- *
- * documents.status is Morning's own state, refreshed on every pull, and it is a
- * perfect predictor of the builder's openness gate — verified across 609
- * documents (owner 2026-08-09): status=0 always carries a ref containing BOTH
- * 305 and 320; status=1 and status=2 always carry an empty ref. So the screen
- * reads `status` and never `raw->'ref'`, which would mean hauling heavy jsonb
- * across a 5,000-row query to learn the same thing.
- *
- * The proportion is the point: only 23 of those 609 are open. Until now the
- * button lit on all of them, so it was mostly an invitation to a 409.
- *
- * null / anything unexpected = we have no state for it (an app-issued document
- * carries no status until the next pull — issue.ts never writes one). The
- * builder ALLOWS that case and flags it, so the button stays lit and the chip
- * says so rather than pretending to know.
- */
-type Openness = { open: boolean; label: string; tone: "open" | "closed" | "unknown" };
-
-function parentOpenness(status: number | null): Openness {
-  // null = never pulled, so we genuinely do not know. Everything else Morning
-  // gave us a state for.
-  if (status === null || status === undefined) {
-    return { open: true, label: "טרם נמשך ממורנינג", tone: "unknown" };
-  }
-  if (status === 0) return { open: true, label: "פתוח", tone: "open" };
-  if (status === 1) return { open: false, label: "נסגר אוטומטית", tone: "closed" };
-  if (status === 2) return { open: false, label: "נסגר ידנית", tone: "closed" };
-  // Any OTHER code counts as closed, and that is deliberate. We met status=4 on
-  // five 305s (2026-08-11) having only ever seen 0/1/2 — and its ref was empty,
-  // exactly like 1 and 2. Treating an unrecognised code as "unknown" would light
-  // the button on a document the builder is about to refuse; treating it as
-  // closed matches every observation and fails safe. Only 0 has ever carried a
-  // non-empty ref.
-  return { open: false, label: "סגור", tone: "closed" };
-}
-
-const OPENNESS_TITLE: Record<Openness["tone"], string> = {
-  open: "פתוח במורנינג — אפשר להנפיק על סמכו מסמך מס",
-  closed: "סגור במורנינג — כבר לא ניתן להנפיק על סמכו",
-  unknown: "המסמך טרם נמשך ממורנינג, ולכן מצבו אינו ידוע. אפשר לנסות — הבדיקה תיעשה בשרת.",
-};
+// parentOpenness / Openness / OPENNESS_TITLE now live in
+// lib/documents/registrySelection.ts, beside the selection rules that read
+// them — pure, and therefore testable without this component.
 
 // tab order = the owner's five, then "other", then the unmatched bucket which
 // is a client-match state, not a Morning type (owner: "לשונית לא משויך")
@@ -262,24 +233,8 @@ const SOURCE_LABEL: Record<DocRow["source"], string> = { app: "מהאפליקצ�
 const money = (n: number | null, cur: string) =>
   n === null ? "—" : new Intl.NumberFormat("he-IL", { style: "currency", currency: cur || "ILS", maximumFractionDigits: 0 }).format(n);
 
-/**
- * Σ of the queue rows' net amounts — the figure the bundled child will carry.
- *
- * ALL-OR-NOTHING: one missing `pending_amount` returns null, and `money` renders
- * that as "—". Skipping the row instead would print a total that is short by
- * exactly the line nobody can see, on a screen whose whole job is to say what
- * is about to be issued. Substituting `amount` (the gross) would be worse
- * still — a bigger number wearing the net's label.
- *
- * The case is close to unreachable: a selectable row has a queue row by
- * definition, and createTaxFromParents refuses a source with no amount
- * ("אין סכום — לא ניתן לסכם את מסמכי המקור") before it builds anything. So "—"
- * here previews a refusal rather than hiding one.
- */
-const sumPendingAmounts = (rows: DocRow[]): number | null =>
-  rows.some((r) => r.pending_amount === null)
-    ? null
-    : rows.reduce((s, r) => s + (r.pending_amount ?? 0), 0);
+// bundleNet / sumSourceNet now live in lib/documents/registrySelection.ts,
+// beside the predicates that decide which rows they are summing.
 
 export default function RegistryClient({
   rows,
@@ -349,9 +304,20 @@ export default function RegistryClient({
   // createTaxFromParents has taken N parents since it was written, and the
   // route caps only the `documentIds` door — `sourceIds` never had a limit.
   const [childDoc, setChildDoc] = useState<{ rows: DocRow[]; action: "tax" | "receipt" } | null>(null);
-  // Bundled tax documents: which queue rows are ticked. Keyed by pending_id —
-  // that IS what goes out as sourceIds, so the state holds the thing it sends
-  // rather than a row id that would have to be re-resolved at submit time.
+  /**
+   * Bundled documents: which rows are ticked. Keyed by `DocRow.id`.
+   *
+   * ⚠️ WAS KEYED BY `pending_id`, "so the state holds the thing it sends". That
+   * stopped being possible on 2026-10-04, when a pulled deal invoice became
+   * selectable: a raw row has NO queue row, so its pending_id is null and a
+   * Set keyed on it could hold at most one of them (and `pending_id!` asserted
+   * a value that was not there). `id` is the one identity both doors have.
+   *
+   * The id → what-gets-sent mapping now happens at SUBMIT time, in the modal's
+   * one branch that already had to choose a door — which is also the only place
+   * that can choose correctly, because the door is a property of the row and
+   * not of the tick.
+   */
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // in "לא משויך", quotes/orders/credits are noise for the bookkeeper — show
   // only real billing docs by default (owner spec 2026-07-27), the rest behind a toggle
@@ -436,7 +402,7 @@ export default function RegistryClient({
     if (busy || pendingIds.length === 0) return;
     // the sum is read BEFORE the await: on success the selection is cleared,
     // and the confirmation has to state the figure the document carries
-    const selectedTotal = sumPendingAmounts(rowsToBundle);
+    const selectedTotal = sumSourceNet(rowsToBundle);
     const currency = rowsToBundle[0]?.currency ?? "ILS";
     setBusy("bundle-deal");
     setMsg(null);
@@ -571,57 +537,9 @@ export default function RegistryClient({
     return Array.from(by.entries()).sort((a, b) => b[1] - a[1]);
   }, [shown]);
 
-  /**
-   * May this row join a bundled tax document?
-   *
-   * The conditions are the "צור חשבונית מס" button's own, plus one: the row
-   * must go through the `sourceIds` door. A `raw` row (raised by hand in
-   * Morning, no queue row) travels as `documentIds`, which the route caps at
-   * one and refuses to mix with sourceIds — so a checkbox on it could only ever
-   * produce a 400. It keeps its single-row button and gets no checkbox at all:
-   * a control that cannot work is worse than a control that is not there.
-   *
-   * `over_ceiling` needs no thought here and that is not an accident — the
-   * ceiling lives in mapPullDocToSource and is only ever set on a raw row
-   * (page.tsx's `over-ceiling` state), which this predicate has already
-   * excluded. Selectable rows are therefore always ceiling-free, and the
-   * handshake below stays exactly the single-row path it is today.
-   */
-  const taxSelectable = (r: DocRow): boolean =>
-    canPull &&
-    r.buildable === "pending" &&
-    !!r.pending_id &&
-    r.child_actions.includes("tax") &&
-    parentOpenness(r.status).open;
-
-  /**
-   * May this work order join a bundled deal invoice?
-   *
-   * The single-row "צור חשבון עסקה" button's own condition (:764), and nothing
-   * more — one predicate, two readers, the same rule the tax side keeps.
-   *
-   * `buildable` is deliberately ABSENT, unlike taxSelectable: it is the tax
-   * path's verdict (mapper state, net ceiling) and says nothing about this
-   * builder, which is keyed on a queue row instead — the reason the single
-   * button's comment (:754-763) gives for gating itself on `pending_id`. A
-   * checkbox that asked for `buildable` here would hide exactly the orders this
-   * feature exists to fold: 10303/10304/10305 are `buildable: null` (no tax
-   * child is offered on a work order that has no job stamped yet) while their
-   * deal-invoice button is live.
-   *
-   * `has_live_deal_child` is the idempotency half, added 2026-09-08 after the
-   * owner bundled three orders and — seeing nothing change, because nothing on
-   * these rows CAN change until the child is issued and pulled — clicked twice
-   * more into two 409s. A tick offered on work already billed is the screen
-   * promising what the server will refuse. The server gate stays exactly where
-   * it is; this is the first of two, not a replacement for it.
-   */
-  const dealSelectable = (r: DocRow): boolean =>
-    canPull &&
-    !!r.pending_id &&
-    r.child_actions.includes("deal_invoice") &&
-    !r.has_live_deal_child &&
-    parentOpenness(r.status).open;
+  // taxSelectable / dealSelectable now live in lib/documents/registrySelection.ts
+  // — pure, testable, and the only place the rules are written. They take
+  // `canPull` rather than closing over it, which is what made them movable.
 
   // the checkbox column exists only where bundling is on the table — deal
   // invoices fold into one tax document (cac681b), work orders into one deal
@@ -630,7 +548,7 @@ export default function RegistryClient({
   const selectMode = canPull && (tab === "deal_invoice" || tab === "work_order");
   const bundleAction: "tax" | "deal_invoice" = tab === "work_order" ? "deal_invoice" : "tax";
   const rowSelectable = (r: DocRow): boolean =>
-    bundleAction === "deal_invoice" ? dealSelectable(r) : taxSelectable(r);
+    bundleAction === "deal_invoice" ? dealSelectable(r, canPull) : taxSelectable(r, canPull);
 
   /** How many jobs a BUNDLED document covers. 0 = not a bundle. */
   const bundleSize = (r: DocRow): number => r.bundle_job_ids?.length ?? 0;
@@ -662,9 +580,11 @@ export default function RegistryClient({
   // survive in `selected`, but a work order can never satisfy taxSelectable and
   // is not in `shown` on the deal-invoice tab either, so the bar empties rather
   // than carrying a selection across two different actions.
-  const selectedRows = shown.filter(
-    (r) => r.pending_id && selected.has(r.pending_id) && rowSelectable(r)
-  );
+  const selectedRows = shown.filter((r) => selected.has(r.id) && rowSelectable(r));
+
+  // Homogeneity, through the module's own rule — see isMixedSelection there
+  // for why the screen blocks this rather than letting it become a 400.
+  const mixedSelection = isMixedSelection(selectedRows);
 
   /**
    * Is a selection live that this row's own button would contradict?
@@ -689,7 +609,11 @@ export default function RegistryClient({
   const contradictsSelection = (r: DocRow, action: ChildAction): boolean =>
     selectMode &&
     action === bundleAction &&
-    selectedRows.some((x) => x.pending_id !== r.pending_id);
+    // `id` and not `pending_id`: a raw row's pending_id is null, so comparing
+    // it put EVERY raw row's button in "some other row is ticked" the moment a
+    // single raw row was ticked — including its own. The row id is the identity
+    // the selection is keyed on now, and it is the one that exists on both doors.
+    selectedRows.some((x) => x.id !== r.id);
 
   /** The sentence a dimmed row button carries, in the tab's own noun. */
   const bundleInsteadText = (): string =>
@@ -697,11 +621,11 @@ export default function RegistryClient({
       bundleAction === "deal_invoice" ? "הזמנות" : "חשבונות עסקה"
     } — השתמשי בכפתור המאוגד למעלה`;
 
-  function toggleSelected(pendingId: string) {
+  function toggleSelected(rowId: string) {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(pendingId)) next.delete(pendingId);
-      else next.add(pendingId);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
       return next;
     });
   }
@@ -950,50 +874,23 @@ export default function RegistryClient({
         </div>
       )}
 
-      {/* The bundling bar. Its own row rather than another button in the
-          controls above: it is a MODE the operator entered by ticking boxes,
-          and it has to carry the count and the sum — the two numbers that say
-          what is about to be created. One selected row is not a bundle, so it
-          appears at two and the single-row button keeps that case. */}
-      {selectMode && selectedRows.length >= 2 && (
-        <div className="flex items-center justify-between gap-3 mb-3 text-xs border border-[var(--rule2)] rounded-xl px-3 py-2">
-          <span>
-            <span className="font-bold">
-              נבחרו {selectedRows.length}{" "}
-              {bundleAction === "deal_invoice" ? "הזמנות עבודה" : "חשבונות עסקה"}
-            </span>
-            <span className="text-[var(--faint)]">
-              {" · "}
-              {money(sumPendingAmounts(selectedRows), selectedRows[0]?.currency ?? "ILS")}
-            </span>
-          </span>
-          <span className="flex items-center gap-2">
-            <button
-              onClick={() => setSelected(new Set())}
-              className="rounded-lg px-3 py-1 border border-[var(--rule)] text-[var(--faint)]"
-            >
-              נקה בחירה
-            </button>
-            {bundleAction === "deal_invoice" ? (
-              <button
-                onClick={() => convertBundleToDealInvoice(selectedRows)}
-                disabled={busy === "bundle-deal"}
-                className="font-bold rounded-lg px-3 py-1 bg-[var(--signal)] text-white disabled:opacity-40"
-                title="חשבון עסקה אחד שסוגר את כל ההזמנות שנבחרו"
-              >
-                צור חשבון עסקה מאוגד ({selectedRows.length})
-              </button>
-            ) : (
-              <button
-                onClick={() => setChildDoc({ rows: selectedRows, action: "tax" })}
-                className="font-bold rounded-lg px-3 py-1 bg-[var(--signal)] text-white"
-                title="חשבונית מס אחת שסוגרת את כל המסמכים שנבחרו"
-              >
-                צור חשבונית מס מאוגדת ({selectedRows.length})
-              </button>
-            )}
-          </span>
-        </div>
+      {/* The bundling bar — BundleBar, which is pure and separately
+          render-tested (the count assertions live there). Its visibility rule
+          stays with it: fewer than two ticked rows is not a bundle. */}
+      {selectMode && (
+        <BundleBar
+          rows={selectedRows}
+          action={bundleAction}
+          mixed={mixedSelection}
+          busy={busy === "bundle-deal"}
+          currency={selectedRows[0]?.currency ?? "ILS"}
+          onClear={() => setSelected(new Set())}
+          onBundle={() =>
+            bundleAction === "deal_invoice"
+              ? convertBundleToDealInvoice(selectedRows)
+              : setChildDoc({ rows: selectedRows, action: "tax" })
+          }
+        />
       )}
 
       {shown.length === 0 ? (
@@ -1028,8 +925,9 @@ export default function RegistryClient({
                       {rowSelectable(r) && (
                         <input
                           type="checkbox"
-                          checked={selected.has(r.pending_id!)}
-                          onChange={() => toggleSelected(r.pending_id!)}
+                          data-bundle-tick={r.id}
+                          checked={selected.has(r.id)}
+                          onChange={() => toggleSelected(r.id)}
                           title={
                             bundleAction === "deal_invoice"
                               ? "כלול בחשבון עסקה מאוגד"
@@ -1478,10 +1376,14 @@ type BuiltPayload = {
  * therefore renders and posts byte-for-byte what it did yesterday; the multi
  * blocks are additive and appear only above one.
  *
- * The ceiling handshake is untouched and reachable only in the single case:
- * `over_ceiling` is set exclusively on a `raw` row, and taxSelectable refuses
- * those, so a bundle can never carry one. That is checked, not assumed — the
- * predicate says so and this comment is the second place it is written down.
+ * The ceiling handshake is untouched and reachable only in the single case.
+ * `over_ceiling` is set exclusively on a `raw` row, and since 2026-10-04 raw
+ * rows ARE selectable — so the thing that keeps the handshake single is no
+ * longer "no raw row can be ticked" but the ceiling clause in taxSelectable:
+ * a row with `over_ceiling` set is not selectable, therefore never in `docs`
+ * beside another, therefore the handshake below still only ever sees one
+ * document. Checked, not assumed, in three places: that predicate, this
+ * comment, and the route's own refusal (TAX_BUNDLE_NOTICE.over_ceiling_in_bundle).
  */
 function TaxFromParentModal({
   docs,
@@ -1497,7 +1399,7 @@ function TaxFromParentModal({
   const doc = docs[0];
   const multi = docs.length > 1;
   // the net the child will be built on, not the parents' printed gross
-  const sourcesTotal = sumPendingAmounts(docs);
+  const sourcesTotal = sumSourceNet(docs);
   const isReceipt = action === "receipt";
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -1521,15 +1423,18 @@ function TaxFromParentModal({
       // which door: the queue row when there is one, the pulled document
       // otherwise — mirrors the server's pending-wins rule exactly.
       //
-      // The sourceIds branch maps over ALL of them. With one row that is the
-      // same single-element array it always sent; with several it is the bundle.
-      // The raw branch stays [doc.id] because it can never hold more than one:
-      // taxSelectable excludes raw rows from selection, and the route caps
-      // documentIds at 1 and refuses to mix the two doors in one request.
-      const base =
-        doc.buildable === "raw"
-          ? { documentIds: [doc.id] }
-          : { sourceIds: docs.map((d) => d.pending_id) };
+      // BOTH branches now map over ALL of them. The raw branch used to be
+      // [doc.id] because a bundle could never hold more than one pulled parent;
+      // since 2026-10-04 it can, and the cap it was written around is gone from
+      // the route. With one row either branch is the same single-element array
+      // it always sent, byte for byte.
+      //
+      // Built by the module, not here: `bundleRequestBody` asks "which door"
+      // with the same expression `doorOf` uses for the tick, so the row cannot
+      // be ticked through one door and sent through the other. It is also the
+      // thing the test asserts — which it could not do while this lived inside
+      // a submit handler.
+      const base = bundleRequestBody(docs);
 
       // The ceiling handshake, and note what is NOT here: no `confirm: true`
       // this code could hard-code. The first request carries no ticket and is
@@ -1601,9 +1506,12 @@ function TaxFromParentModal({
                 ההכנסה יורשות {multi ? "מכל מסמכי המקור" : "מהמסמך הזה"} במדויק, והקישור{" "}
                 {multi ? "אליהם הוא שסוגר את כולם" : "אליו הוא שסוגר אותו"} במורנינג. במסך האישור
                 תוכלי להחליף ל<b>חשבונית מס קבלה</b> — אבל רק אם הכסף כבר התקבל, כי היא מצהירה על כך.
-                {doc.buildable === "raw" && (
-                  <> המסמך הזה נמשך ממורנינג — הירושה היא מהנתונים שנמשכו, לפי הנטו המאומת.</>
-                )}
+                {doc.buildable === "raw" &&
+                  (multi ? (
+                    <> מסמכי המקור נמשכו ממורנינג — הירושה היא מהנתונים שנמשכו, לפי הנטו המאומת.</>
+                  ) : (
+                    <> המסמך הזה נמשך ממורנינג — הירושה היא מהנתונים שנמשכו, לפי הנטו המאומת.</>
+                  ))}
               </p>
             )}
             <div className="text-xs space-y-1 border border-[var(--rule)] rounded-xl p-3 mb-3">
@@ -1615,15 +1523,17 @@ function TaxFromParentModal({
                       <div key={d.id} className="flex justify-between gap-2 font-mono">
                         <span>#{d.number ?? "—"}</span>
                         <span className="text-[var(--faint)]">{displayDate(d.document_date) ?? "—"}</span>
-                        <span>{money(d.pending_amount, d.currency)}</span>
+                        <span>{money(bundleNet(d), d.currency)}</span>
                       </div>
                     ))}
                   </div>
                   {/* Plain "סה״כ": this IS the figure the document will carry.
-                      Both the lines and the total read pending_amount — the
-                      queue rows' net, exactly what createTaxFromParents sums —
-                      so this preview and the סכום כולל on the confirmation
-                      screen are the same number reached two different ways. */}
+                      Both the lines and the total read bundleNet — the queue
+                      row's net for a pending source, the mapper's PROVEN net
+                      for a pulled one, exactly what createTaxFromParents sums
+                      in either case — so this preview and the סכום כולל on the
+                      confirmation screen are the same number reached two
+                      different ways. Never `amount`: that is the gross. */}
                   <div className="flex justify-between gap-2 border-t border-[var(--rule)] pt-1">
                     <span className="text-[var(--faint)]">סה״כ</span>
                     <span className="font-mono font-bold">{money(sourcesTotal, doc.currency)}</span>

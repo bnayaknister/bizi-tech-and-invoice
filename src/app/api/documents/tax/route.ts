@@ -7,6 +7,7 @@ import {
   verifyOverrideTicket,
   OVERRIDE_TICKET_TTL_MS,
 } from "@/lib/documents/overrideTicket";
+import { TAX_BUNDLE_NOTICE } from "@/lib/morning/types";
 
 // "צור חשבונית מס על סמך המסמך" (owner spec 2026-08-06) — the third rung of the
 // chain: 100 -> 300 -> 305/320. The parent must already be issued in Morning;
@@ -35,15 +36,33 @@ import {
 // TWO source kinds since stage 3 (owner approved 2026-08-11), one per request:
 //   sourceIds   — pending_documents.id, the original path, N allowed (bundles)
 //   documentIds — documents.id of a PULLED parent, mapped from its raw by
-//                 pullSource.ts. EXACTLY ONE: v1 is one document per source,
-//                 and aggregating pulled parents is a business decision the
-//                 owner deferred, not a technical gap. The builder underneath
-//                 keeps its N-source capability — this route is the v1 valve,
-//                 and widening it later means deleting one check here.
-// Mixing the two kinds in one request is refused for the same reason. An
-// app-issued document sent as a documentId is refused by the builder's source
-// gate toward its queue row — deliberately a refusal, not a silent redirect:
-// the server must never act on a row the operator did not pick.
+//                 pullSource.ts. N ALLOWED since 2026-10-04 — see below.
+// Mixing the two kinds in one request is refused: one child cannot inherit from
+// a payload we SENT and a payload we RECONSTRUCTED from a pull at the same
+// time. An app-issued document sent as a documentId is refused by the builder's
+// source gate toward its queue row — deliberately a refusal, not a silent
+// redirect: the server must never act on a row the operator did not pick.
+//
+// ═══ THE VALVE THAT OPENED (owner decision 2026-10-04) ═══
+// This header used to read: "EXACTLY ONE: v1 is one document per source, and
+// aggregating pulled parents is a business decision the owner deferred, not a
+// technical gap. The builder underneath keeps its N-source capability — this
+// route is the v1 valve, and widening it later means deleting one check here."
+//
+// The owner took the decision, and the prediction held: one check deleted.
+// The case that forced it — כפיר ארביב אחזקות, 40283 (12.7) and 40289 (15.7),
+// both pulled, ₪590 each, one client, one debt, and no way to send the client
+// ONE tax invoice. The queue-row path (ידידיה) has done exactly this since
+// cac681b. fetchPullSources has taken an array since it was written, and
+// taxFromParent.ts:246-253 says the merged gates "were written for exactly this
+// merge" — every one of them (idempotency per morning_doc_id, one Morning doc
+// per request, one parent type, one client, openness, invoice_tax on every job)
+// runs on the merged list unchanged.
+//
+// ONE rule is new, and it is the ceiling rather than a count: a pulled source
+// above PULL_NET_CEILING does not join a bundle. It keeps its single-row button
+// and the admin handshake, which is built around ONE document id — see the two
+// refusals below, and TAX_BUNDLE_NOTICE for why the sentence lives in one place.
 export async function POST(request: Request) {
   const supabase = createClient();
   const {
@@ -74,12 +93,12 @@ export async function POST(request: Request) {
       { status: 400 }
     );
   }
-  if (documentIds.length > 1) {
-    return NextResponse.json(
-      { error: "מסמך נמשך אחד לבקשה — איגוד מסמכים מהרישום אינו נתמך בשלב זה" },
-      { status: 400 }
-    );
-  }
+  // No cap on documentIds since 2026-10-04 — the valve the header describes is
+  // open. What replaces it is NOT a count but a ceiling rule, and it cannot be
+  // decided here: PULL_NET_CEILING applies to the PROVEN net, which only the
+  // mapper knows. So the check sits immediately after the probe below, where
+  // that number exists. See the block marked "no over-ceiling source in a
+  // bundle".
 
   const admin = createAdminClient();
 
@@ -116,6 +135,18 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
+    // An override is ONE deliberate act on ONE document, and the handshake says
+    // so in its own data: every line below binds the ticket to `documentIds[0]`.
+    // In a bundle that index names an arbitrary member rather than the one over
+    // the ceiling, so a ticket minted here would commit to the wrong document
+    // and `verifyOverrideTicket` would then happily match it. Refused before
+    // any of that can start.
+    if (documentIds.length > 1) {
+      return NextResponse.json(
+        { error: TAX_BUNDLE_NOTICE.over_ceiling_in_bundle },
+        { status: 400 }
+      );
+    }
     if (!overCeilingReason) {
       return NextResponse.json({ error: "חובה לציין סיבה לעקיפת התקרה" }, { status: 400 });
     }
@@ -129,6 +160,25 @@ export async function POST(request: Request) {
   const probe = await createTaxFromParents(admin, sourceIds, user.id, undefined, {
     ...(documentIds.length ? { documentIds } : {}),
   });
+
+  // ---- no over-ceiling source in a bundle (owner decision 2026-10-04) -----
+  // Placed HERE and not with the shape gates above because the ceiling is a
+  // property of the proven net, which mapPullDocToSource derives and nothing
+  // before this line knows. `probe.overCeiling` is set only by that gate — it
+  // sits LAST in the mapper (pullSource.ts:355-372), so every other refusal
+  // arrives with it undefined and falls through to the ordinary handling below.
+  //
+  // And it must come BEFORE that handling: with no override requested, the
+  // generic branch would return the mapper's own sentence ("סכום חריג למסלול
+  // זה…"), which tells the operator to issue by hand in Morning — the wrong
+  // instruction here, where the right one is "take that one out of the bundle".
+  if (!probe.ok && probe.overCeiling && documentIds.length > 1) {
+    return NextResponse.json(
+      { error: TAX_BUNDLE_NOTICE.over_ceiling_in_bundle },
+      { status: 400 }
+    );
+  }
+
   if (!probe.ok && !(probe.overCeiling && mayOverride)) {
     return NextResponse.json(
       { error: probe.error, ...(probe.overCeiling ? { over_ceiling: probe.overCeiling } : {}) },

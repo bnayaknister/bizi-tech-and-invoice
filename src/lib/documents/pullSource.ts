@@ -455,6 +455,21 @@ export async function fetchPullSources(
   // audit the real numbers rather than the ones the caller claimed. Undefined
   // when nothing was over the ceiling — an override that changed no outcome
   // must not leave an audit trail saying it did.
+  //
+  // ⚠️ REFUSES A SECOND ONE RATHER THAN OVERWRITING IT (2026-10-04).
+  // This was `overCeiling = …` inside the loop: with two over-ceiling sources
+  // in one request, the first was silently replaced and the audit event the
+  // route writes would have named ONE document's numbers for a build that let
+  // TWO through. Unreachable today — an override requires a single documentId
+  // (documents/tax/route.ts refuses `documentIds.length > 1` in the override
+  // block) and taxSelectable keeps over-ceiling rows out of bundles — so this
+  // is a mine being defused rather than a bug being fixed.
+  //
+  // WHY A REFUSAL AND NOT AN ARRAY. An array would have to be plumbed through
+  // OverCeilingInfo, the ticket (which signs ONE net and ONE document id), the
+  // event payload and the screen's warning — four places, to describe a
+  // combination the owner has not approved. A refusal states the rule in one
+  // line, and if the rule ever changes the refusal is what will name itself.
   let overCeiling: OverCeilingInfo | undefined;
   for (const d of rows) {
     const res = mapPullDocToSource(d, childCode, opts);
@@ -463,6 +478,15 @@ export async function fetchPullSources(
       // re-derive from the mapped source, not from the caller: `amount` here IS
       // the proven net (see PullSourceRow.amount)
       if (res.source.amount > PULL_NET_CEILING) {
+        if (overCeiling) {
+          return {
+            ok: false,
+            status: 400,
+            error:
+              "יותר ממסמך אחד מעל התקרה בבקשה אחת — עקיפת תקרה היא פעולה על מסמך בודד. " +
+              "הוציאו אותם בנפרד.",
+          };
+        }
         overCeiling = { net: res.source.amount, ceiling: PULL_NET_CEILING, gross: num(d.amount) };
       }
     }

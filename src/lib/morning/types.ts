@@ -97,6 +97,31 @@ export const RECEIPT_NOTICE = {
 } as const;
 
 /**
+ * The two things the app can say about REFUSING a bundled tax document —
+ * one copy, shared by the server that refuses and by the screen that prevents
+ * (owner-approved wording, 2026-10-04). Same reason RECEIPT_NOTICE above is
+ * here: both sentences have two authors, and two phrasings of one refusal is
+ * how the registry ends up saying something the route does not.
+ *
+ * `mixed_sources` — a request may carry `sourceIds` OR `documentIds`, never
+ * both (documents/tax/route.ts). One child cannot inherit from a payload we
+ * sent and a payload we reconstructed from a pull at the same time. The screen
+ * blocks the combination at the tick; the route refuses it at the door.
+ *
+ * `over_ceiling_in_bundle` — a pulled source above PULL_NET_CEILING keeps its
+ * single-row button and its admin handshake, and stays out of bundles. The
+ * handshake mints and verifies a ticket bound to ONE document id; in a bundle
+ * that id names an arbitrary member rather than the one over the ceiling.
+ * Widening it to N was deferred, so the combination is refused instead.
+ */
+export const TAX_BUNDLE_NOTICE = {
+  mixed_sources:
+    "אי אפשר לאגד יחד מסמכים שהונפקו במערכת ומסמכים שנוצרו במורנינג. סמנו רק סוג אחד.",
+  over_ceiling_in_bundle:
+    "אחד המסמכים מעל תקרת הסכום ולכן לא נכנס לאיגוד. הוציאו אותו בנפרד.",
+} as const;
+
+/**
  * The provenance line for a document created ON THE BASIS OF others — e.g.
  * "חשבון עסקה עבור הזמנה 10306". Belongs in `remarks`.
  *
