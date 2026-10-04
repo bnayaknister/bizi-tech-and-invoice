@@ -31,10 +31,29 @@ export type AccruedMonth = {
 };
 
 export type AccruedGroup = {
+  /**
+   * The card's identity, and the React key. `client_id` for per_episode and
+   * every_n; `${client_id}:${month_key}` for a monthly client, which is what
+   * gives that client one card per recording month (owner 2026-10-04).
+   *
+   * Not client_id: two cards of the same client would collide on the key and
+   * share the `busy` spinner, and React would reconcile them as one.
+   */
+  card_key: string;
   client_id: string;
   client_name: string;
   cadence: "per_episode" | "monthly" | "every_n";
   every_n: number | null;
+  /**
+   * The ONE recording month this card covers, "YYYY-MM" — monthly clients
+   * only, null for every other cadence. It is both the title's month and the
+   * scope the redeem button sends, so a card can never bill a month it does
+   * not name.
+   */
+  month_key?: string | null;
+  month_label?: string | null;
+  /** This card's own month has closed and was not redeemed. */
+  month_closed?: boolean;
   total: number;
   oldest_age_days: number;
   rows: AccruedRow[];
@@ -61,6 +80,14 @@ const money = (n: number | null) =>
 
 const cadenceLabel = (g: AccruedGroup) =>
   g.cadence === "monthly" ? "מרוכז חודשי" : g.cadence === "every_n" ? `מרוכז כל ${g.every_n ?? "?"} פרקים` : "פר-פרק";
+
+// The card's heading. A monthly card is a MONTH of a client, and says so
+// (owner-approved wording 2026-10-04: "מצנע · אוקטובר 2026") — without it, two
+// cards of the same client are two identical headings and the bookkeeper
+// cannot tell which one she is about to redeem. Every other cadence keeps the
+// bare client name it has always had.
+const cardTitle = (g: AccruedGroup) =>
+  g.cadence === "monthly" && g.month_label ? `${g.client_name} · ${g.month_label}` : g.client_name;
 
 const remainingLabel = (n: number) => (n === 1 ? "עוד פרק אחד לאגד מלא" : `עוד ${n} פרקים לאגד מלא`);
 
@@ -98,19 +125,28 @@ export default function AccruedClient({
 
   async function redeem(g: AccruedGroup) {
     if (busy) return;
-    setBusy(g.client_id);
+    // keyed on the CARD, not the client: a monthly client has several cards and
+    // only the one pressed may show "פודה…"
+    setBusy(g.card_key);
     setError(null);
     setNote(null);
     try {
       const res = await fetch("/api/documents/redeem", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ clientId: g.client_id }),
+        body: JSON.stringify({
+          clientId: g.client_id,
+          // The scope of the redemption, sent only by a card that HAS a month.
+          // A non-monthly card sends the bare clientId exactly as before, and
+          // the route refuses a monthKey from one — so the old shape stays the
+          // old shape and the new one cannot leak sideways.
+          ...(g.cadence === "monthly" && g.month_key ? { monthKey: g.month_key } : {}),
+        }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error ?? "הפדיון נכשל");
       const parts = [`הזמנת עבודה מרוכזת (${j.work_order?.lines} פרקים)`];
-      setNote(`${g.client_name}: ${parts.join(" · ")} — נכנסו לתור לאישור`);
+      setNote(`${cardTitle(g)}: ${parts.join(" · ")} — נכנסו לתור לאישור`);
       router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "שגיאה");
@@ -255,11 +291,11 @@ export default function AccruedClient({
 
       <div className="space-y-5">
         {groups.map((g) => (
-          <section key={g.client_id} className="glass-card rounded-2xl p-5">
+          <section key={g.card_key} className="glass-card rounded-2xl p-5">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
-                  <h2 className="text-lg font-semibold">{g.client_name}</h2>
+                  <h2 className="text-lg font-semibold">{cardTitle(g)}</h2>
                   {g.ready && (
                     <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-xs text-amber-300">מוכן לפדיון</span>
                   )}
@@ -276,7 +312,7 @@ export default function AccruedClient({
                     disabled={busy !== null}
                     className="mt-2 rounded-lg bg-[var(--violet)] px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
                   >
-                    {busy === g.client_id ? "פודה…" : `פדה · ${g.rows.length} פרקים`}
+                    {busy === g.card_key ? "פודה…" : `פדה · ${g.rows.length} פרקים`}
                   </button>
                 )}
               </div>
@@ -308,20 +344,20 @@ export default function AccruedClient({
 
             {/* monthly has no numeric target — the target is the end of the
                 month. A month that already closed is not progress, it is a
-                miss, and it gets the amber dot the rest of the app uses. */}
-            {g.cadence === "monthly" && g.months && g.months.length > 0 && (
-              <div className="mb-3 space-y-1">
-                {g.months.map((m) => (
-                  <div key={m.key} className="flex items-baseline justify-between gap-2 text-xs">
-                    <span className={`flex items-center gap-1.5 ${m.closed ? "text-amber-300" : "opacity-70"}`}>
-                      {m.closed && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />}
-                      {m.label} · {m.count} פרקים
-                    </span>
-                    <span className="opacity-60">
-                      {m.closed ? "חודש שנסגר ולא נפדה" : monthEndLabel(g.days_to_month_end ?? 0)}
-                    </span>
-                  </div>
-                ))}
+                miss, and it gets the amber dot the rest of the app uses.
+
+                This was a LIST of months, because one card held them all. The
+                card is now a single month, which is named in the heading and
+                counted in the cadence line above — so all that is left to say
+                is whether that month is still open, and repeating its name and
+                count here would just be the heading twice. The dot, the amber,
+                and both sentences are the ones that were here before. */}
+            {g.cadence === "monthly" && (
+              <div className="mb-3 flex items-baseline gap-2 text-xs">
+                <span className={`flex items-center gap-1.5 ${g.month_closed ? "text-amber-300" : "opacity-70"}`}>
+                  {g.month_closed && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />}
+                  {g.month_closed ? "חודש שנסגר ולא נפדה" : monthEndLabel(g.days_to_month_end ?? 0)}
+                </span>
               </div>
             )}
 

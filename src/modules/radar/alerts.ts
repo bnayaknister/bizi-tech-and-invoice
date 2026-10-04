@@ -1,6 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { deriveMilestoneState, type MilestoneState } from "@/lib/finance/milestone";
 import { isAmountMissing, isPaidNoTax } from "@/lib/finance/state";
+import { todayInIsrael } from "@/lib/dates";
+import { closedAccruedMonths } from "@/lib/documents/accruedMonth";
 
 /**
  * A document number is present. null and "" both mean "no number" — a blank
@@ -123,14 +125,10 @@ export type RadarData = {
 
 const DAY = 86_400_000;
 
-// Calendar boundaries are read in the business's own time zone, never UTC —
-// a monthly client's "did the month close" turns on the hour.
-const ISRAEL_DAY = new Intl.DateTimeFormat("en-CA", {
-  timeZone: "Asia/Jerusalem",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
+// Calendar boundaries are read in the business's own time zone, never UTC — a
+// monthly client's "did the month close" turns on the hour. The formatter that
+// used to sit here is gone with the month-key copy that was its only caller;
+// israelMonthKey and todayInIsrael (@/lib/dates) own that rule now.
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function fetchAll<T>(supabase: SupabaseClient, table: string, columns: string, filter?: (q: any) => any): Promise<T[]> {
@@ -615,13 +613,13 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     accruedByClient.set(d.client_id, arr);
   }
 
-  // The month an accrued episode belongs to: record_date, the same anchor the
-  // rate rule uses, with created_at standing in only when the production has
-  // no date. Israel time on both — at 01:00 on the 1st, UTC still says last
-  // month, and for a monthly client that hour decides whether it is late.
+  // The month an accrued episode belongs to: israelMonthKey, which is now the
+  // only implementation of that rule in the codebase. This file carried a copy
+  // (`israelMonth` + the inline record_date branch at the call site below) and
+  // so did the accrued screen; scripts/test_month_key_parity.ts proved the
+  // three identical before two were deleted.
   const recordDateByProd = new Map(productions.map((p) => [p.id, p.record_date]));
-  const israelMonth = (iso: string) => ISRAEL_DAY.format(new Date(iso)).slice(0, 7);
-  const currentMonth = israelMonth(new Date().toISOString());
+  const currentMonth = todayInIsrael().slice(0, 7);
 
   // 🟡 every_n: the bundle is FULL. No time threshold — full is full, and the
   // day it fills is the day to redeem it. Same test the redemption screen
@@ -645,6 +643,18 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const STALL_DAYS = 30;
   let bundleStalled = 0;
   // 🟡 monthly: a month CLOSED with episodes still accrued in it.
+  //
+  // Counts CLOSED MONTHS, not clients (owner 2026-10-04). It used to be
+  // `rows.some(...)` then one increment per client, which was right only while
+  // /documents/accrued drew one card per client: now that a monthly client
+  // gets a card per recording month, a client sitting on two unredeemed months
+  // is two cards, two "פדה" buttons and two work orders — and the radar saying
+  // "1" would send the bookkeeper to a screen showing two.
+  //
+  // That promise is the reason this is being changed rather than left alone:
+  // the comment on bundleFull above claims the radar and the redemption screen
+  // "can never disagree" because they run the same test. The test the screen
+  // now runs is per month-card, so this one has to be too.
   let monthClosedUnredeemed = 0;
   for (const [clientId, rows] of Array.from(accruedByClient)) {
     const c = cadenceById.get(clientId);
@@ -655,11 +665,17 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
       if (rows.length >= c.everyN) bundleFull++;
       else if (daysSinceNewest >= STALL_DAYS) bundleStalled++;
     } else if (c.cadence === "monthly") {
-      const late = rows.some((r) => {
-        const rd = r.production_id ? recordDateByProd.get(r.production_id) : null;
-        return (rd ? rd.slice(0, 7) : israelMonth(r.created_at)) < currentMonth;
-      });
-      if (late) monthClosedUnredeemed++;
+      // one increment per DISTINCT closed month, through the same partition
+      // the screen keys its cards on — so the two counts cannot drift
+      monthClosedUnredeemed += closedAccruedMonths(
+        rows.map((r) => ({
+          created_at: r.created_at,
+          productions: {
+            record_date: r.production_id ? recordDateByProd.get(r.production_id) ?? null : null,
+          },
+        })),
+        currentMonth
+      ).length;
     }
   }
 
