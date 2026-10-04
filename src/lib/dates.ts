@@ -10,12 +10,27 @@
 // en-CA formats as ISO (2026-07-29); the timeZone option makes it correct
 // across the DST transition without any manual offset math.
 export function todayInIsrael(): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Jerusalem",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
+  return israelDate(new Date());
+}
+
+/**
+ * The Israeli CALENDAR DAY of an instant, "YYYY-MM-DD".
+ *
+ * todayInIsrael answers this for `now`; a calendar event answers it for a
+ * moment someone else chose, and that is the case that was wrong. The
+ * /api/calendar/sync route derived a production's record_date with
+ * `event.start.toISOString().slice(0, 10)` — UTC — so a session starting
+ * before 03:00 Israel (02:00 in winter) was filed under the PREVIOUS DAY, and
+ * when that day was the 1st, under the previous month. The same insert wrote
+ * record_time through an Asia/Jerusalem formatter, so a 01:00 session was
+ * stored as 30.09 at 01:00: the two halves of one timestamp disagreeing.
+ *
+ * Same formatter, same zone, same rule as the month key below — deliberately
+ * not a second implementation. DST needs no special case: the Intl formatter
+ * knows 25 Oct 2026 moves Israel from +03:00 to +02:00.
+ */
+export function israelDate(d: Date): string {
+  return ISRAEL_DAY.format(d);
 }
 
 // Which month a production belongs to, "YYYY-MM".

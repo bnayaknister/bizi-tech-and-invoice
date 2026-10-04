@@ -8,6 +8,7 @@ import { findUnsyncedRecurring } from "@/lib/calendar/recurring";
 import { STUDIOS } from "@/lib/calendar/studios";
 import { enqueueDocument } from "@/lib/documents/enqueue";
 import { must, mustRows, type QueryResult } from "@/lib/supabase/unwrap";
+import { israelDate } from "@/lib/dates";
 
 // Google Calendar sync (screens-spec §11, owner rules 2026-07-16/17):
 //   GET  — Vercel Cron trigger. Authorizes via CRON_SECRET, always reads
@@ -102,7 +103,10 @@ function israelDayWindow(now: Date): { date: string; start: Date; end: Date } {
   return { date, start, end };
 }
 
-async function alreadySyncedToday(admin: ReturnType<typeof createAdminClient>, israelDate: string): Promise<boolean> {
+// the parameter is `israelDay`, not `israelDate`: that name now belongs to the
+// imported helper, and a string shadowing a function in a file that derives
+// record_date is a trap worth not laying
+async function alreadySyncedToday(admin: ReturnType<typeof createAdminClient>, israelDay: string): Promise<boolean> {
   const { data } = await admin
     .from("events")
     .select("payload")
@@ -111,7 +115,7 @@ async function alreadySyncedToday(admin: ReturnType<typeof createAdminClient>, i
     .eq("event_type", "cron_sync_completed")
     .order("created_at", { ascending: false })
     .limit(1);
-  return (data ?? []).some((e) => (e.payload as { date?: string } | null)?.date === israelDate);
+  return (data ?? []).some((e) => (e.payload as { date?: string } | null)?.date === israelDay);
 }
 
 async function syncEnabled(admin: ReturnType<typeof createAdminClient>): Promise<boolean> {
@@ -287,7 +291,22 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string, allEven
     const show = showById.get(action.show.id);
     if (!show) continue;
     const kind = show.billing_mode === "contract" ? "contract" : show.billing_mode === "per_episode" && show.client_id ? "client" : "internal";
-    const recordDate = action.event.start ? action.event.start.toISOString().slice(0, 10) : todayIsraelDate;
+    // The Israeli calendar day of the session, NOT its UTC day.
+    //
+    // This was `action.event.start.toISOString().slice(0, 10)`, which is UTC:
+    // a session starting before 03:00 Israel (02:00 in winter) was filed under
+    // the previous day, and when that day was the 1st, under the previous
+    // MONTH. record_date is the anchor for the rate rule, for /projects, for
+    // the radar and — since the owner's 2026-10-04 decision — for which card
+    // and which consolidated work order an episode belongs to, so an hour of
+    // drift here is a billing-period error downstream.
+    //
+    // The line below already read Israel time (israelTimeHHMM), so one
+    // timestamp was being split by two different rules: a 01:00 session was
+    // stored as record_date 30.09 with record_time "01:00".
+    //
+    // Only new syncs are affected; no existing row is touched.
+    const recordDate = action.event.start ? israelDate(action.event.start) : todayIsraelDate;
     const titleParts = extractStudioAndGuest(action.event.title, STUDIOS);
     const { data: inserted, error } = await admin
       .from("productions")
