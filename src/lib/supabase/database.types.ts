@@ -603,6 +603,7 @@ export type Database = {
           created_at: string
           end_date: string | null
           id: string
+          included_episodes: number | null
           name: string
           show_id: string | null
           start_date: string | null
@@ -614,6 +615,7 @@ export type Database = {
           created_at?: string
           end_date?: string | null
           id?: string
+          included_episodes?: number | null
           name: string
           show_id?: string | null
           start_date?: string | null
@@ -625,6 +627,7 @@ export type Database = {
           created_at?: string
           end_date?: string | null
           id?: string
+          included_episodes?: number | null
           name?: string
           show_id?: string | null
           start_date?: string | null
