@@ -160,6 +160,36 @@ export function effectivePrice(production: ProductionForBilling, show: ShowForBi
   return { amount: Number(show.default_rate), blocked: null };
 }
 
+/**
+ * The amount to OFFER when a human is asked to price a production by hand
+ * ("יצירת עבודה לחיוב"). `null` means "we cannot compute one" — the field is
+ * then left empty rather than pre-filled with a guess.
+ *
+ * A named wrapper and not `effectivePrice(p, s).amount` at the call site, for
+ * two reasons worth the three lines:
+ *
+ *   · it is the one thing the route and its test both point at, so "what does
+ *     the form suggest" has a single definition;
+ *   · it records, here rather than in a route comment, that the suggestion is
+ *     the BASE ONLY — no approved add-ons. ensure_job_for_production adds them
+ *     (0090:198-204) because nobody is watching when the trigger fires. Here
+ *     somebody is: the number lands in a field they read and confirm, and a
+ *     suggestion that silently folded in an add-on they had not thought about
+ *     would be the harder of the two to check.
+ *
+ * The blocked REASON is deliberately not surfaced. The screen's sentence is
+ * the same for all three ("לתוכנית אין מחיר מוגדר. הזינו סכום.") because the
+ * action is the same for all three — type the number — and no_hourly_rate vs
+ * no_hours is a show-configuration diagnosis the 🟡 on /radar already carries.
+ */
+export function suggestJobAmount(
+  production: ProductionForBilling,
+  show: ShowForBilling | null
+): number | null {
+  if (!show) return null;
+  return effectivePrice(production, show).amount;
+}
+
 export type ClientForBilling = {
   id: string;
   name: string | null;

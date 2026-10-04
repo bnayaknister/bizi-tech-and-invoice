@@ -453,6 +453,11 @@ async function handleGet(
     // gates the drawer's production status controls (the phone-friendly path
     // that replaces drag) — the DB trigger is the real enforcement
     canEditStages: !!profile.can_edit_stages,
+    // gates "יצירת עבודה לחיוב" in the drawer. A separate flag and not
+    // `linked !== null`: that block is populated for can_view_money, and
+    // creating a job is a money WRITE. The route that does it re-checks
+    // can_edit_money itself — this only decides whether the button is drawn.
+    canEditMoney: !!profile.can_edit_money,
     review,
     reviewItems,
     reviewLinks,

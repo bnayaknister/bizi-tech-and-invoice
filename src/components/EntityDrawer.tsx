@@ -32,6 +32,7 @@ import IconTile, { type IconAccent } from "@/components/IconTile";
 import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
 import { displayDate, displayDateTime, displayLogTime } from "@/lib/dates";
 import { HOURS_STEP, MAX_HOURS, hoursError as validateHours, hoursMissing } from "@/lib/productions/hours";
+import { CreateJobButton, CreateJobModalBody } from "@/components/CreateJobBody";
 
 // entity type -> line icon + tile accent (no emoji, DESIGN.md §12)
 const ENTITY_ICON: Record<string, string> = {
@@ -105,6 +106,10 @@ type DrawerData = {
   milestones: Record<string, unknown>[] | null;
   history: HistoryEntry[] | null;
   canEditStages: boolean; // gates the production status controls (touch path)
+  // gates "יצירת עבודה לחיוב". A SEPARATE flag and not `linked !== null`:
+  // `linked` is populated for can_view_money, and creating a job is a money
+  // WRITE — a bookkeeper who may read the pipeline must not be offered it.
+  canEditMoney: boolean;
   review: {
     episode_approved: boolean; reels_approved: boolean; reels_required: boolean;
     episode_note: string | null; reels_note: string | null;
@@ -914,6 +919,17 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   // route, and a failure here must not read as "the note failed".
   const [hoursValue, setHoursValue] = useState("");
   const [hoursError, setHoursError] = useState<string | null>(null);
+  // "יצירת עבודה לחיוב" — its own window and its own error line, for the same
+  // reason the hours field has them: it posts to its own route, and a failure
+  // here must not read as something else having gone wrong.
+  // `createJobSuggested` is what the SERVER offered, kept beside the typed
+  // value so the POST can report an override rather than the screen guessing.
+  const [createJobOpen, setCreateJobOpen] = useState(false);
+  const [createJobAmount, setCreateJobAmount] = useState("");
+  const [createJobSuggested, setCreateJobSuggested] = useState<number | null>(null);
+  const [createJobBusy, setCreateJobBusy] = useState(false);
+  const [createJobErr, setCreateJobErr] = useState<string | null>(null);
+  const [createJobDone, setCreateJobDone] = useState(false);
   // dirty text/number edits awaiting blur/Cmd+Enter
   const dirty = useRef<Record<string, unknown>>({});
 
@@ -927,6 +943,14 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     setEpisodeMedia("");
     setReelMedia({});
     setMatPicker(null);
+    // The money window never survives a change of entity: its amount belongs
+    // to one production, and carrying it to the next one is the shape that
+    // bills the wrong work.
+    setCreateJobOpen(false);
+    setCreateJobDone(false);
+    setCreateJobErr(null);
+    setCreateJobAmount("");
+    setCreateJobSuggested(null);
     mediaInitFor.current = null;
     setRef(next);
   }, []);
@@ -1207,6 +1231,67 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     setHoursError(null);
     broadcast();
     return true;
+  }
+
+  // ═══ "יצירת עבודה לחיוב" ═══════════════════════════════════════════════
+  // Two calls, and the GET is deliberately NOT folded into /api/entity.
+  //
+  // The suggestion needs shows.hourly_rate and shows.default_rate, which 0022
+  // and 0067:189 do NOT grant to `authenticated` — so it has to be read behind
+  // the service role, behind an explicit can_edit_money gate. Putting that read
+  // on the generic entity route would make every drawer open of every entity
+  // pay for it, money viewer or not, to answer a question only a click asks.
+  // The drawer already knows whether a job exists (`data.linked`), so the fetch
+  // happens when the window opens and not before.
+  async function askCreateJob() {
+    if (!ref) return;
+    setCreateJobErr(null);
+    setCreateJobDone(false);
+    setCreateJobSuggested(null);
+    setCreateJobAmount("");
+    setCreateJobOpen(true);
+    const res = await fetch(`/api/productions/${ref.id}/create-job`);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setCreateJobErr(body.error ?? "טעינת ההצעה נכשלה");
+      return;
+    }
+    // A pre-filled field the owner can overwrite — never a locked number. When
+    // the server has nothing to offer it stays empty and the window says why.
+    if (body.blocked) setCreateJobErr(body.blocked as string);
+    const s = body.suggested_amount == null ? null : Number(body.suggested_amount);
+    if (s != null && Number.isFinite(s)) {
+      setCreateJobSuggested(s);
+      setCreateJobAmount(String(s));
+    }
+  }
+
+  async function submitCreateJob() {
+    if (!ref || createJobBusy) return;
+    setCreateJobBusy(true);
+    setCreateJobErr(null);
+    const res = await fetch(`/api/productions/${ref.id}/create-job`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        amount: Number(createJobAmount),
+        suggested_amount: createJobSuggested,
+      }),
+    });
+    const body = await res.json().catch(() => ({}));
+    setCreateJobBusy(false);
+    if (!res.ok) {
+      // Inside the window, for the reason saveHours states: the window covers
+      // the drawer's error strip.
+      setCreateJobErr(body.error ?? "יצירת העבודה נכשלה");
+      return;
+    }
+    setCreateJobDone(true);
+    broadcast();
+    // Reload so "חיובים מקושרים" shows the new job and the button is gone —
+    // the drawer's own answer to "did that work" rather than a sentence
+    // claiming it did.
+    void load(ref, true);
   }
 
   // §3: add a note (free, or attached to the just-completed stage)
@@ -1492,6 +1577,29 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
             void load(ref!, true);
           }}
         />
+      )}
+
+      {createJobOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(3,2,10,0.7)", backdropFilter: "blur(6px)" }}>
+          <div
+            className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl"
+            style={{ background: "rgba(15,13,28,0.95)", backdropFilter: "blur(24px)" }}
+          >
+            <CreateJobModalBody
+              showName={(data?.entity?.podcast_name as string | null) ?? (data?.title as string | null)}
+              recordDate={(data?.entity?.record_date as string | null) ?? null}
+              guest={(data?.entity?.guest as string | null) ?? null}
+              suggested={createJobSuggested}
+              value={createJobAmount}
+              busy={createJobBusy}
+              error={createJobErr}
+              done={createJobDone}
+              onChange={setCreateJobAmount}
+              onSubmit={() => void submitCreateJob()}
+              onCancel={() => setCreateJobOpen(false)}
+            />
+          </div>
+        </div>
       )}
 
       {freezeAsk && (
@@ -2158,6 +2266,25 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                         אין קישורים.{" "}
                         <Link href="/finance/link" className="underline">מסך הקישור ←</Link>
                       </div>
+                    )}
+                    {/* The notice above CARRIES THE ACTION, the same call the
+                        missing-hours flag makes: "אין קישורים" plus a link to a
+                        screen that can only link an EXISTING job is a dead end
+                        for the two cases this button was built for — there is
+                        no job to link.
+
+                        OUTSIDE the length===0 branch on purpose. Inside it,
+                        `hasJob` would be false by construction and the
+                        component's rule would be decoration — two predicates
+                        for one question, the second of them untested. Here the
+                        rule lives in exactly one place: CreateJobButton, where
+                        the render test counts it at 1 and at 0. */}
+                    {data.type === "production" && (
+                      <CreateJobButton
+                        hasJob={data.linked.length > 0}
+                        canEditMoney={!!data.canEditMoney}
+                        onOpen={() => void askCreateJob()}
+                      />
                     )}
                     <div className="space-y-1">
                       {data.linked.map((l) => (

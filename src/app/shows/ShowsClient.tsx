@@ -6,6 +6,7 @@ import Link from "next/link";
 import IconTile from "@/components/IconTile";
 import ClientCombobox from "@/components/ClientCombobox";
 import MorningClientReadonly from "@/components/MorningClientReadonly";
+import { useDrawer } from "@/components/EntityDrawer";
 import { displayDate } from "@/lib/dates";
 import RecordPastBody, {
   type PastEpisode,
@@ -578,6 +579,9 @@ function ShowCard({
   // cancelled or merged rows either — so it is per REAL episode.
   const perEpisode = show.revenue && show.episodes > 0 ? Math.round(show.revenue / show.episodes) : null;
   const [recordPastFor, setRecordPastFor] = useState<ShowRow | null>(null);
+  // the production drawer, so an episode row can open the real thing — see the
+  // note on the row below for why this and not a second button
+  const { openEntity } = useDrawer();
 
   return (
     <div
@@ -975,10 +979,30 @@ function ShowCard({
             )}
           </div>
           <div className="max-h-56 overflow-y-auto border border-[var(--rule)] rounded">
+            {/* Each row opens the PRODUCTION drawer (DrawerProvider is mounted
+                in the root layout, so it is available here).
+                WHY THIS AND NOT A SECOND "יצירת עבודה לחיוב" BUTTON: the owner
+                asked for the action on the episode row too, "if it is the same
+                component or cheap". A per-row button here would be a second
+                modal, a second fetch and a second render test for one action
+                that already has all three in the drawer — and the row carries
+                none of the facts the window needs (no client, no price, no
+                job). Opening the drawer is three lines and gives this row the
+                real thing, button included. */}
             {episodes.map((e) => (
               <div
                 key={e.id}
-                className="flex items-center gap-3 px-3 py-1.5 text-xs border-b border-[var(--rule)] last:border-b-0"
+                role="button"
+                tabIndex={0}
+                onClick={() => openEntity({ type: "production", id: e.id })}
+                onKeyDown={(ev) => {
+                  if (ev.key === "Enter" || ev.key === " ") {
+                    ev.preventDefault();
+                    openEntity({ type: "production", id: e.id });
+                  }
+                }}
+                title="פתח את ההפקה"
+                className="flex items-center gap-3 px-3 py-1.5 text-xs border-b border-[var(--rule)] last:border-b-0 cursor-pointer hover:bg-[var(--panel3)] transition-colors"
               >
                 <span className="text-[var(--dim)] w-20 shrink-0">{displayDate(e.record_date) ?? "—"}</span>
                 <span className="flex-1 truncate">{e.guest || ""}</span>

@@ -483,7 +483,16 @@ export async function createDealInvoiceFromWorkOrder(
     return {
       ok: false,
       status: 409,
-      error: "לא נמצאו עבודות מאושרות. חשבון עסקה נוצר רק אחרי שהפרקים אושרו ע״י הלקוח.",
+      // The old sentence named client approval as the condition, which was the
+      // wrong diagnosis for the case that actually arrives here: SFI's two
+      // productions of 17.8.2026 have ISSUED work orders and no job at all,
+      // because 0060's 'הוקלט' trigger was created seven days after they were
+      // recorded (0077:205-212). Waiting for the client to approve would not
+      // have produced one either — ensure_job_for_production's duplicate guard
+      // is not the obstacle, the absence of any job is. So the message now
+      // names the missing thing and the action that makes it.
+      error:
+        'לפרקים האלה אין עבודה במערכת, ולכן אין על מה לחייב. אפשר ליצור עבודה מתוך כל הפקה: "יצירת עבודה לחיוב".',
     };
   }
 
