@@ -14,6 +14,7 @@ import {
 import { deriveMilestoneState } from "@/lib/finance/milestone";
 import { must, SupabaseReadError, type QueryResult } from "@/lib/supabase/unwrap";
 import { getAppBaseUrl } from "@/lib/appUrl";
+import { quotaOf, type QuotaProduction } from "@/lib/contracts/quota";
 
 // EntityDrawer backend. Everything flows through the user's own client so
 // RLS and the 0010 column-guard triggers are the real gates; the field
@@ -358,6 +359,56 @@ async function handleGet(
       linked = data;
     } else linked = [];
   }
+  // ── 0098: is THIS episode beyond its contract's package quota? ───────────
+  //
+  // 🔴 READ-ONLY, and that is the owner's decision rather than a property of
+  // this route: "התראה בלבד, לא חסימה ולא מסמך". The verdict is derived from
+  // three reads and the pure module; nothing here touches checkEligibility,
+  // enqueueDocument or ensure_job_for_production.
+  //
+  // Through the ADMIN client, and that is the permission note: `contracts` is
+  // RLS'd to can_view_money (contracts_view, 0002:358), and the explicit
+  // `profile.can_view_money` gate below is what stands in for it — the same
+  // shape the `hourly` block above uses for its own reason. A user-scoped read
+  // would return nothing for a stage-only viewer and the drawer would silently
+  // say "not over quota", which is the quiet direction.
+  //
+  // Only when the production actually HAS a contract_id: the two reads below
+  // are skipped entirely for every per-episode production, which is almost all
+  // of them.
+  let quotaOver: { included: number; contract_name: string | null } | null = null;
+  if (type === "production" && profile.can_view_money) {
+    const admin = createAdminClient();
+    const { data: prodRow } = await admin
+      .from("productions")
+      .select("contract_id")
+      .eq("id", params.id)
+      .maybeSingle();
+    const contractId = (prodRow?.contract_id as string | null) ?? null;
+    if (contractId) {
+      const { data: contractRow } = await admin
+        .from("contracts")
+        .select("id,name,included_episodes")
+        .eq("id", contractId)
+        .maybeSingle();
+      const included = (contractRow?.included_episodes as number | null) ?? null;
+      if (included != null) {
+        const { data: siblings } = await admin
+          .from("productions")
+          .select("id,contract_id,status,cancelled_at,merged_into,record_date,created_at")
+          .eq("contract_id", contractId);
+        const q = quotaOf(included, contractId, (siblings ?? []) as unknown as QuotaProduction[]);
+        // `some(id)` and not "am I past the count": the order is what decides
+        // which episodes are over, and quotaOf already applied it. Asking the
+        // question any other way here would be a second definition of
+        // "the seventh episode".
+        if (q && q.over.some((p) => p.id === params.id)) {
+          quotaOver = { included: q.included, contract_name: (contractRow?.name as string | null) ?? null };
+        }
+      }
+    }
+  }
+
   if (type === "job" && profile.can_view_money) {
     const { data: links } = await supabase
       .from("job_productions")
@@ -458,6 +509,9 @@ async function handleGet(
     // creating a job is a money WRITE. The route that does it re-checks
     // can_edit_money itself — this only decides whether the button is drawn.
     canEditMoney: !!profile.can_edit_money,
+    // 0098 — set only when this episode is beyond its contract's quota.
+    // null is the ordinary case and means "nothing to say".
+    quotaOver,
     review,
     reviewItems,
     reviewLinks,

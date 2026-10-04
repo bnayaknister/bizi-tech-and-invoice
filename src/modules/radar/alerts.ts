@@ -1,8 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { deriveMilestoneState, type MilestoneState } from "@/lib/finance/milestone";
 import { isAmountMissing, isPaidNoTax } from "@/lib/finance/state";
-import { todayInIsrael } from "@/lib/dates";
+import { displayDate, todayInIsrael } from "@/lib/dates";
 import { closedAccruedMonths } from "@/lib/documents/accruedMonth";
+import { contractQuotas, quotaOverNotice, type QuotaProduction } from "@/lib/contracts/quota";
 
 /**
  * A document number is present. null and "" both mean "no number" — a blank
@@ -167,8 +168,13 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     fetchAll<{ id: string; contract_id: string; amount: number; status: string; expected_date: string | null; is_estimated: boolean; job_id: string | null }>(
       supabase, "contract_milestones", "id,contract_id,amount,status,expected_date,is_estimated,job_id"
     ),
-    // only to decide which milestones count — see the filter below
-    fetchAll<{ id: string; status: string }>(supabase, "contracts", "id,status"),
+    // status decides which milestones count (see the filter below); name and
+    // included_episodes are 0098 — the quota alert needs the denominator, and
+    // two scalar columns on a table already being paged are cheaper than a
+    // second round-trip.
+    fetchAll<{ id: string; status: string; name: string | null; included_episodes: number | null }>(
+      supabase, "contracts", "id,status,name,included_episodes"
+    ),
     fetchAll<{ id: string; date_is_estimated: boolean }>(supabase, "invoices", "id,date_is_estimated"),
     fetchAll<{
       id: string;
@@ -182,7 +188,16 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
       billing_block_reason: string | null;
       calendar_removed: boolean;
       status: string;
-    }>(supabase, "productions", "id,kind,show_id,client_id,record_date,on_hold,on_hold_since,merged_into,billing_block_reason,calendar_removed,status"),
+      // 0098 — the four the quota count and its ordering need. cancelled_at was
+      // NOT on this select before: every existing check here reads `merged_into`
+      // and `status`, and `hasBeenPerformed` wants the column the schema's own
+      // triggers test (status.ts:56-60). created_at is the tie-break that makes
+      // "which episode is the seventh" a question with one answer.
+      contract_id: string | null;
+      cancelled_at: string | null;
+      created_at: string | null;
+      podcast_name: string | null;
+    }>(supabase, "productions", "id,kind,show_id,client_id,record_date,on_hold,on_hold_since,merged_into,billing_block_reason,calendar_removed,status,contract_id,cancelled_at,created_at,podcast_name"),
     // per-production stage counts from the rollup view (migration 0035) — one
     // round-trip of ~1 row per production instead of paging every ~4.3k raw
     // stage rows. total/done drive the "produced but never billed" check;
@@ -352,6 +367,47 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     if (p.show_id && billingModeByShow.get(p.show_id) === "none") return false;
     return true;
   });
+
+  // ---- 0098: episodes recorded beyond a contract's package quota ----------
+  //
+  // 🔴 ONE ALERT ROW PER EPISODE (owner 4.10), with the show name and the date —
+  // because "3 episodes are over quota" sends the owner to count the board,
+  // and the whole point of the alert is that she should not have to.
+  // The radar keys every row (`key={a.key}` in radar/page.tsx), so the
+  // production id is part of the key.
+  //
+  // ⚠️ READ-ONLY, and that is the requirement rather than a property: the
+  // owner's decision is "התראה בלבד, לא חסימה ולא מסמך". Nothing here touches
+  // checkEligibility, enqueueDocument or ensure_job_for_production — the count
+  // is derived from rows this function already paged, through the pure module.
+  //
+  // CLOSED CONTRACTS ARE EXCLUDED, the same line the milestone alerts draw
+  // below: closing a contract is what silences the radar. end_date is NOT
+  // consulted — owner: "בלי תוקף".
+  const quotaContracts = contracts.filter((c) => c.status === "active" && c.included_episodes != null);
+  const contractNameById = new Map(quotaContracts.map((c) => [c.id, c.name ?? ""]));
+  const quotas = contractQuotas(
+    quotaContracts.map((c) => ({ id: c.id, included_episodes: c.included_episodes })),
+    productions as unknown as QuotaProduction[]
+  );
+  const quotaOverRows: { productionId: string; contractId: string; included: number; label: string }[] = [];
+  // Array.from and not `for … of quotas`: tsconfig targets below es2015 and
+  // iterating a Map directly needs downlevelIteration (TS2802) — the same note
+  // RegistryClient.tsx carries over its own Map.entries().
+  for (const [contractId, q] of Array.from(quotas.entries())) {
+    for (const p of q.over) {
+      quotaOverRows.push({
+        productionId: p.id,
+        contractId,
+        included: q.included,
+        // the two facts the sentence alone does not carry. displayDate and not
+        // the raw column: the radar is a screen.
+        label: [p.podcast_name ?? contractNameById.get(contractId) ?? "", displayDate(p.record_date) ?? "—"]
+          .filter(Boolean)
+          .join(" · "),
+      });
+    }
+  }
 
   // ---- other alerts ----
   // the shared predicate (state.ts) — same rule the hub card and the
@@ -834,6 +890,15 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     { key: "overdue_60", severity: "red", title: "60+ יום מעבר לפירעון", count: vuBuckets.red.length, amount: vuBuckets.red.reduce((s, a) => s + a, 0), href: "/finance?vu=red" },
     { key: "milestone_overdue", severity: "red", title: "אבן דרך שעבר מועדה ואין חשבונית", count: milestoneOverdue.length, amount: milestoneOverdue.reduce((s, m) => s + num(m.amount), 0), href: "/contracts" },
     { key: "produced_not_billed", severity: "blue", title: "הופק ולא חויב", count: producedNotBilled.length, amount: null, href: "/productions" },
+    // 0098 — spread, not a single row: one per episode over quota.
+    ...quotaOverRows.map((r) => ({
+      key: `quota_over:${r.productionId}`,
+      severity: "yellow" as Severity,
+      title: `${r.label} — ${quotaOverNotice(r.included)}`,
+      count: 1,
+      amount: null,
+      href: "/contracts",
+    })),
     { key: "open_commitment", severity: "blue", title: "התחייבות פתוחה", count: openMilestones.length, amount: openCommitment, href: "/contracts" },
     { key: "billing_blocked", severity: "yellow", title: "הפקת לקוח חסומה לחיוב", count: billingBlocked.length, amount: null, href: "/productions" },
     { key: "cancelled_with_work_order", severity: "yellow", title: "הפקה בוטלה אחרי שהונפקה הזמנת עבודה — לסגור במורנינג", count: cancelledWithWorkOrder.length, amount: null, href: "/productions" },

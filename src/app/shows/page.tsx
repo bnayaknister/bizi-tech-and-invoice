@@ -6,6 +6,7 @@ import AppHeader from "@/components/AppHeader";
 import ShowsClient, { type EpisodeRow, type ShowRow, type ContractOption } from "./ShowsClient";
 import { mustRows, type QueryResult } from "@/lib/supabase/unwrap";
 import { countsAsEpisode } from "@/lib/productions/status";
+import { contractQuotas, type QuotaProduction } from "@/lib/contracts/quota";
 
 export const dynamic = "force-dynamic";
 
@@ -86,7 +87,7 @@ export default async function ShowsPage() {
 
     const { data: contractRows, error: contractsErr } = await admin
       .from("contracts")
-      .select("id,name,client_id,show_id,status,total_amount,contract_milestones(count)")
+      .select("id,name,client_id,show_id,status,total_amount,included_episodes,contract_milestones(count)")
       .eq("status", "active")
       .order("name");
     // Degrade explicitly, never silently. Swallowing this would render an
@@ -101,6 +102,28 @@ export default async function ShowsPage() {
       }`;
       console.error("[shows] contracts load failed:", contractsErr);
     }
+    // ═══ מכסת הפרקים (0098) — שאילתה אחת למסך ═══
+    // רק אם קיים חוזה פעיל עם מכסה. `in` על מערך ריק הוא סיבוב רשת מיותר על
+    // מסך שרוב הפתיחות שלו אינן נוגעות בחוזים בכלל.
+    const quotaContractIds = (contractRows ?? [])
+      .filter((c) => c.included_episodes != null)
+      .map((c) => c.id as string);
+    let quotaProductions: QuotaProduction[] = [];
+    if (quotaContractIds.length) {
+      const { data: prods } = await admin
+        .from("productions")
+        .select("id,contract_id,status,cancelled_at,merged_into,record_date,created_at,podcast_name")
+        .in("contract_id", quotaContractIds);
+      quotaProductions = (prods ?? []) as unknown as QuotaProduction[];
+    }
+    const quotas = contractQuotas(
+      (contractRows ?? []).map((c) => ({
+        id: c.id as string,
+        included_episodes: (c.included_episodes as number | null) ?? null,
+      })),
+      quotaProductions
+    );
+
     for (const c of contractRows ?? []) {
       const embedded = (c as { contract_milestones?: { count: number }[] }).contract_milestones;
       contracts.push({
@@ -110,6 +133,10 @@ export default async function ShowsPage() {
         show_id: (c.show_id as string) ?? null,
         total_amount: (c.total_amount as number) ?? null,
         milestone_count: embedded?.[0]?.count ?? 0,
+        // undefined -> null במכוון: ContractOption עובר ל-"use client",
+        // ו-undefined אינו עובר סריאליזציה דרך גבול ה-RSC בצורה שאפשר
+        // לסמוך עליה. null הוא "אין מכסה", וזו אמירה מפורשת.
+        quota: quotas.get(c.id as string) ?? null,
       });
     }
   }

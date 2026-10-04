@@ -214,6 +214,15 @@ export const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
       { key: "name", label: "שם", type: "text", view: "money", edit: "money" },
       { key: "client_id", label: "לקוח", type: "select", view: "money", edit: "money", options: "clients" },
       { key: "total_amount", label: "סכום כולל", type: "number", view: "money", edit: "money" },
+      // 0098 — מכסת פרקים. רשומה כאן ולא רק במסך החוזים משתי סיבות: היא מה
+      // שמכניס את העמודה ל-`selectColumns` (ובלעדיה המסך הגנרי לא היה קורא
+      // אותה בכלל), והיא מה שהופך את `patch: { included_episodes }` לחוקי
+      // ב-`/api/entity/contract/[id]` — המסלול שמסך החוזים כבר משתמש בו
+      // לעדכון סטטוס (ContractsClient.tsx:135).
+      // ⚠️ הראוט הגנרי אינו מוליד ולידציה. הגבולות 1..500 נאכפים ב-CHECK של
+      // 0098, והבדיקה ב-lib/contracts/quota.ts היא מה שמונע מהם להגיע כשגיאת
+      // Postgres גולמית. אותה אסימטריה שיש ל-total_amount מאז 0002.
+      { key: "included_episodes", label: "פרקים בחבילה", type: "number", view: "money", edit: "money" },
       { key: "start_date", label: "תחילה", type: "date", view: "money", edit: "money" },
       { key: "end_date", label: "סיום", type: "date", view: "money", edit: "money" },
       {

@@ -5,6 +5,13 @@ import { useRouter } from "next/navigation";
 import IconTile from "@/components/IconTile";
 import ClientCombobox from "@/components/ClientCombobox";
 import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
+import ContractQuotaBox from "@/components/ContractQuotaBox";
+import {
+  QUOTA_COPY,
+  includedEpisodesError,
+  parseIncludedEpisodes,
+  type ContractQuota,
+} from "@/lib/contracts/quota";
 import { DOC_TYPE_LABEL, RECEIPT_NOTICE } from "@/lib/morning/types";
 import { displayDate } from "@/lib/dates";
 import RecordBilledBody, {
@@ -78,6 +85,10 @@ export type ContractCard = {
   paid_sum: number;
   status: string; // 'active' | 'closed'
   all_paid: boolean;
+  // 0098 — מכסת פרקים. `included_episodes` הוא מה שהטופס עורך;
+  // `quota` הוא מה שהתצוגה גוזרת. null בשניהם = חוזה רגיל לפי אבני דרך.
+  included_episodes: number | null;
+  quota: ContractQuota | null;
   milestones: MilestoneCard[];
 };
 
@@ -119,6 +130,7 @@ export default function ContractsClient({
     null
   );
   const [closeFor, setCloseFor] = useState<ContractCard | null>(null);
+  const [quotaFor, setQuotaFor] = useState<ContractCard | null>(null);
   const [showClosed, setShowClosed] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -411,6 +423,24 @@ export default function ContractsClient({
                       {money(unmilestoned)} מסכום החוזה טרם פורקו לאבני דרך — לכן אינם נספרים בהתחייבות הפתוחה
                     </div>
                   )}
+                  {/* 0098 — מצב המכסה. מתחת לפס ההתקדמות ולא לידו: הפס הוא
+                      כסף והמכסה היא פרקים, ושתי יחידות על שורה אחת נקראות
+                      כאילו אחת מהן היא אחוז של השנייה. ציור בלבד — הרכיב
+                      מחזיר null כשאין מכסה. */}
+                  <div className="flex items-start gap-2">
+                    <ContractQuotaBox quota={c.quota} />
+                    {/* המצב והפקד שמשנה אותו, יחד. הטופס עצמו הוא החלון —
+                        הנוסח המאושר יושב ב-QUOTA_COPY ולא כאן. */}
+                    {canEditMoney && !closed && (
+                      <button
+                        data-contract-action="quota"
+                        onClick={() => setQuotaFor(c)}
+                        className="text-[10px] text-[var(--dim)] underline hover:text-[var(--ink)] transition-colors"
+                      >
+                        {c.included_episodes == null ? "הגדר מכסת פרקים" : "ערוך מכסה"}
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* milestones */}
@@ -825,6 +855,17 @@ export default function ContractsClient({
           onError={setError}
         />
       )}
+      {quotaFor && (
+        <QuotaModal
+          contract={quotaFor}
+          onClose={() => setQuotaFor(null)}
+          onDone={() => {
+            setQuotaFor(null);
+            router.refresh();
+          }}
+          onError={setError}
+        />
+      )}
       {closeFor && (
         <CloseContractModal
           contract={closeFor}
@@ -882,6 +923,92 @@ function CloseContractModal({
 }
 
 // ---------- modals ----------
+/**
+ * מכסת הפרקים של חוזה קיים (0098).
+ *
+ * ⚠️ **אין ראוט עריכה לחוזה.** `src/app/api/contracts/` מחזיק POST ליצירה
+ * ואת ראוטי אבני הדרך, וזה הכל — ולכן העדכון עובר ב-`/api/entity/contract/[id]`,
+ * המסלול הגנרי שהמסך הזה כבר משתמש בו לשינוי סטטוס (setContractStatus למעלה).
+ * `included_episodes` נרשמה ב-lib/entities.ts כדי שה-patch הזה יהיה חוקי.
+ *
+ * הראוט הגנרי אינו מוליד ולידציה, ולכן הגבולות נבדקים כאן לפני השליחה —
+ * ו-ה-CHECK של 0098 הוא הקיר שמאחור. מדווח ולא מוסתר.
+ *
+ * ריק → `null`, ולא 0: למצב "חוזה רגיל לפי אבני דרך" יש ייצוג אחד, וה-CHECK
+ * של 0098 דוחה 0 בדיוק מהסיבה הזו.
+ */
+function QuotaModal({
+  contract,
+  onClose,
+  onDone,
+  onError,
+}: {
+  contract: ContractCard;
+  onClose: () => void;
+  onDone: () => void;
+  onError: (m: string) => void;
+}) {
+  const [value, setValue] = useState(
+    contract.included_episodes == null ? "" : String(contract.included_episodes)
+  );
+  const [busy, setBusy] = useState(false);
+  const err = includedEpisodesError(value);
+
+  async function submit() {
+    if (err || busy) return;
+    setBusy(true);
+    const res = await fetch(`/api/entity/contract/${contract.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patch: { included_episodes: parseIncludedEpisodes(value) } }),
+    });
+    setBusy(false);
+    if (!res.ok) {
+      onError((await res.json().catch(() => ({}))).error ?? "העדכון נכשל");
+      onClose();
+      return;
+    }
+    onDone();
+  }
+
+  return (
+    <div className="fixed inset-0 flex items-center justify-center p-4 z-50" style={OVERLAY} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl" style={PANEL}>
+        <h3 className="font-bold mb-1">{contract.name}</h3>
+        <label className="block text-xs font-bold mb-1" htmlFor="quota-input">
+          {QUOTA_COPY.field}
+        </label>
+        <input
+          id="quota-input"
+          autoFocus
+          inputMode="numeric"
+          value={value}
+          disabled={busy}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !err) void submit();
+          }}
+          className={INPUT}
+          style={inputBg}
+        />
+        <div className="text-[10px] text-[var(--faint)] mt-1 mb-1 leading-relaxed">{QUOTA_COPY.fieldHint}</div>
+        {err && <div className="text-[11px] text-[var(--peak)] mb-2">{err}</div>}
+        <div className="flex gap-2 mt-3">
+          <button
+            onClick={() => void submit()}
+            disabled={busy || !!err}
+            className="text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-40"
+            style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}
+          >
+            {busy ? "שומר…" : "שמור"}
+          </button>
+          <button onClick={onClose} className="text-[var(--dim)] text-sm px-3">ביטול</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const OVERLAY = { background: "rgba(3,2,10,0.66)", backdropFilter: "blur(6px)" } as React.CSSProperties;
 const PANEL = {
   background: "rgba(15,13,28,0.94)",
@@ -906,6 +1033,8 @@ function AddContractModal({
   const [name, setName] = useState("");
   const [clientId, setClientId] = useState<string | null>(null);
   const [total, setTotal] = useState("");
+  // 0098 — מכסת פרקים ביצירה. ריק הוא המצב הרגיל ולכן זו ברירת המחדל.
+  const [included, setIncluded] = useState("");
   const [ms, setMs] = useState<{ name: string; amount: string; expected_date: string; is_estimated: boolean }[]>([
     { name: "", amount: "", expected_date: "", is_estimated: false },
   ]);
@@ -921,6 +1050,7 @@ function AddContractModal({
         name,
         client_id: clientId,
         total_amount: total ? Number(total) : null,
+        included_episodes: parseIncludedEpisodes(included),
         milestones: ms
           .filter((m) => m.name.trim() && m.amount)
           .map((m) => ({
@@ -955,6 +1085,22 @@ function AddContractModal({
             onCreated={(c) => setLocalClients((cs) => [...cs, c])}
           />
           <input value={total} onChange={(e) => setTotal(e.target.value)} type="number" placeholder="סכום כולל" className={INPUT} style={inputBg} />
+          {/* 0098. מתחת לסכום הכולל ומעל אבני הדרך, במכוון: זו תכונה של
+              העסקה, כמו הסכום — ולא אבן דרך נוספת. */}
+          <div>
+            <input
+              value={included}
+              onChange={(e) => setIncluded(e.target.value)}
+              inputMode="numeric"
+              placeholder={QUOTA_COPY.field}
+              className={INPUT}
+              style={inputBg}
+            />
+            <div className="text-[10px] text-[var(--faint)] mt-1 leading-relaxed">{QUOTA_COPY.fieldHint}</div>
+            {includedEpisodesError(included) && (
+              <div className="text-[11px] text-[var(--peak)] mt-1">{includedEpisodesError(included)}</div>
+            )}
+          </div>
         </div>
         <div className="text-[11px] text-[var(--faint)] mb-1">אבני דרך</div>
         <div className="space-y-2 mb-3">
@@ -970,7 +1116,7 @@ function AddContractModal({
           </button>
         </div>
         <div className="flex gap-2">
-          <button onClick={submit} disabled={busy || !name.trim() || !clientId || !total} className="text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-40" style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}>
+          <button onClick={submit} disabled={busy || !name.trim() || !clientId || !total || !!includedEpisodesError(included)} className="text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-40" style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}>
             צור חוזה
           </button>
           <button onClick={onClose} className="text-[var(--dim)] text-sm px-3">ביטול</button>

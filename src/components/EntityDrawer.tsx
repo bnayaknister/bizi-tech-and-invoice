@@ -33,6 +33,7 @@ import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
 import { displayDate, displayDateTime, displayLogTime } from "@/lib/dates";
 import { HOURS_STEP, MAX_HOURS, hoursError as validateHours, hoursMissing } from "@/lib/productions/hours";
 import { CreateJobButton, CreateJobModalBody } from "@/components/CreateJobBody";
+import { quotaOverNotice } from "@/lib/contracts/quota";
 
 // entity type -> line icon + tile accent (no emoji, DESIGN.md §12)
 const ENTITY_ICON: Record<string, string> = {
@@ -110,6 +111,9 @@ type DrawerData = {
   // `linked` is populated for can_view_money, and creating a job is a money
   // WRITE — a bookkeeper who may read the pipeline must not be offered it.
   canEditMoney: boolean;
+  // 0098 — set only when THIS episode is beyond its contract's package quota.
+  // null is the ordinary case: no contract, no quota, or inside it.
+  quotaOver: { included: number; contract_name: string | null } | null;
   review: {
     episode_approved: boolean; reels_approved: boolean; reels_required: boolean;
     episode_note: string | null; reels_note: string | null;
@@ -2241,6 +2245,30 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                       )}
                     </div>
                   )}
+
+                {/* 0098 — הפרק הזה מעבר למכסת החבילה של החוזה.
+                    ⚠️ NO BUTTON, unlike the missing-hours flag above, and that
+                    is the owner's decision rather than an omission: "התראה
+                    בלבד, לא חסימה ולא מסמך". There is no single right action —
+                    widening the package and billing separately are two
+                    business decisions — and the sentence says so in words.
+                    A button here would have to pick one of them. */}
+                {data.type === "production" && data.quotaOver && (
+                  <div
+                    data-quota-over-production
+                    className="rounded-lg border px-2.5 py-2"
+                    style={{ borderColor: "var(--warn)", background: "rgba(251,191,36,0.08)" }}
+                  >
+                    <div className="text-[11px] font-bold" style={{ color: "var(--warn)" }}>
+                      🟡 {quotaOverNotice(data.quotaOver.included)}
+                    </div>
+                    {data.quotaOver.contract_name && (
+                      <div className="text-[10px] text-[var(--dim)] mt-0.5">
+                        חוזה: {data.quotaOver.contract_name}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {data.type === "production" && ref && (
                   <AddonsSection productionId={ref.id} onChanged={broadcast} />

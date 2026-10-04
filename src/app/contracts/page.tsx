@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import { deriveMilestoneState } from "@/lib/finance/milestone";
 import { MORNING_DOC_CODE } from "@/lib/morning/types";
+import { contractQuotas, type QuotaProduction } from "@/lib/contracts/quota";
 import ContractsClient, { type ContractCard } from "./ContractsClient";
 
 export const dynamic = "force-dynamic";
@@ -17,7 +18,12 @@ export default async function ContractsPage() {
   const admin = createAdminClient();
   const [{ data: contracts }, { data: milestones }, { data: clients }, { data: jobs }, { data: queued }] =
     await Promise.all([
-      admin.from("contracts").select("id,name,client_id,total_amount,status").order("created_at"),
+      // 0098: included_episodes רוכב כאן. חוזה בלי מכסה מחזיר null, ואז
+      // contractQuotas אינה מכניסה אותו למפה בכלל — אפס שינוי בתצוגה.
+      admin
+        .from("contracts")
+        .select("id,name,client_id,total_amount,status,included_episodes")
+        .order("created_at"),
       admin
         .from("contract_milestones")
         .select("id,contract_id,name,amount,expected_date,is_estimated,status,job_id")
@@ -45,6 +51,31 @@ export default async function ContractsPage() {
         .in("doc_type", ["work_order", "deal_invoice", "tax_invoice", "tax_receipt"])
         .in("status", ["pending", "approved", "issued"]),
     ]);
+
+  // ═══ מכסת הפרקים (0098) — שאילתה אחת למסך, לא אחת לכל חוזה ═══
+  // נטענת רק כשיש בכלל חוזה עם מכסה: `in` על מערך ריק הוא סיבוב רשת מיותר
+  // על מסך שרוב השימושים בו אינם נוגעים במכסות.
+  //
+  // חמשת השדות הם מה ש-countsTowardQuota ו-compareForQuota דורשים, ו-podcast_name
+  // הוא לשורת ההתראה. אין כאן סינון סטטוס בשאילתה במכוון: `hasBeenPerformed`
+  // היא הגדרה אחת ב-lib/productions/status.ts, ורשימת סטטוסים שנכתבת שוב
+  // ב-`.in(...)` הייתה הגדרה שנייה שנסחפת מהראשונה (הלקח של 0061).
+  const quotaContracts = (contracts ?? []).filter((c) => c.included_episodes != null);
+  let quotaProductions: QuotaProduction[] = [];
+  if (quotaContracts.length) {
+    const { data: prods } = await admin
+      .from("productions")
+      .select("id,contract_id,status,cancelled_at,merged_into,record_date,created_at,podcast_name")
+      .in("contract_id", quotaContracts.map((c) => c.id as string));
+    quotaProductions = (prods ?? []) as unknown as QuotaProduction[];
+  }
+  const quotas = contractQuotas(
+    (contracts ?? []).map((c) => ({
+      id: c.id as string,
+      included_episodes: (c.included_episodes as number | null) ?? null,
+    })),
+    quotaProductions
+  );
 
   const clientName = new Map((clients ?? []).map((c) => [c.id, c.name]));
   const clientMapped = new Map((clients ?? []).map((c) => [c.id, !!c.morning_client_id]));
@@ -321,6 +352,10 @@ export default async function ContractsPage() {
       // column still says 'invoiced' (milestone.ts). A badge only — nothing
       // closes the contract on its own.
       all_paid: milestoneCards.length > 0 && milestoneCards.every((m) => m.state === "paid"),
+      // 0098. `included_episodes` נשלח גם בנפרד, כי הטופס עורך אותו ישירות
+      // והתצוגה נגזרת מ-`quota` — שתי שאלות שונות על אותה עמודה.
+      included_episodes: (c.included_episodes as number | null) ?? null,
+      quota: quotas.get(c.id as string) ?? null,
       milestones: milestoneCards,
     };
   });

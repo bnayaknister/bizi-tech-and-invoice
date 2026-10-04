@@ -7,6 +7,8 @@ import IconTile from "@/components/IconTile";
 import ClientCombobox from "@/components/ClientCombobox";
 import MorningClientReadonly from "@/components/MorningClientReadonly";
 import { useDrawer } from "@/components/EntityDrawer";
+import ContractQuotaBox from "@/components/ContractQuotaBox";
+import type { ContractQuota } from "@/lib/contracts/quota";
 import { displayDate } from "@/lib/dates";
 import RecordPastBody, {
   type PastEpisode,
@@ -66,6 +68,8 @@ export type ContractOption = {
   show_id: string | null;
   total_amount: number | null;
   milestone_count: number;
+  // 0098 — מצב מכסת הפרקים, מחושב בשרת. null = אין מכסה, ואין מה לצייר.
+  quota: ContractQuota | null;
 };
 
 export type EpisodeRow = {
@@ -1473,6 +1477,10 @@ function ContractLink({
           ) : (
             <div className="text-[11px] text-[var(--dim)]">{linked.milestone_count} אבני דרך</div>
           )}
+          {/* 0098 — מצב המכסה, מתחת לאבני הדרך. אותו רכיב שמצייר אותה
+              ב-/contracts, כדי שהמשפט לא ייאמר כאן אחרת. compact: הקופסה
+              הזו צרה. מחזיר null כשאין מכסה — ואז התיבה נראית כמו תמיד. */}
+          <ContractQuotaBox quota={linked.quota} compact />
           {canEditMoney && (
             <button
               disabled={busy}
