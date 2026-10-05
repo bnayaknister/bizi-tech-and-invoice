@@ -239,10 +239,22 @@ const money = (n: number | null, cur: string) =>
 export default function RegistryClient({
   rows,
   canPull,
+  canViewAccrued,
   lastPull,
 }: {
   rows: DocRow[];
   canPull: boolean;
+  /**
+   * May this viewer open /documents/accrued? It is the REDEMPTION SCREEN's own
+   * gate — `can_view_money` (accrued/page.tsx:25) — and deliberately not
+   * `canPull`, which is `can_edit_money`: two independent booleans, and the
+   * pull is a write while this is a read.
+   *
+   * Optional so a stale server payload cannot take the header down, and
+   * defaulted FALSE rather than true: a missing permission must hide the link,
+   * never reveal it. That is the only direction a default may fail in.
+   */
+  canViewAccrued?: boolean;
   lastPull: string | null;
 }) {
   const router = useRouter();
@@ -739,6 +751,28 @@ export default function RegistryClient({
           >
             פערים לטיפול →
           </button>
+          {/* Owner request 6.10: reach the redemption screen without leaving
+              the registry. Same element and the same four classes as the
+              neighbour above — one visual decision, made once, so the pair
+              reads as a pair rather than as two buttons that happen to sit
+              together.
+
+              Gated on `canViewAccrued`, which is /documents/accrued's own
+              `can_view_money`. Today that is satisfied by everyone who reaches
+              this screen (registry/page.tsx:16 redirects otherwise), so the
+              guard is defence in depth and not the only wall — exactly like the
+              "פערים לטיפול" button beside it, whose target carries the
+              identical gate (gaps/page.tsx:20). It is written anyway because a
+              link that states its own requirement cannot be widened by a change
+              to someone else's. */}
+          {canViewAccrued && (
+            <button
+              onClick={() => router.push("/documents/accrued")}
+              className="text-xs font-bold rounded-xl px-4 py-1.5 border border-[var(--rule2)]"
+            >
+              פדיון מרוכז →
+            </button>
+          )}
           {canPull && (
             <button
               disabled={pulling}

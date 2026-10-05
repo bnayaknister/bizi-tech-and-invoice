@@ -360,6 +360,21 @@ export default async function RegistryPage() {
       <RegistryClient
         rows={rows}
         canPull={!!profile.can_edit_money}
+        // The redemption screen's OWN gate, read from the same profile rather
+        // than assumed: /documents/accrued redirects on `can_view_money`
+        // (accrued/page.tsx:25), so that is the flag the link requires.
+        //
+        // ⚠️ It is `can_view_money` and NOT `canPull`. The two are independent
+        // booleans, both defaulting false (0002:14-16), and `canPull` is
+        // `can_edit_money` — the pull is a write. A link that borrowed it would
+        // hide the screen from a money-viewer who is entitled to it.
+        //
+        // Always true as things stand, because line 16 of this file redirects
+        // anyone without `can_view_money` before a row is read. That is why the
+        // flag is passed anyway: it states the LINK's requirement instead of
+        // inheriting the page's, so widening this page's gate later cannot
+        // silently widen the link's.
+        canViewAccrued={!!profile.can_view_money}
         lastPull={(settings?.documents_pulled_at as string | null) ?? null}
       />
     </div>
