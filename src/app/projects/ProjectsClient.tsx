@@ -702,8 +702,26 @@ export default function ProjectsClient({
                   </div>
                 )}
 
+                {/* ⚠️ "{N} הפקות בחודש", replacing a caption that claimed to
+                    count the month's ROWS in total.
+                    The number is unchanged — `expectedTotalRows` is still
+                    `all.length` over the PRODUCTION rows, and the owner's
+                    decision was explicitly that no card arithmetic moves. What
+                    changed on 5.10 is the TABLE: it carries five sources now, so
+                    a caption claiming to count "rows in the month" sat above a
+                    table with more of them. In a month with 28 episodes, one
+                    bundle order and one radio job it read "28 שורות" over 30
+                    rows — a false statement on a money screen, and the sharpest
+                    one the unified table created.
+
+                    The second line is the fix for the real confusion underneath
+                    it: the purple card's total covers productions ONLY, and
+                    before this nothing on the screen said so. */}
                 <div className="mt-1.5 text-[11px] text-[var(--ink-faint)]">
-                  לא כולל הפקות פנימיות ומבוטלות · {s.expectedTotalRows} שורות בחודש בסך הכל
+                  לא כולל הפקות פנימיות ומבוטלות · {s.expectedTotalRows} הפקות בחודש
+                </div>
+                <div className="mt-1 text-[11px] text-[var(--ink-faint)]">
+                  הסכום הזה מכסה הפקות בלבד. הזמנות מרוכזות, רדיו ושונות וייבוא מופיעים בטבלה ואינם בתוכו.
                 </div>
               </div>
 
@@ -712,14 +730,25 @@ export default function ProjectsClient({
                   <div className="text-xs text-[var(--ink-faint)]">חויב — חשבונות עסקה (300)</div>
                   <div className="mt-1 font-mono text-2xl">{money(s.billed)}</div>
                   <div className="mt-1 text-[11px] text-[var(--ink-faint)]">
-                    {s.billedCount} מסמכים לפי תאריך הנפקה · כל העסק, לא רק ההפקות שלמטה
+                    {/* "גם מה שאינו בטבלה שלמטה", replacing a caption that
+                        said "not only the productions below". That was accurate
+                        while the table held productions alone; now that it holds
+                        five sources it reads as if the table were the smaller
+                        set and the card merely wider. The real relationship is
+                        that these two totals count EVERY document in the month,
+                        including the ones no row on this screen can attribute to
+                        anybody — 300: 27 of 44 reach no production, 400: 7 of 7
+                        (measured 2026-09-15, recorded above monthDocsRes in
+                        page.tsx). The new phrasing says that out loud. */}
+                    {s.billedCount} מסמכים לפי תאריך הנפקה · כל העסק, גם מה שאינו בטבלה שלמטה
                   </div>
                 </div>
                 <div className="glass-card rounded-2xl p-4">
                   <div className="text-xs text-[var(--ink-faint)]">נכנס — מס-קבלה וקבלות (320+400)</div>
                   <div className="mt-1 font-mono text-2xl">{money(s.incoming)}</div>
                   <div className="mt-1 text-[11px] text-[var(--ink-faint)]">
-                    {s.incomingCount} מסמכים לפי תאריך הנפקה · כל העסק, לא רק ההפקות שלמטה
+                    {/* same change, same reason — see the 300 card above */}
+                    {s.incomingCount} מסמכים לפי תאריך הנפקה · כל העסק, גם מה שאינו בטבלה שלמטה
                   </div>
                 </div>
                 <div className="text-[11px] text-[var(--ink-faint)] sm:col-span-2">

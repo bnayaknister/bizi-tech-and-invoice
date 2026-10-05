@@ -247,6 +247,31 @@ check("full payload", () => {
   if (!html.includes("(5 עבודות)")) throw new Error("month option should count 5 work rows");
 });
 
+console.log("\n=== the summary cards' wording (owner 5.10) ===");
+// COUNTING, once each. The cards' ARITHMETIC did not change — only their
+// captions — and these assertions are what stop a future edit from putting the
+// old claim back. `expectedTotalRows` is still `all.length` over the PRODUCTION
+// rows, so a caption that called it the month's row total sat above a table
+// carrying five sources' worth of rows.
+check("the three approved captions, once each", () => {
+  const html = render([fullBucket]);
+  const once = (needle: string) => {
+    const n = html.split(needle).length - 1;
+    if (n !== 1) throw new Error(`"${needle.slice(0, 40)}…" appears ${n}x, want 1`);
+  };
+  once("לא כולל הפקות פנימיות ומבוטלות · 1 הפקות בחודש");
+  once("הסכום הזה מכסה הפקות בלבד. הזמנות מרוכזות, רדיו ושונות וייבוא מופיעים בטבלה ואינם בתוכו.");
+  // this one legitimately appears on BOTH document cards — 300 and 320+400
+  const both = html.split("מסמכים לפי תאריך הנפקה · כל העסק, גם מה שאינו בטבלה שלמטה").length - 1;
+  if (both !== 2) throw new Error(`document-card caption appears ${both}x, want 2`);
+});
+check("the superseded wording is gone", () => {
+  const html = render([fullBucket]);
+  for (const dead of ["שורות בחודש בסך הכל", "לא רק ההפקות שלמטה"]) {
+    if (html.includes(dead)) throw new Error(`old copy still rendered: ${dead}`);
+  }
+});
+
 console.log("\n=== the empty states, one each ===");
 check("אין עבודות בחודש הזה — when work is empty", () => {
   const html = render([{ ...fullBucket, work: [] }]);
