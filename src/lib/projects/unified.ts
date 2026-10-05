@@ -145,13 +145,19 @@ export const SOURCE_TONE: Record<RowSource, string> = {
  * within each source and approximate across them. The alternative — four date
  * columns, three of them empty on every row — was rejected as unreadable.
  */
-export type DateMeaning = "record" | "work" | "issued" | "document";
+export type DateMeaning = "record" | "work" | "issued" | "document" | "milestone_expected";
 
 export const DATE_MEANING_TITLE: Record<DateMeaning, string> = {
   record: "תאריך הקלטה",
   work: "תאריך העבודה",
   issued: "תאריך הנפקת ההזמנה, לא תאריך העבודה",
   document: "תאריך המסמך",
+  // The FIFTH meaning, added 5.10 for a milestone that has a job and no
+  // document yet. It is the only one that names its own absence, and it has to:
+  // the date is the milestone's `expected_date` (or, failing that, its job's
+  // date), which is a PLAN rather than a record of anything. Every other row on
+  // this screen is dated by something that happened.
+  milestone_expected: "תאריך אבן הדרך (אין עדיין מסמך)",
 };
 
 /** How a row is opened. `entity` goes to the existing drawer; `href` is a link. */
@@ -324,8 +330,36 @@ export type MilestoneInput = {
   /** The milestone's own state label and colour, from MILESTONE_META. */
   stateLabel: string;
   stateColor: string;
+  /**
+   * The gross of the ANCHOR DOCUMENT when there is one — ₪5,900 and not ₪5,000,
+   * because a row that attributes a number already inside the month cards has to
+   * show the number it is attributing. When there is NO document (the 5.10 case
+   * below) it is the milestone's own amount, which is the only figure that
+   * exists; nothing is being attributed, so nothing can be misattributed.
+   */
   amount: number | null;
-  anchor_date: string | null;
+  /**
+   * The date the CALLER chose, and `dateMeaning` says which fact it is. Two
+   * shapes reach this field:
+   *
+   *   document            the anchor document's date. The money landed (320/400)
+   *                       or the bill went out (300/305), and the row is placed
+   *                       in the month that happened.
+   *   milestone_expected  🔴 NEW, owner 5.10. The milestone has a JOB and no
+   *                       anchor document — it was enqueued and nothing has been
+   *                       issued yet. Before this it claimed its job through
+   *                       `excluded` and produced no row, so the job reached no
+   *                       row at all and came back in `unrepresented`. A billing
+   *                       row that exists and is invisible is the failure this
+   *                       screen was rebuilt to end, so it gets a row, dated by
+   *                       `expected_date` (or its job's date as a fallback) and
+   *                       LABELLED as a plan rather than a record.
+   *
+   * The choosing happens in page.tsx because that is where expected_date, the
+   * anchor and the job all are; the builder only places what it is handed.
+   */
+  date: string | null;
+  dateMeaning: Extract<DateMeaning, "document" | "milestone_expected">;
   job_id: string | null;
   jobFacts: FinanceJobFacts | null;
   docs: ProjectDoc[];
@@ -628,8 +662,8 @@ export function buildUnifiedRows(input: UnifiedInput): UnifiedResult {
       key,
       source: "milestone",
       month: m.month,
-      date: m.anchor_date,
-      dateMeaning: "document",
+      date: m.date,
+      dateMeaning: m.dateMeaning,
       client: m.client_name,
       show: m.contract_name,
       description: m.name,

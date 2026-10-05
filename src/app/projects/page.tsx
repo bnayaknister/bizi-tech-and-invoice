@@ -615,15 +615,12 @@ export default async function ProjectsPage() {
     status: string;
     job_id: string | null;
   }[];
-  const allJobsById = new Map(
-    ((jobsRes.data ?? []) as {
-      id: string;
-      invoice_biz: string | null;
-      invoice_tax: string | null;
-      paid: string | null;
-      dismissed: boolean;
-    }[]).map((j) => [j.id, j])
-  );
+  // Typed as the full JobDbRow rather than the five columns the milestone
+  // document walk needed. `date` joined the readers on 5.10: an anchor-less
+  // milestone row falls back to its job's date when the milestone itself carries
+  // no expected_date, and a narrower local type here would have hidden a column
+  // the select already fetches.
+  const allJobsById = new Map(allJobRows.map((j) => [j.id, j]));
   const present = (v: unknown) => v != null && String(v).trim() !== "";
   const msJobIds = Array.from(new Set(msRows.map((m) => m.job_id).filter((v): v is string => !!v)));
   const msDocNumbers = Array.from(
@@ -1051,10 +1048,20 @@ export default async function ProjectsPage() {
   // than in the client, so the pure builder carries a label and a colour and
   // never has to know what a MilestoneState is. Unknown state → render itself,
   // the same fallback MilestoneTableRow already applies.
-  const milestoneInputs: MilestoneInput[] = milestoneRows.map((m) => {
-    const meta = MILESTONE_META[m.state] ?? { label: m.state ?? "—", color: "var(--dim)", dot: "var(--dim)" };
+  const msMeta = (state: string) =>
+    MILESTONE_META[state as keyof typeof MILESTONE_META] ?? {
+      label: state ?? "—",
+      color: "var(--dim)",
+      dot: "var(--dim)",
+    };
+  const msFactsOf = (jobId: string | null | undefined) => {
+    const j = jobId ? allJobsById.get(jobId) ?? null : null;
+    return j ? { paid: j.paid, invoice_biz: j.invoice_biz, invoice_tax: j.invoice_tax } : null;
+  };
+
+  const anchoredInputs: MilestoneInput[] = milestoneRows.map((m) => {
     const msRow = msRows.find((x) => x.id === m.id) ?? null;
-    const msJob = msRow?.job_id ? allJobsById.get(msRow.job_id) ?? null : null;
+    const meta = msMeta(m.state);
     return {
       month: m.month,
       id: m.id,
@@ -1065,14 +1072,95 @@ export default async function ProjectsPage() {
       stateLabel: meta.label,
       stateColor: meta.color,
       amount: m.amount,
-      anchor_date: m.anchor_date,
+      date: m.anchor_date,
+      dateMeaning: "document" as const,
       job_id: msRow?.job_id ?? null,
-      jobFacts: msJob
-        ? { paid: msJob.paid, invoice_biz: msJob.invoice_biz, invoice_tax: msJob.invoice_tax }
-        : null,
+      jobFacts: msFactsOf(msRow?.job_id),
       docs: m.docs,
     };
   });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔴 THE MILESTONE THAT HAS A JOB AND NO DOCUMENT (owner decision 5.10)
+  // ══════════════════════════════════════════════════════════════════════════
+  //
+  // The block above emits a row only for a milestone whose state is paid or
+  // invoiced AND which has an anchor document — "an open milestone has no
+  // document, therefore no date, therefore no month it could honestly belong
+  // to", as the note above it has said since 15.9. That reasoning is still right
+  // about a milestone with NOTHING behind it.
+  //
+  // It was wrong about a milestone with a JOB. Such a milestone was enqueued:
+  // `contract_milestones.job_id` is set, a billing row exists, and the owner's
+  // deduplication rule puts that job id into `excluded` whether or not a row was
+  // drawn for it. So the job reached no row at all and came back in
+  // `unrepresented` — a live billing row, invisible on the screen whose job is to
+  // show every piece of work. 823b9c3 reported that consequence rather than
+  // hiding it; this is the owner's answer to it: the milestone gets a row.
+  //
+  // WHAT THE ROW SAYS, and what it is careful NOT to say:
+  //   date     `expected_date`, falling back to the job's date. Both are PLANS,
+  //            not records, and `dateMeaning: "milestone_expected"` labels the
+  //            cell "תאריך אבן הדרך (אין עדיין מסמך)" so nobody reads it as a
+  //            document date. This is the one date on the screen that describes
+  //            something that has not happened.
+  //   amount   the MILESTONE's own figure — ₪5,000, the net. The anchored rows
+  //            show the DOCUMENT's gross because they attribute a number already
+  //            inside the month cards; this row attributes nothing (there is no
+  //            document to be inside a card), so the milestone's own amount is
+  //            the only honest figure and there is nothing to double-count.
+  //   bill     `deriveState` of the JOB. It has a job, so it is never
+  //            "טרם חויבה" — that label is for work with no billing object at
+  //            all, and this work has one.
+  //   docs     empty. There are none, and an empty document cell is the correct
+  //            output for a document nobody has issued.
+  //
+  // A milestone with a job and NEITHER date still gets no row — it cannot answer
+  // "when", the same bar every other source on this screen has to clear — and it
+  // stays in `unrepresented`. Zero such rows exist in the live data (all five
+  // milestone jobs carry an expected_date or a job date), so this branch is
+  // written for the day one appears.
+  const anchoredIds = new Set(milestoneRows.map((m) => m.id));
+  const unanchoredInputs: MilestoneInput[] = [];
+  for (const m of msRows) {
+    if (anchoredIds.has(m.id)) continue;
+    if (!m.job_id) continue; // no job, no billing row — the 15.9 reasoning stands
+    const job = allJobsById.get(m.job_id) ?? null;
+    // 0041: a dismissed job is out of every money surface, and its milestone has
+    // nothing left to attribute. Same guard the anchored loop applies.
+    if (!job || job.dismissed) continue;
+    const date = m.expected_date ?? job.date ?? null;
+    if (!date) continue; // cannot say when — stays in `unrepresented`
+    const month = date.slice(0, 7);
+    if (month < RANGE_START_MONTH) continue;
+    const contract = msContractById.get(m.contract_id) ?? null;
+    const state = deriveMilestoneState({
+      status: m.status,
+      expected_date: m.expected_date,
+      is_estimated: m.is_estimated,
+      jobPaid: job.paid ?? null,
+      jobBilled: present(job.invoice_biz) || present(job.invoice_tax),
+    });
+    const meta = msMeta(state);
+    unanchoredInputs.push({
+      month,
+      id: m.id,
+      name: m.name,
+      contract_id: m.contract_id,
+      contract_name: contract?.name ?? null,
+      client_name: contract?.client_id ? clientName.get(contract.client_id) ?? null : null,
+      stateLabel: meta.label,
+      stateColor: meta.color,
+      amount: m.amount ?? null,
+      date,
+      dateMeaning: "milestone_expected" as const,
+      job_id: m.job_id,
+      jobFacts: msFactsOf(m.job_id),
+      docs: [],
+    });
+  }
+
+  const milestoneInputs: MilestoneInput[] = [...anchoredInputs, ...unanchoredInputs];
 
   const miscInputs: MiscInput[] = miscRows.map((w) => {
     const j = w.job_id ? jobRowById.get(w.job_id) ?? null : null;

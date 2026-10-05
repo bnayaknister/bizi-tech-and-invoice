@@ -126,7 +126,8 @@ const ms = (over: Partial<MilestoneInput> = {}): MilestoneInput => ({
   stateLabel: "שולם",
   stateColor: "var(--green)",
   amount: 5900,
-  anchor_date: "2026-09-10",
+  date: "2026-09-10",
+  dateMeaning: "document" as const,
   job_id: null,
   jobFacts: null,
   docs: noDocs,
@@ -361,6 +362,73 @@ console.log("\n── 9. 🔴 הדבר שההצעה מסרבת להסתיר: unr
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+console.log("\n── 9ב. 🔴 אבן דרך עם job ובלי מסמך עוגן (הכרעה 5.10) ─────────");
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  // page.tsx now hands the builder a SECOND kind of milestone input: one dated
+  // by expected_date (or its job's date) and labelled as a plan. The builder's
+  // job is to place it; these cases pin what it places.
+  const unanchored = ms({
+    id: "mU",
+    month: "2026-09",
+    date: "2026-09-30",
+    dateMeaning: "milestone_expected" as const,
+    amount: 5000, // the MILESTONE's net — there is no document to be gross about
+    job_id: "jU",
+    jobFacts: { paid: "לא", invoice_biz: "40333", invoice_tax: null },
+    docs: [],
+    stateLabel: "חויב — ממתין לתשלום",
+  });
+
+  const r = build({ milestones: [unanchored], jobs: [job({ id: "jU", date: "2026-09-12" })] });
+  eq("שורה אחת", r.rows.length, 1);
+  eq("המקור הוא אבן דרך", r.rows[0].source, "milestone");
+  eq("ואפס שורות job-only", bySource(r.rows, "bundle").length + bySource(r.rows, "import").length, 0);
+  eq("התאריך הוא של אבן הדרך", r.rows[0].date, "2026-09-30");
+  eq("ומסומן כתוכנית ולא כמסמך", r.rows[0].dateMeaning, "milestone_expected");
+  eq(
+    "והכיתוב אומר שאין עדיין מסמך",
+    DATE_MEANING_TITLE[r.rows[0].dateMeaning],
+    "תאריך אבן הדרך (אין עדיין מסמך)"
+  );
+  eq("הסכום הוא של אבן הדרך", r.rows[0].amount, 5000);
+  eq("עמודות המסמכים ריקות", r.rows[0].docs, []);
+  // 🔴 יש job — ולכן לעולם לא "טרם חויבה"
+  eq("סטטוס חיוב מ-deriveState", r.rows[0].billStatus.state, "blue");
+  eq("ובפרט לא טרם חויבה", r.rows[0].billStatus.label === NO_JOB_LABEL, false);
+  eq("לקוח / חוזה / תיאור כמו שורת אבן דרך", [r.rows[0].client, r.rows[0].show, r.rows[0].description], ["לקוח ב", "מכירת ביפו", "חלק א"]);
+  eq("מחוץ לסכומי הכסף, כמו כל אבן דרך", r.rows[0].excludedFromMoney, true);
+  // 🔴 AND THE WHOLE POINT: the job is no longer unrepresented
+  eq("🔴 ה-job אינו חסר ייצוג", r.unrepresented, []);
+  eq("והשורה נושאת אותו", r.rows[0].jobIds, ["jU"]);
+
+  // ---- regression: an ANCHORED milestone still produces exactly one row ----
+  const anchored = build({
+    milestones: [ms({ id: "mA", job_id: "jA2", jobFacts: { paid: "כן", invoice_biz: null, invoice_tax: "60197" } })],
+    jobs: [job({ id: "jA2", date: "2026-09-10" })],
+  });
+  eq("אבן דרך עם מסמך — שורה אחת בלבד", anchored.rows.length, 1);
+  eq("ותאריך המסמך", anchored.rows[0].dateMeaning, "document");
+  eq("אפס חסרי ייצוג", anchored.unrepresented, []);
+
+  // ---- a milestone with NO job — unchanged, and this is what it does today --
+  // page.tsx never builds an input for it (no job_id → `continue`), so the
+  // builder never sees one and nothing is drawn. Nothing is dropped either:
+  // there is no job, so there is no billing row to go missing. The 15.9
+  // reasoning stands for this case exactly as written — "an open milestone has
+  // no document, therefore no date, therefore no month it could honestly belong
+  // to".
+  const noJob = build({ milestones: [], jobs: [] });
+  eq("אבן דרך בלי job — אפס שורות, אפס דיווח", [noJob.rows.length, noJob.unrepresented.length], [0, 0]);
+
+  // ---- and the case that still gets no row: a job and NO date -------------
+  // The builder is never handed it (page.tsx requires a date), so from the
+  // builder's side the job simply looks unclaimed-and-dateless.
+  const noDate = build({ jobs: [job({ id: "jND", date: null })] });
+  eq("job בלי תאריך — מדווח", noDate.unrepresented, [{ jobId: "jND", reason: "no_date" }]);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 console.log("\n── 10. 🔴 הקנרי: כל job בדיוק פעם אחת ─────────────────────────");
 // ═══════════════════════════════════════════════════════════════════════════
 {
@@ -376,12 +444,27 @@ console.log("\n── 10. 🔴 הקנרי: כל job בדיוק פעם אחת ─
       // a production with no job at all — an episode not yet billed
       prod({ id: "pD", month: "2026-09", jobs: [] }),
     ],
-    milestones: [ms({ id: "mA", job_id: "jM" })],
+    milestones: [
+      ms({ id: "mA", job_id: "jM" }),
+      // 🔴 the 5.10 addition: a milestone with a job and no document. Before it,
+      // jU was in `excluded` and in no row — the canary's exact failure mode.
+      ms({
+        id: "mU",
+        month: "2026-09",
+        date: "2026-09-30",
+        dateMeaning: "milestone_expected" as const,
+        amount: 5000,
+        job_id: "jU",
+        jobFacts: { paid: "לא", invoice_biz: null, invoice_tax: null },
+        docs: [],
+      }),
+    ],
     misc: [misc({ id: "wA", job_id: "jW" })],
     jobs: [
       job({ id: "jA", date: "2026-08-12" }),
       job({ id: "jB", date: "2026-08-14" }),
       job({ id: "jM", date: "2026-09-10" }),
+      job({ id: "jU", date: "2026-09-12" }),
       job({ id: "jW", date: "2026-08-05" }),
       job({ id: "jBundle", date: "2026-08-22" }),
       job({ id: "jImport", date: "2026-08-23", external_id: "C0007" }),
@@ -427,10 +510,17 @@ console.log("\n── 10. 🔴 הקנרי: כל job בדיוק פעם אחת ─
   eq(
     "ספירה לפי מקור",
     countBySource(r.rows),
-    { production: 4, bundle: 1, misc: 1, milestone: 1, import: 1 }
+    { production: 4, bundle: 1, misc: 1, milestone: 2, import: 1 }
   );
-  eq("סך השורות", r.rows.length, 8);
+  eq("סך השורות", r.rows.length, 9);
   eq("אפס התנגשויות", r.conflicts, []);
+
+  // 🔴 THE 5.10 ASSERTION, STATED AS THE OWNER STATED IT: after the change,
+  // `unrepresented` holds no milestone job. What is left in it is one job that
+  // predates the July floor — the floor doing its job, not a gap.
+  const msJobIds = new Set(["jM", "jU"]);
+  eq("אף job של אבן דרך אינו חסר ייצוג", r.unrepresented.filter((u) => msJobIds.has(u.jobId)), []);
+  eq("ומה שנשאר הוא רק הרצפה", r.unrepresented.map((u) => u.reason), ["before_range"]);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
