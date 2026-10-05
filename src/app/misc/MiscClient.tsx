@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import IconTile from "@/components/IconTile";
 import { displayDate } from "@/lib/dates";
+import { MISC_BOARD_STATES, MISC_STATUS_TONE } from "@/lib/misc/status";
 import NewMiscModal from "./NewMiscModal";
 
 /** A client the create form may pick. `morningMapped` is the boolean form of
@@ -66,25 +67,21 @@ export type MiscRow = {
 const money = (n: number | null) => (n == null ? "—" : `₪${Math.round(n).toLocaleString("he-IL")}`);
 
 /**
- * Status colour, keyed BY NAME — never by order.
+ * Status colour and the board's three columns MOVED OUT to lib/misc/status.ts.
  *
- * 0074's header states the rule that this map is the UI half of: the enum is
- * ordered נפתח, בעבודה, הושלם, בוטל with 'בוטל' LAST, so any test shaped like
- * `status >= 'הושלם'` sweeps cancelled rows in. The enum order exists for
- * display, not for logic. A record keyed on the literal cannot make that
- * mistake, and an unknown value falls through to the neutral tone rather than
- * being silently grouped with whatever sorts next to it.
+ * /projects shows misc work beside podcast episodes since 5.10 (owner decision)
+ * and needs the same four names and the same four colours. The alternative was
+ * ProjectsClient importing from this file — a "use client" module whose other
+ * 800 lines are a kanban board, its drag handlers and its fetch calls — to reach
+ * a four-entry record. Two copies was never an option: two spellings of a status
+ * colour is two chances for the same cancelled row to be grey on one screen and
+ * red on the other.
  *
- * Hues follow DESIGN.md §2: cyan is open commitment (never debt), violet is the
- * active signal, green is done, and cancelled is greyed out rather than red —
- * a cancelled job is not a problem to fix, it is a job that will not happen.
+ * The RULE those exports carry is unchanged and still load-bearing here: 0074's
+ * enum is ordered נפתח, בעבודה, הושלם, בוטל with 'בוטל' LAST, so anything shaped
+ * like `status >= 'הושלם'` sweeps cancelled rows in. Named, never ranged.
  */
-const STATUS_TONE: Record<string, string> = {
-  "נפתח": "var(--cyan)",
-  "בעבודה": "var(--violet-light)",
-  "הושלם": "var(--green)",
-  "בוטל": "var(--faint)",
-};
+const STATUS_TONE = MISC_STATUS_TONE;
 
 function StatusPill({ status }: { status: string }) {
   const color = STATUS_TONE[status] ?? "var(--dim)";
@@ -184,7 +181,8 @@ function Suppliers({ lines }: { lines: SupplierLine[] }) {
  * Cancelled rows stay VISIBLE IN THE TABLE, with their reason beside the name
  * (:244-249). Off the board is not out of the screen.
  */
-const BOARD_STATES = ["נפתח", "בעבודה", "הושלם"] as const;
+// lib/misc/status.ts — see the note above STATUS_TONE
+const BOARD_STATES = MISC_BOARD_STATES;
 
 const COLUMN_CAP = 60;
 

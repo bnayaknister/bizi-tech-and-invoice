@@ -10,7 +10,7 @@ import {
   type ConsolidationLink,
 } from "@/lib/documents/forProduction";
 import AppHeader from "@/components/AppHeader";
-import { deriveMilestoneState } from "@/lib/finance/milestone";
+import { deriveMilestoneState, MILESTONE_META } from "@/lib/finance/milestone";
 import {
   emptyReasonFor,
   stuckFor,
@@ -18,6 +18,18 @@ import {
   type Cadence as StuckCadence,
   type PaymentTerms as StuckPaymentTerms,
 } from "@/lib/projects/stuck";
+import {
+  buildUnifiedRows,
+  compareUnified,
+  excludedJobIds,
+  jobOnlyCandidates,
+  type JobInput,
+  type MilestoneInput,
+  type MiscInput,
+  type ProductionInput,
+  type UnifiedRow,
+} from "@/lib/projects/unified";
+import type { ProjectDoc } from "@/lib/projects/row";
 import ProjectsClient, {
   type BillingClass,
   type MilestoneRow,
@@ -192,6 +204,41 @@ type ProdRow = {
   contract_id: string | null;
 };
 
+/**
+ * A `jobs` row as this screen reads it.
+ *
+ * Nine columns, and every one of them is load-bearing since 5.10: five feed the
+ * document walk and the billing cell, three feed the row itself, and
+ * `external_id` + `legacy` are the only two facts in the table that hint at
+ * where a job-only row came from (see `jobOnlySource`, which says plainly that
+ * the hint is an inference and not a record).
+ */
+type JobDbRow = {
+  id: string;
+  client_id: string | null;
+  campaign: string | null;
+  date: string | null;
+  amount: number | null;
+  invoice_biz: string | null;
+  invoice_tax: string | null;
+  paid: string | null;
+  dismissed: boolean;
+  external_id: string | null;
+  legacy: boolean;
+};
+
+/** A `misc_productions` row — "רדיו ושונות". `work_date` is NOT NULL (0074:182). */
+type MiscDbRow = {
+  id: string;
+  client_id: string;
+  name: string;
+  work_date: string;
+  amount: number | null;
+  description: string | null;
+  status: string;
+  job_id: string | null;
+};
+
 // Paged for the same reason productions/page.tsx is: PostgREST silently caps an
 // unbounded select at 1000 rows and returns no error. 83 rows in range today,
 // growing ~30 a month, so the cap is years away — and the day it is crossed is
@@ -256,8 +303,17 @@ export default async function ProjectsPage() {
   const admin = createAdminClient();
 
   // ---- wave 1: everything that does not depend on an id list ---------------
-  const [productions, showsRes, contractsRes, clientsRes, jobsRes, linksRes, receiptQueueRes, milestonesRes] =
-    await Promise.all([
+  const [
+    productions,
+    showsRes,
+    contractsRes,
+    clientsRes,
+    jobsRes,
+    linksRes,
+    receiptQueueRes,
+    milestonesRes,
+    miscRes,
+  ] = await Promise.all([
     fetchProductionsInRange(admin),
     // billing_mode and active are both read, and they are NOT interchangeable:
     // billing_mode is a money field (can_edit_money, shows/update/route.ts:19)
@@ -271,9 +327,30 @@ export default async function ProjectsPage() {
     // rule and the empty-cell labels (2026-09-17). payment_terms is only ever
     // used to ASK public.due_date_for — never to compute a date here.
     admin.from("clients").select("id,name,billing_cadence,billing_every_n,payment_terms"),
-    // `paid` joined the select for the milestone rows below — deriveMilestoneState
-    // needs it, and the per-episode document resolver never did.
-    admin.from("jobs").select("id,invoice_biz,invoice_tax,paid,dismissed"),
+    // ═══ EVERY JOB, AND NOW EVERY COLUMN A ROW NEEDS ═══
+    //
+    // This read used to be five columns, because a job was only ever a ROUTE to
+    // a document here. Since 5.10 a job can BE a row — bundle-from-show and CSV
+    // imports write jobs with no production at all, and 47 of the 94 jobs in the
+    // database live that way (lib/misc/workOrder.ts:88-89) — so the row's own
+    // facts have to come down too: client, campaign, date, amount, and the two
+    // provenance columns `jobOnlySource` reads.
+    //
+    // PAGED, where it was not before. The old five-column read fed a document
+    // walk whose misses were invisible; now a missed page is a missing row on a
+    // money screen. PostgREST silently caps an unbounded select at 1000 and
+    // returns no error (the reason fetchProductionsInRange pages), so the day
+    // the 94 becomes 1001 is the day this screen would quietly start omitting
+    // work. ~94 rows today, so one round-trip is also the last one.
+    fetchAllPages<JobDbRow>((from, to) =>
+      admin
+        .from("jobs")
+        .select(
+          "id,client_id,campaign,date,amount,invoice_biz,invoice_tax,paid,dismissed,external_id,legacy"
+        )
+        .order("id")
+        .range(from, to)
+    ).then((data) => ({ data })),
     admin.from("job_productions").select("job_id,production_id"),
     // the ONLY record of which tax invoices a receipt was raised on. A pulled
     // receipt has no such row, and Morning's search response carries no
@@ -299,6 +376,35 @@ export default async function ProjectsPage() {
     admin
       .from("contract_milestones")
       .select("id,contract_id,name,amount,expected_date,is_estimated,status,job_id"),
+    // ---- רדיו ושונות -------------------------------------------------------
+    // The fourth subject on this screen, and the one 0074 explicitly deferred
+    // to a later step: "מחוץ להיקף במכוון: … הופעה במעקב הפרויקטים (צעד נפרד
+    // אחרי שהמסך עובד)" (0074:402). This is that step.
+    //
+    // 🔴 SERVICE ROLE, AND THE PERMISSION MISMATCH IS THE REASON. 0074's RLS
+    // policy on misc_productions is `can_view_stages`, while this page's gate is
+    // `can_view_money` — two INDEPENDENT booleans, both defaulting false
+    // (0002:14-16). A bookkeeper with money and no stages would read zero rows
+    // through her own session and be shown a projects screen that is silently
+    // missing every radio job, which is the exact failure modules/misc.ts:28-53
+    // spells out at length for the hub card. The whole page is already a
+    // service-role read behind a money check (see the gate above), so this rides
+    // the same trade rather than inventing a second one.
+    //
+    // `amount` is in the select and is NOT readable by `authenticated` — 0074
+    // revokes the table and grants column by column, deliberately never naming
+    // amount or price. One more reason the service role is not optional here.
+    //
+    // Paged for the reason every unbounded read in this app is. The table was
+    // empty when /misc shipped (misc/page.tsx:74), so this is insurance — and
+    // the cheap kind: one page is also the last page.
+    fetchAllPages<MiscDbRow>((from, to) =>
+      admin
+        .from("misc_productions")
+        .select("id,client_id,name,work_date,amount,description,status,job_id")
+        .order("id")
+        .range(from, to)
+    ).then((data) => ({ data })),
   ]);
 
   // merged_into is the one soft-delete mechanism (0019) — a merged duplicate is
@@ -322,21 +428,54 @@ export default async function ProjectsPage() {
     }[]).map((c) => [c.id, c])
   );
 
+  const allJobRows = (jobsRes.data ?? []) as unknown as JobDbRow[];
+  const miscRows = (miscRes.data ?? []) as unknown as MiscDbRow[];
+
   // A dismissed job is hidden from every money surface (0041: wrong/duplicate/
   // irrelevant). Its documents must not surface through it either, or a
   // duplicate job would pull a real invoice onto the wrong episode.
-  const jobs = (jobsRes.data ?? []).filter((j) => !j.dismissed) as {
-    id: string;
-    invoice_biz: string | null;
-    invoice_tax: string | null;
-  }[];
+  const jobs = allJobRows.filter((j) => !j.dismissed);
   const jobIdSet = new Set(jobs.map((j) => j.id));
   const jobLinks = (linksRes.data ?? []).filter(
     (l) => jobIdSet.has(l.job_id as string) && prodIds.includes(l.production_id as string)
   ) as { job_id: string; production_id: string }[];
 
-  const relevantJobIds = Array.from(new Set(jobLinks.map((l) => l.job_id)));
-  const relevantJobs = jobs.filter((j) => relevantJobIds.includes(j.id));
+  // ═══ THE EXCLUDED SET, ASKED HERE AND ASKED AGAIN BY THE BUILDER ═══
+  //
+  // It has to be known NOW, one wave before the rows exist, because the
+  // documents of a job-only row have to be fetched in wave 2 along with
+  // everybody else's — a row rendered with an empty document cell because the
+  // server never went looking is the quietest wrong answer this screen could
+  // give. `excludedJobIds` and `jobOnlyCandidates` are therefore both imported
+  // from lib/projects/unified and NOT re-spelled: buildUnifiedRows calls the
+  // same two functions on the same facts, so the set it subtracts and the set
+  // whose documents were fetched cannot be different sets.
+  //
+  // `linkedJobIds` is read off the FULL job_productions table, not the
+  // in-range-filtered `jobLinks` above. That difference is load-bearing: a job
+  // whose production sits below the July floor is still a linked job, and
+  // treating it as unlinked would resurrect it as a "מרוכזת" row — inventing a
+  // bundle order out of a production the screen deliberately does not show.
+  const allLinks = (linksRes.data ?? []) as { job_id: string; production_id: string }[];
+  const excluded = excludedJobIds({
+    linkedJobIds: allLinks.map((l) => l.job_id),
+    miscJobIds: miscRows.map((w) => w.job_id),
+    milestoneJobIds: ((milestonesRes.data ?? []) as { job_id: string | null }[]).map((m) => m.job_id),
+  });
+  const jobOnly = jobOnlyCandidates(jobs, excluded);
+
+  // Documents are wanted for three populations now, not one: the jobs of the
+  // episodes on screen, the jobs of the misc rows, and the job-only rows
+  // themselves. One id list, so wave 2 stays the same five queries.
+  const relevantJobIds = Array.from(
+    new Set([
+      ...jobLinks.map((l) => l.job_id),
+      ...miscRows.map((w) => w.job_id).filter((v): v is string => !!v),
+      ...jobOnly.map((j) => j.id),
+    ])
+  );
+  const relevantJobSet = new Set(relevantJobIds);
+  const relevantJobs = jobs.filter((j) => relevantJobSet.has(j.id));
   const docNumbers = Array.from(
     new Set(relevantJobs.flatMap((j) => [j.invoice_biz, j.invoice_tax]).filter((n): n is string => !!n))
   );
@@ -521,9 +660,34 @@ export default async function ProjectsPage() {
     }
   }
 
+  // ═══ ONE RESOLUTION FOR ALL THREE ROW KINDS, AND WHY IT IS ONE CALL ═══
+  //
+  // resolveProductionDocuments' contract is not really "give me productions" —
+  // it is "give me a set of KEYS and the jobs attached to each, and I will walk
+  // the six routes for every key". Of those six, only route 1 (documents
+  // .production_id) and route 4 (the consolidated work order) are keyed on a
+  // production id at all; the other four are keyed on the key's JOBS. So a misc
+  // row and a job-only row can be resolved by the same function by handing it
+  // their own id as the key and a one-element job link — routes 1 and 4 simply
+  // miss for them, which is correct, and routes 2/3/5/6 do the work.
+  //
+  // 🔴 AND IT MUST BE ONE CALL, not three. `shared` — the "מאוגד" tag — is
+  // computed from how many keys in the SET hold the same document
+  // (forProduction.ts:279-285). Resolving productions separately from job-only
+  // rows would mean a bundle covering one linked job and one unlinked job gets
+  // no tag on either side, because neither call could see the other holder. One
+  // call sees all of them. 0087 wrote bundle_job_ids onto pulled documents by
+  // hand, so a bundle spanning both populations is a live shape, not a theory.
+  //
+  // The key spaces cannot collide: production ids, misc ids and job ids are all
+  // distinct uuids from distinct tables.
+  const miscJobLinks = miscRows
+    .filter((w) => w.job_id)
+    .map((w) => ({ job_id: w.job_id as string, production_id: w.id }));
+  const jobOnlyLinks = jobOnly.map((j) => ({ job_id: j.id, production_id: j.id }));
   const resolved = resolveProductionDocuments({
-    productionIds: prodIds,
-    jobLinks,
+    productionIds: [...prodIds, ...miscRows.map((w) => w.id), ...jobOnly.map((j) => j.id)],
+    jobLinks: [...jobLinks, ...miscJobLinks, ...jobOnlyLinks],
     jobs: relevantJobs,
     documents: Array.from(docsById.values()),
     receiptLinks,
@@ -810,19 +974,175 @@ export default async function ProjectsPage() {
     });
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // THE UNIFIED ROWS — every piece of work, one row each (owner 5.10)
+  // ══════════════════════════════════════════════════════════════════════════
+  //
+  // ⚠️ THE TWO ARRAYS BELOW ARE NOT A DUPLICATION, THEY ARE THE SUMMARY'S
+  // FIREWALL.
+  //
+  // `rows` (ProjectRow[]) stays exactly as it was and keeps feeding `summary`.
+  // The unified rows are a SECOND view, derived from the first — the production
+  // entries are built from the already-classified ProjectRow, never from the raw
+  // production again, so price and BillingClass are computed once and read
+  // twice (the drift the note at the `rows` literal above warns about:
+  // "classifying twice is how the cell and the rule drift apart").
+  //
+  // Keeping the summary on its own array is what preserves the decision
+  // standing at the bucket below: "MILESTONES LIVE IN THEIR OWN ARRAY, AND THAT
+  // IS THE EXCLUSION … no filter CAN forget it". If every source were poured
+  // into one array with a discriminator, each of the eight summary counters
+  // would need a `source === "production"` guard added by hand, and the ninth
+  // counter somebody writes next year would silently count a radio job as an
+  // episode. Owner 5.10 is explicit that the cards' arithmetic does not change;
+  // this is the shape that guarantees it rather than promising it.
+  const docsOf = (key: string): ProjectDoc[] =>
+    (resolved.get(key) ?? []).map((d) => ({
+      type: d.type,
+      number: d.number,
+      date: d.date,
+      shared: d.shared,
+      cancelled: d.cancelled,
+      path: d.path,
+    }));
+
+  // The job facts behind one production — every job linked to it, dismissed ones
+  // already gone (`jobs` is filtered at :432). More than one is possible, and
+  // billStatusFor shows the least finished of them.
+  const jobFactsByProduction = new Map<
+    string,
+    { id: string; paid: string | null; invoice_biz: string | null; invoice_tax: string | null }[]
+  >();
+  const jobRowById = new Map(jobs.map((j) => [j.id, j]));
+  for (const l of jobLinks) {
+    const j = jobRowById.get(l.job_id);
+    if (!j) continue;
+    const facts = { id: j.id, paid: j.paid, invoice_biz: j.invoice_biz, invoice_tax: j.invoice_tax };
+    jobFactsByProduction.set(l.production_id, [
+      ...(jobFactsByProduction.get(l.production_id) ?? []),
+      facts,
+    ]);
+  }
+
+  const productionInputs: ProductionInput[] = rows.map((r) => ({
+    month: r.month,
+    id: r.id,
+    record_date: r.record_date,
+    podcast_name: r.podcast_name,
+    show_name: r.show_name,
+    client_name: r.client_name,
+    guest: r.guest,
+    status: r.status,
+    episode_no: r.episode_no,
+    internal: r.internal,
+    cancelled: r.cancelled,
+    price: r.price,
+    // read off the already-classified row, never re-derived — classify() runs
+    // exactly once per production, at the `rows` literal above
+    billing: r.billing,
+    contract_name: r.contract_name,
+    empty_reason_text: r.empty_reason?.text ?? null,
+    docs: r.docs,
+    jobs: jobFactsByProduction.get(r.id) ?? [],
+    stuckSentences: (r.stuck ?? []).map((s) => s.sentence),
+  }));
+
+  // The milestone's own state vocabulary comes from MILESTONE_META here rather
+  // than in the client, so the pure builder carries a label and a colour and
+  // never has to know what a MilestoneState is. Unknown state → render itself,
+  // the same fallback MilestoneTableRow already applies.
+  const milestoneInputs: MilestoneInput[] = milestoneRows.map((m) => {
+    const meta = MILESTONE_META[m.state] ?? { label: m.state ?? "—", color: "var(--dim)", dot: "var(--dim)" };
+    const msRow = msRows.find((x) => x.id === m.id) ?? null;
+    const msJob = msRow?.job_id ? allJobsById.get(msRow.job_id) ?? null : null;
+    return {
+      month: m.month,
+      id: m.id,
+      name: m.name,
+      contract_id: msRow?.contract_id ?? "",
+      contract_name: m.contract_name,
+      client_name: m.client_name,
+      stateLabel: meta.label,
+      stateColor: meta.color,
+      amount: m.amount,
+      anchor_date: m.anchor_date,
+      job_id: msRow?.job_id ?? null,
+      jobFacts: msJob
+        ? { paid: msJob.paid, invoice_biz: msJob.invoice_biz, invoice_tax: msJob.invoice_tax }
+        : null,
+      docs: m.docs,
+    };
+  });
+
+  const miscInputs: MiscInput[] = miscRows.map((w) => {
+    const j = w.job_id ? jobRowById.get(w.job_id) ?? null : null;
+    return {
+      id: w.id,
+      name: w.name,
+      client_name: clientName.get(w.client_id) ?? null,
+      work_date: w.work_date,
+      amount: w.amount,
+      description: w.description,
+      status: w.status,
+      job_id: w.job_id,
+      jobFacts: j ? { paid: j.paid, invoice_biz: j.invoice_biz, invoice_tax: j.invoice_tax } : null,
+      docs: docsOf(w.id),
+    };
+  });
+
+  // EVERY job goes in, dismissed included. The builder needs to see a dismissed
+  // job to know it is withdrawn rather than missing — filtering here would make
+  // it indistinguishable from a job that fell through a gap, which is precisely
+  // what `unrepresented` exists to tell apart.
+  const jobInputs: JobInput[] = allJobRows.map((j) => ({
+    id: j.id,
+    client_name: j.client_id ? clientName.get(j.client_id) ?? null : null,
+    campaign: j.campaign,
+    date: j.date,
+    amount: j.amount,
+    paid: j.paid,
+    invoice_biz: j.invoice_biz,
+    invoice_tax: j.invoice_tax,
+    dismissed: j.dismissed,
+    external_id: j.external_id,
+    legacy: j.legacy,
+    docs: docsOf(j.id),
+  }));
+
+  const unified = buildUnifiedRows({
+    rangeStartMonth: RANGE_START_MONTH,
+    productions: productionInputs,
+    milestones: milestoneInputs,
+    misc: miscInputs,
+    jobs: jobInputs,
+    linkedJobIds: allLinks.map((l) => l.job_id),
+  });
+
   // ---- month buckets ------------------------------------------------------
   const monthDocs = ((monthDocsRes.data ?? []) as unknown as MonthDoc[]).filter(
     (d) => !d.archived_at && !d.cancelled_at
   );
 
   const currentMonth = todayInIsrael().slice(0, 7);
+  // The unified rows join the picker. A month that holds nothing but a radio job
+  // or a bundle order is a month with work in it, and before 5.10 it would not
+  // have appeared at all — the picker was built from productions and milestones
+  // only, so the screen could not be navigated to work it did not know about.
   const monthKeys = Array.from(
     new Set(
-      [...rows.map((r) => r.month), ...milestoneRows.map((r) => r.month), currentMonth].filter(
-        (m) => m >= RANGE_START_MONTH
-      )
+      [
+        ...rows.map((r) => r.month),
+        ...milestoneRows.map((r) => r.month),
+        ...unified.rows.map((r) => r.month),
+        currentMonth,
+      ].filter((m) => m >= RANGE_START_MONTH)
     )
   ).sort();
+
+  const unifiedByMonth = new Map<string, UnifiedRow[]>();
+  for (const r of unified.rows) {
+    unifiedByMonth.set(r.month, [...(unifiedByMonth.get(r.month) ?? []), r]);
+  }
 
   const buckets: MonthBucket[] = monthKeys.map((key) => {
     const all = rows
@@ -870,6 +1190,13 @@ export default async function ProjectsPage() {
       label: monthLabel(key),
       rows: all,
       milestones: msForMonth,
+      // The table's data since 5.10. `rows` and `milestones` stay on the payload
+      // because the SUMMARY is derived from them and because a browser holding
+      // the previous JS chunk still reads them — the version-skew class
+      // safeBucket exists for (ProjectsClient.tsx:313-330). Sorted here, with
+      // the one total order compareUnified defines, so the server and any
+      // re-render agree on row order.
+      work: (unifiedByMonth.get(key) ?? []).slice().sort(compareUnified),
       summary: {
         expected: priced.reduce((t, r) => t + (r.price ?? 0), 0),
         expectedPriced: priced.length,

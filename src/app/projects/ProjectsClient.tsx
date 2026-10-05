@@ -3,17 +3,32 @@
 import { useEffect, useMemo, useState } from "react";
 import { displayDate } from "@/lib/dates";
 import { DOC_TYPES, DOC_TYPE_LABEL } from "@/lib/documents/forProduction";
-import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
+import { type MilestoneState } from "@/lib/finance/milestone";
 import { countByMonth, type EmptyReason, type Stuck } from "@/lib/projects/stuck";
+import {
+  BILL_FILTER_KEYS,
+  DATE_MEANING_TITLE,
+  EMPTY_FILTER,
+  NO_JOB_LABEL,
+  ROW_SOURCES,
+  SOURCE_LABEL,
+  SOURCE_TONE,
+  billFilterLabel,
+  clientOptions,
+  countBySource,
+  isFilterActive,
+  matchesFilter,
+  type BillFilterKey,
+  type RowSource,
+  type UnifiedFilter,
+  type UnifiedRow,
+} from "@/lib/projects/unified";
+import type { ProjectDoc } from "@/lib/projects/row";
 
-export type ProjectDoc = {
-  type: number;
-  number: string | null;
-  date: string | null;
-  shared: boolean;
-  cancelled: boolean;
-  path: string;
-};
+// Re-exported so nothing that already imported `ProjectDoc` from this component
+// has to change — the type itself moved to lib/projects/row.ts to break a cycle
+// (this file imports lib/projects/unified, which carries `docs` on every row).
+export type { ProjectDoc };
 
 /** Why a row carries no per-episode price. Defined here so the row cell and the
  *  summary answer with the same vocabulary — see classify() in page.tsx. */
@@ -50,15 +65,20 @@ export type ProjectRow = {
 };
 
 /**
- * A contract milestone, shown in the SAME table as the episodes and separated
- * from them by a labelled row.
+ * A contract milestone as the SERVER derives it.
  *
  * Not a ProjectRow, and deliberately not made into one. A milestone has no
  * recording date, no guest, no episode number and no production status — six
  * of ProjectRow's fields would have to be filled with invented values, which is
- * the exact category error classify() was written to stop. It is a different
- * subject that belongs on the same page, so it gets its own shape and its own
- * renderer.
+ * the exact category error classify() was written to stop.
+ *
+ * Since 5.10 it is no longer RENDERED from this shape: page.tsx converts it into
+ * a `UnifiedRow` with `source: "milestone"`, and the labelled separator row that
+ * used to announce it is gone — five sources interleaved by date cannot be
+ * banded without the table ceasing to be chronological, so the announcement
+ * moved onto the row itself as a source tag (see SourceTag). The shape stays
+ * because the server still builds it and because a browser holding the previous
+ * JS chunk still reads `bucket.milestones`.
  *
  * `amount` is the ANCHOR DOCUMENT's gross, never the milestone's net: this row
  * exists to attribute a number that is already inside the month cards above,
@@ -80,8 +100,17 @@ export type MilestoneRow = {
 export type MonthBucket = {
   key: string;
   label: string;
+  /**
+   * The production rows — STILL HERE, and still the only thing `summary` is
+   * derived from. Since 5.10 the TABLE renders `work` instead; these two stay on
+   * the payload because the summary cards are computed from them server-side
+   * (page.tsx keeps that arithmetic untouched by owner decision) and because the
+   * stuck windows read `rows` for their per-row sentences.
+   */
   rows: ProjectRow[];
   milestones: MilestoneRow[];
+  /** Every piece of work in this month, one row each. The table's data. */
+  work: UnifiedRow[];
   summary: {
     expected: number;
     expectedPriced: number;
@@ -103,9 +132,6 @@ export type MonthBucket = {
 
 const money = (n: number | null) =>
   n == null ? "—" : `₪${Math.round(n).toLocaleString("he-IL")}`;
-
-// the enum stores spaces as underscores ('אושר_ע"י_לקוח')
-const statusLabel = (s: string) => s.replace(/_/g, " ");
 
 const NO_PRICE_LABEL: Record<BillingClass, string> = {
   priced: "—",
@@ -152,12 +178,14 @@ const PATH_NOTE: Record<string, string> = {
  * "מצטבר · 0 מתוך 6", which is true of the CURRENT bundle and beside the point
  * for an episode that was never enqueued into one.
  */
-function DocCell({ docs, emptyReason }: { docs: ProjectDoc[]; emptyReason?: EmptyReason | null }) {
+function DocCell({ docs, emptyText }: { docs: ProjectDoc[]; emptyText?: string | null }) {
   if (!docs?.length) {
-    if (emptyReason) {
-      return (
-        <span className="text-[10px] text-[var(--ink-faint)] leading-tight">{emptyReason.text}</span>
-      );
+    // The TEXT, not the EmptyReason object. The reason's `kind` discriminator is
+    // a server-side fact (which branch of emptyReasonFor fired) that no cell
+    // reads, and a unified row carries the sentence alone — one less shape on
+    // the wire, and one less thing a stale chunk can be wrong about.
+    if (emptyText) {
+      return <span className="text-[10px] text-[var(--ink-faint)] leading-tight">{emptyText}</span>;
     }
     return <span className="text-[var(--ink-faint)]">—</span>;
   }
@@ -181,65 +209,6 @@ function DocCell({ docs, emptyReason }: { docs: ProjectDoc[]; emptyReason?: Empt
 }
 
 /**
- * The milestone renderer. Same columns, filled only where they mean something.
- *
- * The three that do not apply — guest, production status, episode — render an
- * em dash. That is not a gap to be filled later: a milestone HAS no guest, and
- * printing anything there would be the invented value this row exists to avoid.
- * The status column instead carries the milestone's own vocabulary from
- * MILESTONE_META ("שולם", "חויב — ממתין לתשלום"), which cannot be
- * mistaken for a production status.
- */
-function MilestoneTableRow({ m }: { m: MilestoneRow }) {
-  const byType = (t: number) => (m.docs ?? []).filter((d) => d.type === t);
-  // same reasoning as safeBucket: a state this chunk does not know about must
-  // RENDER, not throw. Caught by test_projects_render.tsx on the day this row
-  // was written — indexing MILESTONE_META with an unknown key returns undefined
-  // and reading .color off it takes the whole page down, which is the exact
-  // version-skew crash that suite exists for.
-  const meta = MILESTONE_META[m.state] ?? { label: m.state ?? "—", color: "var(--dim)", dot: "var(--dim)" };
-  const dash = <span className="text-[var(--ink-faint)]">—</span>;
-  return (
-    <tr className="border-b border-white/5 align-top">
-      <td className="py-2 pl-3 font-mono text-xs whitespace-nowrap" title="תאריך המסמך, לא תאריך הקלטה">
-        {m.anchor_date ? displayDate(m.anchor_date) : dash}
-      </td>
-      <td className="py-2 pl-3">
-        <div className="text-sm">
-          {m.name}
-          {m.contract_name && <span className="text-[var(--ink-faint)]"> · {m.contract_name}</span>}
-        </div>
-        <div className="flex items-center gap-1.5 text-[11px] text-[var(--ink-faint)]">
-          {m.client_name ?? dash}
-          <span className="rounded-full bg-[var(--cyan)]/20 px-1.5 py-px text-[10px] text-[var(--cyan)]">
-            אבן דרך
-          </span>
-        </div>
-      </td>
-      <td className="py-2 pl-3 text-xs">{dash}</td>
-      <td className="py-2 pl-3 text-xs whitespace-nowrap" style={{ color: meta.color }}>
-        {meta.label}
-      </td>
-      <td className="py-2 pl-3 font-mono text-xs whitespace-nowrap">
-        {money(m.amount)}
-        {/* which card up top already holds it. A 305 sits in neither, and says
-            nothing rather than claiming a total it is not in. */}
-        {m.counted_in && (
-          <div className="text-[10px] text-[var(--ink-faint)]">
-            {m.counted_in === "incoming" ? "בתוך נכנס" : "בתוך חויב"}
-          </div>
-        )}
-      </td>
-      {DOC_TYPES.map((t) => (
-        <td key={t} className="py-2 pl-3">
-          <DocCell docs={byType(t)} />
-        </td>
-      ))}
-    </tr>
-  );
-}
-
-/**
  * The stuck highlight.
  *
  * --amber, and chosen against the other three the palette already speaks:
@@ -255,62 +224,146 @@ const STUCK_ROW: React.CSSProperties = {
   background: "color-mix(in srgb, var(--amber) 5%, transparent)",
 };
 
-function Row({ r }: { r: ProjectRow }) {
-  // same reasoning as safeBucket: a row from a payload shape this chunk
-  // does not know about must render, not throw
+/**
+ * The source tag — the one thing that makes a mixed table readable.
+ *
+ * ═══ 🔴 WHY IT IS NOT OPTIONAL, AND WHY IT REPLACES A SEPARATOR ROW ═══
+ * Until 5.10 the milestone rows were announced by a labelled separator row, and
+ * the note above it said exactly why: "A milestone row carries a contract name
+ * where an episode carries a show, and a document date where an episode carries
+ * a recording date. Dropped into the list unannounced it reads as one more
+ * episode, and the screen lies quietly — which is worse than the blank it
+ * replaces."
+ *
+ * That argument does not scale to five sources: a separator per source would
+ * mean five bands and a fixed order, so a chronological table would have to stop
+ * being chronological. The tag moves the same announcement onto the row itself,
+ * which is the only place it can live when the rows interleave by date. The
+ * sentence the separator also carried — that milestone money is already inside
+ * the cards above — survives as the footnote under the table, because it is a
+ * statement about the CARDS and not about any one row.
+ */
+function SourceTag({ source }: { source: RowSource }) {
+  const color = SOURCE_TONE[source] ?? "var(--dim)";
+  // A source this chunk does not know about renders its own key rather than
+  // `undefined` — the version-skew discipline safeBucket exists for.
+  const label = SOURCE_LABEL[source] ?? String(source);
+  return (
+    <span
+      className="inline-block rounded-full px-1.5 py-px text-[10px] whitespace-nowrap"
+      style={{ color, background: "rgba(255,255,255,0.05)", border: `1px solid ${color}33` }}
+    >
+      {label}
+    </span>
+  );
+}
+
+/**
+ * ONE renderer for all five sources.
+ *
+ * It replaces `Row` and `MilestoneTableRow`, which were two renderers over two
+ * row shapes in one table. Three more shapes would have been five renderers and
+ * five chances for a column to drift out of line with its header — the thing
+ * that actually goes wrong in a wide table nobody can hold in their head.
+ *
+ * ═══ THE EM DASH IS A STATEMENT, NOT A PLACEHOLDER ═══
+ * Every cell a source genuinely has no answer for renders "—", and that is the
+ * rule MilestoneTableRow established and this inherits: "a milestone HAS no
+ * guest, and printing anything there would be the invented value this row exists
+ * to avoid". A job-only row has no production status; a bundle order has no
+ * guest; a milestone has neither. None of those is a gap to be filled later.
+ */
+function WorkRow({ r }: { r: UnifiedRow }) {
   const byType = (t: number) => (r.docs ?? []).filter((d) => d.type === t);
-  const stuck = (r.stuck ?? []).length > 0;
+  const stuck = (r.stuckSentences ?? []).length > 0;
+  const dash = <span className="text-[var(--ink-faint)]">—</span>;
+  const billing = r.billing as BillingClass | null;
   return (
     <tr
       className={`border-b border-white/5 align-top ${r.cancelled ? "opacity-45" : ""}`}
       style={stuck ? STUCK_ROW : undefined}
-      title={stuck ? r.stuck.map((s) => s.sentence).join(" · ") : undefined}
+      title={stuck ? r.stuckSentences.join(" · ") : undefined}
     >
-      <td className="py-2 pl-3 font-mono text-xs whitespace-nowrap">
-        {r.record_date ? displayDate(r.record_date) : "—"}
+      {/* ⚠️ ONE COLUMN, FOUR MEANINGS — the title is what keeps it honest.
+          DATE_MEANING_TITLE names which date this row is showing; for a
+          bundle/import row it says out loud that this is the order's issue date
+          and NOT when the work was done, because jobs.date on that path is
+          `todayInIsrael()` at creation. The precedent is the milestone cell,
+          which has carried `title="תאריך המסמך, לא תאריך הקלטה"` since 15.9. */}
+      <td
+        className="py-2 pl-3 font-mono text-xs whitespace-nowrap"
+        title={DATE_MEANING_TITLE[r.dateMeaning] ?? undefined}
+      >
+        {r.date ? displayDate(r.date) : dash}
       </td>
       <td className="py-2 pl-3">
-        <div className={`text-sm ${r.cancelled ? "line-through" : ""}`}>
-          {r.show_name ?? r.podcast_name}
-          {r.episode_no != null && <span className="text-[var(--ink-faint)]"> · פרק {r.episode_no}</span>}
-        </div>
-        <div className="flex items-center gap-1.5 text-[11px] text-[var(--ink-faint)]">
-          {/* an internal production has no client, and the tag beside it
-              already says so — printing a fallback here too rendered
-              "פנימיפנימי" */}
-          {r.client_name ?? (r.internal ? null : "—")}
-          {r.internal && (
-            <span className="rounded-full bg-white/10 px-1.5 py-px text-[10px] text-[var(--dim)]">פנימי</span>
-          )}
-          {r.cancelled && (
-            <span className="rounded-full bg-[var(--red)]/20 px-1.5 py-px text-[10px] text-[var(--red)]">בוטל</span>
-          )}
-        </div>
+        <SourceTag source={r.source} />
       </td>
-      <td className="py-2 pl-3 text-xs text-[var(--dim)]">{r.guest || <span className="text-[var(--ink-faint)]">—</span>}</td>
-      <td className="py-2 pl-3 text-xs whitespace-nowrap text-[var(--dim)]">{statusLabel(r.status)}</td>
-      {/* A row with no price says WHY, in the same vocabulary the summary uses.
-          It used to say "לא מתומחר" for all of them, which was the same
-          category error the summary made: an episode billed through a contract
-          milestone is not an episode somebody forgot to price. */}
-      <td className="py-2 pl-3 font-mono text-xs whitespace-nowrap">
-        {r.price != null ? (
-          money(r.price)
-        ) : r.billing === "contract" ? (
-          // Name the contract when it is unambiguous. The sum is deliberately
-          // absent: it belongs to the contract as a whole and is on /contracts.
-          <span className="font-sans text-[var(--cyan)]" title={NO_PRICE_NOTE.contract}>
-            {r.contract_name ? `בחוזה: ${r.contract_name}` : "מחויב בחוזה"}
-          </span>
-        ) : (
-          <span className="font-sans text-[var(--ink-faint)]" title={NO_PRICE_NOTE[r.billing]}>
-            {NO_PRICE_LABEL[r.billing]}
+      <td className="py-2 pl-3 text-xs text-[var(--dim)]">{r.client ?? dash}</td>
+      <td className="py-2 pl-3">
+        <div className={`text-sm ${r.cancelled ? "line-through" : ""}`}>
+          {r.show ?? dash}
+          {/* The contract behind a contract-named row. On a milestone it is the
+              contract itself and would read twice, so it is printed only when it
+              differs from what the column already says. */}
+          {r.contractName && r.contractName !== r.show && (
+            <span className="text-[var(--ink-faint)]"> · {r.contractName}</span>
+          )}
+        </div>
+        {r.cancelled && (
+          <span className="rounded-full bg-[var(--red)]/20 px-1.5 py-px text-[10px] text-[var(--red)]">
+            בוטל
           </span>
         )}
       </td>
+      <td className="py-2 pl-3 text-xs text-[var(--dim)]">{r.description || dash}</td>
+      {/* A row with no amount says WHY, in the same vocabulary the summary uses.
+          It used to say "לא מתומחר" for all of them, which was the same category
+          error the summary made: an episode billed through a contract milestone
+          is not an episode somebody forgot to price. Only production rows can
+          answer this question — see `billing` on UnifiedRow. */}
+      <td className="py-2 pl-3 font-mono text-xs whitespace-nowrap">
+        {r.amount != null ? (
+          money(r.amount)
+        ) : billing === "contract" ? (
+          <span className="font-sans text-[var(--cyan)]" title={NO_PRICE_NOTE.contract}>
+            {r.contractName ? `בחוזה: ${r.contractName}` : "מחויב בחוזה"}
+          </span>
+        ) : billing && NO_PRICE_LABEL[billing] ? (
+          <span className="font-sans text-[var(--ink-faint)]" title={NO_PRICE_NOTE[billing]}>
+            {NO_PRICE_LABEL[billing]}
+          </span>
+        ) : (
+          dash
+        )}
+      </td>
+      {/* סטטוס הפקה — the row's own vocabulary, or nothing. A production shows
+          STATUS_LABEL, a misc job its four-value enum, a milestone its
+          MILESTONE_META wording; a bundle or import row has no production at
+          all and shows a dash. Each is coloured by its own source's map, so a
+          misc 'הושלם' can never be mistaken for a pipeline stage. */}
+      <td className="py-2 pl-3 text-xs whitespace-nowrap">
+        {r.prodStatus ? (
+          <span style={{ color: r.prodStatus.color }}>{r.prodStatus.label}</span>
+        ) : (
+          dash
+        )}
+      </td>
+      {/* סטטוס חיוב — deriveState's four values via TAB_META, or the absence.
+          `state === null` is a row with no job: "טרם חויבה", never "לא חויב".
+          The two are different claims and the amber hue says the second one is
+          not being made. */}
+      <td className="py-2 pl-3 text-xs whitespace-nowrap">
+        <span style={{ color: r.billStatus.color }}>{r.billStatus.label}</span>
+      </td>
       {DOC_TYPES.map((t) => (
         <td key={t} className="py-2 pl-3">
-          <DocCell docs={byType(t)} emptyReason={t === 100 || stuck ? null : r.empty_reason} />
+          {/* The empty-cell label is suppressed on the 100 column and on a stuck
+              row, exactly as before: a work order is the START of the chain
+              rather than a step in it, and on a row the rule has just raised a
+              hand about, the blank IS the problem — the label's whole claim is
+              "this blank is expected". */}
+          <DocCell docs={byType(t)} emptyText={t === 100 || stuck ? null : r.emptyReasonText} />
         </td>
       ))}
     </tr>
@@ -358,6 +411,31 @@ function safeBucket(b: MonthBucket): MonthBucket {
       incomingCount: s.incomingCount ?? 0,
     },
     milestones: b?.milestones ?? [],
+    // `work` is the array the table maps over, so it gets the same treatment
+    // every other array here does — and per-row, because a UnifiedRow carries
+    // three fields a renderer walks (`docs`, `stuckSentences`) or indexes
+    // (`source`). A payload from a build that predates one of them must render a
+    // smaller truth, not a blank page: that is this function's whole job, and
+    // the crash it was written for (2026-08-27) was exactly one missing array
+    // inside a .map.
+    work: (b?.work ?? []).map((r) => ({
+      ...r,
+      docs: r?.docs ?? [],
+      stuckSentences: r?.stuckSentences ?? [],
+      // 🔴 billStatus IS DEREFERENCED UNCONDITIONALLY by the row — `.color` and
+      // `.label` with no guard, because every row genuinely has a billing
+      // status: `billStatusFor` returns the "טרם חויבה" shape rather than null
+      // when there is no job. So the cell is right to assume it, and the
+      // BOUNDARY is where a payload that predates the field has to be repaired.
+      //
+      // Caught by test_projects_render on the day this was written — the same
+      // crash class, in the same component, as the 2026-08-27 one this function
+      // was created for: one missing field inside a .map, and a blank page with
+      // a stack trace instead of a smaller truth. `prodStatus` needs nothing
+      // because the row already renders a dash when it is falsy.
+      billStatus: r?.billStatus ?? { state: null, label: NO_JOB_LABEL, color: "var(--dim)" },
+      jobIds: r?.jobIds ?? [],
+    })),
   };
 }
 
@@ -439,6 +517,39 @@ export default function ProjectsClient({
 
   const s = bucket?.summary;
 
+  // ---- the filters -------------------------------------------------------
+  // State lives here and the PREDICATE lives in lib/projects/unified, so the
+  // table and every count beside it ask one function. A second spelling of
+  // "does this row match" is how a chip comes to claim 4 rows above a table
+  // showing 3 — the class of contradiction the stuck windows already had to be
+  // fixed for (one counted documents, the other counted rows).
+  const [filter, setFilter] = useState<UnifiedFilter>(EMPTY_FILTER);
+  // Memoised, and not `bucket?.work ?? []` inline: the fallback literal is a NEW
+  // array on every render, so the three useMemos below would recompute every
+  // time and the memo would be decoration. Harmless at 40 rows and wrong in
+  // principle — react-hooks/exhaustive-deps said so, and it was right.
+  const work = useMemo(() => bucket?.work ?? [], [bucket]);
+  const shown = useMemo(() => work.filter((r) => matchesFilter(r, filter)), [work, filter]);
+  // Counts are of the UNFILTERED month: a chip has to say how many rows it
+  // WOULD show, not how many survive the other chips — otherwise every count
+  // but the active one reads zero and the bar becomes unusable.
+  const sourceCounts = useMemo(() => countBySource(work), [work]);
+  const clients = useMemo(() => clientOptions(work), [work]);
+  const toggleSource = (src: RowSource) =>
+    setFilter((f) => ({
+      ...f,
+      sources: f.sources.includes(src) ? f.sources.filter((x) => x !== src) : [...f.sources, src],
+    }));
+  const toggleBill = (k: BillFilterKey) =>
+    setFilter((f) => ({
+      ...f,
+      bills: f.bills.includes(k) ? f.bills.filter((x) => x !== k) : [...f.bills, k],
+    }));
+  // A month with milestone rows still has to say the thing the old separator
+  // row said — that this money is already inside the two cards above. It is a
+  // statement about the CARDS, not about a row, so it lives under the table.
+  const hasMilestoneRows = shown.some((r) => r.source === "milestone");
+
   return (
     <main className="mx-auto max-w-[1400px] px-4 py-8" dir="rtl">
       {notice && (
@@ -459,9 +570,13 @@ export default function ProjectsClient({
           למסך הכספים ←
         </a>
       </div>
+      {/* Owner-approved wording, 5.10. It replaces "כל ההפקות לפי חודש הקלטה",
+          which stopped being true the moment four more sources arrived — and
+          "לפי חודש הקלטה" was the specific falsehood: only one of the five is
+          placed by a recording date. */}
       <p className="mb-5 text-xs text-[var(--ink-faint)]">
-        כל ההפקות לפי חודש הקלטה, עם המסמכים החשבונאיים שיצאו לכל אחת. המסך מתחיל ביולי 2026 — לפני כן הנתונים הם
-        ייבוא היסטורי שלא עבר את המסלול, והסטטוסים בו אינם אמיתיים.
+        כל עבודה שמתבצעת במערכת לפי חודש, עם המסמכים החשבונאיים שיצאו לכל אחת — הפקות, הזמנות מרוכזות, רדיו ושונות
+        ואבני דרך של חוזים. המסך מתחיל ביולי 2026; לפני כן הנתונים הם ייבוא היסטורי שלא עבר את המסלול.
       </p>
 
       {/* month picker — a select rather than a button row: it holds its size as
@@ -477,17 +592,22 @@ export default function ProjectsClient({
           onChange={(e) => setMonth(e.target.value)}
           className="rounded-lg border border-[var(--rule)] bg-[var(--panel3)] px-3 py-1.5 text-sm text-[var(--ink)] outline-none focus:border-[var(--violet)]"
         >
+          {/* `work.length`, not `rows.length` — the count has to be of what the
+              table will show. A month holding one radio job and no episodes read
+              "(0 הפקות)" before 5.10 and was indistinguishable from an empty
+              one, so the only month with that work in it looked like a month
+              with none. */}
           {safe.map((b) => (
             <option key={b.key} value={b.key}>
-              {b.label} ({b.rows.length} הפקות)
+              {b.label} ({b.work.length} עבודות)
             </option>
           ))}
         </select>
       </div>
 
-      {!bucket || bucket.rows.length === 0 ? (
+      {!bucket || bucket.work.length === 0 ? (
         <div className="glass-card rounded-2xl px-6 py-12 text-center text-[var(--dim)]">
-          אין הפקות בחודש הזה.
+          אין עבודות בחודש הזה.
         </div>
       ) : (
         <>
@@ -609,15 +729,117 @@ export default function ProjectsClient({
             </div>
           )}
 
+          {/* ── the filter bar ──────────────────────────────────────────────
+              Three axes, and every one of them treats an EMPTY selection as "no
+              filter on this axis" rather than "match nothing" — the same
+              decision isFinanceFilterKey makes for an unrecognised query string
+              (state.ts:117-126): "a money screen must never hide rows because it
+              half-recognised a filter". The predicate is matchesFilter, imported;
+              the counts beside each chip come from the same row set the table
+              maps over, so a chip cannot claim rows the table does not show. */}
+          <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] text-[var(--ink-faint)]">מקור</span>
+              {ROW_SOURCES.map((src) => {
+                const on = filter.sources.includes(src);
+                const n = sourceCounts[src] ?? 0;
+                const color = SOURCE_TONE[src] ?? "var(--dim)";
+                return (
+                  <button
+                    key={src}
+                    onClick={() => toggleSource(src)}
+                    // A source with no rows this month is disabled rather than
+                    // hidden: a chip that appears and vanishes between months
+                    // teaches nobody what the screen contains, and "0" is a real
+                    // answer to "how much radio work did we do in August".
+                    disabled={n === 0 && !on}
+                    className="rounded-full px-2 py-0.5 text-[11px] whitespace-nowrap transition-opacity disabled:opacity-30"
+                    style={{
+                      color: on ? "var(--ink)" : color,
+                      background: on ? color : "rgba(255,255,255,0.05)",
+                      border: `1px solid ${color}${on ? "" : "33"}`,
+                    }}
+                  >
+                    {SOURCE_LABEL[src] ?? src} {n}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <label htmlFor="client" className="text-[11px] text-[var(--ink-faint)]">
+                לקוח
+              </label>
+              <select
+                id="client"
+                value={filter.client}
+                onChange={(e) => setFilter((f) => ({ ...f, client: e.target.value }))}
+                className="rounded-lg border border-[var(--rule)] bg-[var(--panel3)] px-2 py-1 text-xs text-[var(--ink)] outline-none focus:border-[var(--violet)]"
+              >
+                <option value="">כל הלקוחות</option>
+                {clients.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] text-[var(--ink-faint)]">סטטוס חיוב</span>
+              {/* Four TAB_META values plus the absence. "טרם חויבה" is a FILTER
+                  key and not a fifth FinanceState — see BillStatus in
+                  lib/projects/unified for why extending the enum would have put
+                  a new tab on /finance as a side effect. */}
+              {BILL_FILTER_KEYS.map((k) => {
+                const on = filter.bills.includes(k);
+                return (
+                  <button
+                    key={k}
+                    onClick={() => toggleBill(k)}
+                    className={`rounded-full border px-2 py-0.5 text-[11px] whitespace-nowrap ${
+                      on
+                        ? "border-[var(--violet)] bg-[var(--violet)]/20 text-[var(--ink)]"
+                        : "border-[var(--rule)] text-[var(--dim)]"
+                    }`}
+                  >
+                    {billFilterLabel(k)}
+                  </button>
+                );
+              })}
+            </div>
+
+            {isFilterActive(filter) && (
+              <button
+                onClick={() => setFilter(EMPTY_FILTER)}
+                className="text-[11px] text-[var(--violet)] hover:underline"
+              >
+                נקה סינון ({shown.length} מתוך {work.length})
+              </button>
+            )}
+          </div>
+
+          {shown.length === 0 ? (
+            <div className="glass-card rounded-2xl px-6 py-12 text-center text-[var(--dim)]">
+              אין עבודות מהמקורות שנבחרו בחודש הזה.
+            </div>
+          ) : (
           <div className="glass-card overflow-x-auto rounded-2xl">
             <table className="w-full text-right">
               <thead>
                 <tr className="border-b border-white/10 text-[11px] text-[var(--ink-faint)]">
-                  <th className="py-2 pl-3 font-normal whitespace-nowrap">תאריך הקלטה</th>
-                  <th className="py-2 pl-3 font-normal">תוכנית</th>
-                  <th className="py-2 pl-3 font-normal">אורח</th>
-                  <th className="py-2 pl-3 font-normal">סטטוס</th>
-                  <th className="py-2 pl-3 font-normal">מחיר</th>
+                  {/* "תאריך" and no longer "תאריך הקלטה": only one of the five
+                      sources is placed by a recording date. Which date a given
+                      row is showing is on the cell's own title — see
+                      DATE_MEANING_TITLE. */}
+                  <th className="py-2 pl-3 font-normal whitespace-nowrap">תאריך</th>
+                  <th className="py-2 pl-3 font-normal">מקור</th>
+                  <th className="py-2 pl-3 font-normal">לקוח</th>
+                  <th className="py-2 pl-3 font-normal">תוכנית / עבודה</th>
+                  <th className="py-2 pl-3 font-normal">תיאור</th>
+                  <th className="py-2 pl-3 font-normal">סכום</th>
+                  <th className="py-2 pl-3 font-normal whitespace-nowrap">סטטוס הפקה</th>
+                  <th className="py-2 pl-3 font-normal whitespace-nowrap">סטטוס חיוב</th>
                   {DOC_TYPES.map((t) => (
                     <th key={t} className="py-2 pl-3 font-normal whitespace-nowrap">
                       {DOC_TYPE_LABEL[t]}
@@ -627,43 +849,30 @@ export default function ProjectsClient({
                 </tr>
               </thead>
               <tbody>
-                {/* No "undated" group any more: a production with no
-                    record_date never reaches this screen. See the range note in
-                    page.tsx — the group existed only to hold a legacy import
-                    batch that was never July work. */}
-                {bucket.rows.map((r) => (
-                  <Row key={r.id} r={r} />
-                ))}
-                {/* ═══ THE SEPARATOR IS THE POINT, NOT DECORATION ═══
-                    A milestone row carries a contract name where an episode
-                    carries a show, and a document date where an episode carries
-                    a recording date. Dropped into the list unannounced it reads
-                    as one more episode, and the screen lies quietly — which is
-                    worse than the blank it replaces. The label changes the
-                    subject out loud, and the second half states the thing a
-                    reader would otherwise have to work out: this money is
-                    already inside the two cards above. */}
-                {bucket.milestones.length > 0 && (
-                  <tr className="border-b border-white/10 bg-white/[0.03]">
-                    <td colSpan={5 + DOC_TYPES.length} className="px-3 py-2">
-                      <span className="text-xs font-semibold text-[var(--cyan)]">אבני דרך של חוזים</span>
-                      <span className="mr-2 text-[11px] text-[var(--ink-faint)]">
-                        הסכומים כבר בתוך &quot;חויב&quot; ו&quot;נכנס&quot; שלמעלה — מוצגים כאן כדי לראות למי הם שייכים, ואינם
-                        נספרים פעמיים · לפי תאריך המסמך
-                      </span>
-                    </td>
-                  </tr>
-                )}
-                {bucket.milestones.map((m) => (
-                  <MilestoneTableRow key={m.id} m={m} />
+                {/* ONE list, in date order, with the source on each row. No
+                    separator bands: five sources interleaved by date cannot be
+                    banded without the table ceasing to be chronological, which
+                    is the one property a month view has to keep. The sentence
+                    the milestone separator also carried — "this money is already
+                    inside the cards above" — is below the table, because it is a
+                    statement about the cards rather than about a row. */}
+                {shown.map((r) => (
+                  <WorkRow key={r.key} r={r} />
                 ))}
               </tbody>
             </table>
           </div>
+          )}
 
           <p className="mt-3 text-[11px] text-[var(--ink-faint)]">
-            תא ריק בעמודת מסמך פירושו שלא נמצא מסמך המשויך להפקה הזו, לא שלא הונפק מסמך.
+            תא ריק בעמודת מסמך פירושו שלא נמצא מסמך המשויך לעבודה הזו, לא שלא הונפק מסמך.
           </p>
+          {hasMilestoneRows && (
+            <p className="mt-1 text-[11px] text-[var(--ink-faint)]">
+              סכומי אבני הדרך כבר בתוך &quot;חויב&quot; ו&quot;נכנס&quot; שלמעלה — הם מוצגים כאן כדי לראות למי הם
+              שייכים, ואינם נספרים פעמיים.
+            </p>
+          )}
         </>
       )}
     </main>
