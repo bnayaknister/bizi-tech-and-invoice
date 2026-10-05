@@ -12,7 +12,9 @@ import {
 import AppHeader from "@/components/AppHeader";
 import { deriveMilestoneState, MILESTONE_META } from "@/lib/finance/milestone";
 import {
+  accruedSince,
   emptyReasonFor,
+  lastBillingDateByClient,
   stuckFor,
   termsUnconfigured,
   type Cadence as StuckCadence,
@@ -99,6 +101,11 @@ type MonthDoc = {
   document_date: string | null;
   cancelled_at: string | null;
   archived_at: string | null;
+  /**
+   * For the every_n counter only — see the note at `lastBillingDocByClient`.
+   * The two month-card totals never look at it: they sum by type and date.
+   */
+  client_id: string | null;
 };
 
 /**
@@ -264,8 +271,24 @@ async function fetchProductionsInRange(admin: ReturnType<typeof createAdminClien
   }
 }
 
+// 🔴 client_id JOINED THE SELECT ON 5.10, AND ITS ABSENCE WAS A LIVE BUG.
+//
+// `lastBillingDateByClient` read `d.client_id` off these rows. PostgREST returns
+// the columns it is asked for and nothing else, so the field was `undefined` on
+// every row, the map was ALWAYS EMPTY, and the every_n counter therefore counted
+// every undocumented episode a client had in range instead of only those since
+// the last bill. See the note above `accruedSince` in lib/projects/stuck.ts for
+// the full account.
+//
+// Checked against every other reader of this constant before adding it: the
+// three other files that define a `DOC_SELECT` (milestones/record-billed,
+// shows/record-past-productions, documents/reconcile) each declare their OWN
+// local copy, so this one is read nowhere else. Within this file the extra
+// column is inert everywhere but the counter — `resolveProductionDocuments`
+// projects the fields it names and ignores the rest, and the milestone document
+// walk reads type/date/number/amount only.
 const DOC_SELECT =
-  "id,morning_doc_id,morning_doc_number,type,amount,document_date,pdf_url,production_id,job_id,bundle_job_ids,cancelled_at,archived_at,status";
+  "id,morning_doc_id,morning_doc_number,type,amount,document_date,pdf_url,production_id,job_id,bundle_job_ids,cancelled_at,archived_at,status,client_id";
 
 /**
  * Page any query whose result is not bounded by an id list.
@@ -541,7 +564,7 @@ export default async function ProjectsPage() {
       fetchAllPages<MonthDoc>((from, to) =>
         admin
           .from("documents")
-          .select("id,type,amount,document_date,cancelled_at,archived_at")
+          .select("id,type,amount,document_date,cancelled_at,archived_at,client_id")
           .gte("document_date", RANGE_START_DATE)
           .order("id")
           .range(from, to)
@@ -698,18 +721,48 @@ export default async function ProjectsPage() {
     addonsByProduction.set(a.production_id, arr);
   }
 
-  // The last billing document each client received, for the every_n counter.
-  // Read off `documents` rather than the queue: a bundle raised by hand in
-  // Morning closes an accrual just as a redeemed one does, and the counter has
-  // to start from whichever came last.
-  const lastBillingDocByClient = new Map<string, string>();
-  for (const d of Array.from(docsById.values())) {
-    if (![300, 305, 320].includes(d.type) || d.cancelled_at) continue;
-    const cid = (d as unknown as { client_id?: string | null }).client_id ?? "";
-    const dt = d.document_date ?? "";
-    if (!cid || !dt) continue;
-    if (dt > (lastBillingDocByClient.get(cid) ?? "")) lastBillingDocByClient.set(cid, dt);
-  }
+  // ---- the last billing document each client received ---------------------
+  //
+  // THE RULE IS `lastBillingDateByClient` (lib/projects/stuck.ts). It used to be
+  // an inline loop here reading a column that was not in the select, so the map
+  // was always empty — the whole account is in the note above that function.
+  //
+  // ⚠️ IT IS FED FROM TWO SETS, AND THE SECOND IS THE POINT.
+  //
+  // `docsById` holds only documents reachable from an episode, a job or a
+  // bundle on this screen. The old comment here named the exact case that set
+  // CANNOT see — "a bundle raised by hand in Morning closes an accrual just as
+  // a redeemed one does" — and such a document has no production and no job: 27
+  // of 44 of this account's 300s reach no production at all (measured
+  // 2026-09-15, recorded above monthDocsRes). Fixing only the select would have
+  // moved the counter from "always counts everything" to "counts from the last
+  // bill we happen to have fetched", which is a second wrong answer and a harder
+  // one to notice.
+  //
+  // `monthDocs` is already every document dated since the July floor, fetched
+  // for the month cards, so the complete set costs ONE extra column and no extra
+  // query. Both are passed; the rule takes the max per client either way.
+  //
+  // RESIDUAL LIMIT, stated rather than hidden: a client whose last bill predates
+  // 2026-07 is not in `monthDocs`, and unless that document reached an episode
+  // on screen the client's `lastBilled` is "" and every in-range episode counts.
+  // That is the same answer as before the fix for those clients — never worse —
+  // and it cannot be better without reading documents from outside the screen's
+  // own range.
+  const lastBillingDocByClient = lastBillingDateByClient([
+    ...Array.from(docsById.values()).map((d) => ({
+      client_id: (d as unknown as { client_id?: string | null }).client_id ?? null,
+      type: d.type,
+      document_date: d.document_date,
+      cancelled_at: d.cancelled_at,
+    })),
+    ...((monthDocsRes.data ?? []) as unknown as MonthDoc[]).map((d) => ({
+      client_id: d.client_id,
+      type: d.type,
+      document_date: d.document_date,
+      cancelled_at: d.cancelled_at,
+    })),
+  ]);
 
   // ════ the stuck chain (owner spec 2026-09-17) ════════════════════════════
   //
@@ -790,20 +843,20 @@ export default async function ProjectsPage() {
     // How many of this client's episodes have accrued since the last billing
     // document. ONE definition, two readers — the "מצטבר · X מתוך N" label and
     // the every_n rule read the same number, so the label can never say the
-    // bundle is half full beside a row claiming it overflowed.
+    // bundle is half full beside a row claiming it overflowed. The rule itself
+    // is `accruedSince` in lib/projects/stuck.ts, where a test can reach it.
     const lastBilled = lastBillingDocByClient.get(p.client_id ?? "") ?? "";
-    const accrued = inRange
-      .filter(
-        (x) =>
-          x.client_id === p.client_id &&
-          !x.cancelled_at &&
-          (x.record_date ?? "") > lastBilled &&
-          (resolved.get(x.id) ?? []).length === 0
-      )
-      .sort((a, b) => (a.record_date ?? "").localeCompare(b.record_date ?? ""));
-    const accruedCount = accrued.length;
-    const bundleCompletedOn =
-      everyN && accruedCount >= everyN ? accrued[everyN - 1].record_date ?? null : null;
+    const { count: accruedCount, bundleCompletedOn } = accruedSince({
+      clientId: p.client_id,
+      lastBilled,
+      everyN,
+      episodes: inRange.map((x) => ({
+        client_id: x.client_id,
+        record_date: x.record_date,
+        cancelled: !!x.cancelled_at,
+        hasDocs: (resolved.get(x.id) ?? []).length > 0,
+      })),
+    });
 
     const jobsOfProd = allJobsByProduction.get(p.id) ?? [];
     const stuck = stuckFor({

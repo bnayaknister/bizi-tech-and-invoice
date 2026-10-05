@@ -323,3 +323,125 @@ export function countByMonth(rows: { month: string; stuck: Stuck[] }[]): { month
   }
   return Array.from(byMonth).sort(([a], [b]) => a.localeCompare(b)).map(([month, set]) => ({ month, count: set.size }));
 }
+
+// ---- the accrual counter --------------------------------------------------
+//
+// ⚠️ EXTRACTED FROM projects/page.tsx ON 5.10 TO FIX A BUG THAT COULD NOT BE
+// SEEN WHILE IT WAS INLINE.
+//
+// `lastBillingDateByClient` walked the fetched documents reading `d.client_id`
+// — and `client_id` WAS NOT IN THE SELECT. PostgREST returns the columns it is
+// asked for and nothing else, so the field was `undefined` on every row, the
+// `if (!cid) continue` guard fired every time, and THE MAP WAS ALWAYS EMPTY.
+// `lastBilled` was therefore always "", and `(record_date ?? "") > ""` is true
+// for every dated episode: the counter counted every undocumented episode the
+// client had ever had in range, from the beginning, instead of only those since
+// the last bill. A client billed every 4 episodes with 9 undocumented episodes
+// in range read "מצטבר · 9 מתוך 4".
+//
+// It read as working code — the loop, the guard and the max-by-date comparison
+// are all correct — and nothing could contradict it: the empty map produces a
+// plausible number, which is this codebase's most expensive failure mode
+// (unwrap.ts, and the 546 cards showing 0/0 in 0035). The column is now in the
+// select AND the rule is here, where a test can hand it rows and check the
+// answer.
+//
+// ═══ 🔴 WHAT THIS IS *NOT*, AND MUST NOT BE MISTAKEN FOR ═══
+// This is /projects' RECONSTRUCTION of how full a bundle is, from productions
+// and the documents that reached them. The radar does not use it and does not
+// need it: alerts.ts:663-724 counts `pending_documents` rows whose status is
+// still 'accrued' — the QUEUE ITSELF — where redemption removes a row from the
+// population and no "since when" question arises at all.
+//
+// So the two surfaces answer the same question by different means and CAN
+// disagree, in both directions: an episode with no queue row counts here and
+// not on the radar (owner rule ג is precisely about that state), and a queue
+// row whose production fell below the July floor counts there and not here.
+// Making them one definition means reading this count off the queue too, which
+// is a redesign of the stuck rule and not a bug fix.
+
+/** The one fact a billing document contributes to the counter. */
+export type BillingDocFact = {
+  client_id?: string | null;
+  type: number;
+  document_date?: string | null;
+  cancelled_at?: string | null;
+};
+
+/**
+ * The document types that CLOSE an accrual: 300 (חשבון עסקה), 305 (חשבונית מס)
+ * and 320 (מס-קבלה). Named literally, never a range.
+ *
+ * A 100 is the start of the chain and closes nothing; a 400 is a receipt raised
+ * on a 305 that is already counted here, and counting it too would move the
+ * boundary forward on a document that opened no new bill.
+ */
+export const ACCRUAL_CLOSING_TYPES = [300, 305, 320];
+
+/**
+ * The date of the LAST billing document each client received.
+ *
+ * Read off `documents` rather than the queue on purpose: a bundle raised BY HAND
+ * in Morning closes an accrual exactly as a redeemed one does, and the counter
+ * has to start from whichever came last. A cancelled document closes nothing —
+ * it is a bill that was withdrawn.
+ */
+export function lastBillingDateByClient(docs: BillingDocFact[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const d of docs) {
+    if (!ACCRUAL_CLOSING_TYPES.includes(d.type) || d.cancelled_at) continue;
+    const cid = d.client_id ?? "";
+    const dt = d.document_date ?? "";
+    if (!cid || !dt) continue;
+    if (dt > (out.get(cid) ?? "")) out.set(cid, dt);
+  }
+  return out;
+}
+
+/** One episode, as the counter sees it. */
+export type AccrualEpisode = {
+  client_id: string | null;
+  record_date: string | null;
+  cancelled: boolean;
+  /** true when any document resolved to this episode — then it is already billed */
+  hasDocs: boolean;
+};
+
+/**
+ * How many of ONE client's episodes have accrued toward the next bundle, and —
+ * when the bundle has overflowed — the date it filled on.
+ *
+ * ONE definition, TWO readers: the "מצטבר · X מתוך N" label (emptyReasonFor)
+ * and the every_n branch of the stuck rule (stuckFor) both read this number, so
+ * the label can never say the bundle is half full beside a row claiming it
+ * overflowed.
+ *
+ * `> lastBilled` and not `>=`: an episode recorded ON the day the bill went out
+ * is on that bill. `lastBilled === ""` means no closing document is known for
+ * this client, and then every dated episode qualifies — which is the correct
+ * answer for a client who has never been billed, and was the WRONG answer being
+ * given to everybody while the map was empty.
+ *
+ * Sorted by record_date so `bundleCompletedOn` is the Nth episode's date and not
+ * whichever the query happened to return Nth.
+ */
+export function accruedSince(args: {
+  clientId: string | null;
+  lastBilled: string;
+  everyN: number | null;
+  episodes: AccrualEpisode[];
+}): { count: number; bundleCompletedOn: string | null } {
+  const accrued = args.episodes
+    .filter(
+      (x) =>
+        x.client_id === args.clientId &&
+        !x.cancelled &&
+        (x.record_date ?? "") > args.lastBilled &&
+        !x.hasDocs
+    )
+    .sort((a, b) => (a.record_date ?? "").localeCompare(b.record_date ?? ""));
+  const count = accrued.length;
+  const bundleCompletedOn =
+    args.everyN && count >= args.everyN ? accrued[args.everyN - 1].record_date ?? null : null;
+  return { count, bundleCompletedOn };
+}
