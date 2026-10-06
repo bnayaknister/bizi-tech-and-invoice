@@ -45,6 +45,9 @@ import {
 
 let failures = 0;
 let checks = 0;
+/** True when a section could not run (a missing git range). Reported in the
+ *  final line so a skipped run can never read as a clean one. */
+let skipped = false;
 function check(label: string, ok: boolean, detail?: string) {
   checks++;
   if (ok) console.log(`  PASS  ${label}`);
@@ -638,47 +641,153 @@ console.log("\n=== 5. אכיפת קריאה-בלבד ===");
 /**
  * The ticket's hard constraint: תצוגה בלבד — zero writes, zero change to
  * document paths, jobs or triggers, and no migration. Enforced by reading the
- * TEXT of what this branch actually changed, so the constraint cannot be
- * satisfied by intent alone.
+ * TEXT of what the change actually did, so the constraint cannot be satisfied
+ * by intent alone.
+ *
+ * 🔴 THIS SECTION WAS PINNED TO TWO COMMITS ON 2026-10-06, AND THE REF IT USED
+ * TO ASK WAS THE BUG.
+ *
+ * It ran `git diff --name-only origin/main`, which was true for exactly as long
+ * as HEAD was the branch carrying the fix. The moment the fix was merged and
+ * HEAD moved on to unrelated work (stage 3ג-1), the same question returned 3ג-1's
+ * 24 files — and the section reported 26 failures saying things like
+ * "src/lib/booking/title.ts is not in the allowed list". Which is true, and
+ * about nothing: `title.ts` was never in this change's scope, and this suite has
+ * no business judging it.
+ *
+ * ⚠️ IT ALSO INFLATED THE COUNT, AND THAT IS THE QUIETER HALF OF THE BUG. The
+ * per-file loop below runs once per changed file, so the suite's TOTAL moved
+ * with whatever HEAD happened to carry — 118 checks on the fix branch, 136 once
+ * 3ג-1 was on top. A test whose denominator depends on unrelated commits cannot
+ * be read as a number at all.
+ *
+ * THE FIX: ask about the two commits this section was written to police, by
+ * their own hashes, and never about a moving ref. The range is immutable, so
+ * the answer is the same on every branch, on every machine, forever.
+ *
+ * Note for whoever extends this: the other three suites born in the same week
+ * (test_accrual_counter, test_projects_unified, test_contract_quota) enforce the
+ * same kind of constraint by `readFileSync` on the SHIPPED FILES, with no git at
+ * all — and none of them went stale. That is the better default. The git range
+ * survives here only because this section asks something file text cannot: what
+ * the change ADDED, as opposed to what the file now holds.
  *
  * `git diff` is a local read. No network, no database.
  */
 {
-  const changed = execFileSync("git", ["diff", "--name-only", "origin/main"], { cwd: ROOT, encoding: "utf8" })
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  console.log(`  קבצים ששונו: ${changed.join(", ") || "(none)"}`);
+  /**
+   * The two commits this section polices, and the base they were built on.
+   *
+   *   23feaca  origin/main at the time — the parent of the first fix commit
+   *   8febad1  classify by the production's snapshot (the first commit)
+   *   9258124  restore the contract-name fallbacks behind a kind gate (the second)
+   *
+   * BASE..TIP is therefore exactly the two-commit change, with no third party in
+   * it. Hashes and not refs: a ref is a question about today.
+   */
+  const BASE = "23feaca";
+  const TIP = "9258124";
+  const EXPECTED_COMMITS = 2;
 
-  const ALLOWED = [
+  /**
+   * Does this clone actually hold the range? A shallow clone (CI with
+   * `fetch-depth: 1`) holds neither commit, and a `git diff` against a missing
+   * object throws.
+   *
+   * 🔴 A MISSING RANGE SKIPS LOUDLY — it does not pass, and it does not fail.
+   * Passing silently would turn the whole section into decoration the day CI
+   * clones shallow; failing would paint an unrelated branch red for a condition
+   * that says nothing about the code. So it prints what is missing and what was
+   * therefore NOT checked, and `skipped` is reported in the final line so the
+   * number can never be mistaken for a clean run.
+   */
+  const have = (rev: string) => {
+    try {
+      execFileSync("git", ["cat-file", "-e", `${rev}^{commit}`], { cwd: ROOT, stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const ancestor = (a: string, b: string) => {
+    try {
+      execFileSync("git", ["merge-base", "--is-ancestor", a, b], { cwd: ROOT, stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const missing = [BASE, TIP].filter((r) => !have(r));
+  if (missing.length) {
+    skipped = true;
+    console.log(`  ⏭️  הודלג — הטווח אינו ב-clone הזה: ${missing.join(", ")} חסר${missing.length > 1 ? "ים" : ""}.`);
+    console.log("     (clone רדוד? הריצו git fetch --unshallow)");
+    console.log("     לא נבדקו: רשימת הקבצים המותרת, היעדר מיגרציה, ופועלי כתיבה בשורות שנוספו.");
+    console.log("     הבדיקות שקוראות את הקבצים עצמם כן רצו — ראו למטה.");
+  } else {
+    // the range is real, and it is the range we think it is
+    check(`הטווח תקין: ${BASE} הוא אב של ${TIP}`, ancestor(BASE, TIP));
+    const range = execFileSync("git", ["rev-list", "--count", `${BASE}..${TIP}`], { cwd: ROOT, encoding: "utf8" }).trim();
+    check(
+      `והוא מכיל בדיוק ${EXPECTED_COMMITS} קומיטים — ולא עבודה של מישהו אחר`,
+      range === String(EXPECTED_COMMITS),
+      range
+    );
+
+    const changed = execFileSync("git", ["diff", "--name-only", BASE, TIP], { cwd: ROOT, encoding: "utf8" })
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    console.log(`  קבצים ששונו ב-${BASE}..${TIP}: ${changed.join(", ") || "(none)"}`);
+
+    const ALLOWED = [
+      "src/app/projects/page.tsx",
+      "src/app/projects/ProjectsClient.tsx",
+      "src/lib/projects/classify.ts",
+      "src/lib/projects/stuck.ts",
+      "scripts/test_projects_classify.ts",
+      "scripts/test_projects_classify_render.tsx",
+    ];
+    // ⚠️ the denominator is now FIXED, because `changed` is fixed: six files,
+    // the same six on every branch. The loop can no longer grow with HEAD.
+    check(`הטווח נוגע ב-${ALLOWED.length} קבצים בלבד`, changed.length === ALLOWED.length, String(changed.length));
+    for (const f of changed) {
+      check(`${f} נמצא ברשימת הקבצים המותרת`, ALLOWED.includes(f));
+    }
+    check("⛔ אין מיגרציה", !changed.some((f) => f.startsWith("supabase/")), changed.filter((f) => f.startsWith("supabase/")).join(","));
+    check("⛔ אין שינוי בנתיבי מסמכים", !changed.some((f) => f.startsWith("src/lib/documents/")));
+    check("⛔ אין שינוי ב-API routes", !changed.some((f) => f.startsWith("src/app/api/")));
+    check("⛔ אין שינוי בטריגרים או בסקריפטים חיים", !changed.some((f) => f.startsWith("scripts/") && !f.startsWith("scripts/test_projects_classify")));
+
+    // the added lines themselves: no write verb, no RPC, no fetch
+    const added = execFileSync("git", ["diff", "--unified=0", BASE, TIP, "--", ...ALLOWED.slice(0, 4)], {
+      cwd: ROOT,
+      encoding: "utf8",
+    })
+      .split("\n")
+      .filter((l) => l.startsWith("+") && !l.startsWith("+++"))
+      .join("\n");
+    check("הדיף אינו ריק — יש שורות שנוספו לבדוק", added.length > 0, String(added.length));
+    for (const verb of [".insert(", ".upsert(", ".update(", ".delete(", ".rpc(", "fetch(", "revalidate"]) {
+      check(`⛔ אף שורה שנוספה בטווח אינה מכילה ${verb}`, !added.includes(verb), verb);
+    }
+  }
+
+  /**
+   * AND THE SHIPPED FILES, UNCONDITIONALLY.
+   *
+   * Outside the range guard on purpose: this half asks "what does the file hold
+   * NOW", which needs no git and therefore cannot be skipped. It is the half
+   * that still protects the constraint on a shallow clone, and it is the pattern
+   * the three sibling suites use throughout.
+   */
+  for (const f of [
     "src/app/projects/page.tsx",
     "src/app/projects/ProjectsClient.tsx",
     "src/lib/projects/classify.ts",
     "src/lib/projects/stuck.ts",
-    "scripts/test_projects_classify.ts",
-    "scripts/test_projects_classify_render.tsx",
-  ];
-  for (const f of changed) {
-    check(`${f} נמצא ברשימת הקבצים המותרת`, ALLOWED.includes(f));
-  }
-  check("⛔ אין מיגרציה", !changed.some((f) => f.startsWith("supabase/")), changed.filter((f) => f.startsWith("supabase/")).join(","));
-  check("⛔ אין שינוי בנתיבי מסמכים", !changed.some((f) => f.startsWith("src/lib/documents/")));
-  check("⛔ אין שינוי ב-API routes", !changed.some((f) => f.startsWith("src/app/api/")));
-  check("⛔ אין שינוי בטריגרים או בסקריפטים חיים", !changed.some((f) => f.startsWith("scripts/") && !f.startsWith("scripts/test_projects_classify")));
-
-  // the added lines themselves: no write verb, no RPC, no fetch
-  const added = execFileSync("git", ["diff", "--unified=0", "origin/main", "--", ...ALLOWED.slice(0, 4)], {
-    cwd: ROOT,
-    encoding: "utf8",
-  })
-    .split("\n")
-    .filter((l) => l.startsWith("+") && !l.startsWith("+++"))
-    .join("\n");
-  for (const verb of [".insert(", ".upsert(", ".update(", ".delete(", ".rpc(", "fetch(", "revalidate"]) {
-    check(`⛔ אף שורה שנוספה אינה מכילה ${verb}`, !added.includes(verb), verb);
-  }
-  // and the shipped files hold no write verb at all
-  for (const f of ALLOWED.slice(0, 4)) {
+  ]) {
     const text = readFileSync(join(ROOT, f), "utf8");
     for (const verb of [".insert(", ".upsert(", ".update(", ".delete("]) {
       check(`${f} אפס ${verb}`, !text.includes(verb));
@@ -686,5 +795,8 @@ console.log("\n=== 5. אכיפת קריאה-בלבד ===");
   }
 }
 
-console.log(`\n${failures === 0 ? "✅" : "❌"}  ${checks - failures}/${checks}`);
+console.log(
+  `\n${failures === 0 ? (skipped ? "⚠️" : "✅") : "❌"}  ${checks - failures}/${checks}` +
+    (skipped ? "  · סעיף אחד הודלג (ראו למעלה)" : "")
+);
 process.exit(failures === 0 ? 0 : 1);
