@@ -19,6 +19,20 @@ import {
   sumSourceNet,
   taxSelectable,
 } from "@/lib/documents/registrySelection";
+import {
+  BTN_CANCEL_IN_MORNING,
+  BTN_MARK_LOCALLY,
+  CHAIN_BOTH,
+  CHAIN_DISMISS,
+  CHAIN_ONLY_DEAL,
+  CHAIN_QUESTION,
+  REASON_LABEL,
+  WINDOW_BODY,
+  offersMorningCancel,
+  parentWorkOrderFor,
+  windowTitle,
+  type ChainRow,
+} from "@/lib/documents/cancelLocal";
 
 const BILLING_TYPES = [300, 305, 320, 400]; // deal / tax / tax-receipt / receipt — real חיוב, linkable to a job
 const isBilling = (t: number) => BILLING_TYPES.includes(t);
@@ -309,6 +323,7 @@ export default function RegistryClient({
   const [rowResult, setRowResult] = useState<{ id: string; notice: Notice } | null>(null);
   const [assignDoc, setAssignDoc] = useState<DocRow | null>(null);
   const [cancelDoc, setCancelDoc] = useState<DocRow | null>(null);
+  const [morningCancelDoc, setMorningCancelDoc] = useState<DocRow | null>(null);
   const [newDoc, setNewDoc] = useState<"work_order" | "deal_invoice" | null>(null);
   // N episodes of one show, billed as a single order — no productions involved
   const [bundleOpen, setBundleOpen] = useState(false);
@@ -1303,9 +1318,26 @@ export default function RegistryClient({
                         {canPull && CANCELLABLE_TYPES.includes(r.type) && (
                           <button
                             onClick={() => setCancelDoc(r)}
-                            className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--red)]"
+                            className="text-[10px] rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--faint)]"
+                            title="משקף ביטול שכבר נעשה ידנית במורנינג — אינו סוגר שם דבר"
                           >
-                            סמן כמבוטל
+                            {BTN_MARK_LOCALLY}
+                          </button>
+                        )}
+                        {/* ═══ "בטל במורנינג" — E11, 6.10 ═══
+                            source='app' ו-100/300 בלבד, בדיוק שני השערים
+                            הראשונים של הראוט. שער מסמך-המס שלו נשאר ברקע
+                            במכוון: הוא סירוב עם משפט, לא כפתור שנעלם, כי
+                            הבעלים צריך ללמוד שנדרשת חשבונית זיכוי.
+                            "סמן כמבוטל אצלנו" נשאר זמין לידו גם בשורות האלה —
+                            למקרה שהמסמך כבר בוטל ידנית במורנינג. */}
+                        {canPull && offersMorningCancel(r) && (
+                          <button
+                            onClick={() => setMorningCancelDoc(r)}
+                            className="text-[10px] font-bold rounded-lg px-2 py-1 border border-[var(--rule2)] text-[var(--red)]"
+                            title="סוגר את המסמך במורנינג ואז מסמן אותו כמבוטל אצלנו"
+                          >
+                            {BTN_CANCEL_IN_MORNING}
                           </button>
                         )}
                         {canPull && (
@@ -1338,6 +1370,17 @@ export default function RegistryClient({
         />
       )}
 
+      {morningCancelDoc && (
+        <MorningCancelModal
+          doc={morningCancelDoc}
+          allRows={rows as unknown as ChainRow[]}
+          onClose={() => setMorningCancelDoc(null)}
+          onCancelled={() => {
+            setMorningCancelDoc(null);
+            router.refresh();
+          }}
+        />
+      )}
       {cancelDoc && (
         <CancelModal
           doc={cancelDoc}
@@ -1709,6 +1752,180 @@ function Field({ label, value, mono }: { label: string; value: string; mono?: bo
   );
 }
 
+/**
+ * ═══ "בטל במורנינג" — E11, 6.10 ═══
+ *
+ * Closes the document AT MORNING and only then marks it cancelled here. The
+ * sibling `CancelModal` below does the opposite and still should: it mirrors a
+ * cancellation somebody already performed by hand.
+ *
+ * 🔴 THE CHAIN IS AN OFFER, NEVER A CASCADE. A deal invoice derived from a work
+ * order gets a second screen with three buttons, and nothing is closed until
+ * one is pressed. `parentWorkOrderFor` decides whether that screen appears at
+ * all — four conditions, each removing a case where the question is wrong.
+ *
+ * ⚠️ "בטל את שניהם" IS SEQUENTIAL AND GATED: the deal invoice first, and the
+ * work order ONLY if the first call returned ok. Reversed or parallel, a failure
+ * on the 300 would leave the work order closed under a live deal invoice — and a
+ * closed work order is one that can no longer father the corrected document.
+ *
+ * Each step is its own route call with its own guards and its own events. There
+ * is no "cancel two documents" endpoint, deliberately: one document, one
+ * transaction boundary, one audit trail.
+ */
+function MorningCancelModal({
+  doc,
+  allRows,
+  onClose,
+  onCancelled,
+}: {
+  doc: DocRow;
+  allRows: ChainRow[];
+  onClose: () => void;
+  onCancelled: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  // null = the reason screen; set = the chain question, with the reason already in
+  const [askChain, setAskChain] = useState<ChainRow | null>(null);
+
+  const parent = useMemo(
+    () => parentWorkOrderFor(doc as unknown as ChainRow, allRows),
+    [doc, allRows]
+  );
+
+  /** One route call. Returns the parsed body plus ok, so the caller can gate. */
+  async function cancelOne(id: string): Promise<{ ok: boolean; message?: string; error?: string }> {
+    const res = await fetch(`/api/documents/${id}/cancel-in-morning`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: reason.trim() }),
+    });
+    const body = await res.json().catch(() => ({}));
+    return { ok: res.ok, message: body?.message, error: body?.error };
+  }
+
+  async function run(alsoParent: boolean) {
+    setBusy(true);
+    setErr(null);
+    setNote(null);
+    try {
+      const first = await cancelOne(doc.id);
+      if (!first.ok) {
+        // the route's own sentence — the tax-child refusal and the timeout text
+        // both arrive this way, already in the owner's words
+        setErr(first.error ?? "הביטול נכשל");
+        return;
+      }
+      // 🔴 THE GATE. Only a successful 300 releases the work order.
+      if (alsoParent && parent) {
+        const second = await cancelOne(parent.id);
+        if (!second.ok) {
+          setErr(
+            `חשבון העסקה בוטל, אבל ביטול הזמנת העבודה ${parent.morning_doc_number ?? ""} נכשל — ${
+              second.error ?? "שגיאה"
+            }`
+          );
+          return;
+        }
+      }
+      if (first.message) setNote(first.message);
+      onCancelled();
+    } catch {
+      setErr("שגיאת רשת");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function submitReason() {
+    if (!reason.trim()) {
+      setErr("חובה לציין סיבה");
+      return;
+    }
+    // a derived deal invoice asks about its parent before anything is closed
+    if (parent) {
+      setErr(null);
+      setAskChain(parent);
+      return;
+    }
+    void run(false);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div className="glass-card w-full max-w-md p-5 rounded-2xl" onClick={(e) => e.stopPropagation()}>
+        <h2 className="text-sm font-bold mb-1">{windowTitle(doc.type, doc.number)}</h2>
+
+        {askChain ? (
+          <>
+            <p className="text-[11px] text-[var(--dim)] mb-3 leading-relaxed">
+              {CHAIN_QUESTION(askChain.morning_doc_number ?? "")}
+            </p>
+            {err && <div className="text-[11px] text-[var(--red)] mb-2">{err}</div>}
+            <div className="flex flex-wrap items-center justify-end gap-2 mt-2">
+              <button
+                onClick={onClose}
+                disabled={busy}
+                className="text-xs rounded-xl px-4 py-1.5 border border-[var(--rule)] disabled:opacity-40"
+              >
+                {CHAIN_DISMISS}
+              </button>
+              <button
+                onClick={() => void run(false)}
+                disabled={busy}
+                className="text-xs rounded-xl px-4 py-1.5 border border-[var(--rule2)] disabled:opacity-40"
+              >
+                {CHAIN_ONLY_DEAL}
+              </button>
+              <button
+                onClick={() => void run(true)}
+                disabled={busy}
+                className="text-xs font-bold rounded-xl px-4 py-1.5 bg-[var(--red)] text-white disabled:opacity-40"
+              >
+                {busy ? "מבטל…" : CHAIN_BOTH}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="text-[11px] text-[var(--faint)] mb-3 leading-relaxed">{WINDOW_BODY}</p>
+            <label className="block text-[11px] text-[var(--dim)] mb-1">{REASON_LABEL}</label>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              autoFocus
+              rows={2}
+              placeholder="לדוגמה: טעות במחיר"
+              className="w-full bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-xs mb-2"
+            />
+            {err && <div className="text-[11px] text-[var(--red)] mb-2">{err}</div>}
+            {note && <div className="text-[11px] text-[var(--dim)] mb-2">{note}</div>}
+            <div className="flex items-center justify-end gap-2 mt-2">
+              <button
+                onClick={onClose}
+                disabled={busy}
+                className="text-xs rounded-xl px-4 py-1.5 border border-[var(--rule)] disabled:opacity-40"
+              >
+                {CHAIN_DISMISS}
+              </button>
+              <button
+                onClick={submitReason}
+                disabled={busy}
+                className="text-xs font-bold rounded-xl px-4 py-1.5 bg-[var(--red)] text-white disabled:opacity-40"
+              >
+                {busy ? "סוגר במורנינג…" : BTN_CANCEL_IN_MORNING}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CancelModal({ doc, onClose, onCancelled }: { doc: DocRow; onClose: () => void; onCancelled: () => void }) {
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1775,7 +1992,7 @@ function CancelModal({ doc, onClose, onCancelled }: { doc: DocRow; onClose: () =
             disabled={busy}
             className="text-xs font-bold rounded-xl px-4 py-1.5 bg-[var(--red)] text-white disabled:opacity-40"
           >
-            {busy ? "מבטל…" : "סמן כמבוטל"}
+            {busy ? "מבטל…" : BTN_MARK_LOCALLY}
           </button>
         </div>
       </div>

@@ -301,6 +301,62 @@ export async function updateClient(
 }
 
 /**
+ * CLOSE one document in Morning — `POST /documents/{id}/close`.
+ *
+ * ═══ WHY "CLOSE" IS THE CANCEL BUTTON, AND NOT A COMPROMISE ═══
+ *
+ * Morning's API has NO cancel endpoint. It never did; E11 recorded that as the
+ * blocker and the owner went and measured what the Morning UI actually does.
+ *
+ * 🔵 MEASURED 2026-10-06, on EY's own documents: deal invoice **40339**, which
+ * was cancelled THROUGH MORNING'S OWN INTERFACE, came back at **status 2 —
+ * "נסגר ידנית"**, with no credit note anywhere. So "cancel" in Morning's UI, for
+ * a non-tax document, IS a manual close. `close` is not an approximation of the
+ * button Shiri presses; it is the same operation.
+ *
+ * That measurement is what unblocked E11, and it is also what BOUNDS this
+ * function: it is right for 100 and 300 — `types.ts:16` calls them "non-tax,
+ * reversible" — and it is WRONG for 305/320/400, where a real cancellation is a
+ * credit note (330) that moves the original to status 4. The route above this
+ * refuses those types; this function does not know about types and must not be
+ * called for them.
+ *
+ * ═══ 🔴 WHAT IS NOT DOCUMENTED, AND HOW THAT SHAPED THE CODE ═══
+ * Checked 2026-10-06 against the public reference and the community notes: the
+ * PATH is documented and nothing else is. No request body, no response shape,
+ * and — the one that matters — **no documented behaviour when the document is
+ * already closed.**
+ *
+ * So:
+ *   · no body is sent. There is no documented field, and inventing one is how a
+ *     200 turns into a silent no-op on a different field.
+ *   · the response is not parsed for meaning. `request` already throws on any
+ *     non-2xx, and a 2xx is the only signal taken.
+ *   · "already closed" is NOT interpreted here. A 409/400 comes back to the
+ *     caller as a plain MorningError with its status, and the ROUTE decides —
+ *     it is the only layer that knows our own `documents.status`, and the
+ *     owner's rule is that already-closed counts as success ONLY when our row
+ *     already says 1 or 2. See the note at that guard.
+ *
+ * DRY_RUN, same contract as createDocument and updateClient: no call, and a
+ * `dryRun: true` the caller must surface. ⚠️ `isDryRun()` is `!== "false"`, i.e.
+ * dry-run is the DEFAULT and a missing env var does NOT close anything — rule
+ * 40. A caller that treats `{dryRun:true}` as a real close will report a
+ * cancellation that never happened.
+ *
+ * The 15s deadline and the timeout→504 mapping come from `fetchWithTimeout` for
+ * free, and that mapping is load-bearing here for the same reason it is on
+ * issuance: a timeout is an UNKNOWN, not a failure. We cannot tell whether
+ * Morning closed the document and lost the reply. The caller must not mark
+ * anything locally on a 504 — see `MorningError.status === 504`.
+ */
+export async function closeDocument(morningDocId: string): Promise<{ dryRun: boolean }> {
+  if (isDryRun()) return { dryRun: true };
+  await request(`/documents/${encodeURIComponent(morningDocId)}/close`, { method: "POST" });
+  return { dryRun: false };
+}
+
+/**
  * The LIVE email list of one Morning client (GET /clients/{id}). The snapshot
  * in documents.raw.client.emails is stale (owner: כפיר ארביב empty in 10288,
  * present in 40283), so the recipient picker must read this instead. Read-only,

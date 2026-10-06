@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { cancelDocumentLocally } from "@/lib/documents/cancelLocal";
 
 // Mark a deal invoice (חשבון עסקה, type 300) as CANCELLED — owner spec.
 //
@@ -53,62 +54,26 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const docNumber = (doc.morning_doc_number as string | null) ?? null;
   const jobId = (doc.job_id as string | null) ?? null;
 
-  // revert a linked job to its pre-invoice state
-  let invoiceBizCleared = false;
-  let invoiceRowDeleted = false;
-  if (jobId) {
-    const { data: job } = await admin.from("jobs").select("id,invoice_biz").eq("id", jobId).maybeSingle();
-    // only clear the flag if it points at THIS document (don't stomp a later one)
-    if (job && docNumber && job.invoice_biz === docNumber) {
-      await admin.from("jobs").update({ invoice_biz: null }).eq("id", jobId);
-      invoiceBizCleared = true;
-    }
-    // remove the mirrored finance-registry row for this document
-    const { data: del } = await admin
-      .from("invoices")
-      .delete()
-      .eq("morning_doc_id", doc.morning_doc_id as string)
-      .select("id");
-    invoiceRowDeleted = (del?.length ?? 0) > 0;
-  }
-
+  // ⚠️ THE LOCAL EFFECT MOVED TO lib/documents/cancelLocal.ts ON 2026-10-06,
+  // BEHAVIOUR UNCHANGED. The four writes it performs — documents, the job's
+  // invoice_biz, the mirrored invoices row, and the release of the 'issued'
+  // queue row — are exactly what stood here, in the same order, with the same
+  // guards. They moved because `cancel-in-morning` has to produce the identical
+  // state after it closes the document at Morning, and the one thing that must
+  // never happen is two hand-written copies of this list drifting apart. The
+  // reasoning for each write lives on that function.
   const now = new Date().toISOString();
-  await admin
-    .from("documents")
-    .update({ cancelled_at: now, cancelled_by: user.id, cancel_reason: reason, updated_at: now })
-    .eq("id", params.id);
-
-  // ---- release the queue row -------------------------------------------
-  // The registry row is only half the record: the queue row that produced it
-  // is still 'issued', and pending_documents_one_live_per_production counts
-  // it. Leaving it there is what made a corrective document impossible —
-  // verified by simulation, the replacement was refused with 23505 while the
-  // old row sat at 'issued', and 0063 alone did not help because nothing ever
-  // moved it to 'cancelled'.
-  //
-  // Keyed on morning_doc_id, which is UNIQUE (0025), so exactly the document
-  // being cancelled is released — never a sibling on the same production.
-  // The status filter makes a repeated call a no-op rather than a second
-  // event, and refuses to disturb a row that has since moved on.
-  let queueRowReleased = false;
-  if (doc.morning_doc_id) {
-    const { data: released } = await admin
-      .from("pending_documents")
-      .update({ status: "cancelled" })
-      .eq("morning_doc_id", doc.morning_doc_id as string)
-      .eq("status", "issued")
-      .select("id");
-    queueRowReleased = (released?.length ?? 0) > 0;
-    for (const r of released ?? []) {
-      await admin.from("events").insert({
-        entity_type: "pending_document",
-        entity_id: r.id,
-        event_type: "document_cancelled_in_queue",
-        actor_id: user.id,
-        payload: { morning_doc_number: docNumber, doc_type: doc.type, reason, previous_status: "issued" },
-      });
-    }
-  }
+  const { invoiceBizCleared, invoiceRowDeleted, queueRowReleased } = await cancelDocumentLocally(
+    admin,
+    {
+      id: doc.id as string,
+      morning_doc_id: doc.morning_doc_id as string | null,
+      morning_doc_number: docNumber,
+      type: doc.type as number,
+      job_id: jobId,
+    },
+    { userId: user.id, reason, cancelledAt: now }
+  );
 
   // event on the document
   await admin.from("events").insert({
