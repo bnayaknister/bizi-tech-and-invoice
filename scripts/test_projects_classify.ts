@@ -1,0 +1,519 @@
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * הסיווג של שורת הפקה ב-/projects נגזר מהצילום שעל ההפקה — לא מתצורת התוכנית
+ * כפי שהיא היום.
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Run:  npx tsx scripts/test_projects_classify.ts
+ *
+ * ⛔ NO DATABASE, NO SERVER, NO NETWORK, NO CLOCK — no Supabase client, no
+ * fetch, no Date.now(). F19: the live account holds the very rows this suite
+ * describes (the EY episode of 2.8.2026, work order 10302, deal invoice 40306)
+ * and it must not go near them. Every fixture below is a literal.
+ *
+ * ═══ 🔴 THE BUG, AND WHY NO EXISTING TEST COULD HAVE CAUGHT IT ═══
+ * `classify()` lived inline in projects/page.tsx, 60 lines of server component
+ * away from anything importable, and it asked `shows.billing_mode` — the show's
+ * configuration TODAY — about work that happened months ago. `resolveContractName`
+ * then walked to the show's CURRENT contract and printed its name.
+ *
+ * So when EY's show moved to billing_mode='contract' on 4.10, an episode from
+ * 2.8 that had already been billed per episode was redrawn as
+ * "בחוזה: ey 2026 -2027 חצי ראשון 041026" with no price — a contract that did
+ * not exist when the work was done. The production row itself was never wrong:
+ * kind='client', contract_id=NULL. Nobody asked it.
+ *
+ * Both functions now live in src/lib/projects/classify.ts, which has zero
+ * imports, which is why the first three sections of this file exist at all.
+ *
+ * SECTIONS
+ *   1. the rule, case by case — the owner's six cases, verbatim
+ *   2. the frozen job price, and the bundle it must refuse to read
+ *   3. the month cards, BEFORE vs AFTER on one fixture holding every case
+ *   4. one source — every consumer reads the same verdict
+ *   5. read-only enforcement — this change may not write anything, anywhere
+ */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import {
+  classifyProduction,
+  contractNameFor,
+  soleJobAmounts,
+  type BillingClass,
+} from "../src/lib/projects/classify";
+
+let failures = 0;
+let checks = 0;
+function check(label: string, ok: boolean, detail?: string) {
+  checks++;
+  if (ok) console.log(`  PASS  ${label}`);
+  else {
+    failures++;
+    console.log(`  FAIL  ${label}${detail ? ` — ${detail}` : ""}`);
+  }
+}
+
+const ROOT = join(__dirname, "..");
+
+// The three show configurations that matter, as they stand TODAY.
+const SHOW_CONTRACT = { billing_mode: "contract", active: true };
+const SHOW_PER_EPISODE = { billing_mode: "per_episode", active: true };
+const SHOW_NONE = { billing_mode: "none", active: true };
+const SHOW_INACTIVE = { billing_mode: "per_episode", active: false };
+
+// ───────────────────────────────────────────────────────────────────────────
+console.log("\n=== 1. הכלל, מקרה-מקרה (ששת המקרים של הבעלים) ===");
+
+// 🔴 THE REPORTED CASE. kind='client' + contract_id NULL on a show that is now
+// contract-billed, with a job that froze ₪1,000. This is the EY episode.
+{
+  const r = classifyProduction({
+    production: { kind: "client", contract_id: null },
+    show: SHOW_CONTRACT,
+    showPrice: null, // the rate was cleared when the show moved to contract mode
+    jobAmount: 1000,
+  });
+  check("🔴 EY: הפקת client בתוכנית שעכשיו contract → מתומחר", r.billing === "priced", r.billing);
+  check("🔴 EY: המחיר הוא זה שה-job הקפיא — 1,000", r.price === 1000, String(r.price));
+  check(
+    "🔴 EY: אין שם חוזה כשה-contract_id ריק",
+    contractNameFor({ kind: "client", contract_id: null }, [
+      { id: "c-ey", name: "ey 2026 -2027 חצי ראשון 041026" },
+    ]) === null
+  );
+}
+
+// kind='contract' + contract_id X → named, whatever the show says now. The
+// "בלי יריה אחת" case: the show was moved OFF contract mode afterwards.
+for (const [label, show] of [
+  ["contract", SHOW_CONTRACT],
+  ["per_episode", SHOW_PER_EPISODE],
+  ["none", SHOW_NONE],
+] as const) {
+  const p = { kind: "contract", contract_id: "c-jaffa" };
+  const r = classifyProduction({ production: p, show, showPrice: 2500, jobAmount: null });
+  check(`הפקת contract בתוכנית שעכשיו ${label} → חוזה`, r.billing === "contract", r.billing);
+  check(`  ...ובלי מחיר פר-פרק (${label})`, r.price === null, String(r.price));
+  check(
+    `  ...ועם שם החוזה מה-contract_id (${label})`,
+    contractNameFor(p, [{ id: "c-jaffa", name: "מכירת ביפו" }]) === "מכירת ביפו"
+  );
+}
+
+// kind='contract' + contract_id NULL → "חוזה" with no name, and specifically
+// NOT the show's current contract.
+{
+  const p = { kind: "contract", contract_id: null };
+  const r = classifyProduction({ production: p, show: SHOW_CONTRACT, showPrice: null, jobAmount: null });
+  check("הפקת contract בלי contract_id → חוזה", r.billing === "contract", r.billing);
+  check(
+    "  ...בלי שם, ולא שם החוזה הנוכחי של התוכנית",
+    contractNameFor(p, [{ id: "c-now", name: "החוזה החדש" }]) === null
+  );
+  // and the walk is genuinely gone: a contract pointing AT the show, and a sole
+  // active contract of the client, must both be refused as a name source
+  check(
+    "  ...גם כשקיים חוזה שמצביע על התוכנית (contracts.show_id)",
+    contractNameFor({ kind: "contract", contract_id: null }, [
+      { id: "c-byshow", name: "icr spotlight" },
+    ]) === null
+  );
+}
+
+// kind='internal' on a per_episode show that HAS a rate — אילון.
+{
+  const r = classifyProduction({
+    production: { kind: "internal", contract_id: null },
+    show: SHOW_PER_EPISODE,
+    showPrice: 1800,
+    jobAmount: null,
+  });
+  check("הפקת internal בתוכנית per_episode → פנימי", r.billing === "internal", r.billing);
+  check("  ...ובלי מחיר: הפקה פנימית אינה מחויבת לאף אחד", r.price === null, String(r.price));
+}
+
+// kind='client', no job, no rate → missing_rate, exactly as today.
+{
+  const r = classifyProduction({
+    production: { kind: "client", contract_id: null },
+    show: SHOW_PER_EPISODE,
+    showPrice: null,
+    jobAmount: null,
+  });
+  check("הפקת client בלי job ובלי תעריף → חסר תעריף", r.billing === "missing_rate", r.billing);
+}
+
+// regression: the ordinary per_episode show, untouched.
+{
+  const r = classifyProduction({
+    production: { kind: "client", contract_id: null },
+    show: SHOW_PER_EPISODE,
+    showPrice: 1200,
+    jobAmount: null,
+  });
+  check("רגרסיה: client בתוכנית per_episode עם תעריף → מתומחר, 1,200", r.billing === "priced" && r.price === 1200);
+}
+
+// regression: the two show-level answers that were deliberately left alone.
+{
+  const silenced = classifyProduction({
+    production: { kind: "client", contract_id: null },
+    show: SHOW_NONE,
+    showPrice: 900,
+    jobAmount: 900,
+  });
+  check("רגרסיה: billing_mode='none' → חיוב מושתק, כמו היום", silenced.billing === "no_billing", silenced.billing);
+  // the tooltip-vs-amount detail that today's screen already has: a silenced
+  // show carrying a rate shows that ₪, and the label only appears when there is
+  // no number. Unchanged on purpose — see the note at that branch in classify.ts.
+  check("  ...והמחיר נשאר תעריף התוכנית, בדיוק כמו היום", silenced.price === 900, String(silenced.price));
+
+  const inactive = classifyProduction({
+    production: { kind: "client", contract_id: null },
+    show: SHOW_INACTIVE,
+    showPrice: null,
+    jobAmount: null,
+  });
+  check("רגרסיה: תוכנית לא פעילה בלי תעריף → inactive, כמו היום", inactive.billing === "inactive", inactive.billing);
+}
+
+// the price precedence, stated on its own: the frozen number beats the live one
+{
+  const r = classifyProduction({
+    production: { kind: "client", contract_id: null },
+    show: SHOW_PER_EPISODE,
+    showPrice: 1200,
+    jobAmount: 1000,
+  });
+  check("מחיר ה-job קודם לתעריף התוכנית — 1,000 ולא 1,200", r.price === 1000, String(r.price));
+}
+
+// a defensive row: kind absent (never happens — the column is NOT NULL — but a
+// stale payload or a hand-made row must not crash or invent a verdict)
+{
+  const r = classifyProduction({
+    production: {},
+    show: SHOW_PER_EPISODE,
+    showPrice: 500,
+    jobAmount: null,
+  });
+  check("kind חסר → נופל למסלול התצורה, בלי ורדיקט חדש", r.billing === "priced" && r.price === 500);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+console.log("\n=== 2. המחיר שה-job הקפיא, והחבילה שאסור לקרוא ===");
+{
+  // p1 has one job covering it alone → its amount is usable.
+  // p2 and p3 share a bundled job → NEITHER may read it.
+  // p4 has two jobs → ambiguous, no frozen price.
+  // p5's only job is dismissed → the caller never passes it in.
+  const links = [
+    { job_id: "j-solo", production_id: "p1" },
+    { job_id: "j-bundle", production_id: "p2" },
+    { job_id: "j-bundle", production_id: "p3" },
+    { job_id: "j-a", production_id: "p4" },
+    { job_id: "j-b", production_id: "p4" },
+    { job_id: "j-dismissed", production_id: "p5" },
+    // the bundle's third leg sits BELOW the July floor and is invisible on
+    // screen — the reason this function must see the full table
+    { job_id: "j-halfhidden", production_id: "p6" },
+    { job_id: "j-halfhidden", production_id: "p-june" },
+  ];
+  const live = new Map<string, number | null>([
+    ["j-solo", 1000],
+    ["j-bundle", 9000],
+    ["j-a", 500],
+    ["j-b", 500],
+    ["j-halfhidden", 4000],
+    ["j-noamount", null],
+  ]);
+  const amounts = soleJobAmounts(links, live);
+  check("job יחיד על הפקה יחידה → המחיר נקרא", amounts.get("p1") === 1000, String(amounts.get("p1")));
+  check("⚠️ job מאוגד על שתי הפקות → לא נקרא (p2)", !amounts.has("p2"));
+  check("⚠️ job מאוגד על שתי הפקות → לא נקרא (p3)", !amounts.has("p3"));
+  check("שני jobs על הפקה אחת → לא נקרא", !amounts.has("p4"));
+  check("job שנדחה (dismissed) → אינו ברשימה החיה, לא נקרא", !amounts.has("p5"));
+  check(
+    "⚠️ job שהרגל השנייה שלו מתחת לרצפת יולי → עדיין חבילה, לא נקרא",
+    !amounts.has("p6"),
+    String(amounts.get("p6"))
+  );
+  check("job בלי סכום → לא נקרא", !amounts.has("p-noamount"));
+  check("אין הפקות נוספות במפה", amounts.size === 1, String(amounts.size));
+
+  // and the whole point: if the bundle total HAD been read, the expected card
+  // would have counted ₪9,000 twice
+  const wouldHaveBeen = ["p2", "p3"].reduce((t, id) => t + (live.get("j-bundle") ?? 0), 0);
+  check("  ...מה שהיה מכפיל 9,000 לכדי 18,000 בכרטיס הצפוי", wouldHaveBeen === 18000);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+console.log("\n=== 3. כרטיסי החודש — לפני/אחרי על fixture שמכיל את כל המקרים ===");
+/**
+ * ⚠️ THE OLD RULE IS RE-SPELLED HERE, ONCE, ON PURPOSE.
+ *
+ * It no longer exists anywhere in the source — that is the change. To prove the
+ * cards move ONLY where the classification was fixed, the baseline has to come
+ * from somewhere, so the deleted function is reproduced verbatim as `oldWay`
+ * (projects/page.tsx at 23feaca) and both verdicts are poured through ONE
+ * summariser. A difference in any row that was not misclassified would be a
+ * difference the summariser cannot hide.
+ */
+function oldWay(show: { billing_mode?: string | null; active?: boolean | null } | undefined, price: number | null): BillingClass {
+  if (show?.billing_mode === "contract") return "contract";
+  if (show?.billing_mode === "none") return "no_billing";
+  if (price != null) return "priced";
+  if (show && show.active === false) return "inactive";
+  return "missing_rate";
+}
+
+type Fix = {
+  id: string;
+  kind: string;
+  contract_id: string | null;
+  show: { billing_mode?: string | null; active?: boolean | null };
+  showPrice: number | null;
+  jobAmount: number | null;
+  cancelled?: boolean;
+  show_name: string;
+};
+const fixture: Fix[] = [
+  // 🔴 the reported row: per-episode work on a show that has since gone contract
+  { id: "ey-2.8", kind: "client", contract_id: null, show: SHOW_CONTRACT, showPrice: null, jobAmount: 1000, show_name: "ey" },
+  // a genuinely contract-billed episode, named
+  { id: "jaffa-1", kind: "contract", contract_id: "c-jaffa", show: SHOW_CONTRACT, showPrice: null, jobAmount: null, show_name: "מאצ׳ אפ" },
+  // a genuinely contract-billed episode on a show since moved OFF contract mode
+  { id: "noshot-1", kind: "contract", contract_id: "c-jaffa", show: SHOW_PER_EPISODE, showPrice: 2500, jobAmount: null, show_name: "בלי יריה אחת" },
+  // internal, on a show that carries a rate
+  { id: "eilon-1", kind: "internal", contract_id: null, show: SHOW_PER_EPISODE, showPrice: 1800, jobAmount: null, show_name: "אילון" },
+  // the ordinary per-episode rows
+  { id: "plain-1", kind: "client", contract_id: null, show: SHOW_PER_EPISODE, showPrice: 1200, jobAmount: null, show_name: "רגיל" },
+  { id: "plain-2", kind: "client", contract_id: null, show: SHOW_PER_EPISODE, showPrice: 1200, jobAmount: 1200, show_name: "רגיל" },
+  // the real defect, still a defect
+  { id: "norate-1", kind: "client", contract_id: null, show: SHOW_PER_EPISODE, showPrice: null, jobAmount: null, show_name: "חסר תעריף" },
+  // silenced, and switched off
+  { id: "silent-1", kind: "client", contract_id: null, show: SHOW_NONE, showPrice: 700, jobAmount: null, show_name: "מושתק" },
+  { id: "off-1", kind: "client", contract_id: null, show: SHOW_INACTIVE, showPrice: null, jobAmount: null, show_name: "כבויה" },
+  // cancelled: out of the arithmetic either way
+  { id: "cx-1", kind: "client", contract_id: null, show: SHOW_CONTRACT, showPrice: null, jobAmount: 3000, cancelled: true, show_name: "מבוטלת" },
+];
+
+/** The /projects month-card arithmetic, copied from page.tsx and NOT changed. */
+function summarise(rows: { billing: BillingClass; price: number | null; internal: boolean; cancelled: boolean }[]) {
+  const billable = rows.filter((r) => !r.internal && !r.cancelled);
+  const of = (c: BillingClass) => billable.filter((r) => r.billing === c);
+  const priced = of("priced");
+  return {
+    expected: priced.reduce((t, r) => t + (r.price ?? 0), 0),
+    expectedPriced: priced.length,
+    expectedPerEpisode: priced.length + of("missing_rate").length + of("inactive").length,
+    expectedTotalRows: rows.length,
+    missingRateCount: of("missing_rate").length,
+    contractCount: of("contract").length,
+    inactiveCount: of("inactive").length,
+    noBillingCount: of("no_billing").length,
+  };
+}
+
+const before = summarise(
+  fixture.map((f) => {
+    // the old pairing: price computed from the show, class computed beside it
+    const price = f.showPrice;
+    return {
+      billing: oldWay(f.show, price),
+      price,
+      internal: f.kind === "internal",
+      cancelled: !!f.cancelled,
+    };
+  })
+);
+const after = summarise(
+  fixture.map((f) => {
+    const r = classifyProduction({
+      production: { kind: f.kind, contract_id: f.contract_id },
+      show: f.show,
+      showPrice: f.showPrice,
+      jobAmount: f.jobAmount,
+    });
+    return { billing: r.billing, price: r.price, internal: f.kind === "internal", cancelled: !!f.cancelled };
+  })
+);
+console.log(`  לפני:  ${JSON.stringify(before)}`);
+console.log(`  אחרי:  ${JSON.stringify(after)}`);
+
+// WHICH rows were misclassified, named one by one. Everything the cards do
+// differently must be explained by exactly these.
+const fixed = fixture.filter((f) => {
+  const price = f.showPrice;
+  const o = oldWay(f.show, price);
+  const n = classifyProduction({
+    production: { kind: f.kind, contract_id: f.contract_id },
+    show: f.show,
+    showPrice: f.showPrice,
+    jobAmount: f.jobAmount,
+  });
+  return o !== n.billing || price !== n.price;
+});
+check(
+  "השורות שהסיווג או המחיר שלהן תוקנו הן בדיוק ארבע, ובשמן",
+  fixed.map((f) => f.id).sort().join(",") === ["ey-2.8", "noshot-1", "eilon-1", "cx-1"].sort().join(","),
+  fixed.map((f) => f.id).join(",")
+);
+// plain-2 carries a job whose amount EQUALS the show's rate — the ordinary case
+// after a job exists. It must not appear above: reading the frozen number
+// instead of the live one changed nothing, and a row that did not move must not
+// be reported as moved.
+check("שורה שה-job שלה מסכים עם התעריף — לא זזה", !fixed.some((f) => f.id === "plain-2"));
+
+check("expectedTotalRows לא זז — אף שורה לא נעלמה ולא נוספה", before.expectedTotalRows === after.expectedTotalRows);
+
+// 🔴 THE NET MOVEMENT, AND IT IS DOWNWARD. Two corrections in opposite
+// directions, and the second is the larger: EY's ₪1,000 enters the per-episode
+// sum, and "בלי יריה אחת"'s ₪2,500 LEAVES it. That second one is a genuinely
+// contract-billed episode whose show was moved off contract mode afterwards —
+// the old rule read the show's current per-episode rate and added it to a total
+// that the contract's milestones already account for. It was a double count,
+// and it is exactly the double count the deleted comment said could not happen
+// ("313 productions sit on contract-mode shows and NONE of them has a job") —
+// true of the shows that are STILL in contract mode, and silent about the ones
+// that left.
+check("🔴 expected ירד נטו ב-1,500", before.expected - after.expected === 1500, `${before.expected} → ${after.expected}`);
+check("  ...מתוכו: EY נכנסה עם 1,000", after.expected === before.expected - 2500 + 1000);
+check(
+  '  ...ו"בלי יריה אחת" יצאה עם 2,500',
+  oldWay(SHOW_PER_EPISODE, 2500) === "priced" &&
+    classifyProduction({
+      production: { kind: "contract", contract_id: "c-jaffa" },
+      show: SHOW_PER_EPISODE,
+      showPrice: 2500,
+      jobAmount: null,
+    }).price === null
+);
+check("expectedPriced לא זז — אחת נכנסה ואחת יצאה", before.expectedPriced === after.expectedPriced, `${before.expectedPriced} → ${after.expectedPriced}`);
+check("contractCount לא זז — EY יצאה, 'בלי יריה אחת' נכנסה", before.contractCount === after.contractCount, `${before.contractCount} → ${after.contractCount}`);
+check("expectedPerEpisode לא זז", before.expectedPerEpisode === after.expectedPerEpisode, `${before.expectedPerEpisode} → ${after.expectedPerEpisode}`);
+check("missingRateCount לא זז", before.missingRateCount === after.missingRateCount, `${before.missingRateCount} → ${after.missingRateCount}`);
+check("inactiveCount לא זז", before.inactiveCount === after.inactiveCount);
+check("noBillingCount לא זז", before.noBillingCount === after.noBillingCount);
+
+// the two rows that were reclassified OUTSIDE the arithmetic, proven inert
+check(
+  "אילון סווּגה מחדש ל-internal — ואפס כרטיסים זזו בגללה",
+  fixed.some((f) => f.id === "eilon-1") &&
+    summarise([{ billing: "priced", price: 1800, internal: true, cancelled: false }]).expected === 0
+);
+check(
+  "שורה מבוטלת שסיווגה התחלף — אפס השפעה על הסכומים",
+  fixed.some((f) => f.id === "cx-1") &&
+    summarise([{ billing: "priced", price: 3000, internal: false, cancelled: true }]).expected === 0
+);
+
+// ───────────────────────────────────────────────────────────────────────────
+console.log("\n=== 4. מקור יחיד — כל הצרכנים קוראים את אותו ורדיקט ===");
+{
+  const page = readFileSync(join(ROOT, "src/app/projects/page.tsx"), "utf8");
+  const client = readFileSync(join(ROOT, "src/app/projects/ProjectsClient.tsx"), "utf8");
+  const stuck = readFileSync(join(ROOT, "src/lib/projects/stuck.ts"), "utf8");
+  const unified = readFileSync(join(ROOT, "src/lib/projects/unified.ts"), "utf8");
+
+  check("אין classify( מקומי ב-page.tsx", !/function classify\s*\(/.test(page));
+  check("אין resolveContractName מקומי ב-page.tsx", !page.includes("function resolveContractName"));
+  check("page.tsx מייבא את הכלל", page.includes('from "@/lib/projects/classify"'));
+  check("page.tsx קורא ל-classifyProduction", page.includes("classifyProduction({"));
+  check("page.tsx קורא ל-contractNameFor", page.includes("contractNameFor(p, contracts)"));
+
+  // the ordering that IS the fix — kind before billing_mode
+  const rule = readFileSync(join(ROOT, "src/lib/projects/classify.ts"), "utf8");
+  const iKind = rule.indexOf('kind === "contract"');
+  const iMode = rule.indexOf('billing_mode === "none"');
+  check("🔴 הכלל בודק kind לפני billing_mode", iKind > 0 && iMode > iKind, `${iKind} / ${iMode}`);
+  check("אין בדיקת billing_mode === \"contract\" בכלל", !rule.includes('billing_mode === "contract"'));
+  check("אין בכלל נפילה ל-contracts.show_id", !rule.includes("c.show_id") && !rule.includes("show_id ==="));
+  check("אין בכלל נפילה לחוזה הפעיל היחיד של הלקוח", !rule.includes('status === "active"'));
+
+  // and page.tsx no longer asks the show whether an episode is contract-billed
+  check(
+    '🔴 page.tsx אינו שואל billing_mode === "contract" עוד',
+    !page.includes('billing_mode === "contract"')
+  );
+
+  // exactly ONE place computes the class; everything else reads r.billing
+  const callSites = (page.match(/classifyProduction\(/g) ?? []).length;
+  check("classifyProduction נקראת פעם אחת בלבד", callSites === 1, String(callSites));
+  check("unified.ts קורא את billing מהשורה, לא מחשב", unified.includes("billing: p.billing") && !unified.includes("billing_mode"));
+  check("ProjectsClient קורא את billing מהשורה", client.includes("r.billing as BillingClass | null") && !client.includes("billing_mode ==="));
+
+  // the vocabulary has one home and every consumer covers all of it
+  check("BillingClass מוגדר ב-classify.ts", /export type BillingClass/.test(rule));
+  check("ProjectsClient מייצא אותו מחדש ואינו מגדיר מחדש", client.includes("export type { BillingClass }") && !/export type BillingClass =/.test(client));
+  for (const label of ["NO_PRICE_LABEL", "NO_PRICE_NOTE"]) {
+    const body = client.slice(client.indexOf(`const ${label}`), client.indexOf("};", client.indexOf(`const ${label}`)));
+    check(`${label} מכסה גם internal`, /\binternal:/.test(body));
+  }
+  check("stuck.ts מכיר את internal בשתי החתימות", (stuck.match(/\| "internal";/g) ?? []).length === 2);
+  check("stuck.ts נשאר בלי imports", stuck.split("\n").filter((l) => /^\s*import\b/.test(l)).length === 0);
+
+  // the rule module stays pure
+  const imports = rule.split("\n").filter((l) => /^\s*import\b/.test(l));
+  check("classify.ts אינו מייבא דבר", imports.length === 0, imports.join(" | "));
+  for (const w of ["fetch(", "createClient", "process.env", "Date.now", "new Date("]) {
+    check(`classify.ts אפס ${w}`, !rule.includes(w));
+  }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+console.log("\n=== 5. אכיפת קריאה-בלבד ===");
+/**
+ * The ticket's hard constraint: תצוגה בלבד — zero writes, zero change to
+ * document paths, jobs or triggers, and no migration. Enforced by reading the
+ * TEXT of what this branch actually changed, so the constraint cannot be
+ * satisfied by intent alone.
+ *
+ * `git diff` is a local read. No network, no database.
+ */
+{
+  const changed = execFileSync("git", ["diff", "--name-only", "origin/main"], { cwd: ROOT, encoding: "utf8" })
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  console.log(`  קבצים ששונו: ${changed.join(", ") || "(none)"}`);
+
+  const ALLOWED = [
+    "src/app/projects/page.tsx",
+    "src/app/projects/ProjectsClient.tsx",
+    "src/lib/projects/classify.ts",
+    "src/lib/projects/stuck.ts",
+    "scripts/test_projects_classify.ts",
+    "scripts/test_projects_classify_render.tsx",
+  ];
+  for (const f of changed) {
+    check(`${f} נמצא ברשימת הקבצים המותרת`, ALLOWED.includes(f));
+  }
+  check("⛔ אין מיגרציה", !changed.some((f) => f.startsWith("supabase/")), changed.filter((f) => f.startsWith("supabase/")).join(","));
+  check("⛔ אין שינוי בנתיבי מסמכים", !changed.some((f) => f.startsWith("src/lib/documents/")));
+  check("⛔ אין שינוי ב-API routes", !changed.some((f) => f.startsWith("src/app/api/")));
+  check("⛔ אין שינוי בטריגרים או בסקריפטים חיים", !changed.some((f) => f.startsWith("scripts/") && !f.startsWith("scripts/test_projects_classify")));
+
+  // the added lines themselves: no write verb, no RPC, no fetch
+  const added = execFileSync("git", ["diff", "--unified=0", "origin/main", "--", ...ALLOWED.slice(0, 4)], {
+    cwd: ROOT,
+    encoding: "utf8",
+  })
+    .split("\n")
+    .filter((l) => l.startsWith("+") && !l.startsWith("+++"))
+    .join("\n");
+  for (const verb of [".insert(", ".upsert(", ".update(", ".delete(", ".rpc(", "fetch(", "revalidate"]) {
+    check(`⛔ אף שורה שנוספה אינה מכילה ${verb}`, !added.includes(verb), verb);
+  }
+  // and the shipped files hold no write verb at all
+  for (const f of ALLOWED.slice(0, 4)) {
+    const text = readFileSync(join(ROOT, f), "utf8");
+    for (const verb of [".insert(", ".upsert(", ".update(", ".delete("]) {
+      check(`${f} אפס ${verb}`, !text.includes(verb));
+    }
+  }
+}
+
+console.log(`\n${failures === 0 ? "✅" : "❌"}  ${checks - failures}/${checks}`);
+process.exit(failures === 0 ? 0 : 1);

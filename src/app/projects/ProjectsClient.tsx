@@ -24,15 +24,19 @@ import {
   type UnifiedRow,
 } from "@/lib/projects/unified";
 import type { ProjectDoc } from "@/lib/projects/row";
+import type { BillingClass } from "@/lib/projects/classify";
 
 // Re-exported so nothing that already imported `ProjectDoc` from this component
 // has to change — the type itself moved to lib/projects/row.ts to break a cycle
 // (this file imports lib/projects/unified, which carries `docs` on every row).
 export type { ProjectDoc };
 
-/** Why a row carries no per-episode price. Defined here so the row cell and the
- *  summary answer with the same vocabulary — see classify() in page.tsx. */
-export type BillingClass = "priced" | "contract" | "no_billing" | "inactive" | "missing_rate";
+/** Why a row carries no per-episode price. The TYPE moved to
+ *  lib/projects/classify.ts on 2026-10-06, next to the one function that decides
+ *  it, and is re-exported here unchanged so every existing importer — page.tsx
+ *  among them — keeps working. The row cell and the summary still answer with
+ *  one vocabulary; that vocabulary now has one home. */
+export type { BillingClass };
 
 export type ProjectRow = {
   id: string;
@@ -139,6 +143,7 @@ const NO_PRICE_LABEL: Record<BillingClass, string> = {
   no_billing: "חיוב מושתק",
   inactive: "תוכנית לא פעילה",
   missing_rate: "חסר תעריף",
+  internal: "הפקה פנימית",
 };
 
 const NO_PRICE_NOTE: Record<BillingClass, string> = {
@@ -147,6 +152,7 @@ const NO_PRICE_NOTE: Record<BillingClass, string> = {
   no_billing: "חיוב התוכנית מושתק (billing_mode = none)",
   inactive: "התוכנית אינה פעילה, ולכן אינה אמורה לשאת תעריף",
   missing_rate: "תוכנית פעילה שמחויבת פר-פרק ואין לה תעריף — זה חסר שצריך להשלים",
+  internal: "הפקה פנימית של האולפן — אינה מחויבת לאף לקוח, ולכן אין לה מחיר להציג",
 };
 
 const PATH_NOTE: Record<string, string> = {

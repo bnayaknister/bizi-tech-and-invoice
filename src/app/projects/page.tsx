@@ -32,6 +32,7 @@ import {
   type UnifiedRow,
 } from "@/lib/projects/unified";
 import type { ProjectDoc } from "@/lib/projects/row";
+import { classifyProduction, contractNameFor, soleJobAmounts } from "@/lib/projects/classify";
 import ProjectsClient, {
   type BillingClass,
   type MilestoneRow,
@@ -109,43 +110,28 @@ type MonthDoc = {
 };
 
 /**
- * WHY a production carries no per-episode price. "Missing a rate" was the only
- * answer this screen could give, and it was wrong in 9 cases out of 9 (measured
- * 2026-08-27) — there are four different reasons and only one of them is a
- * defect somebody should go and fix.
+ * 🔴 classify() AND resolveContractName() LEFT THIS FILE ON 2026-10-06.
  *
- * Order matters, and billing_mode is checked FIRST — before the price:
+ * Both now live in lib/projects/classify.ts, and the move is the fix rather
+ * than a tidy-up. They asked `shows.billing_mode` and the show's CURRENT
+ * contract — the show as it stands today — about work that happened months ago,
+ * so switching a show to contract mode retroactively relabelled every episode
+ * ever recorded under it. An EY episode from 2.8.2026 that was billed per
+ * episode (order 10302, deal invoice 40306) was shown as "בחוזה: ey 2026 -2027
+ * חצי ראשון 041026", a contract created on 4.10. The full account, and the
+ * four-reason table that used to sit here, is in that module's header.
  *
- *   contract      the show is billed through contract milestones, not per
- *                 episode (מאצ׳ אפ, אפרת וכטל → the ביפו umbrella contract).
- *                 Checked ahead of the price on purpose: even if somebody typed
- *                 a default_rate on a contract show, that money still arrives
- *                 through contract_milestones.job_id, and adding it to the
- *                 per-episode total would count the same shekel twice. Verified
- *                 there is no double count today — 313 productions sit on
- *                 contract-mode shows and NONE of them has a job.
- *   no_billing    billing_mode='none' — billing deliberately silenced.
- *   priced        has a price. This is the money.
- *   inactive      the show is switched off; it is not owed a rate.
- *   missing_rate  an ACTIVE, per-episode, recorded show with no rate. The real
- *                 defect, and the only case worth calling "חסר תעריף". Zero of
- *                 them exist in range today.
+ * The row is now classified from `productions.kind` and `productions.contract_id`
+ * — the snapshot the production froze about itself at creation. The show is
+ * still asked for the price, for `active` and for billing_mode='none', because
+ * those three genuinely are questions about the show as it stands now.
  *
- * `active` is used ONLY here, as a late tiebreak, and never to decide whether
- * money is expected: it is editable with can_edit_stages (shows/update
- * route.ts:48) while billing_mode needs can_edit_money (route.ts:19). A
- * technician must not be able to move a number on a finance screen.
+ * ONE definition, every consumer: the billing cell, the month cards
+ * (expected / contractCount / missingRateCount), the stuck rule and the
+ * billing-status filter all read the single `billing` written onto the row
+ * below. See the note at the `rows` literal — "classifying twice is how the cell
+ * and the rule drift apart".
  */
-function classify(
-  show: { billing_mode?: string | null; active?: boolean | null } | undefined,
-  price: number | null
-): BillingClass {
-  if (show?.billing_mode === "contract") return "contract";
-  if (show?.billing_mode === "none") return "no_billing";
-  if (price != null) return "priced";
-  if (show && show.active === false) return "inactive";
-  return "missing_rate";
-}
 
 type ContractRow = {
   id: string;
@@ -154,45 +140,6 @@ type ContractRow = {
   show_id: string | null;
   status: string;
 };
-
-/**
- * WHICH contract a contract-billed episode belongs to.
- *
- * There is no single reliable pointer, so this walks from strongest evidence to
- * weakest and stops at the first UNAMBIGUOUS answer. Measured 2026-08-27:
- *
- *   1. productions.contract_id — exact, and set on exactly 1 of 765 rows.
- *   2. contracts.show_id — exact, and set on 1 of 3 contracts (icr spotlight).
- *      NULL is the CORRECT state for an umbrella contract like מכירת ביפו that
- *      covers a whole catalogue rather than one show (0056 says so explicitly),
- *      so its absence is not a defect to route around.
- *   3. the client's sole ACTIVE contract — how the 27 ביפו-era shows resolve.
- *      Only when there is exactly one; two would make the answer a guess.
- *
- * Today every one of the 28 contract-mode shows resolves to a name: 1 via
- * show_id, 27 via a sole active client contract. The unnamed branch is
- * unreachable with current data and exists for the day a client signs a second
- * contract — at which point saying "מחויב בחוזה" without naming one is the only
- * honest output, and inventing the wrong contract name on a finance screen is
- * the failure this guards against.
- */
-function resolveContractName(
-  production: { contract_id?: string | null; show_id: string | null; client_id: string | null },
-  show: { client_id?: string | null } | undefined,
-  contracts: ContractRow[]
-): string | null {
-  if (production.contract_id) {
-    const exact = contracts.find((c) => c.id === production.contract_id);
-    if (exact) return exact.name;
-  }
-  const byShow = contracts.filter((c) => c.show_id && c.show_id === production.show_id);
-  if (byShow.length === 1) return byShow[0].name;
-
-  const clientId = production.client_id ?? show?.client_id ?? null;
-  if (!clientId) return null;
-  const byClient = contracts.filter((c) => c.client_id === clientId && c.status === "active");
-  return byClient.length === 1 ? byClient[0].name : null;
-}
 
 type ProdRow = {
   id: string;
@@ -340,9 +287,13 @@ export default async function ProjectsPage() {
     fetchProductionsInRange(admin),
     // billing_mode and active are both read, and they are NOT interchangeable:
     // billing_mode is a money field (can_edit_money, shows/update/route.ts:19)
-    // while active only needs can_edit_stages — a technician can flip it. So
-    // billing_mode decides whether money is expected at all, and active is only
-    // ever a secondary label. See classify() below.
+    // while active only needs can_edit_stages — a technician can flip it.
+    //
+    // 🔴 SINCE 2026-10-06 NEITHER DECIDES WHETHER AN EPISODE IS CONTRACT-BILLED.
+    // That question is answered by `productions.kind`, which froze the show's
+    // mode at creation. billing_mode is still read for the 'none' case (billing
+    // silenced) and active for the "not owed a rate" label — both statements
+    // about the show as it stands now. See lib/projects/classify.ts.
     admin.from("shows").select("id,name,default_rate,billing_mode,active,client_id"),
     // named so a contract-billed row can say WHICH contract it belongs to
     admin.from("contracts").select("id,name,client_id,show_id,status"),
@@ -803,6 +754,29 @@ export default async function ProjectsPage() {
   const todayIL = todayInIsrael();
   const clientOf = (id: string | null) => (id ? clientById.get(id) ?? null : null);
 
+  // ═══ THE PRICE A JOB ALREADY FROZE, PER PRODUCTION ═══
+  //
+  // 🔴 ADDED 2026-10-06, AND WITHOUT IT THE FIX IS HALF A FIX.
+  //
+  // The EY episode this change was filed for cannot get its price from its show:
+  // moving a show to contract mode CLEARS default_rate (ShowsClient.tsx:705), so
+  // the only surviving record of the ₪ that was genuinely charged is
+  // jobs.amount on work order 10302 — the number migration 0033 wrote there at
+  // client approval and the number that went onto deal invoice 40306.
+  // Classifying the row correctly as `priced` while printing "חסר תעריף" beside
+  // it would just move the false statement one column to the left.
+  //
+  // `jobs` and not `allJobRows`: dismissed jobs are out of every money surface
+  // (0041), so a dismissed duplicate must not price an episode.
+  //
+  // THE FULL job_productions TABLE, not `jobLinks` — the bundle test in
+  // soleJobAmounts is only sound over every link a job has, including links to
+  // productions below the July floor. Same reason `allLinks` exists above.
+  const frozenJobAmount = soleJobAmounts(
+    allLinks,
+    new Map(jobs.map((j) => [j.id, j.amount]))
+  );
+
   // ---- the due dates, from the DATABASE ------------------------------------
   //
   // ⚠️ THE ONE RULE OF THIS BLOCK: no due date is calculated here. Migration
@@ -900,17 +874,24 @@ export default async function ProjectsPage() {
   const rows: (ProjectRow & { month: string })[] = inRange.map((p) => {
     const show = showById.get(p.show_id ?? "");
     const base = effectiveBase(p, show ? { default_rate: show.default_rate as number | null } : null);
-    const price = productionTotal(base, approvedAddonTotal(addonsByProduction.get(p.id) ?? []));
+    const showPrice = productionTotal(base, approvedAddonTotal(addonsByProduction.get(p.id) ?? []));
     // hoisted out of the literal below: `judge` needs the same verdict the row
-    // shows, and classifying twice is how the cell and the rule drift apart
-    const billing = classify(
-      show as { billing_mode?: string | null; active?: boolean | null } | undefined,
-      price
-    );
+    // shows, and classifying twice is how the cell and the rule drift apart.
+    //
+    // The class and the price come back TOGETHER because they are one decision
+    // (lib/projects/classify.ts): "priced" is only true if a price was found,
+    // and which price counts depends on the class. `price` below is the
+    // function's answer, never the show's rate re-read on the side.
+    const { billing, price } = classifyProduction({
+      production: p,
+      show: show as { billing_mode?: string | null; active?: boolean | null } | undefined,
+      showPrice,
+      jobAmount: frozenJobAmount.get(p.id) ?? null,
+    });
     return {
       month: israelMonthKey(p.record_date, p.created_at),
       billing,
-      contract_name: resolveContractName(p, show as { client_id?: string | null } | undefined, contracts),
+      contract_name: contractNameFor(p, contracts),
       id: p.id,
       record_date: p.record_date,
       podcast_name: p.podcast_name,

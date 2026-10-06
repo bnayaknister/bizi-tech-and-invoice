@@ -117,7 +117,16 @@ export type EmptyReason =
  * statements about whether money is expected at all and answer first.
  */
 export function emptyReasonFor(args: {
-  billing: "priced" | "contract" | "no_billing" | "inactive" | "missing_rate";
+  /**
+   * The `BillingClass` the row carries. Spelled out as a literal union and NOT
+   * imported from lib/projects/classify.ts: this module imports nothing, by
+   * rule, so a test can reach the rule without reaching anything else
+   * (test_accrual_counter.ts asserts the zero-import invariant by reading this
+   * file's text). "internal" joined the union on 2026-10-06 — behaviour here is
+   * unchanged, because both functions already answer from the `internal`
+   * boolean below, which has always carried the same fact.
+   */
+  billing: "priced" | "contract" | "no_billing" | "inactive" | "missing_rate" | "internal";
   internal: boolean;
   cadence: Cadence;
   everyN: number | null;
@@ -207,7 +216,16 @@ const DOC_NAME: Record<number, string> = { 300: "חשבון עסקה", 305: "ח�
  * one.
  */
 export function stuckFor(args: {
-  billing: "priced" | "contract" | "no_billing" | "inactive" | "missing_rate";
+  /**
+   * The `BillingClass` the row carries. Spelled out as a literal union and NOT
+   * imported from lib/projects/classify.ts: this module imports nothing, by
+   * rule, so a test can reach the rule without reaching anything else
+   * (test_accrual_counter.ts asserts the zero-import invariant by reading this
+   * file's text). "internal" joined the union on 2026-10-06 — behaviour here is
+   * unchanged, because both functions already answer from the `internal`
+   * boolean below, which has always carried the same fact.
+   */
+  billing: "priced" | "contract" | "no_billing" | "inactive" | "missing_rate" | "internal";
   internal: boolean;
   cancelled: boolean;
   allJobsDismissed: boolean;
