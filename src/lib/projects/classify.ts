@@ -85,12 +85,33 @@ export type BillingClass =
   | "missing_rate"
   | "internal";
 
-/** The two columns the production froze about itself. */
+/**
+ * What the production froze about itself, plus the two pointers the contract
+ * walk needs.
+ *
+ * `kind` and `contract_id` are the snapshot — written at creation and never
+ * backfilled. `show_id` and `client_id` are NOT a snapshot of anything and are
+ * only here so `contractNameFor` can run its fallbacks; `classifyProduction`
+ * never reads them.
+ */
 export type ProductionSnapshot = {
   /** productions.kind — 'client' | 'internal' | 'contract' (enum, 0002 + 0012). */
   kind?: string | null;
   /** productions.contract_id — which contract, when it was billed through one. */
   contract_id?: string | null;
+  /** for the contract-name fallbacks only */
+  show_id?: string | null;
+  /** for the contract-name fallbacks only */
+  client_id?: string | null;
+};
+
+/** A `contracts` row as the name walk reads it. */
+export type ContractForName = {
+  id: string;
+  name: string;
+  show_id?: string | null;
+  client_id?: string | null;
+  status?: string | null;
 };
 
 /** The show as it stands TODAY. Consulted only for price / active / silenced. */
@@ -176,44 +197,83 @@ export function classifyProduction(args: ClassifyArgs): { billing: BillingClass;
 }
 
 /**
- * WHICH contract a contract-billed episode belongs to — the production's own
- * pointer, and nothing else.
+ * WHICH contract a contract-billed episode belongs to.
  *
- * 🔴 THE THREE-STEP WALK THAT USED TO LIVE HERE IS GONE, DELIBERATELY, AND IT
- * COSTS NAMES ON SCREEN.
+ * 🔴 THE GATE IS THE FIX. THE WALK BELOW IT IS THE ORIGINAL, RESTORED
+ * UNCHANGED (owner ruling 2026-10-06, on the report of 8febad1).
  *
- * It resolved `productions.contract_id`, then `contracts.show_id`, then "the
- * client's sole active contract". Steps 2 and 3 are both the same sentence —
- * "the contract the show is on TODAY" — and that sentence is the second half of
- * the EY bug. It is how a show signing a contract in October printed that
- * contract's name onto an August episode that predates it. It would do it again
- * the day a show moves from one contract to another: every episode ever
- * recorded under the old one would be relabelled with the new one's name.
+ * 8febad1 answered from `productions.contract_id` alone and nothing else. That
+ * killed the EY bug and took 27 shows' contract names down with it: the comment
+ * it replaced recorded that `contract_id` was set on 1 production in 765, while
+ * 27 of the 28 contract-mode shows resolved their name through the third step.
+ * The owner rejected that trade, and was right to — "מחויב בחוזה" with no name
+ * on almost every contract row is a different wrong answer, not a smaller one.
  *
- * CONSEQUENCE, stated plainly because it is a real loss and not a free fix: the
- * comment this replaces recorded that `contract_id` was set on 1 production in
- * 765 (measured 2026-08-27) while 27 of the 28 contract-mode shows resolved a
- * name through step 3. Those rows now read "מחויב בחוזה" with no name. The
- * umbrella contract מכירת ביפו is exactly the case — it covers a catalogue, so
- * `contracts.show_id` is correctly NULL (0056) and nothing points from those
- * episodes at it.
+ * So the three-step walk comes back verbatim, and the one thing that changes is
+ * WHO IS ALLOWED TO ASK IT:
  *
- * Newer rows are better off: calendar/sync (route.ts:325) and api/productions
- * (route.ts:128-145) both write `contract_id` at creation from the contract
- * whose `show_id` names the show, so a contract with a show_id gets named. The
- * umbrella case and `record-past-productions` (which writes contract_id: null
- * outright, route.ts:357) do not.
+ *   kind='contract'            the full walk. This episode really was billed
+ *                              through a contract; the only open question is
+ *                              which one, and the show is a legitimate witness
+ *                              to that.
+ *   kind='client' | 'internal' NO NAME, EVER, BY ANY ROUTE. Not a label, not a
+ *                              name beside the show. This is the EY episode of
+ *                              2.8: per-episode work whose show later signed a
+ *                              contract. No walk may reach it, because the
+ *                              question "which contract is this episode under"
+ *                              has no answer for a row that was never under one.
  *
- * Saying "מחויב בחוזה" without naming one is the honest output when nothing
- * records which contract it was. Naming the wrong contract on a finance screen
- * is the failure that was actually happening.
+ * That gate is what 8febad1 got right and this keeps. The bug was never that
+ * the walk existed — it was that a `kind='client'` row was sent down it at all.
+ *
+ * ⚠️ WHY THE `contractName` GATE CANNOT LIVE IN THE UI INSTEAD. The billing cell
+ * prints "בחוזה: {name}" only for `billing === "contract"` (ProjectsClient:328),
+ * so a stray name would be invisible there — but the "תוכנית / עבודה" column
+ * prints `· {contractName}` beside the show name for ANY row that carries one
+ * (ProjectsClient:300-305). EY's row would have shown the contract's name there
+ * with no label and no price next to it, which is the owner's original complaint
+ * in a quieter font. The name has to be absent from the payload, not merely
+ * unlabelled, and that is why the gate is here.
+ *
+ * THE WALK ITSELF, unchanged from projects/page.tsx at 23feaca, strongest
+ * evidence first, stopping at the first UNAMBIGUOUS answer (measured 2026-08-27):
+ *
+ *   1. productions.contract_id — exact, and set on exactly 1 of 765 rows.
+ *   2. contracts.show_id — exact, and set on 1 of 3 contracts (icr spotlight).
+ *      NULL is the CORRECT state for an umbrella contract like מכירת ביפו that
+ *      covers a whole catalogue rather than one show (0056 says so explicitly),
+ *      so its absence is not a defect to route around.
+ *   3. the client's sole ACTIVE contract — how the 27 ביפו-era shows resolve.
+ *      Only when there is exactly one; two would make the answer a guess.
+ *
+ * Both fallbacks read the show's situation TODAY, and for a contract row that is
+ * accepted with open eyes: the day a show moves from one contract to another,
+ * step 3 will relabel its older episodes with the new contract's name. The
+ * durable repair for that is a backfill of `productions.contract_id`, which the
+ * owner filed as its own ticket. Until then, a name that is right for 27 shows
+ * and stale for a hypothetical 28th beats no name at all — and inventing a
+ * contract for an episode that had none is the failure this gate stops.
  */
 export function contractNameFor(
   production: ProductionSnapshot,
-  contracts: { id: string; name: string }[]
+  show: { client_id?: string | null } | null | undefined,
+  contracts: ContractForName[]
 ): string | null {
-  if (!production.contract_id) return null;
-  return contracts.find((c) => c.id === production.contract_id)?.name ?? null;
+  // ═══ THE GATE ═══ a per-episode or internal row is under no contract, and no
+  // amount of evidence about the SHOW can make it be under one.
+  if (production.kind !== "contract") return null;
+
+  if (production.contract_id) {
+    const exact = contracts.find((c) => c.id === production.contract_id);
+    if (exact) return exact.name;
+  }
+  const byShow = contracts.filter((c) => c.show_id && c.show_id === production.show_id);
+  if (byShow.length === 1) return byShow[0].name;
+
+  const clientId = production.client_id ?? show?.client_id ?? null;
+  if (!clientId) return null;
+  const byClient = contracts.filter((c) => c.client_id === clientId && c.status === "active");
+  return byClient.length === 1 ? byClient[0].name : null;
 }
 
 /**

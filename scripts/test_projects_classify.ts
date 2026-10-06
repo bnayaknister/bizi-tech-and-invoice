@@ -55,6 +55,7 @@ function check(label: string, ok: boolean, detail?: string) {
 }
 
 const ROOT = join(__dirname, "..");
+const EY_CONTRACT = "ey 2026 -2027 חצי ראשון 041026";
 
 // The three show configurations that matter, as they stand TODAY.
 const SHOW_CONTRACT = { billing_mode: "contract", active: true };
@@ -76,11 +77,17 @@ console.log("\n=== 1. הכלל, מקרה-מקרה (ששת המקרים של הב
   });
   check("🔴 EY: הפקת client בתוכנית שעכשיו contract → מתומחר", r.billing === "priced", r.billing);
   check("🔴 EY: המחיר הוא זה שה-job הקפיא — 1,000", r.price === 1000, String(r.price));
+  // 🔴 AND THE NAME IS REFUSED EVEN THOUGH EVERY FALLBACK WOULD HAVE ANSWERED.
+  // The show now has a contract pointing at it AND it is the client's sole
+  // active contract — both of the restored steps would name it. kind='client'
+  // is the gate, and this is the assertion the owner's ruling turns on.
   check(
-    "🔴 EY: אין שם חוזה כשה-contract_id ריק",
-    contractNameFor({ kind: "client", contract_id: null }, [
-      { id: "c-ey", name: "ey 2026 -2027 חצי ראשון 041026" },
-    ]) === null
+    "🔴 EY: אין שם חוזה — למרות שכל הנפילות היו עונות",
+    contractNameFor(
+      { kind: "client", contract_id: null, show_id: "s-ey", client_id: "cl-ey" },
+      { client_id: "cl-ey" },
+      [{ id: "c-ey", name: EY_CONTRACT, show_id: "s-ey", client_id: "cl-ey", status: "active" }]
+    ) === null
   );
 }
 
@@ -97,7 +104,7 @@ for (const [label, show] of [
   check(`  ...ובלי מחיר פר-פרק (${label})`, r.price === null, String(r.price));
   check(
     `  ...ועם שם החוזה מה-contract_id (${label})`,
-    contractNameFor(p, [{ id: "c-jaffa", name: "מכירת ביפו" }]) === "מכירת ביפו"
+    contractNameFor(p, undefined, [{ id: "c-jaffa", name: "מכירת ביפו" }]) === "מכירת ביפו"
   );
 }
 
@@ -107,18 +114,68 @@ for (const [label, show] of [
   const p = { kind: "contract", contract_id: null };
   const r = classifyProduction({ production: p, show: SHOW_CONTRACT, showPrice: null, jobAmount: null });
   check("הפקת contract בלי contract_id → חוזה", r.billing === "contract", r.billing);
+  // ═══ THE RESTORED WALK, STEP BY STEP (owner ruling 6.10) ═══
+  // step 2: a contract pointing AT the show — THE NAME COMES BACK
   check(
-    "  ...בלי שם, ולא שם החוזה הנוכחי של התוכנית",
-    contractNameFor(p, [{ id: "c-now", name: "החוזה החדש" }]) === null
+    "🔵 contract_id ריק + חוזה שמצביע על התוכנית → השם חוזר",
+    contractNameFor(
+      { kind: "contract", contract_id: null, show_id: "s-icr", client_id: "cl-icr" },
+      undefined,
+      [{ id: "c-byshow", name: "icr spotlight", show_id: "s-icr", client_id: "cl-icr", status: "active" }]
+    ) === "icr spotlight",
+    ""
   );
-  // and the walk is genuinely gone: a contract pointing AT the show, and a sole
-  // active contract of the client, must both be refused as a name source
+  // step 3: the client's sole ACTIVE contract — how 27 of the 28 shows resolve
   check(
-    "  ...גם כשקיים חוזה שמצביע על התוכנית (contracts.show_id)",
-    contractNameFor({ kind: "contract", contract_id: null }, [
-      { id: "c-byshow", name: "icr spotlight" },
-    ]) === null
+    "🔵 contract_id ריק + חוזה פעיל יחיד ללקוח → השם חוזר (מכירת ביפו)",
+    contractNameFor(
+      { kind: "contract", contract_id: null, show_id: "s-bipo", client_id: "cl-bipo" },
+      undefined,
+      [{ id: "c-umbrella", name: "מכירת ביפו", show_id: null, client_id: "cl-bipo", status: "active" }]
+    ) === "מכירת ביפו"
   );
+  // step 3 via the SHOW's client, when the production has none of its own
+  check(
+    "🔵 ...גם כשה-client_id מגיע מהתוכנית ולא מההפקה",
+    contractNameFor(
+      { kind: "contract", contract_id: null, show_id: "s-bipo", client_id: null },
+      { client_id: "cl-bipo" },
+      [{ id: "c-umbrella", name: "מכירת ביפו", show_id: null, client_id: "cl-bipo", status: "active" }]
+    ) === "מכירת ביפו"
+  );
+  // and the two ways the walk must still refuse to guess
+  check(
+    "שני חוזים פעילים ללקוח → בלי שם, לא ניחוש",
+    contractNameFor(
+      { kind: "contract", contract_id: null, show_id: "s-x", client_id: "cl-x" },
+      undefined,
+      [
+        { id: "c-1", name: "חוזה א", show_id: null, client_id: "cl-x", status: "active" },
+        { id: "c-2", name: "חוזה ב", show_id: null, client_id: "cl-x", status: "active" },
+      ]
+    ) === null
+  );
+  check(
+    "חוזה הלקוח אינו פעיל → בלי שם",
+    contractNameFor(
+      { kind: "contract", contract_id: null, show_id: "s-x", client_id: "cl-x" },
+      undefined,
+      [{ id: "c-1", name: "חוזה שפג", show_id: null, client_id: "cl-x", status: "ended" }]
+    ) === null
+  );
+  check("אין שום שם אפשרי → null, והמסך יאמר \"מחויב בחוזה\"", r.billing === "contract" && contractNameFor(p, undefined, []) === null);
+}
+
+// ⚠️ THE GATE, ASKED ONCE MORE FROM THE OTHER SIDE: the exact same facts that
+// name a contract row must name NOTHING on a client or internal row. Only `kind`
+// differs between these three calls.
+{
+  const facts = [{ id: "c-u", name: "מכירת ביפו", show_id: "s-1", client_id: "cl-1", status: "active" }];
+  const base = { contract_id: null, show_id: "s-1", client_id: "cl-1" };
+  check("אותן עובדות: kind='contract' → שם", contractNameFor({ ...base, kind: "contract" }, undefined, facts) === "מכירת ביפו");
+  check("אותן עובדות: kind='client' → בלי שם", contractNameFor({ ...base, kind: "client" }, undefined, facts) === null);
+  check("אותן עובדות: kind='internal' → בלי שם", contractNameFor({ ...base, kind: "internal" }, undefined, facts) === null);
+  check("אותן עובדות: kind חסר → בלי שם", contractNameFor(base, undefined, facts) === null);
 }
 
 // kind='internal' on a per_episode show that HAS a rate — אילון.
@@ -199,6 +256,111 @@ for (const [label, show] of [
     jobAmount: null,
   });
   check("kind חסר → נופל למסלול התצורה, בלי ורדיקט חדש", r.billing === "priced" && r.price === 500);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+console.log("\n=== 1ב. זהות מול resolveContractName המקורי (לפני 8febad1) ===");
+/**
+ * THE QUESTION THE OWNER ASKED, ANSWERED AS A TEST AND NOT AS AN OPINION:
+ * are contract names now identical to what they were before 8febad1, on every
+ * row that genuinely is kind='contract'?
+ *
+ * The original function is re-spelled below VERBATIM from projects/page.tsx at
+ * 23feaca — the only copy of it left anywhere — and both are run over the same
+ * matrix. For kind='contract' the outputs must agree on every single case; for
+ * kind='client' and 'internal' the new one must return null wherever the old one
+ * answered, and those are exactly the rows the fix is about.
+ */
+function originalResolveContractName(
+  production: { contract_id?: string | null; show_id: string | null; client_id: string | null },
+  show: { client_id?: string | null } | undefined,
+  contracts: { id: string; name: string; client_id: string | null; show_id: string | null; status: string }[]
+): string | null {
+  if (production.contract_id) {
+    const exact = contracts.find((c) => c.id === production.contract_id);
+    if (exact) return exact.name;
+  }
+  const byShow = contracts.filter((c) => c.show_id && c.show_id === production.show_id);
+  if (byShow.length === 1) return byShow[0].name;
+
+  const clientId = production.client_id ?? show?.client_id ?? null;
+  if (!clientId) return null;
+  const byClient = contracts.filter((c) => c.client_id === clientId && c.status === "active");
+  return byClient.length === 1 ? byClient[0].name : null;
+}
+
+{
+  // every shape of contracts table that matters, including the ones measured on
+  // 2026-08-27: contract_id set (1 of 765), show_id set (1 of 3 contracts),
+  // the umbrella with show_id NULL (מכירת ביפו), two actives, and an ended one
+  const TABLES: { label: string; contracts: { id: string; name: string; client_id: string | null; show_id: string | null; status: string }[] }[] = [
+    { label: "ריקה", contracts: [] },
+    { label: "חוזה מדויק לפי contract_id", contracts: [{ id: "c-exact", name: "icr spotlight", client_id: "cl-1", show_id: null, status: "active" }] },
+    { label: "חוזה שמצביע על התוכנית", contracts: [{ id: "c-byshow", name: "icr spotlight", client_id: "cl-1", show_id: "s-1", status: "active" }] },
+    { label: "חוזה גג פעיל יחיד (ביפו)", contracts: [{ id: "c-umb", name: "מכירת ביפו", client_id: "cl-1", show_id: null, status: "active" }] },
+    { label: "שני חוזים פעילים", contracts: [
+      { id: "c-a", name: "חוזה א", client_id: "cl-1", show_id: null, status: "active" },
+      { id: "c-b", name: "חוזה ב", client_id: "cl-1", show_id: null, status: "active" },
+    ] },
+    { label: "חוזה שפג", contracts: [{ id: "c-old", name: "חוזה שפג", client_id: "cl-1", show_id: null, status: "ended" }] },
+    { label: "חוזה של לקוח אחר", contracts: [{ id: "c-other", name: "חוזה זר", client_id: "cl-9", show_id: "s-9", status: "active" }] },
+    { label: "גג פעיל + חוזה לפי show", contracts: [
+      { id: "c-umb", name: "מכירת ביפו", client_id: "cl-1", show_id: null, status: "active" },
+      { id: "c-byshow", name: "icr spotlight", client_id: "cl-1", show_id: "s-1", status: "active" },
+    ] },
+  ];
+  const PRODUCTIONS = [
+    { label: "contract_id מוגדר", contract_id: "c-exact", show_id: "s-1", client_id: "cl-1" },
+    { label: "contract_id ריק", contract_id: null, show_id: "s-1", client_id: "cl-1" },
+    { label: "contract_id ריק, בלי client על ההפקה", contract_id: null, show_id: "s-1", client_id: null },
+    { label: "contract_id ריק, בלי show", contract_id: null, show_id: null, client_id: "cl-1" },
+    { label: "contract_id שמצביע לחוזה שלא קיים", contract_id: "c-missing", show_id: "s-1", client_id: "cl-1" },
+  ];
+  const SHOWS = [
+    { label: "תוכנית עם לקוח", show: { client_id: "cl-1" } },
+    { label: "תוכנית בלי לקוח", show: { client_id: null } },
+    { label: "בלי תוכנית", show: undefined },
+  ];
+
+  let compared = 0;
+  let mismatches = 0;
+  let namesRescued = 0;
+  let namesWithheld = 0;
+  for (const t of TABLES) {
+    for (const pr of PRODUCTIONS) {
+      for (const sh of SHOWS) {
+        const before = originalResolveContractName(pr, sh.show, t.contracts);
+
+        // kind='contract' — MUST be identical, case by case
+        const after = contractNameFor({ ...pr, kind: "contract" }, sh.show, t.contracts);
+        compared++;
+        if (before !== after) {
+          mismatches++;
+          console.log(`  FAIL  שונה: ${t.label} / ${pr.label} / ${sh.label} — לפני=${before} אחרי=${after}`);
+        }
+        if (before !== null) namesRescued++;
+
+        // kind='client' / 'internal' — MUST be null, and that is the fix
+        for (const kind of ["client", "internal"]) {
+          const gated = contractNameFor({ ...pr, kind }, sh.show, t.contracts);
+          if (gated !== null) {
+            mismatches++;
+            console.log(`  FAIL  שם דלף ל-kind='${kind}': ${t.label} / ${pr.label} — ${gated}`);
+          }
+          if (before !== null && gated === null) namesWithheld++;
+        }
+      }
+    }
+  }
+  check(
+    `🔵 ${compared} מקרים: שמות החוזים על שורות kind='contract' זהים לחלוטין למה שהיה לפני 8febad1`,
+    mismatches === 0,
+    `${mismatches} פערים`
+  );
+  console.log(`  מתוכם ${namesRescued} מקרים שבהם היה שם — וכולם חזרו`);
+  console.log(`  ובמקביל ${namesWithheld} מקרים שבהם שם נמנע מ-client/internal — זה התיקון`);
+  check("לפחות מקרה אחד באמת החזיר שם (אחרת ההשוואה ריקה)", namesRescued > 0, String(namesRescued));
+  check("ולפחות אחד באמת נמנע", namesWithheld > 0, String(namesWithheld));
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -421,7 +583,7 @@ console.log("\n=== 4. מקור יחיד — כל הצרכנים קוראים א�
   check("אין resolveContractName מקומי ב-page.tsx", !page.includes("function resolveContractName"));
   check("page.tsx מייבא את הכלל", page.includes('from "@/lib/projects/classify"'));
   check("page.tsx קורא ל-classifyProduction", page.includes("classifyProduction({"));
-  check("page.tsx קורא ל-contractNameFor", page.includes("contractNameFor(p, contracts)"));
+  check("page.tsx קורא ל-contractNameFor", page.includes("contractNameFor(p, show as"));
 
   // the ordering that IS the fix — kind before billing_mode
   const rule = readFileSync(join(ROOT, "src/lib/projects/classify.ts"), "utf8");
@@ -429,8 +591,17 @@ console.log("\n=== 4. מקור יחיד — כל הצרכנים קוראים א�
   const iMode = rule.indexOf('billing_mode === "none"');
   check("🔴 הכלל בודק kind לפני billing_mode", iKind > 0 && iMode > iKind, `${iKind} / ${iMode}`);
   check("אין בדיקת billing_mode === \"contract\" בכלל", !rule.includes('billing_mode === "contract"'));
-  check("אין בכלל נפילה ל-contracts.show_id", !rule.includes("c.show_id") && !rule.includes("show_id ==="));
-  check("אין בכלל נפילה לחוזה הפעיל היחיד של הלקוח", !rule.includes('status === "active"'));
+  // 🔵 THE FALLBACKS ARE BACK — and the assertion is now that they EXIST and
+  // that they sit BEHIND the kind gate. 8febad1 asserted their absence; the
+  // owner's ruling of 6.10 reversed that, so the test reverses with it.
+  check("🔵 נפילת contracts.show_id קיימת", rule.includes("c.show_id === production.show_id"));
+  check("🔵 נפילת החוזה הפעיל היחיד קיימת", rule.includes('c.status === "active"'));
+  const iGate = rule.indexOf('if (production.kind !== "contract") return null;');
+  check("🔴 והשער קודם לשתיהן", iGate > 0 && iGate < rule.indexOf("c.show_id === production.show_id"), String(iGate));
+  check(
+    "  ...והוא השורה הראשונה בפונקציה, לא בדיקה אחרי נפילה",
+    rule.slice(rule.indexOf("export function contractNameFor"), iGate).split("\n").filter((l) => l.trim() && !l.trim().startsWith("//")).length <= 6
+  );
 
   // and page.tsx no longer asks the show whether an episode is contract-billed
   check(

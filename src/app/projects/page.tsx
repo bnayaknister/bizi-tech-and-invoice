@@ -891,7 +891,7 @@ export default async function ProjectsPage() {
     return {
       month: israelMonthKey(p.record_date, p.created_at),
       billing,
-      contract_name: contractNameFor(p, contracts),
+      contract_name: contractNameFor(p, show as { client_id?: string | null } | undefined, contracts),
       id: p.id,
       record_date: p.record_date,
       podcast_name: p.podcast_name,

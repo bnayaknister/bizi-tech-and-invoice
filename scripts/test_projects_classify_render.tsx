@@ -65,7 +65,7 @@ const row = (over: Partial<UnifiedRow> = {}): UnifiedRow => ({
   ...over,
 });
 
-const bucket = (work: UnifiedRow[]): MonthBucket[] => [
+const bucket = (work: UnifiedRow[], summary: Partial<MonthBucket["summary"]> = {}): MonthBucket[] => [
   {
     key: "2026-08",
     label: "אוגוסט 2026",
@@ -88,14 +88,15 @@ const bucket = (work: UnifiedRow[]): MonthBucket[] => [
       billedCount: 0,
       incoming: 0,
       incomingCount: 0,
+      ...summary,
     },
   },
 ];
 
-const html = (work: UnifiedRow[]) =>
+const html = (work: UnifiedRow[], summary: Partial<MonthBucket["summary"]> = {}) =>
   renderToString(
     React.createElement(ProjectsClient, {
-      buckets: bucket(work),
+      buckets: bucket(work, summary),
       initialMonth: "2026-08",
       userId: "u1",
       today: "2026-10-06",
@@ -183,6 +184,78 @@ console.log("\n=== רגרסיה: הוורדיקטים שלא נגענו בהם =
   ]);
   check("חודש מעורב: בדיוק מופע אחד של \"בחוזה\"", count(out, "בחוזה") === 1, String(count(out, "בחוזה")));
   check("  ...והמחיר הפר-פרקי מופיע", out.includes("1,200"));
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+console.log("\n=== 🔵 הכרעת הבעלים 6.10: השמות חוזרים לשורות החוזה ===");
+/**
+ * 8febad1 named a contract row only from `productions.contract_id`, which is
+ * set on 1 production in 765 — so 27 of the 28 contract-mode shows lost their
+ * name and read "מחויב בחוזה". The owner rejected that. The fallbacks are back
+ * behind a `kind='contract'` gate, and these assertions are about what the
+ * SCREEN shows now: the name on a contract row, and still nothing on EY's.
+ *
+ * The server resolves the name (contractNameFor, proven case by case in
+ * test_projects_classify.ts) and hands it down as `contractName`. Here it
+ * arrives already resolved, which is exactly how the component sees it.
+ */
+{
+  // the ביפו case: contract_id NULL, named through the client's sole active
+  // contract — the step that was deleted and is now restored
+  const out = html([row({ show: "מאצ׳ אפ", billing: "contract", amount: null, contractName: "מכירת ביפו" })]);
+  check('🔵 "בחוזה: מכירת ביפו" חזר למסך', out.includes("בחוזה: מכירת ביפו"), "");
+  check("  ...פעם אחת", count(out, "בחוזה: מכירת ביפו") === 1, String(count(out, "בחוזה: מכירת ביפו")));
+  check('  ...ובלי "מחויב בחוזה" חסר-השם לידו', count(out, "מחויב בחוזה") === 0);
+}
+{
+  // and the one that must still be nameless: no contract_id, no contract on the
+  // show, no sole active client contract
+  const out = html([row({ billing: "contract", amount: null, contractName: null })]);
+  check('בלי שום שם אפשרי → "מחויב בחוזה" פעם אחת', count(out, "מחויב בחוזה") === 1, String(count(out, "מחויב בחוזה")));
+  check('  ...ובלי "בחוזה:"', count(out, "בחוזה:") === 0);
+}
+{
+  // 🔴 THE REPORTED ROW, RE-ASKED AFTER THE FALLBACKS CAME BACK. This is the
+  // assertion that proves the restoration did not resurrect the bug: the server
+  // hands this row contractName=null because kind='client' gates the walk, so
+  // the name appears NOWHERE — not as a label, and not beside the show name in
+  // the "תוכנית / עבודה" column, which prints any name it is given.
+  const out = html([row({ billing: "priced", amount: 1000, contractName: null })]);
+  check("🔴 EY אחרי החזרת הנפילות: 0 מופעים של \"בחוזה\"", count(out, "בחוזה") === 0, String(count(out, "בחוזה")));
+  check("🔴 EY: 0 מופעים של שם החוזה", count(out, EY_CONTRACT) === 0);
+  check("🔴 EY: המחיר 1,000 מופיע", out.includes("1,000"));
+}
+{
+  // internal: no contract label by any route
+  const out = html([row({ show: "אילון", billing: "internal", amount: null, contractName: null })]);
+  check("internal: 0 תווית חוזה", count(out, "בחוזה") === 0 && count(out, "מחויב בחוזה") === 0);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+console.log("\n=== contractItems בכרטיס החודש ===");
+{
+  // the card's own list of "show (בחוזה: contract)" — it lost its names in
+  // 8febad1 along with the rows, and comes back with them
+  const out = html(
+    [row({ show: "מאצ׳ אפ", billing: "contract", amount: null, contractName: "מכירת ביפו" })],
+    {
+      contractCount: 1,
+      contractItems: [{ show: "מאצ׳ אפ", contract: "מכירת ביפו" }],
+    }
+  );
+  check("🔵 הכרטיס מציג 'מאצ׳ אפ (בחוזה: מכירת ביפו)'", out.includes("מאצ׳ אפ (בחוזה: מכירת ביפו)"), "");
+  // the count is a separate JSX text node, so SSR puts a <!-- --> between it and
+  // the label — the two halves are asserted separately rather than as one string
+  check("  ...ושורת עבודת החוזה מופיעה", out.includes("עבודת חוזה") && out.includes("ללא מחיר פר-פרק"));
+}
+{
+  // a contract item with no resolvable name still lists the show, with no
+  // parenthetical — the pre-existing fallback in the card, unchanged
+  const out = html([row({ billing: "contract", amount: null, contractName: null })], {
+    contractCount: 1,
+    contractItems: [{ show: "תוכנית ללא שם חוזה", contract: null }],
+  });
+  check("פרק חוזה בלי שם → התוכנית לבדה בכרטיס, בלי סוגריים", out.includes("תוכנית ללא שם חוזה") && count(out, "(בחוזה:") === 0);
 }
 
 // ───────────────────────────────────────────────────────────────────────────
