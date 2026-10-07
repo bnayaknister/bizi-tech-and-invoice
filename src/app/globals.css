@@ -273,29 +273,54 @@ h1, h2, h3 {
       component's `open` state is the only thing that shows the panel. That
       handover is the point: with the CSS rules still live, Esc could not
       close a panel whose own trigger still held focus.
+
+   ═══ BUG 1, FIXED HERE AND IN THE MARKUP (owner, production, 7.10) ═══
+   "The menu closes when the mouse moves down to it, so it cannot be used at
+   all." The panel was `top-full mt-2`. A MARGIN is not part of any element's
+   hit area, so those 8px belonged to neither the trigger row nor the panel:
+   moving the pointer down crossed no-man's-land, `mouseleave` fired on the
+   root, and `open` went false — at which point the panel was already
+   `visibility:hidden; pointer-events:none` and could never be reached.
+
+   The hover subject is `.navm-root`, which contains BOTH the trigger row and
+   the panel. The gap is now `padding-top` on `.navm-pop`, which is inside the
+   root — padding IS hit area, so there is no dead band left to cross. The
+   visibility lives on `.navm-pop` rather than on the panel so that, while the
+   menu is closed, the bridge is `pointer-events:none` too and an invisible
+   strip under the logo cannot hold the menu open.
+
+   ═══ BUG 2: WHY THE Z-INDEX HERE IS NOT WHAT LIFTS THE MENU ═══
+   `.navm-pop`'s z-index is LOCAL to the header, because AppHeader has
+   `backdrop-filter` and that makes it a stacking context (and a containing
+   block) — no z-index on a descendant can escape it. 40 only has to beat the
+   two other dropdowns that live in the header, both at z-20: GlobalSearch's
+   results and ClientCombobox's list. Getting the menu above the PAGE is the
+   header's own z-index; see AppHeader.tsx.
    ═══════════════════════════════════════════════════════════════ */
-.navm-panel {
+.navm-pop {
+  padding-top: 8px;
+  z-index: 40;
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
   transform: translateY(-4px);
   transition: opacity 140ms ease, transform 140ms ease;
 }
-.navm-root[data-open="true"] > .navm-panel {
+.navm-root[data-open="true"] > .navm-pop {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
   transform: none;
 }
 @media (hover: hover) {
-  .navm-root:not([data-js="on"]):hover > .navm-panel {
+  .navm-root:not([data-js="on"]):hover > .navm-pop {
     opacity: 1;
     visibility: visible;
     pointer-events: auto;
     transform: none;
   }
 }
-.navm-root:not([data-js="on"]):focus-within > .navm-panel {
+.navm-root:not([data-js="on"]):focus-within > .navm-pop {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
@@ -315,7 +340,7 @@ h1, h2, h3 {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .navm-panel,
+  .navm-pop,
   .navm-chevron {
     transition: none;
   }

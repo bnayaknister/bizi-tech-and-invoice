@@ -234,12 +234,16 @@ console.log("\n=== closed by default on the server, links still in the DOM ===")
   // ...and it is CSS that hides it. Asserted against globals.css, because the
   // HTML above cannot tell a hidden panel from a visible one.
   const css = readFileSync(join(__dirname, "..", "src", "app", "globals.css"), "utf8");
-  const panelRule = css.slice(css.indexOf(".navm-panel {"), css.indexOf(".navm-root[data-open="));
-  check(".navm-panel is hidden", /visibility:\s*hidden/.test(panelRule), true);
-  check(".navm-panel is click-through while hidden", /pointer-events:\s*none/.test(panelRule), true);
+  // 🔴 .navm-pop, NOT .navm-panel. The visibility moved onto the bridge when
+  // bug 1 was fixed, and it has to live there: if only the panel were
+  // click-through while closed, the bridge would be an invisible 8px strip
+  // under the logo that holds the menu open.
+  const popRule = css.slice(css.indexOf(".navm-pop {"), css.indexOf(".navm-root[data-open="));
+  check(".navm-pop is hidden", /visibility:\s*hidden/.test(popRule), true);
+  check(".navm-pop is click-through while hidden", /pointer-events:\s*none/.test(popRule), true);
   check(
     "the only unconditional reveal is data-open",
-    /\.navm-root\[data-open="true"\]\s*>\s*\.navm-panel\s*\{[^}]*visibility:\s*visible/.test(css),
+    /\.navm-root\[data-open="true"\]\s*>\s*\.navm-pop\s*\{[^}]*visibility:\s*visible/.test(css),
     true
   );
   // the hover and focus fallbacks are gated on the absence of data-js, so JS,
@@ -254,6 +258,147 @@ console.log("\n=== closed by default on the server, links still in the DOM ===")
     /\.navm-root:not\(\[data-js="on"\]\):focus-within/.test(css),
     true
   );
+}
+
+console.log("\n=== 🔴 bug 1: one hover wrapper, and no dead gap to cross ===");
+{
+  const html = renderHeader(owner, "/radar");
+  const css = readFileSync(join(__dirname, "..", "src", "app", "globals.css"), "utf8");
+  const nav = readFileSync(join(__dirname, "..", "src", "components", "NavMenu.tsx"), "utf8");
+
+  // ── the structure: trigger row AND panel inside ONE hover subject ──
+  // The root is the element that carries the mouse handlers and that the CSS
+  // `:hover` rule names. Both the bar and the bridge must be inside it, or
+  // moving the pointer from one to the other leaves the subject.
+  const rootOpen = html.indexOf('<div data-navm="root"');
+  const barAt = html.indexOf('class="navm-bar ');
+  const popAt = html.indexOf('class="navm-pop ');
+  const panelAt = html.indexOf('id="navm-panel"');
+  check("the root is present once", countOf(html, '<div data-navm="root"'), 1);
+  check("the trigger row is present once", countOf(html, 'class="navm-bar '), 1);
+  check("the bridge is present once", countOf(html, 'class="navm-pop '), 1);
+  check("the bar is inside the root", rootOpen >= 0 && barAt > rootOpen, true);
+  check("the bridge is inside the root, after the bar", popAt > barAt, true);
+  check("the panel is inside the bridge", panelAt > popAt, true);
+  // the bridge is a CHILD of the root — the `>` in the CSS rules depends on it
+  check(
+    "the bridge is a direct child of the root",
+    /<div data-navm="root"[^>]*>\s*(<!--.*?-->)?\s*<div class="navm-bar [^"]*">[\s\S]*?<div class="navm-pop /.test(seen(html)),
+    true
+  );
+
+  // ── the dead gap is gone ──
+  // 🔴 THE BUG: `mt-2` is a MARGIN, and margin is not hit area. The 8px
+  // between the logo and the panel belonged to no element, so crossing it
+  // fired mouseleave on the root and the menu closed before it could be used.
+  check("the panel no longer carries the margin gap", /navm-panel[^"]*\bmt-2\b/.test(html), false);
+  check("no element in the menu carries mt-2 any more", countOf(html, "mt-2"), 0);
+  // the same 8px is now PADDING on the bridge, which IS hit area
+  const popRule = css.slice(css.indexOf(".navm-pop {"), css.indexOf(".navm-root[data-open="));
+  check("the bridge pads the gap instead", /padding-top:\s*8px/.test(popRule), true);
+
+  // ── the CSS layer (no JS) keeps it open on hover of the WRAPPER ──
+  // the subject of :hover must be the root, not the logo: hovering the panel
+  // is hovering a descendant of the root, which keeps :hover true
+  check(
+    "the hover rule's subject is the root, and it reveals the bridge",
+    /@media \(hover: hover\) \{\s*\.navm-root:not\(\[data-js="on"\]\):hover\s*>\s*\.navm-pop\s*\{[^}]*visibility:\s*visible/.test(css),
+    true
+  );
+  check("no rule hangs the menu off the logo's own hover", /\.navm-logo:hover/.test(css), false);
+  check(
+    "the focus rule's subject is also the root",
+    /\.navm-root:not\(\[data-js="on"\]\):focus-within\s*>\s*\.navm-pop\s*\{[^}]*visibility:\s*visible/.test(css),
+    true
+  );
+
+  // ── the JS layer: leave with grace, and focus holds it open ──
+  const navCode = nav.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  check("a close delay exists", /CLOSE_DELAY_MS\s*=\s*(\d+)/.test(navCode), true);
+  check(
+    "the delay is 200ms",
+    (/CLOSE_DELAY_MS\s*=\s*(\d+)/.exec(navCode) ?? [])[1],
+    "200"
+  );
+  check("leaving schedules the close, not an immediate one", navCode.includes("closeSoon()"), true);
+  check("re-entering cancels it", navCode.includes("cancelClose()"), true);
+  // mouseleave must NOT call setOpen(false) directly any more — that is the
+  // diagonal-mouse bug
+  check(
+    "onMouseLeave no longer closes immediately",
+    /onMouseLeave=\{\(\) => \{\s*if \(hoverCapable\(\)\) closeSoon\(\);/.test(nav),
+    true
+  );
+  // focus keeps it open while the keyboard is inside it
+  check("focus is handled on the root", /onFocus=\{/.test(nav), true);
+  check("focus leaving the root closes it", /relatedTarget/.test(nav), true);
+  // and Esc still closes WITHOUT the returned focus reopening it
+  check("Esc sets the no-reopen guard", /escaped\.current = true/.test(navCode), true);
+  check("the guard is consulted before reopening on focus", /if \(escaped\.current\)/.test(navCode), true);
+  check("Esc still returns focus to the trigger", navCode.includes("triggerRef.current?.focus()"), true);
+}
+
+console.log("\n=== 🔴 bug 2: the chosen layer, and nothing clipping above it ===");
+{
+  const css = readFileSync(join(__dirname, "..", "src", "app", "globals.css"), "utf8");
+  const header = readFileSync(join(__dirname, "..", "src", "components", "AppHeader.tsx"), "utf8");
+  const nav = readFileSync(join(__dirname, "..", "src", "components", "NavMenu.tsx"), "utf8");
+  const html = renderHeader(owner, "/radar");
+
+  // ── the header is what was promoted ──
+  // 🔴 THE BUG: backdrop-filter makes the header a stacking context, so no
+  // z-index on a descendant can escape it. The header was static/auto and
+  // <main>, its later sibling, painted over it.
+  check("the header is positioned", /className="relative z-30 /.test(header), true);
+  check("the header's layer is 30", countOf(header, 'className="relative z-30 '), 1);
+  check("the rendered header carries it", countOf(html, 'class="relative z-30 '), 1);
+
+  // ── and 30 is the right slot, measured against what exists ──
+  // This is not a magic number: these are the layers in the codebase today.
+  // If a new overlay appears below 40, this is where it gets noticed.
+  const src = ["src/components/EntityDrawer.tsx", "src/components/GlobalSearch.tsx"].map((rel) =>
+    readFileSync(join(__dirname, "..", ...rel.split("/")), "utf8")
+  );
+  check("GlobalSearch's dropdown is still z-20", /className="absolute z-20 /.test(src[1]), true);
+  check("the drawer's backdrop is still z-40", src[0].includes("fixed inset-0 z-40"), true);
+  check("the drawer's panel is still z-50", src[0].includes("z-50 w-full max-w-md"), true);
+  check("the drawer's dialogs are still z-[60]/z-[70]", src[0].includes("z-[70]"), true);
+  // the header must sit ABOVE the page's dropdowns and BELOW every overlay
+  check("30 is above GlobalSearch's 20", 30 > 20, true);
+  check("30 is below the drawer backdrop's 40", 30 < 40, true);
+
+  // ── inside the header, the bridge beats the other dropdown ──
+  const popRule = css.slice(css.indexOf(".navm-pop {"), css.indexOf(".navm-root[data-open="));
+  check("the bridge has its own z-index", /z-index:\s*40/.test(popRule), true);
+  // the panel itself must NOT keep a competing one
+  check("the panel carries no z-index class", /navm-panel[^"]*\bz-\d/.test(html), false);
+
+  // ── nothing in the ancestor chain clips or traps the panel ──
+  // chain: body > div.min-h-screen > header > .navm-root > .navm-pop > nav
+  check("the header does not clip", /className="relative z-30[^"]*overflow/.test(header), false);
+  check("the header has no transform", /transform/.test(header), false);
+  check("the header has no contain", /contain:/.test(header), false);
+  // .navm-root is `relative shrink-0` and nothing else — no overflow, no
+  // transform, no filter, so it is NOT a stacking context of its own and the
+  // bridge's z-index resolves in the header's context as intended
+  check(
+    "the root is only positioned, nothing more",
+    /className="navm-root relative shrink-0"/.test(nav),
+    true
+  );
+  check("the root does not clip", /navm-root[^"]*overflow/.test(nav), false);
+  for (const prop of ["overflow", "transform", "filter", "contain"]) {
+    const rootRule = css.slice(css.indexOf(".navm-root"), css.indexOf(".navm-pop {"));
+    check(`globals.css adds no ${prop} to .navm-root`, new RegExp(`\\.navm-root[^{]*\\{[^}]*${prop}:`).test(rootRule), false);
+  }
+
+  // ── the phone: never wider than the screen, scrolls inside ──
+  check("the panel is capped to the viewport", /maxWidth: "calc\(100vw - 2rem\)"/.test(nav), true);
+  check("the panel is capped to 92vw", /width: "min\(92vw, 28rem\)"/.test(nav), true);
+  check("a long list scrolls inside the panel", /overflowY: "auto"/.test(nav), true);
+  check("the panel has a max height", /maxHeight: "min\(70vh, 32rem\)"/.test(nav), true);
+  // the bridge must not clip the panel's shadow or its scroll
+  check("the bridge sets no overflow", /overflow/.test(popRule), false);
 }
 
 console.log("\n=== accessibility and the approved wordings ===");
@@ -289,7 +434,14 @@ console.log("\n=== regression: the rest of the header is untouched ===");
   const AppHeaderBefore = ({ profile }: { profile: Profile }) => {
     return (
       <header
-        className="flex items-center gap-4 flex-wrap px-5 py-3 border-b border-[var(--rule)]"
+        // ⚠️ WIDENED 7.10 WITH `relative z-30`, and that is the deliberate
+        // change this assertion exists to force someone to make. The header
+        // creates a stacking context (backdrop-filter), so the nav panel could
+        // not paint above page content at any z-index of its own — the header
+        // itself had to be promoted. The assertion's INTENT is unchanged and is
+        // still what is checked: everything in the header that is not the logo
+        // or the menu is byte-identical. Only the header's own layer moved.
+        className="relative z-30 flex items-center gap-4 flex-wrap px-5 py-3 border-b border-[var(--rule)]"
         style={{ background: "rgba(15, 13, 28, 0.6)", backdropFilter: "blur(16px)" }}
       >
         <GlobalSearch />
