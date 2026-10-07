@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import CreateMorningClientModal from "@/components/CreateMorningClientModal";
+import { SharedMappingModal, useMorningMapping } from "@/components/MorningMapping";
 
 // One client at a time is the point (owner, 2026-07-20): unmapped clients
 // can't bill at all, so this screen is the tap the owner opens deliberately.
@@ -22,9 +23,6 @@ type OurClient = {
   suggestion: { id: string; name: string; distance: number } | null;
 };
 
-// a mapping the server flagged as shared, held while the operator confirms
-type PendingShared = { clientId: string; morningId: string; morningName?: string; sharedWith: string[] };
-
 type MorningClient = { id: string; name: string; taxId: string | null };
 
 export default function MorningClientsClient() {
@@ -35,10 +33,12 @@ export default function MorningClientsClient() {
   const [morning, setMorning] = useState<MorningClient[]>([]);
   const [filter, setFilter] = useState("");
   const [onlyUnmapped, setOnlyUnmapped] = useState(true);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  // the POST, the 409 shared handshake and the busy flag now live in
+  // useMorningMapping — the same hook /clients calls. This screen keeps its
+  // own `load()` and its own wording; only the ACT is shared.
+  const { assign, busyId, pendingShared, setPendingShared } = useMorningMapping();
   // per-row chosen morning id before confirm (defaults to the suggestion)
   const [choice, setChoice] = useState<Record<string, string>>({});
-  const [pendingShared, setPendingShared] = useState<PendingShared | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
 
@@ -89,48 +89,26 @@ export default function MorningClientsClient() {
   const mappedCount = billable.filter((c) => c.morning_client_id).length;
   const mergedCount = clients.length - billable.length;
 
+  /**
+   * This screen's wrapper around the shared act: the POST and the 409
+   * handshake are `assign`; what stays here is what is THIS screen's — the
+   * raw error line, the backfill notice, and the full reload that redraws
+   * every row's badge.
+   */
   async function save(
     clientId: string,
     morningId: string | null,
     morningName?: string,
     confirmShared = false
   ) {
-    setBusyId(clientId);
     setError(null);
-    try {
-      const res = await fetch("/api/morning/clients", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          client_id: clientId,
-          morning_client_id: morningId,
-          morning_client_name: morningName,
-          confirm_shared: confirmShared,
-        }),
-      });
-      const body = await res.json();
-      if (res.status === 409 && body.needs_confirmation) {
-        // shared mapping — warn, don't block. Hold it for the modal.
-        setPendingShared({
-          clientId,
-          morningId: morningId as string,
-          morningName,
-          sharedWith: body.shared_with ?? [],
-        });
-        return;
-      }
-      if (!res.ok) {
-        setError(body.error ?? "שמירה נכשלה");
-        return;
-      }
-      setPendingShared(null);
-      if (body.backfilled > 0) setNotice(`מופו ${body.backfilled} מסמכים ישנים שהיו ללא לקוח`);
-      await load();
-    } catch {
-      setError("שגיאת רשת");
-    } finally {
-      setBusyId(null);
+    const out = await assign(clientId, morningId, morningName, confirmShared);
+    if (!out.ok) {
+      if (!out.needsShared) setError(out.error);
+      return;
     }
+    if (out.backfilled > 0) setNotice(`מופו ${out.backfilled} מסמכים ישנים שהיו ללא לקוח`);
+    await load();
   }
 
   if (loading) {
@@ -300,47 +278,18 @@ export default function MorningClientsClient() {
         })}
       </div>
 
-      {/* shared-mapping warning — awareness, not a block */}
+      {/* shared-mapping warning — awareness, not a block. The dialog moved to
+          MorningMapping.tsx with the act it belongs to; the markup is
+          unchanged, which is what keeps this screen byte-identical. */}
       {pendingShared && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
-          {/* `--bg` is not a variable this project defines (globals.css has
-              --bg-base / --bg-panel / --bg-elevated and no bare --bg), so this
-              panel was painting itself with an invalid declaration and coming
-              out transparent. Same bug, same day, as the two approval modals on
-              /documents — fixed with the values every other modal already uses. */}
-          <div
-            style={{
-              background: "rgba(15,13,28,0.94)",
-              backdropFilter: "blur(24px)",
-              WebkitBackdropFilter: "blur(24px)",
-            }}
-            className="border border-[var(--rule)] rounded-2xl p-5 max-w-md w-full"
-          >
-            <h3 className="font-bold text-sm mb-2">לקוח מורנינג משותף</h3>
-            <p className="text-sm mb-3">
-              לקוח זה כבר משויך ל<span className="font-bold">{pendingShared.sharedWith.join(", ")}</span>. שתי
-              הישויות יחויבו לאותו לקוח במורנינג.
-            </p>
-            <p className="text-[11px] text-[var(--faint)] mb-4">אם זו אותה ישות משלמת עם כמה מותגים — זה תקין.</p>
-            <div className="flex gap-2">
-              <button
-                disabled={busyId === pendingShared.clientId}
-                onClick={() =>
-                  save(pendingShared.clientId, pendingShared.morningId, pendingShared.morningName, true)
-                }
-                className="flex-1 bg-[var(--signal)] text-white text-xs font-bold rounded-xl px-4 py-2 disabled:opacity-40"
-              >
-                כן, זו אותה ישות משלמת
-              </button>
-              <button
-                onClick={() => setPendingShared(null)}
-                className="flex-1 text-xs rounded-xl px-4 py-2 border border-[var(--rule)]"
-              >
-                ביטול
-              </button>
-            </div>
-          </div>
-        </div>
+        <SharedMappingModal
+          pending={pendingShared}
+          busy={busyId === pendingShared.clientId}
+          onConfirm={() =>
+            save(pendingShared.clientId, pendingShared.morningId, pendingShared.morningName, true)
+          }
+          onCancel={() => setPendingShared(null)}
+        />
       )}
     </main>
   );

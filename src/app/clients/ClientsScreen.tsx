@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import EntityFieldRows from "@/components/EntityFieldRows";
 import ClientMorningCard from "@/components/ClientMorningCard";
+import MorningMappingCard from "@/components/MorningMappingCard";
 import {
   EMPTY_LIST,
   NOT_MAPPED,
@@ -271,6 +272,16 @@ function ClientCardPanel({ data }: { data: ClientsScreenData }) {
           onSave={(k, v) => void saveField(k, v)}
           dirtyRef={dirty}
           labelWidth={130}
+        />
+        {/* the Morning CARD this client bills on — beside the ח.פ and the
+            contacts, because all three are Morning's facts about the same
+            client and the owner asked for them in one place (7.10) */}
+        <MorningMappingCard
+          clientId={card.id}
+          clientName={card.name}
+          mapped={!!row?.mapped}
+          canEdit={data.canEditMoney}
+          onChanged={() => router.refresh()}
         />
         <ClientMorningCard
           clientId={card.id}
