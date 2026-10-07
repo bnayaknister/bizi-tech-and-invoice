@@ -51,7 +51,6 @@ export const COPY = {
   calendarDryRunNotice: "מצב בדיקה — האירוע לא נוצר ביומן.",
   retryCalendar: "נסה שוב ליצור ביומן",
   eventLink: "קישור לאירוע",
-  productionLink: "ההפקה שנוצרה",
 } as const;
 
 /**
@@ -109,7 +108,6 @@ export type CalendarWriteState = {
   error: string | null;
   htmlLink: string | null;
   dryRun: boolean;
-  productionId: string | null;
 };
 
 export function calendarStateFromView(v: QueueView): CalendarWriteState {
@@ -118,7 +116,6 @@ export function calendarStateFromView(v: QueueView): CalendarWriteState {
     error: v.calendarWriteError,
     htmlLink: null,
     dryRun: false,
-    productionId: v.productionId,
   };
 }
 
@@ -480,11 +477,9 @@ function CalendarStatus({
             {COPY.eventLink}
           </a>
         ) : null}
-        {calendar.productionId ? (
-          <a href={`/productions/${calendar.productionId}`} className="text-[11px] underline text-[var(--signal)]">
-            {COPY.productionLink}
-          </a>
-        ) : null}
+        {/* ⛔ No link to "the production this created" — an approval creates
+            no production. The sync creates it on the recording morning, from
+            this very event (owner correction 7.10). */}
       </div>
     );
   }

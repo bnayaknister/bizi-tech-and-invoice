@@ -4,25 +4,28 @@ import { enqueueDocument, type EnqueueResult } from "@/lib/documents/enqueue";
 // ═══════════════════════════════════════════════════════════════════════════
 // "Create a production from one calendar session" — extracted from
 // calendar/sync/route.ts's `toCreate` loop (feat/calendar-write, 7.10, gate
-// G1) so a SECOND caller — the booking-approval route, which mints a
-// production the MOMENT a recording request is approved rather than waiting
-// for the next sync — creates it exactly the same way. Same columns, same
-// `kind` derivation, same default-editor auto-assign, same `calendar_created`
-// event, same work-order enqueue.
+// G1). Same columns, same `kind` derivation, same default-editor auto-assign,
+// same `calendar_created` event, same work-order enqueue — because it IS that
+// code, moved, not reimplemented.
 //
-// 🔴 WHY THIS MATTERS MORE THAN "DON'T REPEAT YOURSELF": a production that
-// skips the kind derivation, or the work-order enqueue, or lands with a
-// `calendar_uid` the next sync does not recognise, is exactly the class of
-// silent gap this whole feature exists to close (ensure_job_for_production
-// only ever fires for kind='client'; a production minted with the wrong kind
-// would simply never bill). One function, two callers, is what makes "created
-// exactly like the sync would create it" a property of the CODE rather than
-// a promise kept by two authors staying in sync by hand.
+// ═══ ONE CALLER, ON PURPOSE (owner correction, 7.10) ═══
+// The extraction was done for a SECOND caller: the booking-approval route,
+// which was to mint a production the moment a request was approved. That
+// was an unapproved recommendation, not an owner decision, and it is gone
+// (lib/booking/writeCalendarEvent.ts's header has the full reasoning and
+// the sync's own line numbers). Productions enter through the morning sync
+// alone, over events of that same day.
 //
-// NOT SHARED, and deliberately so: title/text parsing (`extractStudioAndGuest`,
-// `matchTitleToShow`) and the `today only` date-window logic are sync-specific
-// — the booking-approval caller already KNOWS its show, studio, guest and
-// date structurally, from `booking_requests`, with no text to parse. Every
+// So the sync is this function's only caller, and the extraction stays
+// anyway: it is the same code it always was, now with a pure core
+// (`buildProductionInsert`) that the kind derivation and the studio fallback
+// can be tested through without a database — which they never could while
+// they lived inline in a 500-line route. ⛔ A caller that is not the sync
+// needs an owner decision first, not just a convenient import.
+//
+// NOT EXTRACTED, and deliberately so: title/text parsing
+// (`extractStudioAndGuest`, `matchTitleToShow`) and the `today only`
+// date-window logic stay in the route — they are what the ROUTE knows. Every
 // field below is RESOLVED before this function is called; it does no
 // resolution of its own.
 //
@@ -54,26 +57,27 @@ export type ProductionCreateInput = {
    * Already resolved to its FINAL value by the caller for every reason except
    * one: the show-default fallback. That one fallback stays HERE (see
    * `buildProductionInsert`) because it is not about where the studio name
-   * came from — title-parsing for sync, a stored column for an approval — it
-   * is about what a production's studio becomes when nothing more specific is
-   * known, which is one rule regardless of caller.
+   * came from — today it is always the sync's title-parsing — it is about
+   * what a production's studio becomes when nothing more specific is known,
+   * which is one rule regardless of caller.
    */
   studio: string | null;
   guest: string | null;
   /**
-   * The calendar event's unique id. For sync, `action.event.uid` — the
-   * iCalUID the ICS feed carried. For an approval, the `iCalUID` Google
-   * returned from `events.insert`, captured at write time (see
-   * lib/calendar/write.ts) rather than round-tripped through a future sync.
-   * Either way this is what `productions.calendar_uid` becomes, and what lets
-   * `buildSyncPlan` recognise the row on the very next run (sync.ts:67,
+   * The calendar event's unique id — `action.event.uid`, the iCalUID the ICS
+   * feed carried. This is what `productions.calendar_uid` becomes, and what
+   * lets `buildSyncPlan` recognise the row on the NEXT run (sync.ts:67,
    * 0019's partial unique index) instead of creating a duplicate.
    */
   calendarUid: string;
   /** for the `calendar_created` event's payload only — never parsed back */
   eventTitle: string;
-  /** which caller this is, carried into the event payload for the audit trail */
-  source: "sync" | "booking_approval";
+  /**
+   * Which caller this is, carried into the event payload for the audit
+   * trail. One variant, because there is one caller — a second one needs an
+   * owner decision (see the header), and it would widen this then.
+   */
+  source: "sync";
   /** explicit, never `new Date()` inside pure logic — same discipline booking/queue.ts states at its own top */
   now: Date;
 };

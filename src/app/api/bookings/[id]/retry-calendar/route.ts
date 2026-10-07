@@ -4,7 +4,6 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { cleanAliasFor } from "@/lib/booking/alias";
 import { eventTitle } from "@/lib/booking/title";
 import { STUDIOS } from "@/lib/calendar/studios";
-import { israelDateOf } from "@/lib/calendar/availability";
 import { calendarEventIdFor } from "@/lib/calendar/write";
 import { writeBookingCalendarEvent } from "@/lib/booking/writeCalendarEvent";
 
@@ -33,13 +32,16 @@ import { writeBookingCalendarEvent } from "@/lib/booking/writeCalendarEvent";
 // safe regardless of what the FIRST attempt actually did.
 //
 // Shares `writeBookingCalendarEvent` with approve/route.ts — "אותה לוגיקה"
-// (owner, step 4) — so a retry creates the production (on a real success)
-// the exact same way a first attempt would have.
+// (owner, step 4) — so a retry settles the same columns and writes the same
+// audit event a first attempt would have.
 //
-// UNTYPED client throughout: this route's entire reason to exist is the five
-// 0099 columns, which database.types.ts does not know until the owner
-// applies that migration and regenerates it (same choice approve/route.ts
-// makes for only its NEW code — this route has no old code to keep typed).
+// ⛔ AND, LIKE AN APPROVAL, IT CREATES NO PRODUCTION (owner correction,
+// 7.10). Productions enter through the morning sync alone; the full
+// reasoning, with the sync's own line numbers, is in
+// lib/booking/writeCalendarEvent.ts's header.
+//
+// Untyped client throughout — 0099 is applied (7.10) and the generated types
+// know its columns; this route simply never needed the typed one.
 
 export const dynamic = "force-dynamic";
 
@@ -61,9 +63,11 @@ export async function POST(_request: Request, { params }: { params: { id: string
 
   const admin = createAdminClient();
 
+  // name/aliases ONLY — see approve/route.ts's own note on the seven billing
+  // columns this select used to carry for a production it no longer creates.
   const { data: row, error: readErr } = await admin
     .from("booking_requests")
-    .select("id,show_id,studio,start_at,end_at,guest,note,status,calendar_write_status,shows(name,aliases,client_id,billing_mode,default_studio,camera_count,default_editor_id,has_episode,reels_count)")
+    .select("id,show_id,studio,start_at,end_at,guest,note,status,calendar_write_status,shows(name,aliases)")
     .eq("id", params.id)
     .maybeSingle();
   if (readErr || !row) {
@@ -82,24 +86,12 @@ export async function POST(_request: Request, { params }: { params: { id: string
     );
   }
 
-  const show = row.shows as unknown as {
-    name: string;
-    aliases: string[] | null;
-    client_id: string | null;
-    billing_mode: string;
-    default_studio: string | null;
-    camera_count: number | null;
-    default_editor_id: string | null;
-    has_episode: boolean;
-    reels_count: number;
-  } | null;
+  const show = row.shows as unknown as { name: string; aliases: string[] | null } | null;
   if (!show) {
     console.error("bookings/retry-calendar: לבקשה אין תוכנית", row.id);
     return NextResponse.json({ error: GENERIC }, { status: 500, headers: NO_STORE });
   }
 
-  const start = new Date(row.start_at);
-  const dateIsrael = israelDateOf(start);
   const alias = cleanAliasFor({ name: show.name, aliases: show.aliases ?? [] }, STUDIOS) ?? show.name;
   const title = eventTitle({ alias, guest: row.guest, studio: row.studio });
 
@@ -110,25 +102,10 @@ export async function POST(_request: Request, { params }: { params: { id: string
 
   const written = await writeBookingCalendarEvent(admin, {
     bookingId: row.id,
-    showId: row.show_id,
-    show: {
-      id: row.show_id,
-      name: show.name,
-      client_id: show.client_id,
-      billing_mode: show.billing_mode,
-      default_studio: show.default_studio,
-      camera_count: show.camera_count,
-      default_editor_id: show.default_editor_id,
-      has_episode: show.has_episode,
-      reels_count: show.reels_count,
-    },
-    studio: row.studio,
     startAtIso: row.start_at,
     endAtIso: row.end_at,
-    guest: row.guest,
     note: row.note,
     title,
-    dateIsrael,
     eventId,
     actorId: user.id,
   });
@@ -142,7 +119,6 @@ export async function POST(_request: Request, { params }: { params: { id: string
         calendarWriteError: written.error,
         calendarHtmlLink: written.htmlLink,
         calendarDryRun: written.dryRun,
-        productionId: written.productionId,
       },
     },
     { headers: NO_STORE }

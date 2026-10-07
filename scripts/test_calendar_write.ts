@@ -295,13 +295,52 @@ async function run() {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // 🔴 THE CORRECTION OF 7.10, AS AN ENFORCEMENT. An approval writes the
+  // calendar EVENT and stops; productions enter through the morning sync
+  // alone. This cannot be expressed as an assertion about a return value —
+  // it is a statement about which functions the approval path is even
+  // capable of reaching — so it is read off the source text, like the
+  // PATCH/DELETE wall above.
+  // ═══════════════════════════════════════════════════════════════════════
+  console.log("\n=== 9b. 🔴 enforcement: the approval path cannot create a production ===");
+  {
+    const FILES = [
+      "src/lib/booking/writeCalendarEvent.ts",
+      "src/app/api/bookings/[id]/approve/route.ts",
+      "src/app/api/bookings/[id]/retry-calendar/route.ts",
+    ];
+    const BANNED = /createProductionFromEvent|enqueueDocument|buildProductionInsert/;
+    for (const rel of FILES) {
+      const src = readFileSync(join(process.cwd(), rel), "utf8");
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+      check(`${rel}: zero createProductionFromEvent / enqueueDocument`, BANNED.test(code), false);
+    }
+    // and nothing in that path writes the column either
+    for (const rel of FILES) {
+      const src = readFileSync(join(process.cwd(), rel), "utf8");
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+      check(`${rel}: zero production_id write`, /production_id/.test(code), false);
+    }
+    // The table itself, from the other direction: the only tables the
+    // approval's own write function touches are booking_requests and events.
+    const w = readFileSync(join(process.cwd(), "src/lib/booking/writeCalendarEvent.ts"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/.*$/gm, "");
+    const tables = Array.from(w.matchAll(/\.from\(\s*["']([a-z_]+)["']\s*\)/g)).map((m) => m[1]);
+    check(
+      "writeCalendarEvent.ts touches ONLY booking_requests and events",
+      Array.from(new Set(tables)).sort(),
+      ["booking_requests", "events"]
+    );
+  }
+
   console.log("\n=== 10. 🔴 enforcement: no path to Morning or pending_documents OUTSIDE the shared creation function ===");
   {
     // The shared path IS lib/calendar/createProductionFromEvent.ts, which is
     // allowed to call enqueueDocument (lib/documents/enqueue.ts) — that is the
-    // ONE door to pending_documents this whole feature is built to reuse,
-    // never duplicate (owner: "לשימוש חוזר ב-POST /api/morning/clients קיים",
-    // same discipline carried over from feat/client-morning-mapping).
+    // ONE door to pending_documents, and since 7.10 the SYNC is its only
+    // caller (see that file's header).
     const FILES = [
       "src/lib/calendar/write.ts",
       "src/lib/booking/writeCalendarEvent.ts",

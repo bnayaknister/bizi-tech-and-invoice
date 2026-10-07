@@ -21,13 +21,19 @@ import { writeBookingCalendarEvent } from "@/lib/booking/writeCalendarEvent";
 // Writing exactly three columns was the WHOLE route until now — this comment
 // is corrected rather than left to describe a version of the route that no
 // longer exists. The owner still pastes nothing: the route now writes the
-// event to the shared Google Calendar itself (lib/calendar/write.ts) and, on
-// success, creates the production IMMEDIATELY (owner decision 7.10, "מתווה
-// א'" — not waiting for the next sync), through the SAME function
-// calendar/sync/route.ts uses for every other calendar-created production
-// (lib/calendar/createProductionFromEvent.ts). `eventTitle`/`cleanAliasFor`
-// below are UNCHANGED from before this feature — the title the calendar event
-// gets is the exact same string the owner used to paste by hand.
+// event to the shared Google Calendar itself (lib/calendar/write.ts).
+// `eventTitle`/`cleanAliasFor` below are UNCHANGED from before this feature —
+// the title the calendar event gets is the exact same string the owner used
+// to paste by hand.
+//
+// ⛔ AND IT CREATES NO PRODUCTION (owner correction, 7.10). An earlier draft
+// of this route did, on the strength of a "מתווה א׳" decision that was never
+// actually made — it was an unapproved recommendation. Productions enter
+// through ONE door: the morning sync, over events of that same day. A
+// booking approved three weeks out would otherwise appear on the
+// productions board three weeks early, times every future booking. The full
+// reasoning, with the sync's own line numbers, is in
+// lib/booking/writeCalendarEvent.ts's header.
 //
 // 🔴 A calendar-write failure does NOT fail the approval. The three-column
 // write above still happens and is kept; the calendar write is reported
@@ -76,14 +82,15 @@ export async function POST(_request: Request, { params }: { params: { id: string
 
   const admin = createTypedAdminClient();
 
-  // Expanded beyond name/aliases (feat/calendar-write): everything
-  // createProductionFromEvent needs to create a production the SAME way
-  // calendar/sync/route.ts does — client_id/billing_mode for the kind
-  // derivation, default_studio/camera_count/default_editor_id/has_episode/
-  // reels_count for the same columns that function's `show` input carries.
+  // name/aliases ONLY — the title is all the show is read for. The seven
+  // extra billing columns this select carried briefly (client_id,
+  // billing_mode, default_studio, camera_count, default_editor_id,
+  // has_episode, reels_count) existed to create a production here; an
+  // approval does not create one (owner correction 7.10 — see
+  // lib/booking/writeCalendarEvent.ts's header), so they are gone.
   const { data: row, error: readErr } = await admin
     .from("booking_requests")
-    .select("id,show_id,studio,start_at,end_at,guest,note,status,shows(name,aliases,client_id,billing_mode,default_studio,camera_count,default_editor_id,has_episode,reels_count)")
+    .select("id,show_id,studio,start_at,end_at,guest,note,status,shows(name,aliases)")
     .eq("id", params.id)
     .maybeSingle();
   if (readErr || !row) {
@@ -155,17 +162,7 @@ export async function POST(_request: Request, { params }: { params: { id: string
     return NextResponse.json({ error: GENERIC }, { status: 500, headers: NO_STORE });
   }
 
-  const show = row.shows as unknown as {
-    name: string;
-    aliases: string[] | null;
-    client_id: string | null;
-    billing_mode: string;
-    default_studio: string | null;
-    camera_count: number | null;
-    default_editor_id: string | null;
-    has_episode: boolean;
-    reels_count: number;
-  } | null;
+  const show = row.shows as unknown as { name: string; aliases: string[] | null } | null;
   // The alias gate ran when the link was created, so a show without a clean
   // alias has no link and therefore no requests. Falling back to the raw name
   // keeps this from throwing if that ever stops being true — the owner can see
@@ -182,25 +179,25 @@ export async function POST(_request: Request, { params }: { params: { id: string
   });
 
   // ═══════════════════════════════════════════════════════════════════════
-  // THE CALENDAR WRITE + PRODUCTION CREATION (feat/calendar-write, 7.10, E8)
+  // THE CALENDAR WRITE (feat/calendar-write, 7.10, E8)
   // ═══════════════════════════════════════════════════════════════════════
   //
-  // ⚠️ `untyped` is `createAdminClient()`, not `createTypedAdminClient()` —
-  // scoped to ONLY the five new booking_requests columns (0099) and the
-  // production-creation call, for ONE reason: database.types.ts is generated
-  // from the LIVE schema, and 0099 is applied by the owner as a separate step
-  // (see the PR report's rollout order) — not necessarily before this code is
-  // built. This is not a new exception: calendar/sync/route.ts and
-  // enqueueDocument already use the untyped client for exactly this family of
-  // writes (see createProductionFromEvent.ts's own header note). Everything
-  // ELSE in this route stays on the typed client above, unchanged.
+  // 🔴 THE EVENT, AND NOTHING ELSE. No production is created here: that
+  // happens on the recording morning, in the sync, from this very event —
+  // one door, unchanged since 2026-07-17 (owner correction 7.10; the full
+  // reasoning, with the sync's own line numbers, is in
+  // lib/booking/writeCalendarEvent.ts's header).
+  //
+  // ⚠️ `untyped` is `createAdminClient()`, scoped to the 0099 columns, so
+  // the shared write function can take a plain `SupabaseClient` either
+  // factory satisfies. Everything ELSE in this route stays on the typed
+  // client above, unchanged.
   const untyped = createAdminClient();
 
   let calendarWriteStatus: "created" | "failed" | null = null;
   let calendarWriteError: string | null = null;
   let calendarHtmlLink: string | null = null;
   let calendarDryRun = false;
-  let productionId: string | null = null;
 
   if (show) {
     // step א: the deterministic id, saved BEFORE the network call. A timeout
@@ -210,30 +207,14 @@ export async function POST(_request: Request, { params }: { params: { id: string
     const eventId = calendarEventIdFor(row.id);
     await untyped.from("booking_requests").update({ calendar_event_id: eventId }).eq("id", row.id);
 
-    // steps ב–ד: the write, the columns it settles, the audit events, and —
-    // on a real success — the production. Shared with retry-calendar/route.ts
-    // so a retry is not a second, drifting copy of this logic.
+    // the write, the columns it settles, and the audit event. Shared with
+    // retry-calendar/route.ts so a retry is not a second, drifting copy.
     const written = await writeBookingCalendarEvent(untyped, {
       bookingId: row.id,
-      showId: row.show_id,
-      show: {
-        id: row.show_id,
-        name: show.name,
-        client_id: show.client_id,
-        billing_mode: show.billing_mode,
-        default_studio: show.default_studio,
-        camera_count: show.camera_count,
-        default_editor_id: show.default_editor_id,
-        has_episode: show.has_episode,
-        reels_count: show.reels_count,
-      },
-      studio: row.studio,
       startAtIso: row.start_at,
       endAtIso: row.end_at,
-      guest: row.guest,
       note: row.note,
       title,
-      dateIsrael,
       eventId,
       actorId: user.id,
     });
@@ -241,7 +222,6 @@ export async function POST(_request: Request, { params }: { params: { id: string
     calendarWriteError = written.error;
     calendarHtmlLink = written.htmlLink;
     calendarDryRun = written.dryRun;
-    productionId = written.productionId;
   }
 
   return NextResponse.json(
@@ -261,7 +241,7 @@ export async function POST(_request: Request, { params }: { params: { id: string
         // built on the SERVER from the stored row — the screen never assembles
         // a title out of its own state
         title,
-        // the four new UI states (see BookingsBody.tsx): created / failed /
+        // the four UI states (see BookingsBody.tsx): created / failed /
         // dry-run / "not yet attempted" (show was null — cannot happen in
         // practice, since a request with no show has no alias and so no link,
         // but the type is nullable and this keeps the response honest about it)
@@ -269,7 +249,6 @@ export async function POST(_request: Request, { params }: { params: { id: string
         calendarWriteError,
         calendarHtmlLink,
         calendarDryRun,
-        productionId,
       },
     },
     { headers: NO_STORE }

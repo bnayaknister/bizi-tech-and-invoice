@@ -1,10 +1,18 @@
 /**
- * lib/calendar/createProductionFromEvent.ts — the ONE production-creation
- * path shared by calendar/sync/route.ts's `toCreate` loop AND the booking-
- * approval route (feat/calendar-write, 7.10, gate G1). `buildProductionInsert`
- * is pure; `createProductionFromEvent` is exercised against a hand-built fake
+ * lib/calendar/createProductionFromEvent.ts — the production-creation path
+ * extracted out of calendar/sync/route.ts's `toCreate` loop
+ * (feat/calendar-write, 7.10, gate G1). `buildProductionInsert` is pure;
+ * `createProductionFromEvent` is exercised against a hand-built fake
  * Supabase client and an injected fake `enqueueDocument` — NO real database,
  * NO network, NO users. F19 is open; nothing here goes near it.
+ *
+ * ⚠️ THE SYNC IS THE ONLY CALLER (owner correction, 7.10). The extraction
+ * was done for a second one — the booking-approval route — which was an
+ * unapproved recommendation and is gone; an approval creates no production
+ * (scripts/test_write_calendar_event.ts asserts that, and
+ * scripts/test_calendar_write.ts enforces it on the source text). What this
+ * suite still buys: the kind derivation and the studio fallback are testable
+ * at all, which they were not while they lived inline in a 500-line route.
  *
  * Run: npx tsx scripts/test_create_production_from_event.ts
  */
@@ -55,7 +63,7 @@ const inputOf = (over: Partial<ProductionCreateInput> = {}): ProductionCreateInp
   guest: "דנה לוי",
   calendarUid: "uid-abc@google.com",
   eventTitle: "דעה לא פופולרית, אורח: דנה לוי, גבעון",
-  source: "booking_approval",
+  source: "sync",
   now: NOW,
   ...over,
 });
@@ -225,10 +233,10 @@ async function run() {
     check("exactly one insert into productions", calls.filter((c) => c.table === "productions" && c.op === "insert").length, 1);
     check("exactly one insert into events", calls.filter((c) => c.table === "events" && c.op === "insert").length, 1);
     check(
-      "the event is a calendar_created event, carrying the caller's source",
+      "the event is a calendar_created event, carrying its source",
       (() => {
         const ev = calls.find((c) => c.table === "events")!.payload as { event_type: string; payload: { source: string } };
-        return ev.event_type === "calendar_created" && ev.payload.source === "booking_approval";
+        return ev.event_type === "calendar_created" && ev.payload.source === "sync";
       })(),
       true
     );
@@ -283,17 +291,37 @@ async function run() {
     check("nothing was enqueued for a production that was never created", enqCalls.length, 0);
   }
 
-  console.log("\n=== 6. createProductionFromEvent — behaves IDENTICALLY for both callers (the whole point of the extraction, gate G1) ===");
+  console.log("\n=== 6. the extraction changed NOTHING about what the sync writes (gate G1) ===");
   {
-    // the exact same input, run twice with independent fakes, must produce
-    // the exact same INSERT payload regardless of which caller it came from —
-    // only the event's `source` field is allowed to differ.
-    const syncInput = inputOf({ source: "sync", calendarUid: "uid-sync@google.com" });
-    const approvalInput = inputOf({ source: "booking_approval", calendarUid: "uid-sync@google.com" });
-    const a = buildProductionInsert(syncInput);
-    const b = buildProductionInsert(approvalInput);
-    check("sync and booking_approval build the IDENTICAL insert payload", a.insert, b.insert);
-    check("...and the identical kind", a.kind, b.kind);
+    // The column set the sync's inline insert wrote before the extraction,
+    // listed here by hand from that code. A column silently dropped by the
+    // move is the one failure mode a behaviour test cannot see — every value
+    // would still be "correct", just absent.
+    const EXPECTED_COLUMNS = [
+      "calendar_synced_at",
+      "calendar_uid",
+      "camera_count",
+      "client_id",
+      "contract_id",
+      "guest",
+      "has_episode",
+      "kind",
+      "legacy",
+      "podcast_name",
+      "record_date",
+      "record_time",
+      "reels_count",
+      "show_id",
+      "studio",
+    ];
+    const { insert } = buildProductionInsert(inputOf());
+    check("exactly the columns the sync wrote inline — none added, none lost", Object.keys(insert).sort(), EXPECTED_COLUMNS);
+    check("and the count is asserted too, so a rename cannot slip through as a swap", Object.keys(insert).length, EXPECTED_COLUMNS.length);
+
+    // pure: same input, same output, no hidden clock or state
+    check("pure — the same input twice gives the identical payload", buildProductionInsert(inputOf()).insert, buildProductionInsert(inputOf()).insert);
+    check("`now` is the ONLY source of the timestamp — an explicit parameter, never a hidden new Date()",
+      buildProductionInsert(inputOf()).insert.calendar_synced_at, NOW.toISOString());
   }
 
   console.log(failed === 0 ? `\n✅  ${passed}/${passed} assertions passed\n` : `\n❌  ${passed}/${passed + failed} assertions passed, ${failed} FAILED\n`);

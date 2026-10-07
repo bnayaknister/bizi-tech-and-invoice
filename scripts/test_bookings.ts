@@ -84,7 +84,6 @@ function row(over: Partial<QueueRow> = {}): QueueRow {
     alias: SHOW,
     calendarWriteStatus: null,
     calendarWriteError: null,
-    productionId: null,
     ...over,
   };
 }

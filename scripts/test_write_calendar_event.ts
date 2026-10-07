@@ -1,8 +1,22 @@
 /**
  * lib/booking/writeCalendarEvent.ts — the shared orchestration BOTH
  * approve/route.ts and retry-calendar/route.ts call ("אותה לוגיקה", owner
- * step 4): the write, the columns it settles, the two audit events, and —
- * on a real success — the production (feat/calendar-write, 7.10, E8).
+ * step 4): the calendar write, the `booking_requests` columns it settles,
+ * and the audit event.
+ *
+ * ═══ 🔴 WHAT THIS SUITE NOW GUARDS (owner correction, 7.10) ═══
+ * An approval creates NO production. The feat/calendar-write prompt stated
+ * "הפקה נוצרת מיד באישור (מתווה א׳)" as an owner decision; it was an
+ * unapproved recommendation. Productions enter through the morning sync
+ * alone, over events of THAT SAME DAY — so an approval three weeks out
+ * would otherwise put a production on the board three weeks early, times
+ * every future booking.
+ *
+ * Every success path below therefore asserts a ZERO: zero productions,
+ * zero pending_documents, zero work-order enqueue, zero `production_id`
+ * write. Absences are exactly what a suite that only checks return values
+ * cannot see, so they are counted, and scripts/test_calendar_write.ts
+ * additionally reads this file's source text.
  *
  * `global.fetch` is mocked (so `createCalendarEvent`'s real control flow
  * runs, exactly as scripts/test_calendar_write.ts drives it) and the
@@ -14,7 +28,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { generateKeyPairSync } from "node:crypto";
 import { writeBookingCalendarEvent, type BookingCalendarWriteInput } from "../src/lib/booking/writeCalendarEvent";
-import type { ShowForProductionCreate } from "../src/lib/calendar/createProductionFromEvent";
 
 let passed = 0;
 let failed = 0;
@@ -30,7 +43,7 @@ function check(name: string, got: unknown, want: unknown) {
   }
 }
 
-// ── the fake admin: thenable at every step, calls recorded ──────────────────
+// ── the fake admin: thenable at every step, every call recorded ─────────────
 type RecordedCall = { table: string; op: "insert" | "update" | "select"; payload: unknown; filters: [string, unknown][] };
 
 function builder(resolveValue: unknown) {
@@ -55,38 +68,23 @@ function builder(resolveValue: unknown) {
 }
 
 /**
- * `writeBookingCalendarEvent` delegates straight into the REAL
- * `enqueueDocument` (no deps seam — that seam belongs only to
- * `createProductionFromEvent`, and only for `enqueueDocument` itself, see its
- * own header note). So a production this fake creates must also read back as
- * a CLEAN, eligible 'client' production through enqueueDocument's real
- * eligibility gate (scripts/test_create_job_for_production.ts's own
- * checkEligibility rules) — otherwise every "success" run here would
- * silently fall through enqueueDocument's "blocked, no show/client
- * configured" branch and write a THIRD event nobody asked for. These two
- * rows exist to make that gate pass cleanly, not to test the gate itself —
- * checkEligibility already has its own suite.
+ * ⚠️ This fake answers EVERY table, including the ones a production write
+ * would need (`productions`, `pending_documents`, `shows`, `clients`). That
+ * is deliberate: if the production path were ever reintroduced it would run
+ * happily here rather than crashing, and the zero-counts below are what
+ * would catch it. A fake that threw on `productions` would turn a real
+ * regression into an unrelated-looking stack trace.
  */
-function makeFakeAdmin(opts: { productionId?: string; productionStatus?: string } = {}) {
-  const productionId = opts.productionId ?? "prod-xyz";
-  const productionStatus = opts.productionStatus ?? "עתיד_להתחיל";
+function makeFakeAdmin() {
   const calls: RecordedCall[] = [];
-
-  const SHOW_ROW = { id: "show-1", client_id: "client-1", billing_mode: "per_episode", default_rate: 1000, pricing_model: "per_episode", hourly_rate: null };
-  const CLIENT_ROW = { id: "client-1", name: "לקוח בדיקה", morning_client_id: "morning-1", billing_cadence: "per_episode" };
 
   const admin = {
     from(table: string) {
       return {
         insert(payload: unknown) {
           calls.push({ table, op: "insert", payload, filters: [] });
-          if (table === "productions") return builder({ data: { id: productionId, status: productionStatus }, error: null });
-          // enqueueDocument's own insert, reached through the SAME shared
-          // path (createProductionFromEvent -> deps.enqueueDocument) every
-          // sync-created production already goes through — not new code
-          // this feature adds, so it is not part of what the owner's "two
-          // events" count below is about.
-          if (table === "pending_documents") return builder({ data: { id: "doc-1" }, error: null });
+          if (table === "productions") return builder({ data: { id: "prod-would-be", status: "עתיד_להתחיל" }, error: null });
+          if (table === "pending_documents") return builder({ data: { id: "doc-would-be" }, error: null });
           return builder({ data: null, error: null });
         },
         update(payload: unknown) {
@@ -105,16 +103,31 @@ function makeFakeAdmin(opts: { productionId?: string; productionStatus?: string 
         },
         select(_cols: string) {
           calls.push({ table, op: "select", payload: null, filters: [] });
-          if (table === "shows") return builder({ data: SHOW_ROW, error: null });
-          if (table === "clients") return builder({ data: CLIENT_ROW, error: null });
-          // contracts (billing_mode='contract' only) and production_addons
-          // (deal_invoice only) — neither path this fixture takes
           return builder({ data: null, error: null });
         },
       };
     },
   };
   return { admin: admin as unknown as SupabaseClient, calls };
+}
+
+/** every table that only a production write would ever touch */
+const PRODUCTION_TABLES = ["productions", "pending_documents", "stages", "contracts", "shows", "clients", "production_addons"];
+
+function assertNoProductionWork(label: string, calls: RecordedCall[]) {
+  for (const table of PRODUCTION_TABLES) {
+    check(`${label}: zero ${table} calls`, calls.filter((c) => c.table === table).length, 0);
+  }
+  check(
+    `${label}: zero production_id written to booking_requests`,
+    calls.some((c) => c.table === "booking_requests" && c.op === "update" && "production_id" in (c.payload as object)),
+    false
+  );
+  check(
+    `${label}: zero calendar_created event (that is the SYNC's event, not ours)`,
+    calls.some((c) => c.table === "events" && (c.payload as { event_type?: string }).event_type === "calendar_created"),
+    false
+  );
 }
 
 // ── env + fetch mocking, same shape as test_calendar_write.ts ───────────────
@@ -126,6 +139,12 @@ const { privateKey } = generateKeyPairSync("rsa", {
 const SA_JSON = JSON.stringify({ client_email: "sa@test.iam.gserviceaccount.com", private_key: privateKey });
 const jsonRes = (status: number, body: unknown): Response =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+const REAL_ENV = {
+  CALENDAR_WRITE_DRY_RUN: "false",
+  GOOGLE_SERVICE_ACCOUNT_JSON: SA_JSON,
+  GOOGLE_CALENDAR_ID: "cal@group.calendar.google.com",
+};
 
 function withEnv(vars: Record<string, string | undefined>, run: () => Promise<void>): Promise<void> {
   const saved: Record<string, string | undefined> = {};
@@ -154,175 +173,139 @@ function withMockedFetch(
   });
 }
 
-const show: ShowForProductionCreate = {
-  id: "show-1",
-  name: "דעה לא פופולרית",
-  client_id: "client-1",
-  billing_mode: "per_episode",
-  default_studio: "חשמונאים",
-  camera_count: 2,
-  default_editor_id: null,
-  has_episode: true,
-  reels_count: 2,
-};
+const EVENT_ID = "0123456789abcdefghijklmnop";
 
 function inputOf(over: Partial<BookingCalendarWriteInput> = {}): BookingCalendarWriteInput {
   return {
     bookingId: "booking-1",
-    showId: show.id,
-    show,
-    studio: "גבעון",
     startAtIso: "2026-10-20T06:00:00.000Z",
     endAtIso: "2026-10-20T07:30:00.000Z",
-    guest: "דנה לוי",
     note: null,
     title: "דעה לא פופולרית, אורח: דנה לוי, גבעון",
-    dateIsrael: "2026-10-20",
-    eventId: "0123456789abcdefghijklmnop",
+    eventId: EVENT_ID,
     actorId: "owner-1",
     ...over,
   };
 }
 
 async function run() {
-  console.log("\n=== 1. success — calendar_uid saved, the production created exactly once, the two NEW events ===");
-  await withEnv(
-    { CALENDAR_WRITE_DRY_RUN: "false", GOOGLE_SERVICE_ACCOUNT_JSON: SA_JSON, GOOGLE_CALENDAR_ID: "cal@group.calendar.google.com" },
-    async () => {
-      await withMockedFetch((url, init) => {
-        if (url.includes("oauth2.googleapis.com/token")) return jsonRes(200, { access_token: "tok" });
-        if (url.endsWith("/events") && init?.method === "POST") {
-          return jsonRes(200, { id: "0123456789abcdefghijklmnop", iCalUID: "ical-1@google.com", htmlLink: "https://calendar.google.com/x" });
-        }
-        throw new Error(`unexpected fetch: ${url}`);
-      }, async () => {
-        const { admin, calls } = makeFakeAdmin({ productionId: "prod-1" });
-        const result = await writeBookingCalendarEvent(admin, inputOf());
+  console.log("\n=== 1. success — the uid is saved, and NOTHING else happens ===");
+  await withEnv(REAL_ENV, async () => {
+    await withMockedFetch((url, init) => {
+      if (url.includes("oauth2.googleapis.com/token")) return jsonRes(200, { access_token: "tok" });
+      if (url.endsWith("/events") && init?.method === "POST") {
+        return jsonRes(200, { id: EVENT_ID, iCalUID: "ical-1@google.com", htmlLink: "https://calendar.google.com/x" });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }, async () => {
+      const { admin, calls } = makeFakeAdmin();
+      const result = await writeBookingCalendarEvent(admin, inputOf());
 
-        check("result: created", result, { status: "created", error: null, htmlLink: "https://calendar.google.com/x", dryRun: false, productionId: "prod-1" });
-
-        const bookingUpdates = calls.filter((c) => c.table === "booking_requests" && c.op === "update");
-        check("exactly two booking_requests updates — the uid/status, then the production_id", bookingUpdates.length, 2);
-        check("the first carries the REAL iCalUID, never the request's own id", bookingUpdates[0].payload, {
-          calendar_event_uid: "ical-1@google.com",
-          calendar_write_status: "created",
-          calendar_write_error: null,
-        });
-        check("the second carries the production id", bookingUpdates[1].payload, { production_id: "prod-1" });
-
-        check("exactly one production insert", calls.filter((c) => c.table === "productions" && c.op === "insert").length, 1);
-
-        const allEvents = calls.filter((c) => c.table === "events" && c.op === "insert");
-        // THREE fire in total: the two this feature adds (below), plus
-        // document_queued — enqueueDocument's OWN event, written through the
-        // exact same deps.enqueueDocument call every sync-created production
-        // already goes through (G1: this function creates a production
-        // "exactly as the sync would"). That third one is not new code this
-        // feature introduces, which is what the owner's "two events" in the
-        // spec is counting — the two asserted by name below.
-        check("three events fire — the two new ones, plus enqueueDocument's own (pre-existing, not new code)", allEvents.length, 3);
-
-        const bookingEvents = allEvents.filter((c) => (c.payload as { entity_type: string }).entity_type === "booking_request");
-        check("exactly one booking_request-scoped event", bookingEvents.length, 1);
-        check("it is entity_type 'booking_request' — NEVER 'production' (G3: keeps the sync's touchedIds clean)",
-          (bookingEvents[0].payload as { entity_type: string }).entity_type, "booking_request");
-        check("...and event_type booking_calendar_event_created", (bookingEvents[0].payload as { event_type: string }).event_type, "booking_calendar_event_created");
-
-        const calendarCreatedEvents = allEvents.filter((c) => (c.payload as { event_type: string }).event_type === "calendar_created");
-        check("exactly ONE calendar_created event — createProductionFromEvent's own, on the production, not duplicated", calendarCreatedEvents.length, 1);
-        check("it is entity_type 'production'", (calendarCreatedEvents[0].payload as { entity_type: string }).entity_type, "production");
-
-        check("the eligibility gate passed cleanly — no billing-block event among the three", allEvents.some((e) => (e.payload as { event_type: string }).event_type === "document_enqueue_blocked"), false);
-      });
-    }
-  );
-
-  console.log("\n=== 2. 409 (already exists) behaves exactly like a fresh success ===");
-  await withEnv(
-    { CALENDAR_WRITE_DRY_RUN: "false", GOOGLE_SERVICE_ACCOUNT_JSON: SA_JSON, GOOGLE_CALENDAR_ID: "cal@group.calendar.google.com" },
-    async () => {
-      await withMockedFetch((url, init) => {
-        if (url.includes("oauth2.googleapis.com/token")) return jsonRes(200, { access_token: "tok" });
-        if (url.endsWith("/events") && init?.method === "POST") return jsonRes(409, { error: "exists" });
-        if (url.endsWith("/events/0123456789abcdefghijklmnop")) {
-          return jsonRes(200, { id: "0123456789abcdefghijklmnop", iCalUID: "ical-2@google.com", htmlLink: "https://calendar.google.com/y" });
-        }
-        throw new Error(`unexpected fetch: ${url}`);
-      }, async () => {
-        const { admin, calls } = makeFakeAdmin({ productionId: "prod-2" });
-        const result = await writeBookingCalendarEvent(admin, inputOf());
-        check("409 -> status created, same as a fresh insert", result.status, "created");
-        check("409 -> the production is STILL created, from the read-back iCalUID", result.productionId, "prod-2");
-        check("409 -> exactly one production insert, not zero and not two", calls.filter((c) => c.table === "productions" && c.op === "insert").length, 1);
-      });
-    }
-  );
-
-  console.log("\n=== 3. failure — the approval stays, ZERO production, status='failed' ===");
-  await withEnv(
-    { CALENDAR_WRITE_DRY_RUN: "false", GOOGLE_SERVICE_ACCOUNT_JSON: SA_JSON, GOOGLE_CALENDAR_ID: "cal@group.calendar.google.com" },
-    async () => {
-      await withMockedFetch((url) => {
-        if (url.includes("oauth2.googleapis.com/token")) return jsonRes(200, { access_token: "tok" });
-        return new Response("boom", { status: 500 });
-      }, async () => {
-        const { admin, calls } = makeFakeAdmin();
-        const result = await writeBookingCalendarEvent(admin, inputOf());
-
-        check("status: failed", result.status, "failed");
-        check("a non-null error is carried for the owner's sentence", typeof result.error === "string" && result.error.length > 0, true);
-        check("zero productions created", calls.filter((c) => c.table === "productions" && c.op === "insert").length, 0);
-        check("zero production_id written back", calls.some((c) => c.table === "booking_requests" && c.op === "update" && "production_id" in (c.payload as object)), false);
-        check("the one booking_requests update is the failure state", calls.find((c) => c.table === "booking_requests")?.payload, {
-          calendar_write_status: "failed",
-          calendar_write_error: result.error,
-        });
-        check("the audit event is booking_calendar_event_failed, on booking_request", (() => {
-          const ev = calls.find((c) => c.table === "events")!.payload as { entity_type: string; event_type: string };
-          return ev.entity_type === "booking_request" && ev.event_type === "booking_calendar_event_failed";
-        })(), true);
-      });
-    }
-  );
-
-  console.log("\n=== 4. timeout — behaves like a failure, and a RETRY with the SAME eventId then succeeds ===");
-  await withEnv(
-    { CALENDAR_WRITE_DRY_RUN: "false", GOOGLE_SERVICE_ACCOUNT_JSON: SA_JSON, GOOGLE_CALENDAR_ID: "cal@group.calendar.google.com" },
-    async () => {
-      const { admin, calls } = makeFakeAdmin({ productionId: "prod-3" });
-
-      await withMockedFetch((url) => {
-        if (url.includes("oauth2.googleapis.com/token")) return jsonRes(200, { access_token: "tok" });
-        const err = new Error("aborted");
-        err.name = "TimeoutError";
-        throw err;
-      }, async () => {
-        const first = await writeBookingCalendarEvent(admin, inputOf());
-        check("timeout -> status failed, not thrown", first.status, "failed");
-        check("timeout -> zero production", calls.filter((c) => c.table === "productions" && c.op === "insert").length, 0);
+      check("result: created, with Google's link, no dry-run", result, {
+        status: "created",
+        error: null,
+        htmlLink: "https://calendar.google.com/x",
+        dryRun: false,
       });
 
-      // the retry route re-derives the SAME deterministic eventId and calls
-      // this same function again — simulated here by calling it again with
-      // an UNCHANGED `eventId`, now against a server that reports the event
-      // already exists (as it would if the timed-out first attempt had, in
-      // fact, gone through on Google's side).
-      await withMockedFetch((url, init) => {
-        if (url.includes("oauth2.googleapis.com/token")) return jsonRes(200, { access_token: "tok" });
-        if (url.endsWith("/events") && init?.method === "POST") return jsonRes(409, { error: "exists" });
-        if (url.endsWith("/events/0123456789abcdefghijklmnop")) {
-          return jsonRes(200, { id: "0123456789abcdefghijklmnop", iCalUID: "ical-3@google.com", htmlLink: "https://calendar.google.com/z" });
-        }
-        throw new Error(`unexpected fetch: ${url}`);
-      }, async () => {
-        const retried = await writeBookingCalendarEvent(admin, inputOf());
-        check("retry with the SAME eventId succeeds", retried.status, "created");
-        check("retry creates the production (it never got created on the timed-out attempt)", retried.productionId, "prod-3");
+      const bookingUpdates = calls.filter((c) => c.table === "booking_requests" && c.op === "update");
+      check("exactly ONE booking_requests update (there is no second one for a production)", bookingUpdates.length, 1);
+      check("it carries the REAL iCalUID, never the request's own id", bookingUpdates[0].payload, {
+        calendar_event_uid: "ical-1@google.com",
+        calendar_write_status: "created",
+        calendar_write_error: null,
       });
-    }
-  );
+      check("scoped to this booking", bookingUpdates[0].filters, [["id", "booking-1"]]);
 
-  console.log("\n=== 5. dry-run — zero network calls, zero production, the dry message, no real uid saved ===");
+      const events = calls.filter((c) => c.table === "events" && c.op === "insert");
+      check("exactly ONE event", events.length, 1);
+      check("entity_type 'booking_request' — never 'production'", (events[0].payload as { entity_type: string }).entity_type, "booking_request");
+      check("event_type booking_calendar_event_created", (events[0].payload as { event_type: string }).event_type, "booking_calendar_event_created");
+
+      assertNoProductionWork("success", calls);
+    });
+  });
+
+  console.log("\n=== 2. 409 (already exists) — same success, still zero production ===");
+  await withEnv(REAL_ENV, async () => {
+    await withMockedFetch((url, init) => {
+      if (url.includes("oauth2.googleapis.com/token")) return jsonRes(200, { access_token: "tok" });
+      if (url.endsWith("/events") && init?.method === "POST") return jsonRes(409, { error: "exists" });
+      if (url.endsWith(`/events/${EVENT_ID}`)) {
+        return jsonRes(200, { id: EVENT_ID, iCalUID: "ical-2@google.com", htmlLink: "https://calendar.google.com/y" });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }, async () => {
+      const { admin, calls } = makeFakeAdmin();
+      const result = await writeBookingCalendarEvent(admin, inputOf());
+      check("409 -> created, same as a fresh insert", result.status, "created");
+      check("409 -> the read-back iCalUID is the one stored", (calls.find((c) => c.table === "booking_requests")!.payload as { calendar_event_uid: string }).calendar_event_uid, "ical-2@google.com");
+      assertNoProductionWork("409", calls);
+    });
+  });
+
+  console.log("\n=== 3. failure — the approval stays, status='failed', zero production ===");
+  await withEnv(REAL_ENV, async () => {
+    await withMockedFetch((url) => {
+      if (url.includes("oauth2.googleapis.com/token")) return jsonRes(200, { access_token: "tok" });
+      return new Response("boom", { status: 500 });
+    }, async () => {
+      const { admin, calls } = makeFakeAdmin();
+      const result = await writeBookingCalendarEvent(admin, inputOf());
+
+      check("status: failed", result.status, "failed");
+      check("a non-null error is carried for the owner's sentence", typeof result.error === "string" && result.error.length > 0, true);
+      check("no link on a failure", result.htmlLink, null);
+      check("the one booking_requests update is the failure state", calls.find((c) => c.table === "booking_requests")?.payload, {
+        calendar_write_status: "failed",
+        calendar_write_error: result.error,
+      });
+      check("🔴 the APPROVAL itself is never touched — no status/decided_at write", calls.some((c) => {
+        const p = (c.payload ?? {}) as Record<string, unknown>;
+        return "status" in p || "decided_at" in p || "decided_by" in p;
+      }), false);
+      check("the audit event is booking_calendar_event_failed, on booking_request", (() => {
+        const ev = calls.find((c) => c.table === "events")!.payload as { entity_type: string; event_type: string };
+        return ev.entity_type === "booking_request" && ev.event_type === "booking_calendar_event_failed";
+      })(), true);
+      assertNoProductionWork("failure", calls);
+    });
+  });
+
+  console.log("\n=== 4. timeout — like a failure, and a retry with the SAME eventId then succeeds ===");
+  await withEnv(REAL_ENV, async () => {
+    const { admin, calls } = makeFakeAdmin();
+
+    await withMockedFetch((url) => {
+      if (url.includes("oauth2.googleapis.com/token")) return jsonRes(200, { access_token: "tok" });
+      const err = new Error("aborted");
+      err.name = "TimeoutError";
+      throw err;
+    }, async () => {
+      const first = await writeBookingCalendarEvent(admin, inputOf());
+      check("timeout -> status failed, not thrown", first.status, "failed");
+      assertNoProductionWork("timeout", calls);
+    });
+
+    // the retry route re-derives the SAME deterministic eventId and calls this
+    // same function again — simulated by an UNCHANGED `eventId` against a
+    // server that now reports the event already exists, as it would if the
+    // timed-out attempt had in fact gone through on Google's side.
+    await withMockedFetch((url, init) => {
+      if (url.includes("oauth2.googleapis.com/token")) return jsonRes(200, { access_token: "tok" });
+      if (url.endsWith("/events") && init?.method === "POST") return jsonRes(409, { error: "exists" });
+      if (url.endsWith(`/events/${EVENT_ID}`)) {
+        return jsonRes(200, { id: EVENT_ID, iCalUID: "ical-3@google.com", htmlLink: "https://calendar.google.com/z" });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }, async () => {
+      const retried = await writeBookingCalendarEvent(admin, inputOf());
+      check("retry with the SAME eventId succeeds", retried.status, "created");
+      check("and still creates nothing but the event", calls.filter((c) => c.table === "productions").length, 0);
+    });
+  });
+
+  console.log("\n=== 5. dry-run — zero network calls, no uid stored, zero production ===");
   await withEnv({ CALENDAR_WRITE_DRY_RUN: "true" }, async () => {
     await withMockedFetch(() => {
       throw new Error("fetch must not be called in a dry run");
@@ -330,13 +313,13 @@ async function run() {
       const { admin, calls } = makeFakeAdmin();
       const result = await writeBookingCalendarEvent(admin, inputOf());
 
-      check("dry-run result", result, { status: "created", error: null, htmlLink: null, dryRun: true, productionId: null });
-      check("zero productions created in dry mode", calls.filter((c) => c.table === "productions" && c.op === "insert").length, 0);
-      check("the booking_requests write carries NO real uid", calls.find((c) => c.table === "booking_requests")?.payload, {
+      check("dry-run result", result, { status: "created", error: null, htmlLink: null, dryRun: true });
+      check("the booking_requests write carries NO uid", calls.find((c) => c.table === "booking_requests")?.payload, {
         calendar_write_status: "created",
         calendar_write_error: null,
       });
       check("the audit event records dry_run:true", (calls.find((c) => c.table === "events")!.payload as { payload: { dry_run: boolean } }).payload.dry_run, true);
+      assertNoProductionWork("dry-run", calls);
     });
   });
 

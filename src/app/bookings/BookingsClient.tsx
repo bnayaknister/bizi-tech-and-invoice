@@ -50,7 +50,6 @@ export default function BookingsClient({
             calendarWriteError: string | null;
             calendarHtmlLink: string | null;
             calendarDryRun: boolean;
-            productionId: string | null;
           };
         };
         if (!res.ok || !body.ok || !body.request) {
@@ -74,7 +73,6 @@ export default function BookingsClient({
             error: body.request.calendarWriteError,
             htmlLink: body.request.calendarHtmlLink,
             dryRun: body.request.calendarDryRun,
-            productionId: body.request.productionId,
           },
         });
         setDeclineFor(null);
@@ -118,8 +116,8 @@ export default function BookingsClient({
 
   /**
    * Retry a failed (or never-attempted) calendar write — 0099, E8. No change
-   * to the approval itself: only the three calendar columns and, on success,
-   * the production. `retryingId` gates the ONE button that was clicked, not
+   * to the approval itself, and no production: only the calendar columns.
+   * `retryingId` gates the ONE button that was clicked, not
    * `busy` — approve/decline stay enabled while a retry is in flight,
    * because they act on a different row.
    */
@@ -138,7 +136,6 @@ export default function BookingsClient({
             calendarWriteError: string | null;
             calendarHtmlLink: string | null;
             calendarDryRun: boolean;
-            productionId: string | null;
           };
         };
         if (!res.ok || !body.ok || !body.request) {
@@ -157,7 +154,6 @@ export default function BookingsClient({
                   error: body.request!.calendarWriteError,
                   htmlLink: body.request!.calendarHtmlLink,
                   dryRun: body.request!.calendarDryRun,
-                  productionId: body.request!.productionId,
                 },
               }
             : prev

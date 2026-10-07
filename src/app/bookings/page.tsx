@@ -24,11 +24,13 @@ export default async function BookingsPage() {
   if (!profile?.approved) redirect("/pending");
   if (profile.role !== "owner") redirect("/");
 
-  // ⚠️ UNTYPED client: three of the columns below (calendar_write_status,
-  // calendar_write_error, production_id) are 0099's and database.types.ts
-  // does not know them until the owner applies that migration and
-  // regenerates it — the same choice calendar/sync/route.ts and
-  // approve/route.ts's own new code make for this whole feature family.
+  // 0099 is applied (7.10) and database.types.ts was regenerated, so the two
+  // calendar_write_* columns below are known to the generated types; the
+  // untyped client is kept here only because this page never needed the
+  // typed one. `production_id` is NOT selected: an approval does not create
+  // a production (owner correction 7.10 — see
+  // lib/booking/writeCalendarEvent.ts), so that column is never written and
+  // reading it would only ever yield null.
   const admin = createAdminClient();
 
   // ⚠️ The service-role client, and `guest` and `note` are in the select.
@@ -38,7 +40,7 @@ export default async function BookingsPage() {
   // built from.
   const { data: rows } = await admin
     .from("booking_requests")
-    .select("id,show_id,studio,start_at,end_at,guest,note,status,created_at,calendar_write_status,calendar_write_error,production_id,shows(name,aliases)")
+    .select("id,show_id,studio,start_at,end_at,guest,note,status,created_at,calendar_write_status,calendar_write_error,shows(name,aliases)")
     .order("start_at", { ascending: false })
     // A ceiling well above the 30 history rows the screen shows, so the split
     // is done over a superset rather than over a window that might not contain
@@ -72,7 +74,6 @@ export default async function BookingsPage() {
       alias: cleanAliasFor({ name: show?.name ?? "", aliases: show?.aliases ?? [] }, STUDIOS) ?? show?.name ?? "",
       calendarWriteStatus: (r.calendar_write_status as "created" | "failed" | null) ?? null,
       calendarWriteError: (r.calendar_write_error as string | null) ?? null,
-      productionId: (r.production_id as string | null) ?? null,
     };
   });
 
