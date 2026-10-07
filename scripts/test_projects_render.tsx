@@ -51,7 +51,7 @@ const fullRow = {
   internal: false,
   cancelled: false,
   price: 700,
-  docs: [{ type: 100, number: "10301", date: "2026-08-12", shared: false, cancelled: false, path: "production" }],
+  docs: [{ type: 100, number: "10301", date: "2026-08-12", shared: false, cancelled: false, path: "production", status: 0 }],
   // the stuck fields (2026-09-17). An empty array and a null are the ordinary
   // case — this row is not stuck — and they are spelled out rather than left
   // off so the suite keeps proving the payload shape the screen is handed.
@@ -71,7 +71,7 @@ const fullMilestone = {
   amount: 5900,
   anchor_date: "2026-08-14",
   counted_in: "incoming" as const,
-  docs: [{ type: 320, number: "60197", date: "2026-08-14", shared: false, cancelled: false, path: "job" }],
+  docs: [{ type: 320, number: "60197", date: "2026-08-14", shared: false, cancelled: false, path: "job", status: 0 }],
 };
 
 /**
@@ -93,9 +93,10 @@ const workRow = (over: Partial<UnifiedRow> = {}): UnifiedRow => ({
   billing: "priced",
   contractName: null,
   emptyReasonText: null,
+      cadence: null,
   prodStatus: { label: "הופץ", color: "var(--dim)" },
   billStatus: { state: "blue", label: "ממתין לתשלום", color: "var(--cyan)" },
-  docs: [{ type: 100, number: "10301", date: "2026-08-12", shared: false, cancelled: false, path: "production" }],
+  docs: [{ type: 100, number: "10301", date: "2026-08-12", shared: false, cancelled: false, path: "production", status: 0 }],
   open: { kind: "entity", type: "production", id: "p1" },
   jobIds: ["j1"],
   excludedFromMoney: false,
@@ -151,7 +152,7 @@ const fullWork: UnifiedRow[] = [
     contractName: "בלי יריה אחת",
     prodStatus: { label: "שולם", color: "var(--green)" },
     billStatus: { state: "closed", label: "סגור", color: "var(--green)" },
-    docs: [{ type: 320, number: "60197", date: "2026-08-14", shared: false, cancelled: false, path: "job" }],
+    docs: [{ type: 320, number: "60197", date: "2026-08-14", shared: false, cancelled: false, path: "job", status: 0 }],
     open: { kind: "entity", type: "contract", id: "c1" },
     jobIds: ["jm"],
     excludedFromMoney: true,
@@ -349,6 +350,7 @@ check("work row everything null", () =>
           billing: null,
           contractName: null,
           emptyReasonText: null,
+      cadence: null,
           prodStatus: null,
           billStatus: undefined,
           docs: undefined,

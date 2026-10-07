@@ -94,6 +94,7 @@ const prod = (over: Partial<ProductionInput> = {}): ProductionInput => ({
   billing: "priced",
   contract_name: null,
   empty_reason_text: null,
+    cadence: null,
   docs: noDocs,
   jobs: [],
   stuckSentences: [],

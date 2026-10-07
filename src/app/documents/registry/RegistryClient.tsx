@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useDrawer } from "@/components/EntityDrawer";
 import AssignDocModal from "@/components/AssignDocModal";
 import NewDocModal from "./NewDocModal";
@@ -273,8 +273,35 @@ export default function RegistryClient({
 }) {
   const router = useRouter();
   const { openEntity } = useDrawer();
-  const [tab, setTab] = useState<RegistryTab | "unmatched" | "cancelled" | "archived">("work_order");
-  const [q, setQ] = useState("");
+  /**
+   * ═══ E10 — the tab and the search box can be SEEDED from the URL ═══
+   * `/projects` links an empty document cell straight at the parent document's
+   * own row here: `?tab=work_order&q=10311`. That link is the whole feature —
+   * the pain it removes is "another screen, then find the row again" — and it
+   * is a seed, not a binding: the moment the bookkeeper clicks another tab or
+   * types in the box, her choice wins and nothing writes back to the URL.
+   *
+   * Only the INITIAL value is read, deliberately. Keeping these in sync with
+   * the address bar would make Back re-filter the table under her hands.
+   */
+  const params = useSearchParams();
+  const [tab, setTab] = useState<RegistryTab | "unmatched" | "cancelled" | "archived">(
+    () => {
+      const t = params?.get("tab");
+      return t === "work_order" ||
+        t === "deal_invoice" ||
+        t === "tax_invoice" ||
+        t === "tax_receipt" ||
+        t === "receipt" ||
+        t === "other" ||
+        t === "unmatched" ||
+        t === "cancelled" ||
+        t === "archived"
+        ? t
+        : "work_order";
+    }
+  );
+  const [q, setQ] = useState(() => params?.get("q") ?? "");
   const [sort, setSort] = useState<"date" | "amount">("date");
   const [pulling, setPulling] = useState(false);
   /**

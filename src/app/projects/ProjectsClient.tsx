@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { displayDate } from "@/lib/dates";
+import { emptyCellAction, type EmptyCellDecision } from "@/lib/projects/emptyCellAction";
 import { DOC_TYPES, DOC_TYPE_LABEL } from "@/lib/documents/forProduction";
 import { type MilestoneState } from "@/lib/finance/milestone";
 import { countByMonth, type EmptyReason, type Stuck } from "@/lib/projects/stuck";
@@ -184,16 +186,57 @@ const PATH_NOTE: Record<string, string> = {
  * "מצטבר · 0 מתוך 6", which is true of the CURRENT bundle and beside the point
  * for an episode that was never enqueued into one.
  */
-function DocCell({ docs, emptyText }: { docs: ProjectDoc[]; emptyText?: string | null }) {
+function DocCell({
+  docs,
+  emptyText,
+  action,
+}: {
+  docs: ProjectDoc[];
+  emptyText?: string | null;
+  /** E10 — what an EMPTY cell offers. Ignored once the cell has a document. */
+  action?: EmptyCellDecision;
+}) {
   if (!docs?.length) {
     // The TEXT, not the EmptyReason object. The reason's `kind` discriminator is
     // a server-side fact (which branch of emptyReasonFor fired) that no cell
     // reads, and a unified row carries the sentence alone — one less shape on
     // the wire, and one less thing a stale chunk can be wrong about.
-    if (emptyText) {
-      return <span className="text-[10px] text-[var(--ink-faint)] leading-tight">{emptyText}</span>;
+    //
+    // ═══ E10 — the body is UNCHANGED, the wrapper is the whole feature ═══
+    // Owner decision 4 (7.10): an active cell gets a hand cursor and a faint
+    // ring ON HOVER ONLY — no permanent marker, because 13 columns of
+    // permanent markers is a table nobody reads. An inactive cell looks
+    // EXACTLY as it did before this feature, and its reason rides on `title`.
+    const body = emptyText ? (
+      <span className="text-[10px] text-[var(--ink-faint)] leading-tight">{emptyText}</span>
+    ) : (
+      <span className="text-[var(--ink-faint)]">—</span>
+    );
+
+    if (action?.active && action.href) {
+      return (
+        <Link
+          href={action.href}
+          title={action.reason ?? undefined}
+          className="block cursor-pointer rounded px-1 -mx-1 ring-1 ring-transparent hover:ring-[var(--cyan)]/50"
+        >
+          {body}
+        </Link>
+      );
     }
-    return <span className="text-[var(--ink-faint)]">—</span>;
+    // Inactive. A destination may still exist — the redemption screen for an
+    // accruing client, the registry for a bundled issuance, the contract
+    // screen for a milestone (decisions 1-3) — and it is reachable, but it
+    // gets NO ring and NO pointer: the cell is not offering to create
+    // anything, it is explaining where that happens.
+    if (action?.href) {
+      return (
+        <Link href={action.href} title={action.reason ?? undefined} className="block">
+          {body}
+        </Link>
+      );
+    }
+    return <span title={action?.reason ?? undefined}>{body}</span>;
   }
   return (
     <div className="space-y-1">
@@ -369,7 +412,16 @@ function WorkRow({ r }: { r: UnifiedRow }) {
               rather than a step in it, and on a row the rule has just raised a
               hand about, the blank IS the problem — the label's whole claim is
               "this blank is expected". */}
-          <DocCell docs={byType(t)} emptyText={t === 100 || stuck ? null : r.emptyReasonText} />
+          <DocCell
+            docs={byType(t)}
+            emptyText={t === 100 || stuck ? null : r.emptyReasonText}
+            action={emptyCellAction({
+              source: r.source,
+              docType: t,
+              docs: r.docs ?? [],
+              cadence: r.cadence,
+            })}
+          />
         </td>
       ))}
     </tr>

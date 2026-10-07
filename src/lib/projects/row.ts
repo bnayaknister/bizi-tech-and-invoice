@@ -22,4 +22,12 @@ export type ProjectDoc = {
   cancelled: boolean;
   /** Which of the six resolver routes won. Drives the cell's tooltip. */
   path: string;
+  /**
+   * Morning's document status, carried for ONE reader: E10's empty-cell
+   * decision, which may only offer a child on an OPEN parent
+   * (lib/projects/emptyCellAction.ts, via `parentOpenness`). Nothing renders
+   * it. `null` = never pulled, which `parentOpenness` treats as open —
+   * see its own note on why that is not the same as "closed".
+   */
+  status: number | null;
 };

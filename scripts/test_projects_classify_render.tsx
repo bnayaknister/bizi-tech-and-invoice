@@ -54,6 +54,7 @@ const row = (over: Partial<UnifiedRow> = {}): UnifiedRow => ({
   billing: "priced",
   contractName: null,
   emptyReasonText: null,
+      cadence: null,
   prodStatus: { label: "הופץ", color: "var(--dim)" },
   billStatus: { state: "blue", label: "ממתין לתשלום", color: "var(--cyan)" },
   docs: [],

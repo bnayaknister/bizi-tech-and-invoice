@@ -910,6 +910,8 @@ export default async function ProjectsPage() {
         shared: d.shared,
         cancelled: d.cancelled,
         path: d.path,
+        // the same lookup stuckFor already does on the same ids (:855)
+        status: docsById.get(d.id)?.status ?? null,
       })),
       ...judge(p, billing, (resolved.get(p.id) ?? []).length > 0),
     };
@@ -1001,6 +1003,7 @@ export default async function ProjectsPage() {
         shared: false,
         cancelled: !!d.cancelled_at,
         path: "job",
+        status: d.status ?? null,
       })),
     });
   }
@@ -1035,6 +1038,7 @@ export default async function ProjectsPage() {
       shared: d.shared,
       cancelled: d.cancelled,
       path: d.path,
+      status: docsById.get(d.id)?.status ?? null,
     }));
 
   // The job facts behind one production — every job linked to it, dismissed ones
@@ -1055,9 +1059,18 @@ export default async function ProjectsPage() {
     ]);
   }
 
+  // The client's rhythm, per production — read through the SAME `clientOf`
+  // that `judge` uses (:812), so the cadence E10's empty-cell decision sees is
+  // the cadence the stuck rule and the "מצטבר" label see. A second lookup here
+  // would be a second opinion about one client's billing.
+  const cadenceByProduction = new Map<string, StuckCadence>(
+    inRange.map((p) => [p.id, (clientOf(p.client_id)?.billing_cadence as StuckCadence) ?? null])
+  );
+
   const productionInputs: ProductionInput[] = rows.map((r) => ({
     month: r.month,
     id: r.id,
+    cadence: cadenceByProduction.get(r.id) ?? null,
     record_date: r.record_date,
     podcast_name: r.podcast_name,
     show_name: r.show_name,

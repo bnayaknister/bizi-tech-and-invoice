@@ -86,6 +86,7 @@ import { deriveState, TAB_META, type FinanceJobFacts, type FinanceState } from "
 import { STATUS_LABEL } from "@/lib/productions/status";
 import { MISC_CANCELLED, miscStatusTone } from "@/lib/misc/status";
 import type { ProjectDoc } from "@/lib/projects/row";
+import type { Cadence } from "@/lib/projects/stuck";
 
 // ---------------------------------------------------------------------------
 // the vocabulary — owner-approved wording, 5.10
@@ -251,6 +252,22 @@ export type UnifiedRow = {
    * A label there would be describing a rhythm the row does not belong to.
    */
   emptyReasonText: string | null;
+  /**
+   * PRODUCTION ROWS ONLY — the client's billing rhythm, carried for ONE
+   * reader: E10's empty-cell decision (lib/projects/emptyCellAction.ts),
+   * which must not offer "create the deal invoice now" on a monthly /
+   * every_n client whose 300 is WAITING for redemption rather than missing.
+   *
+   * It is a sibling of `emptyReasonText` and not a replacement for it, for a
+   * measured reason: `emptyReasonFor` returns null the moment a row has ANY
+   * document (stuck.ts:140), so the accrual label is absent on exactly the
+   * rows this decision is about — a row that already holds its work order.
+   * The cadence itself is the only input that survives that.
+   *
+   * Null on every other source, like `emptyReasonText`: a bundle order, a
+   * radio job and a milestone belong to no rhythm.
+   */
+  cadence: Cadence;
   prodStatus: ProdStatus;
   billStatus: BillStatus;
   docs: ProjectDoc[];
@@ -309,6 +326,8 @@ export type ProductionInput = {
   contract_name: string | null;
   /** `emptyReasonFor(...)?.text`, already derived by the caller. */
   empty_reason_text: string | null;
+  /** the client's `billing_cadence`, as the caller already read it */
+  cadence: Cadence;
   docs: ProjectDoc[];
   /**
    * This production's jobs — ids included, dismissed ones already gone. Empty
@@ -634,6 +653,7 @@ export function buildUnifiedRows(input: UnifiedInput): UnifiedResult {
       billing: p.billing,
       contractName: p.contract_name,
       emptyReasonText: p.empty_reason_text,
+      cadence: p.cadence,
       prodStatus: productionStatusCell(p.status),
       billStatus: billStatusFor(p.jobs),
       jobIds: p.jobs.map((j) => j.id),
@@ -671,6 +691,7 @@ export function buildUnifiedRows(input: UnifiedInput): UnifiedResult {
       billing: null,
       contractName: m.contract_name,
       emptyReasonText: null,
+      cadence: null,
       // The milestone's OWN vocabulary, never a production status: "שולם" /
       // "חויב — ממתין לתשלום" cannot be mistaken for a pipeline stage. Same
       // reasoning MilestoneTableRow already carries (ProjectsClient.tsx:177-183).
@@ -713,6 +734,7 @@ export function buildUnifiedRows(input: UnifiedInput): UnifiedResult {
       billing: null,
       contractName: null,
       emptyReasonText: null,
+      cadence: null,
       prodStatus: miscStatusCell(w.status),
       billStatus: billStatusFor(w.jobFacts ? [w.jobFacts] : []),
       jobIds: w.job_id ? [w.job_id] : [],
@@ -816,6 +838,7 @@ export function buildUnifiedRows(input: UnifiedInput): UnifiedResult {
       billing: null,
       contractName: null,
       emptyReasonText: null,
+      cadence: null,
       // No production status: there is no production. An em dash, exactly as
       // MilestoneTableRow renders for guest/status/episode — "a milestone HAS
       // no guest, and printing anything there would be the invented value this
