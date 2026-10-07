@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getSessionAndProfile } from "@/lib/profile";
-import { createTypedAdminClient } from "@/lib/supabase/admin";
+import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import { cleanAliasFor } from "@/lib/booking/alias";
 import { splitQueue, type QueueRow } from "@/lib/booking/queue";
@@ -24,7 +24,12 @@ export default async function BookingsPage() {
   if (!profile?.approved) redirect("/pending");
   if (profile.role !== "owner") redirect("/");
 
-  const admin = createTypedAdminClient();
+  // ⚠️ UNTYPED client: three of the columns below (calendar_write_status,
+  // calendar_write_error, production_id) are 0099's and database.types.ts
+  // does not know them until the owner applies that migration and
+  // regenerates it — the same choice calendar/sync/route.ts and
+  // approve/route.ts's own new code make for this whole feature family.
+  const admin = createAdminClient();
 
   // ⚠️ The service-role client, and `guest` and `note` are in the select.
   // On the PUBLIC side those two columns are kept out of every payload
@@ -33,7 +38,7 @@ export default async function BookingsPage() {
   // built from.
   const { data: rows } = await admin
     .from("booking_requests")
-    .select("id,show_id,studio,start_at,end_at,guest,note,status,created_at,shows(name,aliases)")
+    .select("id,show_id,studio,start_at,end_at,guest,note,status,created_at,calendar_write_status,calendar_write_error,production_id,shows(name,aliases)")
     .order("start_at", { ascending: false })
     // A ceiling well above the 30 history rows the screen shows, so the split
     // is done over a superset rather than over a window that might not contain
@@ -65,6 +70,9 @@ export default async function BookingsPage() {
       // produced the same one. `showName` above falls back to "—" for display;
       // an alias must not, or the title would carry a dash.
       alias: cleanAliasFor({ name: show?.name ?? "", aliases: show?.aliases ?? [] }, STUDIOS) ?? show?.name ?? "",
+      calendarWriteStatus: (r.calendar_write_status as "created" | "failed" | null) ?? null,
+      calendarWriteError: (r.calendar_write_error as string | null) ?? null,
+      productionId: (r.production_id as string | null) ?? null,
     };
   });
 

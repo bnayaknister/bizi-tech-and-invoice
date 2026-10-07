@@ -82,6 +82,9 @@ function row(over: Partial<QueueRow> = {}): QueueRow {
     status: "pending",
     created_at: iso("2026-09-24", 14, 3),
     alias: SHOW,
+    calendarWriteStatus: null,
+    calendarWriteError: null,
+    productionId: null,
     ...over,
   };
 }

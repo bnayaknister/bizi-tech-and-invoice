@@ -34,6 +34,16 @@ export type QueueRow = {
    * one the owner pastes.
    */
   alias: string;
+  /**
+   * The calendar write's own state (feat/calendar-write, 7.10, 0099). `null`
+   * covers two cases this screen deliberately does not tell apart: a request
+   * approved before 0099 was applied, and one where the write genuinely has
+   * not been attempted yet — both render as "not created" the same way.
+   */
+  calendarWriteStatus: "created" | "failed" | null;
+  calendarWriteError: string | null;
+  /** the production the approval created (0099, "מתווה א'"), if the write succeeded */
+  productionId: string | null;
 };
 
 export type QueueStatus = "pending" | "approved" | "declined" | "past";
@@ -68,6 +78,10 @@ export type QueueView = {
   title: string;
   /** a pre-filled Google "create event" link; opening it creates nothing */
   googleUrl: string;
+  /** see QueueRow — carried through unchanged, for every row regardless of status */
+  calendarWriteStatus: "created" | "failed" | null;
+  calendarWriteError: string | null;
+  productionId: string | null;
 };
 
 /** Approved copy, 24.9. "המועד עבר" is a STATE, not a decision — see below. */
@@ -181,6 +195,9 @@ function toView(row: QueueRow, all: QueueRow[], now: Date): QueueView | null {
     // in one branch only is a value that is wrong in the other.
     title,
     googleUrl: googleCalendarUrl({ title, start, end, details: row.note }),
+    calendarWriteStatus: row.calendarWriteStatus,
+    calendarWriteError: row.calendarWriteError,
+    productionId: row.productionId,
   };
 }
 

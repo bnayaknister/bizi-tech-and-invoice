@@ -6,9 +6,9 @@ import { buildSyncPlan, type ExistingProductionRow } from "@/lib/calendar/sync";
 import { extractStudioAndGuest, type ShowForMatch } from "@/lib/calendar/match";
 import { findUnsyncedRecurring } from "@/lib/calendar/recurring";
 import { STUDIOS } from "@/lib/calendar/studios";
-import { enqueueDocument } from "@/lib/documents/enqueue";
+import { createProductionFromEvent } from "@/lib/calendar/createProductionFromEvent";
 import { must, mustRows, type QueryResult } from "@/lib/supabase/unwrap";
-import { israelDate } from "@/lib/dates";
+import { israelDate, israelTimeHHMM } from "@/lib/dates";
 
 // Google Calendar sync (screens-spec §11, owner rules 2026-07-16/17):
 //   GET  — Vercel Cron trigger. Authorizes via CRON_SECRET, always reads
@@ -65,18 +65,6 @@ async function logCron(
   } catch {
     // swallowed on purpose
   }
-}
-
-// "HH:MM" in Israel local time — stored on the production so two same-day
-// recordings of the same show read differently on the card (screens-spec,
-// multi-episode session support, owner request 2026-07-17).
-function israelTimeHHMM(d: Date): string {
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Jerusalem",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(d);
 }
 
 function israelNow(now: Date): { hour: number; date: string } {
@@ -290,7 +278,6 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string, allEven
   for (const action of plan.toCreate) {
     const show = showById.get(action.show.id);
     if (!show) continue;
-    const kind = show.billing_mode === "contract" ? "contract" : show.billing_mode === "per_episode" && show.client_id ? "client" : "internal";
     // The Israeli calendar day of the session, NOT its UTC day.
     //
     // This was `action.event.start.toISOString().slice(0, 10)`, which is UTC:
@@ -301,95 +288,52 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string, allEven
     // and which consolidated work order an episode belongs to, so an hour of
     // drift here is a billing-period error downstream.
     //
-    // The line below already read Israel time (israelTimeHHMM), so one
-    // timestamp was being split by two different rules: a 01:00 session was
-    // stored as record_date 30.09 with record_time "01:00".
-    //
     // Only new syncs are affected; no existing row is touched.
     const recordDate = action.event.start ? israelDate(action.event.start) : todayIsraelDate;
     const titleParts = extractStudioAndGuest(action.event.title, STUDIOS);
-    const { data: inserted, error } = await admin
-      .from("productions")
-      .insert({
-        podcast_name: show.name,
-        show_id: show.id,
+
+    // Extracted to lib/calendar/createProductionFromEvent.ts (feat/calendar-write,
+    // 7.10, gate G1) so the booking-approval route creates a production the
+    // identical way — same columns, same kind derivation, same editor
+    // auto-assign, same calendar_created event, same work-order enqueue. The
+    // TITLE-PARSING above this line stays here: it is sync-specific (the
+    // approval route already knows its studio/guest structurally, with no
+    // text to parse), and the shared function takes resolved values only.
+    const createResult = await createProductionFromEvent(admin, {
+      show: {
+        id: show.id,
+        name: show.name,
         client_id: show.client_id,
-        kind,
-        // which contract this session belongs to (0056). This is an
-        // ATTRIBUTION, not a charge: on_production_approved only creates a job
-        // when kind='client', and a contract show's productions are
-        // kind='contract'. The money still comes from milestones alone. What
-        // it buys is the per-contract delivery picture ("7 episodes in the
-        // contract, 4 recorded") and, in the switched-show case, a job that
-        // already carries its contract.
-        contract_id: contractByShow.get(show.id) ?? null,
-        record_date: recordDate,
-        record_time: action.event.start ? israelTimeHHMM(action.event.start) : null,
-        guest: titleParts.guest,
-        // The TITLE names the studio, and it overrides the show's default
-        // (owner spec 2026-08-19). event.location does NOT: it is a street
-        // address ("החשמונאים 105, תל אביב-יפו, ישראל"), present on 11% of the
-        // feed, and reading it as a studio name put a raw address in this
-        // column on 20% of calendar-created productions. camera_count still
-        // has no override at all, it's a straight copy.
-        studio: titleParts.studio ?? show.default_studio ?? null,
+        billing_mode: show.billing_mode,
+        default_studio: show.default_studio,
         camera_count: show.camera_count,
-        // deliverables composition, copied show -> production (0055). Same
-        // template semantics as camera_count and default_rate (0032): editing
-        // the show affects NEW productions only, never retroactively. The
-        // create_default_stages trigger reads these off the inserted row to
-        // decide which stage lines to seed.
+        default_editor_id: show.default_editor_id,
         has_episode: show.has_episode,
         reels_count: show.reels_count,
-        calendar_uid: action.event.uid,
-        calendar_synced_at: new Date().toISOString(),
-        legacy: false,
-      })
-      // `status` is read back rather than restated: it is the column's DEFAULT
-      // ('עתיד_להתחיל'), and the work-order enqueue below needs the value the
-      // DB actually wrote — see the per_hour branch of checkEligibility.
-      .select("id,status")
-      .single();
-    if (error) throw new Error(error.message);
-    created++;
-    // "עורך קבוע" — auto-assign to the edit steps the 6-stage trigger just created
-    if (show.default_editor_id && inserted) {
-      await admin.from("stages").update({ assignee_id: show.default_editor_id }).eq("production_id", inserted.id).eq("step", "edit");
-    }
-    await admin.from("events").insert({
-      entity_type: "production",
-      entity_id: inserted!.id,
-      event_type: "calendar_created",
-      payload: { calendar_uid: action.event.uid, title: action.event.title, show: show.name },
-    });
-
-    // A new production owes a work order — but nothing is issued here. It is
-    // QUEUED for the bookkeeper (owner spec 2026-07-19); an ineligible
-    // production is not queued and gets a 🟡 with the reason instead. A
-    // split production is several rows through this same loop, so each
-    // episode queues its own document.
-    const enq = await enqueueDocument(admin, "work_order", {
-      id: inserted!.id,
-      kind,
-      legacy: false,
-      client_id: show.client_id,
-      show_id: show.id,
-      podcast_name: show.name,
-      record_date: recordDate,
-      // the same value just written to the production — the guest belongs on
-      // the printed line, not only in the drawer
+      },
+      contractId: contractByShow.get(show.id) ?? null,
+      recordDate,
+      // The TITLE names the studio, and it overrides the show's default
+      // (owner spec 2026-08-19). event.location does NOT: it is a street
+      // address ("החשמונאים 105, תל אביב-יפו, ישראל"), present on 11% of the
+      // feed, and reading it as a studio name put a raw address in this
+      // column on 20% of calendar-created productions. The fallback to
+      // show.default_studio when titleParts.studio is null lives INSIDE the
+      // shared function (buildProductionInsert) — passed here unresolved.
+      studio: titleParts.studio,
+      recordTime: action.event.start ? israelTimeHHMM(action.event.start) : null,
       guest: titleParts.guest,
-      // 0067: an hourly show's production is created with no hours (the
-      // session hasn't happened), and this status is what tells
-      // checkEligibility that their absence is the calendar, not a fault —
-      // documented silence instead of a 🟡 on every future episode. The work
-      // order for such a show is created later, by the hours route.
-      status: inserted!.status,
+      calendarUid: action.event.uid,
+      eventTitle: action.event.title,
+      source: "sync",
+      now: new Date(),
     });
-    if (enq.status === "queued") queuedWorkOrders++;
-    else if (enq.status === "accrued") accruedWorkOrders++;
-    else if (enq.status === "blocked") blockedWorkOrders++;
-    else if (enq.status === "error") erroredWorkOrders++;
+    created++;
+
+    if (createResult.enqueue.status === "queued") queuedWorkOrders++;
+    else if (createResult.enqueue.status === "accrued") accruedWorkOrders++;
+    else if (createResult.enqueue.status === "blocked") blockedWorkOrders++;
+    else if (createResult.enqueue.status === "error") erroredWorkOrders++;
   }
 
   for (const action of plan.toUpdate) {

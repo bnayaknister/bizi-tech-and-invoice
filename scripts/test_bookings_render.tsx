@@ -25,7 +25,9 @@ import BookingsBody, {
   approveQuestion,
   declineQuestion,
   guestWarns,
+  calendarFailedText,
   type ApprovedPanel,
+  type CalendarWriteState,
 } from "../src/app/bookings/BookingsBody";
 import { splitQueue, NO_GUEST, type QueueRow, type QueueView } from "../src/lib/booking/queue";
 import { israelInstant } from "../src/lib/calendar/availability";
@@ -87,6 +89,9 @@ function row(over: Partial<QueueRow> = {}): QueueRow {
     status: "pending",
     created_at: iso("2026-09-24", 14, 3),
     alias: SHOW,
+    calendarWriteStatus: null,
+    calendarWriteError: null,
+    productionId: null,
     ...over,
   };
 }
@@ -114,6 +119,16 @@ const BASE: BodyProps = {
   onConfirmDecline: () => {},
   onCancelDialog: () => {},
   onCopyTitle: () => {},
+  onRetryCalendar: () => {},
+  retryingId: null,
+};
+
+const NO_CALENDAR_WRITE: CalendarWriteState = {
+  status: null,
+  error: null,
+  htmlLink: null,
+  dryRun: false,
+  productionId: null,
 };
 
 const render = (props: Partial<BodyProps> = {}) =>
@@ -241,7 +256,7 @@ console.log("\n=== 7. just approved: the calendar hand-off ===");
 {
   const v = viewOf(row({ guest: "דנה לוי" }));
   const title = eventTitle({ alias: SHOW, guest: "דנה לוי", studio: GIVON });
-  const panel: ApprovedPanel = { view: v, title, googleUrl: v.googleUrl };
+  const panel: ApprovedPanel = { view: v, title, googleUrl: v.googleUrl, calendar: NO_CALENDAR_WRITE };
   const html = render({ approved: panel });
 
   check("the lead sentence once", countOf(html, COPY.approvedLead), 1);
@@ -259,6 +274,77 @@ console.log("\n=== 7. just approved: the calendar hand-off ===");
 
   const copied = render({ approved: panel, copiedTitleId: v.id });
   check("after copying: the confirmation once", countOf(copied, COPY.titleCopied), 1);
+}
+
+console.log("\n=== 7b. the calendar write's own state — four mutually exclusive renders (feat/calendar-write, 7.10) ===");
+{
+  const v = viewOf(row({ guest: "דנה לוי" }));
+  const title = eventTitle({ alias: SHOW, guest: "דנה לוי", studio: GIVON });
+  const panelWith = (calendar: CalendarWriteState): ApprovedPanel => ({ view: v, title, googleUrl: v.googleUrl, calendar });
+
+  // ── dry-run: zero calls were ever made, so nothing else renders ──────────
+  const dry = render({ approved: panelWith({ status: null, error: null, htmlLink: null, dryRun: true, productionId: null }) });
+  check("dry-run notice once", countOf(dry, COPY.calendarDryRunNotice), 1);
+  check("dry-run: 0 × created text", countOf(dry, COPY.calendarCreated), 0);
+  check("dry-run: 0 × retry button", countButton(dry, COPY.retryCalendar), 0);
+  check("dry-run: the template google button is STILL there (owner, step 5 — fallback)", countAnchor(dry, COPY.openInGoogle), 1);
+
+  // ── created, with both links ───────────────────────────────────────────
+  const created = render({
+    approved: panelWith({
+      status: "created",
+      error: null,
+      htmlLink: "https://calendar.google.com/event?eid=abc",
+      dryRun: false,
+      productionId: "prod-1",
+    }),
+  });
+  check("created notice once", countOf(created, COPY.calendarCreated), 1);
+  check("the event link once", countAnchor(created, COPY.eventLink), 1);
+  check("the production link once", countOf(created, `href="/productions/prod-1"`), 1);
+  check("created: 0 × dry-run notice", countOf(created, COPY.calendarDryRunNotice), 0);
+  check("created: 0 × retry button", countButton(created, COPY.retryCalendar), 0);
+
+  // ── created, but without a link or a production (the dry-run-adjacent
+  //    edge the owner's spec calls out: "dry mode — no production created") ──
+  const createdNoLinks = render({
+    approved: panelWith({ status: "created", error: null, htmlLink: null, dryRun: false, productionId: null }),
+  });
+  check("created with no link: 0 × event link", countAnchor(createdNoLinks, COPY.eventLink), 0);
+  check("created with no link: 0 × production link", countOf(createdNoLinks, "/productions/"), 0);
+  check("created with no link: the sentence still renders once", countOf(createdNoLinks, COPY.calendarCreated), 1);
+
+  // ── failed, with the server's own error dropped into the approved template ──
+  const failed = render({
+    approved: panelWith({ status: "failed", error: "פג הזמן הקצוב", htmlLink: null, dryRun: false, productionId: null }),
+  });
+  const failedText = calendarFailedText("פג הזמן הקצוב");
+  check("the failure sentence once, with the error inside it", countOf(failed, failedText), 1);
+  check("the failure wording is the approved template", calendarFailedText("X"), "האישור נשמר, אך היצירה ביומן נכשלה — X. אפשר לנסות שוב.");
+  check("the retry button once", countButton(failed, COPY.retryCalendar), 1);
+  check("failed: 0 × created text", countOf(failed, COPY.calendarCreated), 0);
+  check("failed: 0 × dry-run notice", countOf(failed, COPY.calendarDryRunNotice), 0);
+  check("the retry button is enabled when nothing is in flight", countRe(failed, /disabled=""/g), 0);
+
+  const retrying = render({
+    approved: panelWith({ status: "failed", error: "שגיאה", htmlLink: null, dryRun: false, productionId: null }),
+    retryingId: v.id,
+  });
+  check("the retry button disables while ITS retry is in flight", countRe(retrying, /disabled=""/g), 1);
+
+  // ── a row from before this feature, or whose write never ran: nothing new ──
+  const nothingYet = render({ approved: panelWith(NO_CALENDAR_WRITE) });
+  check("nothing-yet: 0 × created", countOf(nothingYet, COPY.calendarCreated), 0);
+  check("nothing-yet: 0 × dry-run notice", countOf(nothingYet, COPY.calendarDryRunNotice), 0);
+  check("nothing-yet: 0 × retry button", countButton(nothingYet, COPY.retryCalendar), 0);
+  check("nothing-yet: the template google button is the only hand-off", countAnchor(nothingYet, COPY.openInGoogle), 1);
+
+  // ── retryingId for a DIFFERENT row must not disable this one's button ──────
+  const otherRetrying = render({
+    approved: panelWith({ status: "failed", error: "שגיאה", htmlLink: null, dryRun: false, productionId: null }),
+    retryingId: "some-other-row",
+  });
+  check("a retry in flight on another row leaves this button enabled", countRe(otherRetrying, /disabled=""/g), 0);
 }
 
 console.log("\n=== 8. the hand-off is on EVERY approved history row, not only the fresh one ===");
@@ -280,6 +366,36 @@ console.log("\n=== 8. the hand-off is on EVERY approved history row, not only th
   const onlyDeclined = render({ history: splitQueue([declinedRow], NOW).history });
   check("a declined row alone: 0 google links", countRe(onlyDeclined, /calendar\.google\.com/g), 0);
   check("and 0 wa.me links", countRe(onlyDeclined, /wa\.me/g), 0);
+}
+
+console.log("\n=== 8b. a reloaded history row carries its OWN calendar state (calendarStateFromView) ===");
+{
+  // htmlLink/dryRun are never persisted (0099 has no columns for either) — a
+  // row reloaded from the database can only ever show status/error/productionId.
+  const createdRow = row({
+    id: "cr",
+    status: "approved",
+    start_at: iso(SUN, 15),
+    end_at: iso(SUN, 16, 30),
+    calendarWriteStatus: "created",
+    productionId: "prod-9",
+  });
+  const createdHtml = render({ history: splitQueue([createdRow], NOW).history });
+  check("history row: created notice once", countOf(createdHtml, COPY.calendarCreated), 1);
+  check("history row: 0 × event link — htmlLink is never persisted", countAnchor(createdHtml, COPY.eventLink), 0);
+  check("history row: the production link is still there", countOf(createdHtml, `href="/productions/prod-9"`), 1);
+
+  const failedRow = row({
+    id: "fl",
+    status: "approved",
+    start_at: iso(SUN, 15),
+    end_at: iso(SUN, 16, 30),
+    calendarWriteStatus: "failed",
+    calendarWriteError: "שגיאת רשת",
+  });
+  const failedHtml = render({ history: splitQueue([failedRow], NOW).history });
+  check("history row: the failure sentence once", countOf(failedHtml, calendarFailedText("שגיאת רשת")), 1);
+  check("history row: the retry button once", countButton(failedHtml, COPY.retryCalendar), 1);
 }
 
 console.log("\n=== 9. just declined ===");
@@ -316,7 +432,7 @@ console.log("\n=== 11. malformed props must not take the page down ===");
     ["approveFor with an empty waiting list", { approveFor: v }],
     ["declineFor with an empty waiting list", { declineFor: v }],
     ["both dialogs at once", { approveFor: v, declineFor: v }],
-    ["approved panel with an empty title", { approved: { view: v, title: "", googleUrl: v.googleUrl } }],
+    ["approved panel with an empty title", { approved: { view: v, title: "", googleUrl: v.googleUrl, calendar: NO_CALENDAR_WRITE } }],
     ["copiedTitleId for a row that is not shown", { copiedTitleId: "nope" }],
   ];
   for (const [label, props] of knockouts) {

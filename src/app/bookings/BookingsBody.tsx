@@ -46,7 +46,25 @@ export const COPY = {
   titleCopied: "הכותרת הועתקה",
   declined: "הבקשה נדחתה.",
   declinedWhatsapp: "הודעה בוואטסאפ",
+  // ⚠️ feat/calendar-write (7.10) — approved wording, word for word.
+  calendarCreated: "נוצר ביומן גוגל.",
+  calendarDryRunNotice: "מצב בדיקה — האירוע לא נוצר ביומן.",
+  retryCalendar: "נסה שוב ליצור ביומן",
+  eventLink: "קישור לאירוע",
+  productionLink: "ההפקה שנוצרה",
 } as const;
+
+/**
+ * "האישור נשמר, אך היצירה ביומן נכשלה — {שגיאה}. אפשר לנסות שוב." — approved
+ * wording with the server's own error dropped in. A FUNCTION, not a frozen
+ * COPY string, for the same reason approvedWhatsappText/declinedWhatsappText
+ * live outside COPY: the sentence carries data COPY cannot hold literally.
+ * The render suite checks the two STATIC halves independently, around
+ * whatever error text sits between them.
+ */
+export function calendarFailedText(error: string): string {
+  return `האישור נשמר, אך היצירה ביומן נכשלה — ${error}. אפשר לנסות שוב.`;
+}
 
 /** "לאשר הקלטה של דעה לא פופולרית ביום א׳ 27.9, 09:00–10:30, אולפן גבעון?" */
 export function approveQuestion(v: QueueView): string {
@@ -76,11 +94,41 @@ export function guestWarns(guest: string | null | undefined): boolean {
   return namesAnyRoom(guest, STUDIOS);
 }
 
+/**
+ * The calendar write's outcome, for ONE approved row — whether that row is
+ * the just-approved ephemeral panel (built fresh from the approve response)
+ * or a historical row reloaded from the database (built from QueueView's own
+ * three fields). `htmlLink` and `dryRun` are NEVER persisted (0099 does not
+ * carry a column for either — see the PR report on why), so a reloaded
+ * historical row always carries `htmlLink: null, dryRun: false`: the
+ * TEMPLATE "פתיחה ביומן גוגל" button is what stays reliable for it, exactly
+ * as the owner's own instruction keeps it as a fallback.
+ */
+export type CalendarWriteState = {
+  status: "created" | "failed" | null;
+  error: string | null;
+  htmlLink: string | null;
+  dryRun: boolean;
+  productionId: string | null;
+};
+
+export function calendarStateFromView(v: QueueView): CalendarWriteState {
+  return {
+    status: v.calendarWriteStatus,
+    error: v.calendarWriteError,
+    htmlLink: null,
+    dryRun: false,
+    productionId: v.productionId,
+  };
+}
+
 export type ApprovedPanel = {
   view: QueueView;
   /** the title the SERVER built from the stored row */
   title: string;
   googleUrl: string;
+  /** the FRESH result from the approve response — `view` itself predates it */
+  calendar: CalendarWriteState;
 };
 
 export default function BookingsBody({
@@ -99,6 +147,8 @@ export default function BookingsBody({
   onConfirmDecline,
   onCancelDialog,
   onCopyTitle,
+  onRetryCalendar,
+  retryingId,
 }: {
   waiting: QueueView[];
   history: QueueView[];
@@ -115,6 +165,10 @@ export default function BookingsBody({
   onConfirmDecline: (v: QueueView) => void;
   onCancelDialog: () => void;
   onCopyTitle: (v: QueueView, title: string) => void;
+  /** feat/calendar-write (7.10) — retry a failed/never-attempted write */
+  onRetryCalendar: (v: QueueView) => void;
+  /** the one row currently retrying, so only ITS button disables */
+  retryingId: string | null;
 }) {
   // every array is defaulted before it is walked — the habit from 2026-09-15,
   // where an undefined the TYPE promised took a page down
@@ -137,6 +191,8 @@ export default function BookingsBody({
           panel={approved}
           copied={copiedTitleId === approved.view.id}
           onCopyTitle={onCopyTitle}
+          onRetryCalendar={onRetryCalendar}
+          retrying={retryingId === approved.view.id}
         />
       ) : null}
 
@@ -159,6 +215,8 @@ export default function BookingsBody({
                 onAskApprove={onAskApprove}
                 onAskDecline={onAskDecline}
                 onCopyTitle={onCopyTitle}
+                onRetryCalendar={onRetryCalendar}
+                retrying={retryingId === v.id}
               />
             ))}
           </div>
@@ -183,6 +241,8 @@ export default function BookingsBody({
                 onAskApprove={onAskApprove}
                 onAskDecline={onAskDecline}
                 onCopyTitle={onCopyTitle}
+                onRetryCalendar={onRetryCalendar}
+                retrying={retryingId === v.id}
               />
             ))}
           </div>
@@ -226,6 +286,8 @@ function Row({
   onAskApprove,
   onAskDecline,
   onCopyTitle,
+  onRetryCalendar,
+  retrying,
 }: {
   v: QueueView;
   busy: boolean;
@@ -233,6 +295,8 @@ function Row({
   onAskApprove: (v: QueueView) => void;
   onAskDecline: (v: QueueView) => void;
   onCopyTitle: (v: QueueView, title: string) => void;
+  onRetryCalendar: (v: QueueView) => void;
+  retrying: boolean;
 }) {
   return (
     <div className="rounded-lg border border-[var(--rule)] p-3 space-y-1.5">
@@ -293,6 +357,9 @@ function Row({
           googleUrl={v.googleUrl}
           copied={copied}
           onCopyTitle={onCopyTitle}
+          calendar={calendarStateFromView(v)}
+          onRetryCalendar={onRetryCalendar}
+          retrying={retrying}
         />
       ) : null}
     </div>
@@ -313,12 +380,18 @@ function HandoffButtons({
   googleUrl,
   copied,
   onCopyTitle,
+  calendar,
+  onRetryCalendar,
+  retrying,
 }: {
   view: QueueView;
   title: string;
   googleUrl: string;
   copied: boolean;
   onCopyTitle: (v: QueueView, title: string) => void;
+  calendar: CalendarWriteState;
+  onRetryCalendar: (v: QueueView) => void;
+  retrying: boolean;
 }) {
   const href = whatsappComposeHref(
     approvedWhatsappText({
@@ -360,18 +433,94 @@ function HandoffButtons({
         </a>
       </div>
       {copied ? <p className="text-[11px] text-[var(--cyan)]">{COPY.titleCopied}</p> : null}
+
+      {/* feat/calendar-write (7.10) — the four states. "פתיחה ביומן גוגל"
+          above stays available in EVERY one of them (owner, step 5): the
+          event write is new, the manual paste is the proven fallback. */}
+      <CalendarStatus
+        view={view}
+        calendar={calendar}
+        onRetryCalendar={onRetryCalendar}
+        retrying={retrying}
+      />
     </div>
   );
+}
+
+/**
+ * The calendar write's own state, under the three existing hand-off buttons.
+ * Four mutually exclusive renders — dry-run, created, failed, or "nothing to
+ * say yet" — and exactly one of them for any row, never two at once.
+ */
+function CalendarStatus({
+  view,
+  calendar,
+  onRetryCalendar,
+  retrying,
+}: {
+  view: QueueView;
+  calendar: CalendarWriteState;
+  onRetryCalendar: (v: QueueView) => void;
+  retrying: boolean;
+}) {
+  if (calendar.dryRun) {
+    return <p className="text-[11px] text-[var(--faint)] pt-0.5">{COPY.calendarDryRunNotice}</p>;
+  }
+  if (calendar.status === "created") {
+    return (
+      <div className="flex flex-wrap items-center gap-2 pt-0.5">
+        <p className="text-[11px] text-[var(--cyan)]">{COPY.calendarCreated}</p>
+        {calendar.htmlLink ? (
+          <a
+            href={calendar.htmlLink}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[11px] underline text-[var(--signal)]"
+          >
+            {COPY.eventLink}
+          </a>
+        ) : null}
+        {calendar.productionId ? (
+          <a href={`/productions/${calendar.productionId}`} className="text-[11px] underline text-[var(--signal)]">
+            {COPY.productionLink}
+          </a>
+        ) : null}
+      </div>
+    );
+  }
+  if (calendar.status === "failed") {
+    return (
+      <div className="space-y-1 pt-0.5">
+        <p className="text-[11px] text-rose-400">{calendarFailedText(calendar.error ?? "")}</p>
+        <button
+          type="button"
+          disabled={retrying}
+          onClick={() => onRetryCalendar(view)}
+          className="rounded-lg px-2.5 py-1 text-[11px] border border-rose-500/60 text-rose-300 disabled:opacity-50"
+        >
+          {COPY.retryCalendar}
+        </button>
+      </div>
+    );
+  }
+  // status === null and not dryRun: a row from before this feature existed,
+  // or one whose write genuinely never ran. Nothing to say — the TEMPLATE
+  // button above is the only hand-off this row has ever had.
+  return null;
 }
 
 function ApprovedCard({
   panel,
   copied,
   onCopyTitle,
+  onRetryCalendar,
+  retrying,
 }: {
   panel: ApprovedPanel;
   copied: boolean;
   onCopyTitle: (v: QueueView, title: string) => void;
+  onRetryCalendar: (v: QueueView) => void;
+  retrying: boolean;
 }) {
   return (
     <div className="rounded-lg border border-[var(--cyan)]/50 bg-[var(--cyan)]/5 p-3 space-y-2">
@@ -383,6 +532,9 @@ function ApprovedCard({
         googleUrl={panel.googleUrl}
         copied={copied}
         onCopyTitle={onCopyTitle}
+        calendar={panel.calendar}
+        onRetryCalendar={onRetryCalendar}
+        retrying={retrying}
       />
     </div>
   );

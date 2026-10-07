@@ -31,6 +31,7 @@ export default function BookingsClient({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedTitleId, setCopiedTitleId] = useState<string | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
 
   const onConfirmApprove = useCallback(
     async (v: QueueView) => {
@@ -42,7 +43,15 @@ export default function BookingsClient({
         const body = (await res.json().catch(() => ({}))) as {
           ok?: boolean;
           error?: string;
-          request?: { title: string; showName: string };
+          request?: {
+            title: string;
+            showName: string;
+            calendarWriteStatus: "created" | "failed" | null;
+            calendarWriteError: string | null;
+            calendarHtmlLink: string | null;
+            calendarDryRun: boolean;
+            productionId: string | null;
+          };
         };
         if (!res.ok || !body.ok || !body.request) {
           // The server's sentence verbatim: the two 409s and the feed failure
@@ -54,7 +63,20 @@ export default function BookingsClient({
         // row through eventTitle. The screen never assembles a calendar title
         // out of its own state — that is the string the sync will read back,
         // and it must not be able to disagree with the database.
-        setApproved({ view: v, title: body.request.title, googleUrl: v.googleUrl });
+        setApproved({
+          view: v,
+          title: body.request.title,
+          googleUrl: v.googleUrl,
+          // the FRESH write result — never derived from `v`, which predates
+          // the approve call entirely
+          calendar: {
+            status: body.request.calendarWriteStatus,
+            error: body.request.calendarWriteError,
+            htmlLink: body.request.calendarHtmlLink,
+            dryRun: body.request.calendarDryRun,
+            productionId: body.request.productionId,
+          },
+        });
         setDeclineFor(null);
         // Re-read the lists: this row leaves "ממתינות", and every other pending
         // request in the same room may have just become unapprovable.
@@ -95,6 +117,62 @@ export default function BookingsClient({
   );
 
   /**
+   * Retry a failed (or never-attempted) calendar write — 0099, E8. No change
+   * to the approval itself: only the three calendar columns and, on success,
+   * the production. `retryingId` gates the ONE button that was clicked, not
+   * `busy` — approve/decline stay enabled while a retry is in flight,
+   * because they act on a different row.
+   */
+  const onRetryCalendar = useCallback(
+    async (v: QueueView) => {
+      if (retryingId) return;
+      setRetryingId(v.id);
+      setError(null);
+      try {
+        const res = await fetch(`/api/bookings/${v.id}/retry-calendar`, { method: "POST", cache: "no-store" });
+        const body = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          error?: string;
+          request?: {
+            calendarWriteStatus: "created" | "failed" | null;
+            calendarWriteError: string | null;
+            calendarHtmlLink: string | null;
+            calendarDryRun: boolean;
+            productionId: string | null;
+          };
+        };
+        if (!res.ok || !body.ok || !body.request) {
+          setError(body.error ?? GENERIC);
+          return;
+        }
+        // The ephemeral panel, if it's the row that was just retried, carries
+        // the fresh result forward — a reloaded history row picks it up
+        // through `router.refresh()` and `calendarStateFromView` instead.
+        setApproved((prev) =>
+          prev && prev.view.id === v.id
+            ? {
+                ...prev,
+                calendar: {
+                  status: body.request!.calendarWriteStatus,
+                  error: body.request!.calendarWriteError,
+                  htmlLink: body.request!.calendarHtmlLink,
+                  dryRun: body.request!.calendarDryRun,
+                  productionId: body.request!.productionId,
+                },
+              }
+            : prev
+        );
+        router.refresh();
+      } catch {
+        setError(GENERIC);
+      } finally {
+        setRetryingId(null);
+      }
+    },
+    [retryingId, router]
+  );
+
+  /**
    * The title to the clipboard.
    *
    * The write is INSIDE the try: navigator.clipboard rejects on an insecure
@@ -123,6 +201,7 @@ export default function BookingsClient({
       busy={busy}
       error={error}
       copiedTitleId={copiedTitleId}
+      retryingId={retryingId}
       onAskApprove={(v) => {
         setApproveFor(v);
         setError(null);
@@ -138,6 +217,7 @@ export default function BookingsClient({
         setDeclineFor(null);
       }}
       onCopyTitle={(v, title) => void onCopyTitle(v, title)}
+      onRetryCalendar={(v) => void onRetryCalendar(v)}
     />
   );
 }

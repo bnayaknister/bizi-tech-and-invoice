@@ -33,6 +33,21 @@ export function israelDate(d: Date): string {
   return ISRAEL_DAY.format(d);
 }
 
+// "HH:MM" in Israel local time. Moved here from calendar/sync/route.ts
+// (feat/calendar-write, 7.10) so the booking-approval route — the SECOND
+// caller that needs to stamp a production's `record_time` from an instant —
+// does not carry its own copy. Zero behaviour change: same formatter, same
+// options, same output; only the file it lives in moved.
+const ISRAEL_TIME = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Jerusalem",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+export function israelTimeHHMM(d: Date): string {
+  return ISRAEL_TIME.format(d);
+}
+
 // Which month a production belongs to, "YYYY-MM".
 //
 // record_date is the business truth — the day the work happened — and
