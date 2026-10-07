@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { displayDate } from "@/lib/dates";
-import { emptyCellAction, type EmptyCellDecision } from "@/lib/projects/emptyCellAction";
+import { emptyCellAction, type EmptyCellDecision, type SkipWarning } from "@/lib/projects/emptyCellAction";
 import { DOC_TYPES, DOC_TYPE_LABEL } from "@/lib/documents/forProduction";
 import { type MilestoneState } from "@/lib/finance/milestone";
 import { countByMonth, type EmptyReason, type Stuck } from "@/lib/projects/stuck";
@@ -213,6 +213,14 @@ function DocCell({
       <span className="text-[var(--ink-faint)]">—</span>
     );
 
+    // ═══ the skip path asks first (owner decision א, 7.10) ═══
+    // A 305/320 raised straight off a work order means the deal invoice is
+    // never going to exist, and a blank cell cannot show that. So this one
+    // path is a BUTTON that opens a confirmation, and the navigation happens
+    // only on "המשך" — everything else about the cell is unchanged.
+    if (action?.active && action.href && action.warn) {
+      return <SkipCell href={action.href} title={action.reason} warn={action.warn} body={body} />;
+    }
     if (action?.active && action.href) {
       return (
         <Link
@@ -963,6 +971,83 @@ export default function ProjectsClient({
         </>
       )}
     </main>
+  );
+}
+
+/**
+ * The one cell that asks before it navigates — the 100 -> 305/320 skip
+ * (owner decision א, 7.10).
+ *
+ * ⚠️ IT STILL ONLY NAVIGATES. "המשך" pushes the same registry href every
+ * other active cell links to; nothing here creates, queues or decides
+ * anything about a document, and /projects calls no creation route. The
+ * dialog exists because the cell is blank and the fact it hides — that the
+ * deal invoice will never exist — is the one thing the bookkeeper cannot
+ * read off a dash.
+ *
+ * The panel copies MODAL_OVERLAY / MODAL_PANEL rather than inventing a look:
+ * the same two constants every other modal in the app uses, click-outside to
+ * dismiss, stopPropagation on the panel.
+ */
+function SkipCell({
+  href,
+  title,
+  warn,
+  body,
+}: {
+  href: string;
+  title: string | null;
+  warn: SkipWarning;
+  body: React.ReactNode;
+}) {
+  const [asking, setAsking] = useState(false);
+
+  return (
+    <>
+      <button
+        type="button"
+        title={title ?? undefined}
+        onClick={() => setAsking(true)}
+        className="block w-full cursor-pointer rounded px-1 -mx-1 text-right ring-1 ring-transparent hover:ring-[var(--cyan)]/50"
+      >
+        {body}
+      </button>
+      {asking && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={MODAL_OVERLAY}
+          onClick={() => setAsking(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-2xl border border-[var(--rule2)] p-5 shadow-2xl"
+            style={MODAL_PANEL}
+          >
+            <h2 className="mb-3 text-sm font-bold">{warn.title}</h2>
+            <p className="mb-4 text-sm leading-relaxed">{warn.body}</p>
+            <div className="flex gap-2">
+              {/* a Link, not router.push: it is the SAME navigation every
+                  other active cell performs, and it needs no router hook —
+                  which matters because `useRouter` requires an app-router
+                  context that `renderToString` has none of, and the offline
+                  render suite caught exactly that. */}
+              <Link
+                href={href}
+                className="flex-1 rounded-xl bg-[var(--signal)] px-4 py-2 text-center text-xs font-bold text-white"
+              >
+                {warn.confirm}
+              </Link>
+              <button
+                onClick={() => setAsking(false)}
+                className="flex-1 rounded-xl border border-[var(--rule)] px-4 py-2 text-xs"
+              >
+                {warn.cancel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

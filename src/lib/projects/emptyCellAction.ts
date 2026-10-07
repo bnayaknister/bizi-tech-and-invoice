@@ -61,6 +61,18 @@ export type EmptyCellInput = {
   cadence: Cadence;
 };
 
+/**
+ * The confirmation an active cell must get THROUGH before it navigates —
+ * present only on the 100 -> 305/320 path (owner decision א, 7.10).
+ *
+ * It exists because that path SKIPS A RUNG: the deal invoice that normally
+ * sits between the work order and the tax document is simply not going to
+ * exist. `ALLOWED_CHILDREN` permits it and the registry offers it, so this is
+ * not a refusal — it is the one fact the bookkeeper cannot see from a blank
+ * cell, stated before she leaves the screen that shows it.
+ */
+export type SkipWarning = { title: string; body: string; confirm: string; cancel: string };
+
 export type EmptyCellDecision = {
   /** cursor + hover ring, and a click that goes somewhere useful */
   active: boolean;
@@ -68,29 +80,46 @@ export type EmptyCellDecision = {
   reason: string | null;
   /** where a click goes. Null = not clickable at all. */
   href: string | null;
+  /** when set, the click must be confirmed BEFORE the href is followed */
+  warn: SkipWarning | null;
 };
 
-const INERT: EmptyCellDecision = { active: false, reason: null, href: null };
+const INERT: EmptyCellDecision = { active: false, reason: null, href: null, warn: null };
+
+/** The approved wording, word for word (owner decision א, 7.10). */
+export function skipWarningFor(orderNumber: string): SkipWarning {
+  return {
+    title: "דילוג על חשבון עסקה",
+    body: `להזמנת העבודה ${orderNumber} אין חשבון עסקה. המסמך יונפק ישירות מהזמנת העבודה, בלי חשבון עסקה באמצע. להמשיך?`,
+    confirm: "המשך",
+    cancel: "ביטול",
+  };
+}
 
 /** The redemption screen — where an accruing client's bundle is actually released. */
 const REDEMPTION_HREF = "/documents/accrued";
 const CONTRACTS_HREF = "/contracts";
 
 /**
- * Which document type fathers which cell, per E10's declared scope.
+ * Which document types may father which cell, IN PREFERENCE ORDER.
  *
- * ⚠️ NARROWER THAN `ALLOWED_CHILDREN` ON PURPOSE, and the gap is reported
- * rather than closed here: the allow-list also lets a work order father a
- * 305/320 DIRECTLY (taxFromParent.ts:83-86), and the registry does offer
- * that button. E10's scope names only 300←100, 305/320←300 and 400←305, so
- * that is what this table says. Widening it is a scope decision, not a code
- * detail, so it is left alone.
+ * Widened on 7.10 (owner decision א) to match `ALLOWED_CHILDREN`: a work
+ * order may father a 305/320 directly (taxFromParent.ts:83-86), and the
+ * registry has always offered that button. Until then this table named only
+ * the 300 rung and the cell stayed dark on a row that had a work order and
+ * no deal invoice — the registry would have accepted the click.
+ *
+ * 🔴 ORDER IS THE RULE, NOT A HINT. 300 comes first for 305/320, so the
+ * ordinary rung wins whenever it exists and the skip path is reached only
+ * when there is no deal invoice to use. The first type that has ANY live
+ * document is the one committed to — see `emptyCellAction` on why a CLOSED
+ * deal invoice therefore blocks the skip rather than falling through to it.
  */
-const PARENT_OF: Record<number, number> = {
-  [MORNING_DOC_CODE.deal_invoice]: MORNING_DOC_CODE.order, // 300 ← 100
-  [MORNING_DOC_CODE.tax_invoice]: MORNING_DOC_CODE.deal_invoice, // 305 ← 300
-  [MORNING_DOC_CODE.tax_receipt]: MORNING_DOC_CODE.deal_invoice, // 320 ← 300
-  [MORNING_DOC_CODE.receipt]: MORNING_DOC_CODE.tax_invoice, // 400 ← 305, never ← 320
+const PARENTS_OF: Record<number, number[]> = {
+  [MORNING_DOC_CODE.deal_invoice]: [MORNING_DOC_CODE.order], // 300 ← 100
+  [MORNING_DOC_CODE.tax_invoice]: [MORNING_DOC_CODE.deal_invoice, MORNING_DOC_CODE.order], // 305 ← 300, else ← 100
+  [MORNING_DOC_CODE.tax_receipt]: [MORNING_DOC_CODE.deal_invoice, MORNING_DOC_CODE.order], // 320 ← 300, else ← 100
+  [MORNING_DOC_CODE.receipt]: [MORNING_DOC_CODE.tax_invoice], // 400 ← 305, never ← 320
 };
 
 /** Morning's numeric type -> the `PendingDocType` key `ALLOWED_CHILDREN` is indexed by. */
@@ -133,7 +162,7 @@ export function emptyCellAction(input: EmptyCellInput): EmptyCellDecision {
   // row in this table is supposed to already hold one, so an empty 100 is a
   // fact to surface, not an action to invite.
   if (docType === MORNING_DOC_CODE.order) {
-    return { active: false, reason: "חסרה הזמנת עבודה — חריג", href: null };
+    return { active: false, reason: "חסרה הזמנת עבודה — חריג", href: null, warn: null };
   }
 
   // ── milestone rows — the door is elsewhere, and targeting it would be new ──
@@ -147,6 +176,7 @@ export function emptyCellAction(input: EmptyCellInput): EmptyCellDecision {
       active: false,
       reason: "אבן דרך מחויבת ממסך החוזים, לפי אבן הדרך עצמה",
       href: CONTRACTS_HREF,
+      warn: null,
     };
   }
 
@@ -163,17 +193,41 @@ export function emptyCellAction(input: EmptyCellInput): EmptyCellDecision {
           ? "לקוח בחיוב חודשי — חשבון העסקה ייצא בפדיון בסוף החודש, ממסך הפדיון"
           : "לקוח בחיוב מצטבר — חשבון העסקה ייצא כשהאגד יתמלא, ממסך הפדיון",
       href: REDEMPTION_HREF,
+      warn: null,
     };
   }
 
-  const parentType = PARENT_OF[docType];
-  if (!parentType) return INERT;
+  const chain = PARENTS_OF[docType];
+  if (!chain) return INERT;
+
+  // ── which parent type this cell is actually raised from ───────────────────
+  // The first type in the chain that has ANY LIVE document wins, and the walk
+  // stops there — it does not keep looking for a type whose document happens
+  // to be open.
+  //
+  // 🔴 THAT IS THE WHOLE ANSWER TO "a 300 exists but is closed, and the 100
+  // is open". The walk commits to the 300 and reports it closed; it does NOT
+  // fall through to the work order and offer the skip. Owner decision א lights
+  // the skip path "בשורה שיש בה 100 פתוח ואין בה 300", and a closed deal
+  // invoice is still a deal invoice: the rung was not skipped, it was used and
+  // then closed. A CANCELLED one is different — it is void, the filter below
+  // drops it, and the row genuinely has no deal invoice, so the walk moves on
+  // and the skip path opens with its warning.
+  let parentType: number | null = null;
+  let candidates: CellDoc[] = [];
+  for (const t of chain) {
+    const live = docs.filter((d) => d.type === t && !d.cancelled);
+    if (live.length > 0) {
+      parentType = t;
+      candidates = live;
+      break;
+    }
+  }
 
   // A cancelled parent is not a parent. Nothing can be raised on it, and the
   // registry would refuse — so the cell says why instead of inviting a 409.
-  const candidates = docs.filter((d) => d.type === parentType && !d.cancelled);
-  if (candidates.length === 0) {
-    return { active: false, reason: "אין מסמך אב ברשימה שאפשר להנפיק על סמכו", href: null };
+  if (parentType === null) {
+    return { active: false, reason: "אין מסמך אב ברשימה שאפשר להנפיק על סמכו", href: null, warn: null };
   }
 
   const open = candidates.filter((d) => parentOpenness(d.status).open);
@@ -184,7 +238,12 @@ export function emptyCellAction(input: EmptyCellInput): EmptyCellDecision {
   // disagree about one fact.
   if (open.length === 0) {
     const label = parentOpenness(candidates[0].status).label;
-    return { active: false, reason: `המסמך האב ${label} במורנינג — לא ניתן להנפיק על סמכו`, href: null };
+    return {
+      active: false,
+      reason: `המסמך האב ${label} במורנינג — לא ניתן להנפיק על סמכו`,
+      href: null,
+      warn: null,
+    };
   }
 
   // ── decision 2 — more than one open parent: no picker, no bundling here ───
@@ -198,6 +257,7 @@ export function emptyCellAction(input: EmptyCellInput): EmptyCellDecision {
       active: false,
       reason: `יש ${open.length} מסמכי אב פתוחים — להנפיק מאוגד ממסך הרג'יסטרי`,
       href: `/documents/registry?tab=${encodeURIComponent(registryTabForType(parentType))}`,
+      warn: null,
     };
   }
 
@@ -215,12 +275,22 @@ export function emptyCellAction(input: EmptyCellInput): EmptyCellDecision {
       active: false,
       reason: "למסמך האב עוד אין מספר ממורנינג — לא ניתן לאתר אותו ברג'יסטרי",
       href: null,
+      warn: null,
     };
   }
 
+  // ── decision א — the skip, and the one fact a blank cell cannot show ─────
+  // Reached only when the chain fell past the deal invoice: the parent is the
+  // WORK ORDER and the cell is a tax document. The 300 cell is never warned
+  // about — its parent is a work order by design, nothing is being skipped.
+  const skipping = parentType === MORNING_DOC_CODE.order && docType !== MORNING_DOC_CODE.deal_invoice;
+
   return {
     active: true,
-    reason: `להנפקה על סמך ${parent.number} — נפתח ברג'יסטרי`,
+    reason: skipping
+      ? `אין חשבון עסקה — להנפקה ישירות מהזמנה ${parent.number}, נפתח ברג'יסטרי`
+      : `להנפקה על סמך ${parent.number} — נפתח ברג'יסטרי`,
     href: registryHref(parent),
+    warn: skipping ? skipWarningFor(parent.number) : null,
   };
 }

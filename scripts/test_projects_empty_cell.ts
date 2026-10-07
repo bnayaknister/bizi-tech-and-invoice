@@ -96,10 +96,101 @@ console.log("\n=== 1. the active cells, exactly the three rungs E10 declares ===
   const onlyOrder = [ORDER, DEAL, TAXINV, TAXREC, RECEIPT].map((t) =>
     emptyCellAction(input({ docType: t, docs: [doc(ORDER)] }))
   );
+  // ⚠️ WIDENED 7.10 (decision א): 305 and 320 now light up here too, through
+  // the SKIP path. Before, this row lit only the 300 cell — while the
+  // registry would have accepted a tax document raised straight off the
+  // order, which is what ALLOWED_CHILDREN has always said.
   check(
-    "a row with only an open 100: the 300 cell alone is active",
+    "a row with only an open 100: 300, 305 and 320 are all active",
     onlyOrder.map((d) => d.active),
-    [false, true, false, false, false]
+    [false, true, true, true, false] // 100 · 300 · 305 skip · 320 skip · 400 has no 305
+  );
+}
+
+console.log("\n=== 1b. 🔴 decision \u05D0 (7.10) \u2014 100 \u2192 305/320 directly, behind a skip warning ===");
+{
+  const skip305 = emptyCellAction(input({ docType: TAXINV, docs: [doc(ORDER, { number: "10311" })] }));
+  check("305 with an open 100 and NO 300 \u2192 active", skip305.active, true);
+  check("...through the work order, not a deal invoice", skip305.href, "/documents/registry?tab=work_order&q=10311");
+  check("...and the reason says the 300 is being skipped", skip305.reason, "\u05D0\u05D9\u05DF \u05D7\u05E9\u05D1\u05D5\u05DF \u05E2\u05E1\u05E7\u05D4 \u2014 \u05DC\u05D4\u05E0\u05E4\u05E7\u05D4 \u05D9\u05E9\u05D9\u05E8\u05D5\u05EA \u05DE\u05D4\u05D6\u05DE\u05E0\u05D4 10311, \u05E0\u05E4\u05EA\u05D7 \u05D1\u05E8\u05D2'\u05D9\u05E1\u05D8\u05E8\u05D9");
+
+  // 🔴 the warning itself, word for word
+  check("a skip warning is required", skip305.warn !== null, true);
+  check("the approved title", skip305.warn?.title, "\u05D3\u05D9\u05DC\u05D5\u05D2 \u05E2\u05DC \u05D7\u05E9\u05D1\u05D5\u05DF \u05E2\u05E1\u05E7\u05D4");
+  check(
+    "the approved body, with the order number in it",
+    skip305.warn?.body,
+    "\u05DC\u05D4\u05D6\u05DE\u05E0\u05EA \u05D4\u05E2\u05D1\u05D5\u05D3\u05D4 10311 \u05D0\u05D9\u05DF \u05D7\u05E9\u05D1\u05D5\u05DF \u05E2\u05E1\u05E7\u05D4. \u05D4\u05DE\u05E1\u05DE\u05DA \u05D9\u05D5\u05E0\u05E4\u05E7 \u05D9\u05E9\u05D9\u05E8\u05D5\u05EA \u05DE\u05D4\u05D6\u05DE\u05E0\u05EA \u05D4\u05E2\u05D1\u05D5\u05D3\u05D4, \u05D1\u05DC\u05D9 \u05D7\u05E9\u05D1\u05D5\u05DF \u05E2\u05E1\u05E7\u05D4 \u05D1\u05D0\u05DE\u05E6\u05E2. \u05DC\u05D4\u05DE\u05E9\u05D9\u05DA?"
+  );
+  check("the two buttons", [skip305.warn?.confirm, skip305.warn?.cancel], ["\u05D4\u05DE\u05E9\u05DA", "\u05D1\u05D9\u05D8\u05D5\u05DC"]);
+
+  const skip320 = emptyCellAction(input({ docType: TAXREC, docs: [doc(ORDER, { number: "10311" })] }));
+  check("320 takes the same skip path", skip320.active, true);
+  check("...with the same warning", skip320.warn, skip305.warn);
+  check("...to the same place", skip320.href, skip305.href);
+
+  // \u2500\u2500 and the rung that is NOT a skip carries no warning \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  const normal305 = emptyCellAction(input({ docType: TAXINV, docs: [doc(ORDER), doc(DEAL, { number: "40310" })] }));
+  check("305 with an open 300 \u2192 active", normal305.active, true);
+  check("...and NO warning: nothing is being skipped", normal305.warn, null);
+  check("...and it goes to the 300, not the 100", normal305.href, "/documents/registry?tab=deal_invoice&q=40310");
+
+  const normal320 = emptyCellAction(input({ docType: TAXREC, docs: [doc(ORDER), doc(DEAL)] }));
+  check("320 with an open 300 \u2192 no warning either", normal320.warn, null);
+
+  // the 300 cell itself is raised from a work order BY DESIGN \u2014 never warned
+  check("the 300 cell is never warned about", emptyCellAction(input({ docType: DEAL })).warn, null);
+  // and 400 comes off a 305, which is never a skip
+  check("400 off a 305 carries no warning", emptyCellAction(input({ docType: RECEIPT, docs: [doc(TAXINV)] })).warn, null);
+
+  // every inactive decision carries warn: null \u2014 a warning without a
+  // destination would be a dialog that leads nowhere
+  const inactives = [
+    emptyCellAction(input({ docType: ORDER, docs: [] })),
+    emptyCellAction(input({ docType: DEAL, cadence: "monthly" })),
+    emptyCellAction(input({ source: "milestone", docType: DEAL })),
+    emptyCellAction(input({ docType: DEAL, docs: [doc(ORDER), doc(ORDER)] })),
+    emptyCellAction(input({ docType: DEAL, docs: [doc(ORDER, { status: 1 })] })),
+  ];
+  check("no inactive cell carries a warning", inactives.map((d) => d.warn), [null, null, null, null, null]);
+}
+
+console.log("\n=== 1c. 🔵 REPORTED, NOT DECIDED \u2014 a 300 that exists but cannot father ===");
+{
+  // The owner asked what the function DOES here rather than for a ruling, so
+  // these assertions record the measured behaviour and name the reason.
+  //
+  // CLOSED 300 + open 100: the parent walk commits to the first type that has
+  // a LIVE document \u2014 the 300 \u2014 and reports it closed. It does NOT fall
+  // through to the work order and offer the skip. The reading behind that:
+  // decision \u05D0 lights the skip "\u05D1\u05E9\u05D5\u05E8\u05D4 \u05E9\u05D9\u05E9 \u05D1\u05D4 100 \u05E4\u05EA\u05D5\u05D7 \u05D5\u05D0\u05D9\u05DF \u05D1\u05D4 300",
+  // and a closed deal invoice is still a deal invoice \u2014 the rung was used
+  // and then closed, not skipped.
+  const closedDeal = emptyCellAction(
+    input({ docType: TAXINV, docs: [doc(ORDER, { number: "10311" }), doc(DEAL, { number: "40310", status: 1 })] })
+  );
+  check("closed 300 + open 100 \u2192 INACTIVE (no fallback to the skip path)", closedDeal.active, false);
+  check("...and it reports the 300's state, not the order's", closedDeal.reason, "\u05D4\u05DE\u05E1\u05DE\u05DA \u05D4\u05D0\u05D1 \u05E0\u05E1\u05D2\u05E8 \u05D0\u05D5\u05D8\u05D5\u05DE\u05D8\u05D9\u05EA \u05D1\u05DE\u05D5\u05E8\u05E0\u05D9\u05E0\u05D2 \u2014 \u05DC\u05D0 \u05E0\u05D9\u05EA\u05DF \u05DC\u05D4\u05E0\u05E4\u05D9\u05E7 \u05E2\u05DC \u05E1\u05DE\u05DB\u05D5");
+  check("...no warning, because nothing is offered", closedDeal.warn, null);
+
+  // CANCELLED 300 + open 100: a cancelled document is VOID, the live filter
+  // drops it, so the row genuinely has no deal invoice and the walk moves on
+  // to the work order \u2014 skip path, with its warning. This is the one case
+  // where "a 300 exists" and "the skip is offered" are both true, and the
+  // difference from the closed case is deliberate.
+  const cancelledDeal = emptyCellAction(
+    input({ docType: TAXINV, docs: [doc(ORDER, { number: "10311" }), doc(DEAL, { cancelled: true })] })
+  );
+  check("cancelled 300 + open 100 \u2192 ACTIVE through the skip path", cancelledDeal.active, true);
+  check("...targeting the work order", cancelledDeal.href, "/documents/registry?tab=work_order&q=10311");
+  check("...and it warns", cancelledDeal.warn?.title, "\u05D3\u05D9\u05DC\u05D5\u05D2 \u05E2\u05DC \u05D7\u05E9\u05D1\u05D5\u05DF \u05E2\u05E1\u05E7\u05D4");
+
+  // and for completeness: a closed 300 with NO work order at all behaves the
+  // same as before this change
+  check(
+    "closed 300, no 100 \u2192 inactive, same sentence",
+    emptyCellAction(input({ docType: TAXINV, docs: [doc(DEAL, { status: 2 })] })).reason,
+    "\u05D4\u05DE\u05E1\u05DE\u05DA \u05D4\u05D0\u05D1 \u05E0\u05E1\u05D2\u05E8 \u05D9\u05D3\u05E0\u05D9\u05EA \u05D1\u05DE\u05D5\u05E8\u05E0\u05D9\u05E0\u05D2 \u2014 \u05DC\u05D0 \u05E0\u05D9\u05EA\u05DF \u05DC\u05D4\u05E0\u05E4\u05D9\u05E7 \u05E2\u05DC \u05E1\u05DE\u05DB\u05D5"
   );
 }
 
@@ -228,9 +319,9 @@ console.log("\n=== 7. a source with no door — milestone rows ===");
 console.log("\n=== 8. the cell is only a cell when it is EMPTY ===");
 {
   check(
-    "a live 300 already there → inert, no sentence, no link",
+    "a live 300 already there → inert, no sentence, no link, no warning",
     emptyCellAction(input({ docType: DEAL, docs: [doc(ORDER), doc(DEAL)] })),
-    { active: false, reason: null, href: null }
+    { active: false, reason: null, href: null, warn: null }
   );
   check(
     "a CANCELLED 300 does not occupy the cell — the row still needs one",
