@@ -388,6 +388,13 @@ export type MorningClientContacts = {
   phone: string | null;
   contactPerson: string | null;
   send: boolean | null;
+  // 🔴 7.10 — the client's ח.פ / ע.מ. Read here because this is already the
+  // one GET /clients/{id} the card makes, and a second call for one string
+  // would double the window in which Morning being slow costs the block.
+  // `null` covers all three ways it can be absent — "" from this endpoint,
+  // null from /clients/search, undefined from the type — collapsed by
+  // normalizeMorningText so no screen compares against the wrong one.
+  taxId: string | null;
 };
 
 /**
@@ -428,7 +435,7 @@ export function normalizeMorningEmails(v: unknown): string[] {
 export async function getClientContacts(
   morningClientId: string
 ): Promise<{ contacts: MorningClientContacts; ok: boolean }> {
-  const empty: MorningClientContacts = { emails: [], phone: null, contactPerson: null, send: null };
+  const empty: MorningClientContacts = { emails: [], phone: null, contactPerson: null, send: null, taxId: null };
   try {
     const c = await request<Record<string, unknown>>(`/clients/${encodeURIComponent(morningClientId)}`, {
       method: "GET",
@@ -441,6 +448,7 @@ export async function getClientContacts(
         // a real boolean or nothing — never coerced, so "we could not tell"
         // stays distinguishable from "it is off"
         send: typeof c.send === "boolean" ? c.send : null,
+        taxId: normalizeMorningText(c.taxId),
       },
       ok: true,
     };

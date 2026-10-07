@@ -9,8 +9,11 @@ import {
   canViewField,
   editableKeys,
   selectColumns,
+  MORNING_ONLY_CLIENT_KEYS,
   type EntityType,
 } from "@/lib/entities";
+import { validateTaxId } from "@/lib/clients/taxId";
+import { morningFailureMessage } from "@/lib/clients/morningFailure";
 import { deriveMilestoneState } from "@/lib/finance/milestone";
 import { must, SupabaseReadError, type QueryResult } from "@/lib/supabase/unwrap";
 import { getAppBaseUrl } from "@/lib/appUrl";
@@ -582,11 +585,15 @@ export async function POST(
   // the same event and the same 502/partial contract as the client NAME — and
   // are simply never part of the local write. One write path, not two.
   const rawPatch = (body.patch ?? {}) as Record<string, unknown>;
-  const MORNING_ONLY_KEYS = ["emails", "phone", "contactPerson"] as const;
+  // The list is DERIVED from entities.ts (MORNING_ONLY_CLIENT_FIELDS) and no
+  // longer written out here. It used to be a hard-coded copy of three keys
+  // sitting a file away from the client card they belong to; adding `taxId`
+  // (7.10) would have made that two lists to keep in step, on a field that
+  // prints on a tax document.
   const morningOnly: Record<string, unknown> = {};
   const patch: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(rawPatch)) {
-    if ((MORNING_ONLY_KEYS as readonly string[]).includes(k)) morningOnly[k] = v;
+    if (MORNING_ONLY_CLIENT_KEYS.includes(k)) morningOnly[k] = v;
     else patch[k] = v;
   }
   const hasMorningOnly = Object.keys(morningOnly).length > 0;
@@ -598,6 +605,19 @@ export async function POST(
       return NextResponse.json({ error: "פרטי קשר קיימים ללקוח בלבד" }, { status: 400 });
     if (!profile.can_edit_money)
       return NextResponse.json({ error: "אין הרשאת עריכת כספים" }, { status: 403 });
+  }
+
+  // 🔴 ח.פ / ע.מ — VALIDATED BEFORE ANYTHING ELSE HAPPENS, and refused rather
+  // than coerced. This number prints on the client's invoice and the write is
+  // remote, so a malformed value must not reach `updateClient`: there is no
+  // local row to roll back and nothing to notice afterwards. Exactly 9 digits,
+  // or an explicit "" to clear (owner 7.10) — the rule and the message both
+  // live in lib/clients/taxId.ts, so no screen can reword either.
+  if ("taxId" in morningOnly) {
+    const verdict = validateTaxId(morningOnly.taxId);
+    if (!verdict.ok) return NextResponse.json({ error: verdict.error }, { status: 400 });
+    // the normalised value replaces what arrived: trimmed, and "" when cleared
+    morningOnly.taxId = verdict.value;
   }
 
   const allowed = editableKeys(type, profile);
@@ -677,6 +697,11 @@ export async function POST(
     if ("phone" in morningOnly) morningFields.phone = toMorningText(morningOnly.phone as string | null);
     if ("contactPerson" in morningOnly)
       morningFields.contactPerson = toMorningText(morningOnly.contactPerson as string | null);
+    // toMorningText and NOT `if (value)`: an emptied ח.פ must go on the wire as
+    // an explicit "", because omitting the key means "leave as is" and would
+    // make clearing it silently do nothing (morning/client.ts:412, measured).
+    // validateTaxId above has already normalised it to 9 digits or "".
+    if ("taxId" in morningOnly) morningFields.taxId = toMorningText(morningOnly.taxId as string | null);
 
     if (morningId && Object.keys(morningFields).length) {
       if (!body.confirm_morning) {
@@ -687,9 +712,52 @@ export async function POST(
         for (const k of Object.keys(morningOnly)) changes[k] = { from: null, to: morningFields[k] };
         return NextResponse.json({ needs_morning_confirmation: true, changes }, { status: 409 });
       }
+      // 🔴 The OLD ח.פ, read from Morning, for the audit record — and read only
+      // on the write path (a confirmed taxId change), never on an ordinary
+      // name or contacts save. One extra GET on a rare, double-confirmed,
+      // invoice-bearing field is proportionate; adding it to every client edit
+      // would double the window in which Morning being slow costs the save.
+      //
+      // Not taken from the request. The screen HAS the old value on hand, and
+      // accepting it would make the audit trail client-asserted — the one
+      // record of what a tax number used to be must come from the system that
+      // holds it. `getClientContacts` degrades (`ok:false`) rather than
+      // throwing, and an unreadable old value is recorded AS unknown rather
+      // than blocking the fix: refusing to let someone correct a ח.פ because
+      // Morning would not say what it was is the wrong failure.
+      let taxIdFrom: string | null = null;
+      let taxIdFromKnown = false;
+      if ("taxId" in morningOnly) {
+        const { getClientContacts } = await import("@/lib/morning/client");
+        const snapshot = await getClientContacts(morningId);
+        taxIdFrom = snapshot.ok ? snapshot.contacts.taxId : null;
+        taxIdFromKnown = snapshot.ok;
+      }
       try {
         const { updateClient } = await import("@/lib/morning/client");
         await updateClient(morningId, morningFields);
+        // Its own event, beside the generic `entity_updated` below — the owner
+        // asked for this field by name (7.10). A ח.פ change is the one client
+        // edit someone will come back and ask about months later ("which
+        // number was on the invoice in March"), and finding it means grepping
+        // one event_type rather than filtering every entity_updated payload.
+        if ("taxId" in morningOnly) {
+          await admin.from("events").insert({
+            entity_type: "client",
+            entity_id: params.id,
+            event_type: "client_tax_id_changed",
+            actor_id: user.id,
+            payload: {
+              from: taxIdFrom,
+              to: morningOnly.taxId,
+              // so a null `from` is never misread as "it was empty" when the
+              // truth is "Morning would not tell us"
+              from_known: taxIdFromKnown,
+              morning_client_id: morningId,
+              cleared: morningOnly.taxId === "",
+            },
+          });
+        }
       } catch (e) {
         const { MorningError } = await import("@/lib/morning/client");
         const err = e instanceof MorningError ? e : null;
@@ -775,12 +843,28 @@ export async function POST(
   // done", and entity carries the saved row so the screen can render the new
   // value while still showing the warning.
   if (morningPartial) {
+    // 🔴 TWO DIFFERENT FAILURES, AND THEY MUST NOT READ THE SAME.
+    //
+    // "partial" means a local write happened and Morning did not follow. That
+    // is the `name` case, and the sentence below is true for it.
+    //
+    // A MORNING-ONLY edit has no local write at all (`localKeys` is empty —
+    // emails/phone/contactPerson/taxId have no columns), so when Morning fails
+    // NOTHING changed anywhere. The old sentence said "השינוי נשמר אצלנו" to
+    // that operator, which was false: it invited them to stop, believing half
+    // the job was done, when in fact the retry is the whole job. Caught while
+    // wiring the ח.פ field, whose approved wording (owner 7.10) states the
+    // opposite in so many words — and it was already wrong for a contacts-only
+    // save before taxId existed.
+    // `localKeys` is the SAME list that decided whether to run the UPDATE
+    // above, so the sentence and the write cannot disagree.
+    const localWriteHappened = localKeys.length > 0;
     return NextResponse.json(
       {
         ok: false,
-        partial: true,
+        partial: localWriteHappened,
         entity: updated[0],
-        error: `השינוי נשמר אצלנו, אך עדכון מורנינג נכשל: ${morningPartial.error}. הלקוח אינו מסונכרן — נסי לעדכן שוב.`,
+        error: morningFailureMessage(morningPartial.error, localWriteHappened),
         morning_client_id: morningPartial.morning_client_id,
       },
       { status: 502 }

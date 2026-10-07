@@ -7,6 +7,7 @@ import { financeModule } from "@/modules/finance";
 import { projectsModule } from "@/modules/projects";
 import { contractsModule } from "@/modules/contracts";
 import { usersModule } from "@/modules/users";
+import { clientsModule } from "@/modules/clients";
 import { archiveModule } from "@/modules/archive";
 import { settingsModule } from "@/modules/settings";
 import { availabilityModule } from "@/modules/availability";
@@ -36,6 +37,12 @@ export const MODULES: ModuleDef[] = [
   docRegistryModule,
   documentsModule,
   contractsModule,
+  // directly after חוזים and before תוכניות: a client is the object a
+  // contract and a show both hang off, and the screen is read for the same
+  // reason they are — "what is the state of this account". It sits among the
+  // money screens rather than in the owner-only tail because can_view_money
+  // alone admits a bookkeeper (owner 7.10).
+  clientsModule,
   showsModule,
   approvalsModule,
   // the owner-only cluster, kept contiguous at the end. availability joins it

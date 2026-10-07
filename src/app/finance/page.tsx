@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { getSessionAndProfile } from "@/lib/profile";
 import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
-import { deriveState, isFinanceFilterKey, type FinanceState } from "@/lib/finance/state";
+import { deriveState, isFinanceFilterKey, isUnpaidDebt, type FinanceState } from "@/lib/finance/state";
 import FinanceClient, { type FinanceJob, type FinanceSummary, type HiddenJob } from "./FinanceClient";
 
 export const dynamic = "force-dynamic";
@@ -114,7 +114,7 @@ export default async function FinancePage({
   const num = (v: number | null) => v ?? 0;
   const byState = (s: FinanceState) => rows.filter((r) => r.state === s);
   const sum = (rs: FinanceJob[]) => rs.reduce((t, r) => t + num(r.amount), 0);
-  const unpaid = rows.filter((r) => r.paid === "לא");
+  const unpaid = rows.filter(isUnpaidDebt);
   const overdue60 = unpaid.filter((r) => r.due_days != null && r.due_days < -60);
 
   const summary: FinanceSummary = {

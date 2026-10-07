@@ -75,6 +75,13 @@ const MODULE_THEME: Record<string, { card: CardAccent; tile: IconAccent }> = {
   docregistry: { card: "cyan", tile: "cyan" },
   contracts: { card: "cyan", tile: "violet-light" },
   users: { card: "violet", tile: "violet" },
+  // 7.10. Registered rather than left to fall through, for the reason the
+  // `misc` note above records: the default IS violet/violet, which is exactly
+  // what משתמשים renders, and the two cards share the person glyph — without
+  // this entry they would be indistinguishable on the grid. Cyan is the
+  // money-side family (projects, docregistry, contracts) and the violet tile
+  // keeps it from reading as a duplicate of חוזים, which is cyan/violet-light.
+  clients: { card: "cyan", tile: "violet" },
   settings: { card: "violet", tile: "violet" },
   approvals: { card: "rose", tile: "rose" },
   // cyan like the availability screen it belongs beside, with the lighter tile

@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { deriveMilestoneState, type MilestoneState } from "@/lib/finance/milestone";
-import { isAmountMissing, isPaidNoTax } from "@/lib/finance/state";
+import { isAmountMissing, isPaidNoTax, isUnpaidDebt } from "@/lib/finance/state";
 import { displayDate, todayInIsrael } from "@/lib/dates";
 import { closedAccruedMonths } from "@/lib/documents/accruedMonth";
 import { contractQuotas, quotaOverNotice, type QuotaProduction } from "@/lib/contracts/quota";
@@ -312,7 +312,9 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const unpaidMilestone = (m: { id: string }) => milestoneState.get(m.id) !== "paid";
 
   // ---- two numbers (never summed) ----
-  const debtJobs = jobs.filter((j) => j.paid === "לא" && j.amount != null);
+  // isUnpaidDebt is the shared rule; `amount != null` is NOT part of it and
+  // stays here, because the VU channels below count priced debts only.
+  const debtJobs = jobs.filter((j) => isUnpaidDebt(j) && j.amount != null);
   const debtToCollect = debtJobs.reduce((s, j) => s + num(j.amount), 0);
   const openCommitment = milestones.filter(unpaidMilestone).reduce((s, m) => s + num(m.amount), 0);
 

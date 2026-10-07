@@ -236,6 +236,55 @@ export const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
   },
 };
 
+/**
+ * ═══ THE CLIENT CARD'S MORNING-HELD FIELDS ═══
+ *
+ * The other half of the client card declared above. These four facts belong to
+ * the client exactly as `payment_terms` does — the card shows them, the card
+ * edits them — but they live in MORNING and `clients` has no column for any of
+ * them.
+ *
+ * 🔴 WHY THEY ARE A SEPARATE LIST AND NOT ROWS IN `ENTITY_CONFIG.client.fields`
+ * — this is the constraint, not a preference: `selectColumns` turns every
+ * registered key straight into the PostgREST select list (bottom of this file),
+ * so a key with no column 400s the ENTIRE client card for every viewer, not
+ * just that one field. `editableKeys` and `visibleFields` read the same array.
+ * Registering them there is not "untidy", it is a broken client card.
+ *
+ * And they are not rendered by the generic field rows either, for a second and
+ * independent reason: those rows save on blur with no validation and no
+ * confirmation, which is right for `default_rate` and wrong for a number that
+ * prints on a tax document. EntityFieldRows renders the DB fields; the Morning
+ * block (ClientMorningCard) renders these.
+ *
+ * `view`/`edit` are the same gate the client NAME carries (`edit: "money"`,
+ * above): contact details and the ח.פ travel with the name. The PATCH route
+ * lifts these keys out of `patch` BEFORE the allow-list runs and re-checks
+ * can_edit_money itself — a list is not an authorisation.
+ *
+ * ⚠️ `send` IS ABSENT ON PURPOSE. Morning recomputes it from `emails` and
+ * overwrites anything we pass (measured 2026-09-09, morning/client.ts), so it
+ * is read-only in the card and must never appear in a writable field list.
+ */
+export type MorningOnlyField = { key: string; label: string; view: ViewPerm; edit: EditPerm };
+
+export const MORNING_ONLY_CLIENT_FIELDS: MorningOnlyField[] = [
+  { key: "emails", label: "כתובות מייל", view: "money", edit: "money" },
+  { key: "phone", label: "טלפון", view: "money", edit: "money" },
+  { key: "contactPerson", label: "איש קשר", view: "money", edit: "money" },
+  // 🔴 7.10 — editable from the clients screen, and every write goes to
+  // Morning behind an explicit confirmation window. Validated as exactly 9
+  // digits before the wire (lib/clients/taxId.ts).
+  { key: "taxId", label: "ח.פ / ע.מ", view: "money", edit: "money" },
+];
+
+/**
+ * The keys the PATCH route must lift out of `patch`. DERIVED, so the route and
+ * the card cannot hold different ideas of which fields are remote — the route
+ * used to carry its own hard-coded copy of three of these.
+ */
+export const MORNING_ONLY_CLIENT_KEYS: readonly string[] = MORNING_ONLY_CLIENT_FIELDS.map((f) => f.key);
+
 export function canViewField(profile: Profile, view: ViewPerm): boolean {
   if (view === "any") return true;
   if (view === "money") return profile.can_view_money;

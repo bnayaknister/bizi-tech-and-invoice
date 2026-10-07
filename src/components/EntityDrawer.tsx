@@ -26,7 +26,8 @@ import {
   STATUS_LABEL as PROD_STATUS_LABEL,
   nextStatus as prodNextStatus,
 } from "@/lib/productions/status";
-import ClientCombobox from "@/components/ClientCombobox";
+import ClientMorningCard from "@/components/ClientMorningCard";
+import EntityFieldRows, { type FieldMeta } from "@/components/EntityFieldRows";
 import ClientNotesModal from "./ClientNotesModal";
 import IconTile, { type IconAccent } from "@/components/IconTile";
 import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
@@ -52,14 +53,6 @@ const ENTITY_ACCENT: Record<string, IconAccent> = {
 };
 
 type EntityRef = { type: string; id: string };
-
-type FieldMeta = {
-  key: string;
-  label: string;
-  type: "text" | "number" | "boolean" | "date" | "select" | "readonly";
-  editable: boolean;
-  options: { value: string; label: string }[] | "clients" | "shows" | null;
-};
 
 type Stage = {
   id: string;
@@ -1438,107 +1431,6 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ref, data, noteModal, diskModal]);
 
-  function optionsFor(f: FieldMeta): { value: string; label: string }[] {
-    if (f.options === "clients")
-      return (data?.optionsData.clients ?? []).map((c) => ({ value: c.id, label: c.name }));
-    if (f.options === "shows")
-      return (data?.optionsData.shows ?? []).map((s) => ({ value: s.id, label: s.name }));
-    return f.options ?? [];
-  }
-
-  function renderValue(f: FieldMeta) {
-    const v = data?.entity[f.key];
-    if (f.type === "readonly")
-      return <span className="text-sm">{v == null || v === "" ? "—" : String(v)}</span>;
-    if (!f.editable) {
-      if (f.type === "select") {
-        const opt = optionsFor(f).find((o) => o.value === v);
-        return <span className="text-sm">{opt?.label ?? (v == null ? "—" : String(v))}</span>;
-      }
-      if (f.type === "boolean") return <span className="text-sm">{v ? "כן" : "לא"}</span>;
-      return <span className="text-sm">{v == null || v === "" ? "—" : String(v)}</span>;
-    }
-    switch (f.type) {
-      case "boolean":
-        return (
-          <input
-            type="checkbox"
-            checked={Boolean(v)}
-            onChange={(e) => void saveField(f.key, e.target.checked)}
-          />
-        );
-      case "select":
-        if (f.options === "clients") {
-          return (
-            <ClientCombobox
-              clients={data?.optionsData.clients ?? []}
-              value={(v as string) ?? null}
-              // reaching this editable branch means the server allowed editing
-              // this (money) field — so this viewer is a can_edit_money user
-              morningCreate
-              canEditMoney={f.editable}
-              onChange={(clientId) => void saveField(f.key, clientId)}
-              onCreated={(c) =>
-                setData((d) =>
-                  d ? { ...d, optionsData: { ...d.optionsData, clients: [...d.optionsData.clients, c] } } : d
-                )
-              }
-            />
-          );
-        }
-        return (
-          <select
-            value={(v as string) ?? ""}
-            onChange={(e) => void saveField(f.key, e.target.value || null)}
-            className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1 text-sm"
-          >
-            <option value="">—</option>
-            {optionsFor(f).map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        );
-      case "date":
-        return (
-          <input
-            type="date"
-            value={(v as string) ?? ""}
-            onChange={(e) => void saveField(f.key, e.target.value || null)}
-            className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1 text-sm"
-          />
-        );
-      default: {
-        const isNumber = f.type === "number";
-        const display = Array.isArray(v) ? (v as string[]).join(", ") : v == null ? "" : String(v);
-        return (
-          <input
-            type={isNumber ? "number" : "text"}
-            defaultValue={display}
-            key={`${f.key}:${display}`}
-            onChange={(e) => {
-              const raw = e.target.value;
-              dirty.current[f.key] = Array.isArray(v)
-                ? raw.split(",").map((x) => x.trim()).filter(Boolean)
-                : isNumber
-                  ? raw === "" ? null : Number(raw)
-                  : raw === "" ? null : raw;
-            }}
-            onBlur={() => {
-              if (f.key in dirty.current) {
-                const val = dirty.current[f.key];
-                delete dirty.current[f.key];
-                void saveField(f.key, val);
-              }
-            }}
-            className="w-full bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1 text-sm"
-          />
-        );
-      }
-    }
-  }
-
   function renderChanges(h: HistoryEntry) {
     const changes = (h.payload?.changes ?? null) as Record<string, { from: unknown; to: unknown }> | null;
     if (!changes) return <span className="text-[11px] text-[var(--faint)]">{h.event_type}</span>;
@@ -1986,8 +1878,13 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                   );
                 })()}
 
-                <div className="space-y-2.5">
-                  {data.fields
+                {/* The SAME component /clients renders (owner 7.10 —
+                    "אותו רכיב בדיוק … לא שכפול שדות"). The drawer keeps the
+                    optimistic paint and the per-field revert; the rows keep the
+                    permission-aware controls. `dirtyRef` is handed in so
+                    Cmd+Enter (flushDirty) still flushes what was typed. */}
+                <EntityFieldRows
+                  fields={data.fields
                     // Registered in entities.ts, deliberately not rendered here.
                     // `status` and `storage_disk` have their own dedicated UI at
                     // the top of the drawer; `billing_block_reason` (0067) is
@@ -1996,20 +1893,27 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                     // reading "חסימת חיוב: לא הוזנו שעות ההקלטה" beside the
                     // guest and the studio explains nothing and offers nothing to
                     // press. It comes back with a display built for it.
+                    //
+                    // The filter stays HERE and not in EntityFieldRows: that
+                    // component must not know which screen it is on, or it
+                    // grows one special case per caller.
                     .filter(
                       (f) =>
                         !(
                           data.type === "production" &&
                           (f.key === "status" || f.key === "storage_disk" || f.key === "billing_block_reason")
                         )
+                    )}
+                  entity={data.entity}
+                  optionsData={data.optionsData}
+                  onSave={(key, value) => void saveField(key, value)}
+                  onClientCreated={(c) =>
+                    setData((d) =>
+                      d ? { ...d, optionsData: { ...d.optionsData, clients: [...d.optionsData.clients, c] } } : d
                     )
-                    .map((f) => (
-                    <div key={f.key} className="grid grid-cols-[110px_1fr] items-center gap-2">
-                      <label className="text-xs text-[var(--dim)]">{f.label}</label>
-                      {renderValue(f)}
-                    </div>
-                  ))}
-                </div>
+                  }
+                  dirtyRef={dirty}
+                />
 
                 {/* Contact details, which live in Morning and not in `clients`.
                     Its own self-fetching block beside the DB fields — never a
@@ -2017,7 +1921,11 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                     states: the registry maps field keys to COLUMNS, and these
                     have none. Same shape as AddonsSection. */}
                 {data.type === "client" && ref && (
-                  <ClientContactsSection clientId={ref.id} onChanged={broadcast} />
+                  <ClientMorningCard
+                    clientId={ref.id}
+                    clientName={String(data.title ?? "")}
+                    onChanged={broadcast}
+                  />
                 )}
 
                 {/* the two workflow lines — where daily work happens. Each is
@@ -2677,266 +2585,6 @@ function AddonsSection({ productionId, onChanged }: { productionId: string; onCh
       )}
 
       {error && <div className="mt-2 text-xs text-red-400">{error}</div>}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Client contact block — emails, phone, contact person, and the read-only
-// `send` flag. All four live in MORNING; `clients` has no column for any of
-// them, which is why this is a block and not four rows in the field registry
-// (entities.ts maps every registered key to a real column).
-//
-// Self-fetching, like AddonsSection: the seven DB fields render immediately and
-// this arrives beside them, so Morning being slow or down costs the block and
-// never the card. The server hands back the flags — the drawer never infers a
-// permission on its own.
-// ---------------------------------------------------------------------------
-type ContactsData = {
-  linked: boolean;
-  morningClientId?: string;
-  contacts: { emails: string[]; phone: string | null; contactPerson: string | null; send: boolean | null } | null;
-  clientFetchFailed: boolean;
-  canEdit: boolean;
-  recipientCap: number;
-};
-
-function ClientContactsSection({ clientId, onChanged }: { clientId: string; onChanged: () => void }) {
-  const [data, setData] = useState<ContactsData | null>(null);
-  const [emails, setEmails] = useState<string[]>([]);
-  const [phone, setPhone] = useState("");
-  const [contactPerson, setContactPerson] = useState("");
-  const [newEmail, setNewEmail] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
-  // the last-email warning, held until the operator answers it
-  const [confirmLast, setConfirmLast] = useState<number | null>(null);
-
-  const load = useCallback(async () => {
-    const res = await fetch(`/api/clients/${clientId}/contacts`);
-    if (!res.ok) return;
-    const d: ContactsData = await res.json();
-    setData(d);
-    setEmails(d.contacts?.emails ?? []);
-    setPhone(d.contacts?.phone ?? "");
-    setContactPerson(d.contacts?.contactPerson ?? "");
-  }, [clientId]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  // One save path for all three fields. NO DIRTY-CHECKING: everything the block
-  // holds goes on the wire every time. Measured 2026-09-09 — a field resent at
-  // its current value does not register as a change, and three fields in one
-  // body move exactly those three. Sending the whole block is both safe and
-  // safer than diffing, because a wrong diff writes the wrong thing.
-  //
-  // `emails` is always the COMPLETE list (Morning replaces the array wholesale;
-  // there is no add/remove). Empty strings clear phone/contactPerson — the
-  // route turns null into "" for exactly that reason.
-  async function save(nextEmails: string[], nextPhone: string, nextContact: string, confirm = false) {
-    setBusy(true);
-    setError(null);
-    setNote(null);
-    const res = await fetch(`/api/entity/client/${clientId}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        patch: { emails: nextEmails, phone: nextPhone.trim(), contactPerson: nextContact.trim() },
-        ...(confirm ? { confirm_morning: true } : {}),
-      }),
-    });
-    const body = await res.json().catch(() => ({}));
-    setBusy(false);
-    // the same double-confirmation the client NAME goes through — one click,
-    // then the same request again with confirm_morning
-    if (res.status === 409 && body?.needs_morning_confirmation) {
-      return save(nextEmails, nextPhone, nextContact, true);
-    }
-    if (!res.ok) {
-      setError(body?.error ?? "השמירה נכשלה");
-      // pull the truth back rather than leave the form showing what did not save
-      await load();
-      return false;
-    }
-    await load();
-    onChanged();
-    return true;
-  }
-
-  function removeEmail(i: number) {
-    // The ONLY moment the emails/send coupling fires: the list dropping to zero.
-    // Measured 2026-09-09 and one-way — emptying turns `send` off, refilling
-    // does NOT turn it back on. So the warning is here, before the act, and
-    // nowhere else.
-    if (emails.length === 1) {
-      setConfirmLast(i);
-      return;
-    }
-    const next = emails.filter((_, j) => j !== i);
-    setEmails(next);
-    void save(next, phone, contactPerson);
-  }
-
-  function addEmail() {
-    const e = newEmail.trim();
-    if (!e) return;
-    const next = [...emails, e];
-    setNewEmail("");
-    setEmails(next);
-    void save(next, phone, contactPerson);
-  }
-
-  if (!data) return null;
-
-  // Unmapped client: shown, locked, and told why. No creation path from here.
-  if (!data.linked) {
-    return (
-      <div className="rounded-lg border border-[var(--rule)] px-2.5 py-2">
-        <div className="text-[11px] font-bold text-[var(--dim)] mb-1">פרטי קשר</div>
-        <div className="text-[10px] text-[var(--faint)]">
-          הלקוח אינו מקושר למורנינג. פרטי הקשר נשמרים במורנינג בלבד, ולכן אין מה להציג או לערוך כאן.
-        </div>
-      </div>
-    );
-  }
-
-  if (data.clientFetchFailed) {
-    return (
-      <div className="rounded-lg border border-amber-500/40 px-2.5 py-2" style={{ background: "rgba(251,191,36,0.08)" }}>
-        <div className="text-[11px] font-bold text-amber-400 mb-1">פרטי קשר</div>
-        <div className="text-[10px] text-[var(--dim)]">
-          לא ניתן לקרוא את פרטי הקשר ממורנינג כרגע. שאר פרטי הלקוח מוצגים כרגיל.
-        </div>
-        <button onClick={() => void load()} className="mt-1.5 text-[10px] underline text-[var(--signal)]">
-          נסי שוב
-        </button>
-      </div>
-    );
-  }
-
-  const canEdit = data.canEdit;
-  const overCap = emails.length > data.recipientCap;
-
-  return (
-    <div className="rounded-lg border border-[var(--rule)] px-2.5 py-2 space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="text-[11px] font-bold text-[var(--dim)]">פרטי קשר</div>
-        <div className="text-[9px] text-[var(--faint)]">מתוך מורנינג</div>
-      </div>
-
-      {/* ---- emails ---- */}
-      <div className="space-y-1">
-        {emails.length === 0 && <div className="text-[10px] text-[var(--faint)]">אין כתובות מייל</div>}
-        {emails.map((e, i) => (
-          <div key={`${e}-${i}`} className="flex items-center gap-2">
-            <span className="text-[11px] flex-1 min-w-0 break-all">{e}</span>
-            {canEdit && (
-              <button
-                onClick={() => removeEmail(i)}
-                disabled={busy}
-                className="shrink-0 text-[10px] text-[var(--faint)] hover:text-rose-400"
-                title="הסרת כתובת"
-              >
-                הסר
-              </button>
-            )}
-          </div>
-        ))}
-        {canEdit && (
-          <div className="flex items-center gap-1.5 pt-0.5">
-            <input
-              value={newEmail}
-              onChange={(ev) => setNewEmail(ev.target.value)}
-              onKeyDown={(ev) => { if (ev.key === "Enter") addEmail(); }}
-              placeholder="הוספת מייל"
-              inputMode="email"
-              className="flex-1 min-w-0 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1 text-[11px]"
-            />
-            <button onClick={addEmail} disabled={busy || !newEmail.trim()} className="shrink-0 text-[10px] underline text-[var(--signal)]">
-              הוסף
-            </button>
-          </div>
-        )}
-        {/* NOT a block. Three is the cap Morning applies to a DOCUMENT request
-            (recipients.ts), not to a client record — measured: a client in this
-            very account holds four. So the card states the consequence and lets
-            the operator decide. */}
-        {overCap && (
-          <div className="text-[10px] text-amber-400">
-            בהנפקת מסמך מורנינג מקבל עד {data.recipientCap} כתובות — הראשונות ברשימה.
-          </div>
-        )}
-      </div>
-
-      {/* ---- phone + contact person ---- */}
-      <div className="grid grid-cols-[70px_1fr] items-center gap-2">
-        <label className="text-[10px] text-[var(--dim)]">טלפון</label>
-        <input
-          value={phone}
-          onChange={(ev) => setPhone(ev.target.value)}
-          onBlur={() => { if ((data.contacts?.phone ?? "") !== phone.trim()) void save(emails, phone, contactPerson); }}
-          disabled={!canEdit || busy}
-          inputMode="tel"
-          className="bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1 text-[11px] disabled:opacity-60"
-        />
-        <label className="text-[10px] text-[var(--dim)]">איש קשר</label>
-        <input
-          value={contactPerson}
-          onChange={(ev) => setContactPerson(ev.target.value)}
-          onBlur={() => { if ((data.contacts?.contactPerson ?? "") !== contactPerson.trim()) void save(emails, phone, contactPerson); }}
-          disabled={!canEdit || busy}
-          className="bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1 text-[11px] disabled:opacity-60"
-        />
-      </div>
-
-      {/* ---- send: READ-ONLY, and that is the whole mitigation ----
-          Morning recomputes this from `emails` and overwrites anything we pass
-          (measured), so we never send it. Showing it is what stops the silent
-          change: the flag was invisible until 2026-09-09, and an invisible flag
-          is what let it be knocked off without anyone noticing. */}
-      <div className="flex items-center gap-2 pt-0.5 border-t border-[var(--rule)]">
-        <span className="text-[10px] text-[var(--dim)]">שליחה אוטומטית של מסמכים</span>
-        {data.contacts?.send == null ? (
-          <span className="text-[10px] text-[var(--faint)]">לא ידוע</span>
-        ) : data.contacts.send ? (
-          <span className="text-[10px] text-emerald-400">פעילה</span>
-        ) : (
-          <span className="text-[10px] text-amber-400">כבויה</span>
-        )}
-        <span className="text-[9px] text-[var(--faint)]">· נקבע במורנינג</span>
-      </div>
-
-      {error && <div className="text-[10px] text-red-400">{error}</div>}
-      {note && <div className="text-[10px] text-[var(--dim)]">{note}</div>}
-
-      {confirmLast !== null && (
-        <div className="rounded-lg border border-amber-500/50 px-2.5 py-2" style={{ background: "rgba(251,191,36,0.10)" }}>
-          <div className="text-[10px] text-amber-200 leading-relaxed">
-            זהו המייל האחרון של הלקוח. מחיקתו תכבה במורנינג את השליחה האוטומטית של מסמכים ללקוח הזה — והדגל לא יידלק בחזרה כשתוסיפי מייל. להדליק אותו שוב אפשר רק ידנית, בכרטיס הלקוח במורנינג.
-          </div>
-          <div className="flex items-center gap-2 mt-1.5">
-            <button
-              onClick={() => {
-                const i = confirmLast;
-                setConfirmLast(null);
-                const next = emails.filter((_, j) => j !== i);
-                setEmails(next);
-                void save(next, phone, contactPerson);
-              }}
-              disabled={busy}
-              className="text-[10px] rounded-lg px-2 py-1 border border-amber-500/60 text-amber-300"
-            >
-              מחק בכל זאת
-            </button>
-            <button onClick={() => setConfirmLast(null)} className="text-[10px] text-[var(--faint)] underline">
-              ביטול
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

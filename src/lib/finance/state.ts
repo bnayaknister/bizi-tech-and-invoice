@@ -83,6 +83,41 @@ export function isAmountMissing(j: AmountMissingFacts): boolean {
   return j.amount == null;
 }
 
+/** The one fact the debt rule needs. */
+export type DebtFacts = { paid: string | null };
+
+/**
+ * "חוב לגבייה": charged, and the money has not come in.
+ *
+ * ═══ WHY THIS IS A FUNCTION NOW ═══
+ * It was spelled `j.paid === "לא"` in TWO places — the /finance summary
+ * (page.tsx:117, feeding the "חוב לגבייה" card) and the radar's debtToCollect
+ * (alerts.ts:315) — and /clients would have been a third. The isPaidNoTax note
+ * above says what happens then, from experience: three spellings of one money
+ * rule is three chances to disagree, and the hub card's own copy of a different
+ * rule WAS wrong. A client's debt that does not add up to the /finance total is
+ * a bug the owner would find by adding a column with a calculator.
+ *
+ * 🔴 `=== "לא"` AND NOT `!== "כן"`. `jobs.paid` is text, not a boolean, and it
+ * has four values (FinanceJobFacts above): 'כן', 'לא', 'לא ידוע', 'ללא חיוב'.
+ * Only 'לא' is debt. 'ללא חיוב' is nothing to collect by decision, and
+ * 'לא ידוע' is an UNKNOWN — counting either as money owed would inflate a
+ * number the owner collects against. This is the behaviour both call sites
+ * already had; it is preserved exactly, not tidied.
+ *
+ * `amount` is deliberately NOT consulted — an unpriced job is still a debt row,
+ * it just contributes 0 to a sum. The radar additionally requires
+ * `amount != null` for its own COUNT; that stays at the call site, because it
+ * is a different question ("how many priced debts") and not this rule.
+ *
+ * `dismissed` is NOT tested here, exactly as in isPaidNoTax: a soft-removed job
+ * is out of every money surface (0041), and that filter belongs to whoever
+ * loads the rows.
+ */
+export function isUnpaidDebt(j: DebtFacts): boolean {
+  return j.paid === "לא";
+}
+
 // ---- the radar's red alerts, as views of /finance -------------------------
 
 /** Everything a filter predicate may consult. FinanceJob satisfies it. */
