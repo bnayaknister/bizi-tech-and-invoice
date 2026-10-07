@@ -193,6 +193,10 @@ export type Database = {
       }
       booking_requests: {
         Row: {
+          calendar_event_id: string | null
+          calendar_event_uid: string | null
+          calendar_write_error: string | null
+          calendar_write_status: string | null
           created_at: string
           decided_at: string | null
           decided_by: string | null
@@ -201,12 +205,17 @@ export type Database = {
           id: string
           link_id: string
           note: string | null
+          production_id: string | null
           show_id: string
           start_at: string
           status: string
           studio: string
         }
         Insert: {
+          calendar_event_id?: string | null
+          calendar_event_uid?: string | null
+          calendar_write_error?: string | null
+          calendar_write_status?: string | null
           created_at?: string
           decided_at?: string | null
           decided_by?: string | null
@@ -215,12 +224,17 @@ export type Database = {
           id?: string
           link_id: string
           note?: string | null
+          production_id?: string | null
           show_id: string
           start_at: string
           status?: string
           studio: string
         }
         Update: {
+          calendar_event_id?: string | null
+          calendar_event_uid?: string | null
+          calendar_write_error?: string | null
+          calendar_write_status?: string | null
           created_at?: string
           decided_at?: string | null
           decided_by?: string | null
@@ -229,6 +243,7 @@ export type Database = {
           id?: string
           link_id?: string
           note?: string | null
+          production_id?: string | null
           show_id?: string
           start_at?: string
           status?: string
@@ -247,6 +262,13 @@ export type Database = {
             columns: ["link_id"]
             isOneToOne: false
             referencedRelation: "booking_links"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "booking_requests_production_id_fkey"
+            columns: ["production_id"]
+            isOneToOne: false
+            referencedRelation: "productions"
             referencedColumns: ["id"]
           },
           {
