@@ -15,9 +15,14 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { buildParentRef, resolveWorkOrdersForJobs, refusalMessage } from "../src/lib/documents/parentRef";
-import { sourceRemark, MORNING_DOC_CODE, DOC_TYPE_TO_MORNING_CODE } from "../src/lib/morning/types";
-import { isDryRun } from "../src/lib/morning/client";
+import { buildParentRef, resolveWorkOrdersForJobs, refusalMessage } from "../../src/lib/documents/parentRef";
+import { sourceRemark, MORNING_DOC_CODE, DOC_TYPE_TO_MORNING_CODE } from "../../src/lib/morning/types";
+import { isDryRun } from "../../src/lib/morning/client";
+import { requireLiveDbOptIn } from "./_guard";
+
+// ⛔ F19 — the gate. MUST stay above the `.env.local` parser below: that
+// file is what hands this suite the service-role key. See ./_guard.ts.
+requireLiveDbOptIn();
 
 for (const line of readFileSync(join(process.cwd(), ".env.local"), "utf8").split("\n")) {
   const t = line.trim();

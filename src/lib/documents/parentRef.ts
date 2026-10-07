@@ -105,7 +105,7 @@ export function parentRefFields(ref: ParentRef): Pick<MorningDocumentRequest, "l
  * gate list that decides what money closes must not be reachable only through
  * the one file that happened to need it first.
  *
- * issue.ts re-exports it so scripts/test_parent_work_order_link.ts keeps
+ * issue.ts re-exports it so scripts/live/test_parent_work_order_link.ts keeps
  * importing from where it always did.
  */
 export type ParentLink =

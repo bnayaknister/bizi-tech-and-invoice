@@ -20,9 +20,14 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { enqueueDocument, buildLineItemText, type ProductionForBilling } from "../src/lib/documents/enqueue";
-import { createDealInvoiceFromWorkOrder } from "../src/lib/documents/bundle";
-import type { MorningDocumentRequest } from "../src/lib/morning/types";
+import { enqueueDocument, buildLineItemText, type ProductionForBilling } from "../../src/lib/documents/enqueue";
+import { createDealInvoiceFromWorkOrder } from "../../src/lib/documents/bundle";
+import type { MorningDocumentRequest } from "../../src/lib/morning/types";
+import { requireLiveDbOptIn } from "./_guard";
+
+// ⛔ F19 — the gate. MUST stay above the `.env.local` parser below: that
+// file is what hands this suite the service-role key. See ./_guard.ts.
+requireLiveDbOptIn();
 
 for (const line of readFileSync(join(process.cwd(), ".env.local"), "utf8").split("\n")) {
   const t = line.trim();
@@ -49,6 +54,27 @@ const made = { pending: [] as string[], jobs: [] as string[], links: [] as { job
 // productions whose billing_block_reason we may have cleared
 const blockRestore = new Map<string, string | null>();
 
+/**
+ * 🔴 WHEN THIS RUN STARTED — and it is load-bearing, not bookkeeping.
+ *
+ * The cleanup below deletes the audit event this suite's own `enqueueDocument`
+ * call wrote against a REAL production. Until 7.10 that delete was scoped to
+ * the production and the three event types ONLY, with no time bound — so it
+ * also deleted that production's genuine historical document_queued /
+ * document_accrued / document_enqueue_blocked rows. On 7.10 it did exactly
+ * that: the suite failed early (`enqueueDocument` returned "exists", so it
+ * created nothing at all), the finally block ran anyway, and real audit rows
+ * for one production were deleted. A deletion leaves nothing to restore.
+ *
+ * Bounding the delete by this timestamp is what makes "clean up after
+ * yourself" mean only that. Kept rather than removed outright because the
+ * delete DOES have a job: without it, a test run leaves its own audit event
+ * on a production forever.
+ */
+const RUN_START = new Date().toISOString();
+/** whole-table count of pending_documents before the run — the cleanup compares against THIS, never a hardcoded number */
+let pendingCountBefore: number | null = null;
+
 type Prod = {
   id: string; podcast_name: string | null; guest: string | null; record_date: string | null;
   kind: string | null; legacy: boolean | null; show_id: string | null; client_id: string | null;
@@ -67,6 +93,9 @@ async function payloadOf(id: string): Promise<MorningDocumentRequest> {
 }
 
 async function main() {
+  const { count: before } = await admin.from("pending_documents").select("id", { count: "exact", head: true });
+  pendingCountBefore = before ?? null;
+
   // ---- pick two real, eligible, unbilled client productions ---------------
   const { data: prods } = await admin
     .from("productions")
@@ -214,7 +243,14 @@ main()
     if (made.jobs.length) await admin.from("jobs").delete().in("id", made.jobs);
     for (const [pid, reason] of Array.from(blockRestore.entries())) {
       await admin.from("productions").update({ billing_block_reason: reason }).eq("id", pid);
-      await admin.from("events").delete().eq("entity_id", pid).in("event_type", ["document_queued", "document_accrued", "document_enqueue_blocked"]);
+      // ⛔ `.gte("created_at", RUN_START)` IS THE WHOLE FIX — see RUN_START's
+      // own note. Without it this line deletes the production's real history.
+      await admin
+        .from("events")
+        .delete()
+        .eq("entity_id", pid)
+        .in("event_type", ["document_queued", "document_accrued", "document_enqueue_blocked"])
+        .gte("created_at", RUN_START);
     }
     // verified, not assumed
     if (made.pending.length) {
@@ -229,8 +265,22 @@ main()
       const { data } = await admin.from("productions").select("billing_block_reason").eq("id", pid).single();
       check(`cleanup: ${pid.slice(0, 8)} block reason restored`, (data?.billing_block_reason ?? null) === reason, JSON.stringify(data?.billing_block_reason));
     }
-    const { count } = await admin.from("pending_documents").select("id", { count: "exact", head: true });
-    check("cleanup: pending_documents back to 35", count === 35, String(count));
+    // A DELTA, never a hardcoded total. This used to assert `count === 35` —
+    // the table's size on the day the suite was written — so it failed on
+    // every run thereafter purely because production grew (148 rows on 7.10),
+    // which is how a genuine cleanup failure would have gone unnoticed in the
+    // noise. Comparing against the count taken at the start of THIS run asks
+    // the question that was always meant: did we put the table back?
+    const { count: after } = await admin.from("pending_documents").select("id", { count: "exact", head: true });
+    if (pendingCountBefore === null) {
+      check("cleanup: pending_documents delta", false, "baseline never taken — main() died before its first query");
+    } else {
+      check(
+        "cleanup: pending_documents back to its pre-run count",
+        after === pendingCountBefore,
+        `before ${pendingCountBefore} / after ${after}`
+      );
+    }
 
     console.log(`\n${failed === 0 ? "all checks passed" : `${failed} FAILED`}`);
     process.exit(failed ? 1 : 0);

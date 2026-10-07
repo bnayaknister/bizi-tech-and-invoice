@@ -17,7 +17,12 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { MORNING_TIMEOUT_MS } from "../src/lib/morning/client";
+import { MORNING_TIMEOUT_MS } from "../../src/lib/morning/client";
+import { requireLiveDbOptIn } from "./_guard";
+
+// ⛔ F19 — the gate. MUST stay above the `.env.local` parser below: that
+// file is what hands this suite the service-role key. See ./_guard.ts.
+requireLiveDbOptIn();
 
 for (const line of readFileSync(join(process.cwd(), ".env.local"), "utf8").split("\n")) {
   const t = line.trim();
@@ -200,7 +205,39 @@ main()
     console.log("\n=== CLEANUP ===");
     if (made.pending.length) await admin.from("events").delete().in("entity_id", made.pending);
     if (made.pending.length) await admin.from("pending_documents").delete().in("id", made.pending);
-    if (uid) await fetch(`${SUP}/auth/v1/admin/users/${uid}`, { method: "DELETE", headers: { apikey: SVC, Authorization: `Bearer ${SVC}` } });
+    // ═══ 🔴 THE TEMPORARY USER, DELETED AND THEN VERIFIED GONE ═══
+    // This suite mints a real auth user with role='owner' and every money
+    // permission (see cookieHeader). Until 7.10 the DELETE's response was
+    // discarded and nothing checked the outcome — so a deletion blocked by a
+    // foreign key (the known failure mode: rows referencing the user with ON
+    // DELETE RESTRICT) would have left an approved OWNER account in
+    // production, silently, and the suite would still have printed ALL PASS.
+    // A leftover here is not a cleanup detail; it is a live credential.
+    if (uid) {
+      const del = await fetch(`${SUP}/auth/v1/admin/users/${uid}`, {
+        method: "DELETE",
+        headers: { apikey: SVC, Authorization: `Bearer ${SVC}` },
+      });
+      if (!del.ok) {
+        const body = await del.text().catch(() => "");
+        failed++;
+        console.error(
+          `\n  🔴 FAIL  מחיקת משתמש הבדיקה נכשלה — נשאר חשבון owner מאושר בייצור.\n` +
+            `          user id: ${uid}\n` +
+            `          HTTP ${del.status} ${body.slice(0, 300)}\n` +
+            `          DELETE THE USER BY HAND before running anything else.\n`
+        );
+      }
+      // verified, not assumed — the same discipline the row cleanup below uses
+      const probe = await fetch(`${SUP}/auth/v1/admin/users/${uid}`, {
+        headers: { apikey: SVC, Authorization: `Bearer ${SVC}` },
+      });
+      check(
+        `temp auth user ${uid.slice(0, 8)} is gone`,
+        probe.status === 404,
+        `GET returned ${probe.status} (404 = gone)`
+      );
+    }
     hung?.close();
 
     const { data: left } = await admin.from("pending_documents").select("id").in("id", made.pending.length ? made.pending : ["-"]);

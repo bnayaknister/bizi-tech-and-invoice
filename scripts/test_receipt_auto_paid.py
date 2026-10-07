@@ -13,7 +13,7 @@ What this covers, and what it deliberately cannot:
   write on purpose (2026-08-22). So the work is split three ways:
 
     * the RULES         -> scripts/test_auto_paid.ts       (pure, no I/O)
-    * the CHAIN         -> scripts/test_receipt_chain.ts   (jobsBehindReceipt,
+    * the CHAIN         -> scripts/live/test_receipt_chain.ts   (jobsBehindReceipt,
                                                             real rows, dedupe)
     * this file         -> the dry-run boundary on the receipt branch, plus the
                            claim the design rests on, verified on real rows

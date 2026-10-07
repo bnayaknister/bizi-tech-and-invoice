@@ -25,12 +25,17 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { createTaxFromParents, childRule, ALLOWED_CHILDREN } from "../src/lib/documents/taxFromParent";
-import { MORNING_DOC_CODE, sourceRemark, type MorningDocumentRequest } from "../src/lib/morning/types";
+import { createTaxFromParents, childRule, ALLOWED_CHILDREN } from "../../src/lib/documents/taxFromParent";
+import { MORNING_DOC_CODE, sourceRemark, type MorningDocumentRequest } from "../../src/lib/morning/types";
+import { requireLiveDbOptIn } from "./_guard";
 
 // ---------------------------------------------------------------------------
 // env + client
 // ---------------------------------------------------------------------------
+// ⛔ F19 — the gate. MUST stay above the `.env.local` parser below: that
+// file is what hands this suite the service-role key. See ./_guard.ts.
+requireLiveDbOptIn();
+
 for (const line of readFileSync(join(process.cwd(), ".env.local"), "utf8").split("\n")) {
   const t = line.trim();
   if (!t || t.startsWith("#") || !t.includes("=")) continue;

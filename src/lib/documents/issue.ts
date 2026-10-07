@@ -172,7 +172,7 @@ export async function jobsBehindReceipt(
 // builder), and a gate list that decides what money closes must not be
 // reachable only through the file that happened to need it first.
 //
-// Re-exported so scripts/test_parent_work_order_link.ts keeps importing from
+// Re-exported so scripts/live/test_parent_work_order_link.ts keeps importing from
 // where it always did.
 // ---------------------------------------------------------------------------
 export { resolveParentWorkOrderLink, type ParentLink } from "@/lib/documents/parentRef";

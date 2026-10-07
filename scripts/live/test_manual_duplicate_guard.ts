@@ -22,9 +22,14 @@
  */
 import { readFileSync } from "fs";
 import { createClient } from "@supabase/supabase-js";
+import { requireLiveDbOptIn } from "./_guard";
 
 const env: Record<string, string> = {};
-for (const line of readFileSync(new URL("../.env.local", import.meta.url), "utf8").split("\n")) {
+// ⛔ F19 — the gate. MUST stay above the `.env.local` parser below: that
+// file is what hands this suite the service-role key. See ./_guard.ts.
+requireLiveDbOptIn();
+
+for (const line of readFileSync(new URL("../../.env.local", import.meta.url), "utf8").split("\n")) {
   const t = line.trim();
   if (t && !t.startsWith("#") && t.includes("=")) {
     const i = t.indexOf("=");
