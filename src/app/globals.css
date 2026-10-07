@@ -257,3 +257,66 @@ h1, h2, h3 {
     font-size: 16px;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Header navigation menu (NavMenu.tsx) — owner 7.10
+
+   The panel is hidden with CSS, never unmounted: the links are in the
+   server-rendered DOM so they work with JavaScript off. Two regimes:
+
+   1. Before mount (no `data-js="on"`), CSS alone runs the menu — open on
+      hover where a mouse exists, and on keyboard focus everywhere. Focus is
+      what lets Tab walk INTO the panel: `:focus-within` on the ROOT means
+      the trigger's own focus already reveals the panel, so its links become
+      focusable, and focus landing on one of them keeps `:focus-within` true.
+   2. After mount, `data-js="on"` switches every fallback rule off and the
+      component's `open` state is the only thing that shows the panel. That
+      handover is the point: with the CSS rules still live, Esc could not
+      close a panel whose own trigger still held focus.
+   ═══════════════════════════════════════════════════════════════ */
+.navm-panel {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+.navm-root[data-open="true"] > .navm-panel {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: none;
+}
+@media (hover: hover) {
+  .navm-root:not([data-js="on"]):hover > .navm-panel {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: none;
+  }
+}
+.navm-root:not([data-js="on"]):focus-within > .navm-panel {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: none;
+}
+
+/* the chevron points up while the panel is down, the usual disclosure cue */
+.navm-root[data-open="true"] .navm-chevron {
+  transform: rotate(180deg);
+}
+.navm-chevron {
+  transition: transform 140ms ease;
+}
+
+.navm-item-active {
+  background: rgba(139, 92, 246, 0.16);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .navm-panel,
+  .navm-chevron {
+    transition: none;
+  }
+}
