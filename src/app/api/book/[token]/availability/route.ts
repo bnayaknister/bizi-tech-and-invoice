@@ -3,6 +3,7 @@ import { createTypedAdminClient } from "@/lib/supabase/admin";
 import { resolveBookingLink } from "@/lib/booking/links";
 import { loadAvailability } from "@/lib/booking/availabilityServer";
 import { toPublicAvailability, PUBLIC_SLOT_STEP_MINUTES } from "@/lib/booking/publicView";
+import { validateDuration } from "@/lib/booking/duration";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET /api/book/[token]/availability — PUBLIC. The token is the only credential.
@@ -38,19 +39,44 @@ const HEADERS = {
   "Referrer-Policy": "no-referrer",
 } as const;
 
-export async function GET(_request: Request, { params }: { params: { token: string } }) {
+export async function GET(request: Request, { params }: { params: { token: string } }) {
   const admin = createTypedAdminClient();
 
+  // ⚠️ THE TOKEN IS RESOLVED FIRST, AND THE DURATION ONLY AFTERWARDS.
+  // Validating the query string first would answer 400 for a bad `minutes` on a
+  // DEAD token and 404 for a good one — a two-answer oracle that tells a
+  // stranger probing tokens which of theirs is real. resolveBookingLink's whole
+  // point is that every dead-token state looks identical; a 400 that arrives
+  // earlier than the 404 would undo it.
   const link = await resolveBookingLink(admin, params.token);
   if (link.status !== "ok") {
     // One answer for unknown, revoked and malformed alike — see resolveBookingLink.
     return NextResponse.json({ error: "הקישור אינו פעיל" }, { status: 404, headers: HEADERS });
   }
 
+
+  // 🔴 THE DURATION *IS* A PARAMETER, UNLIKE THE STEP (E9-2, rule ג). The
+  // note above says a public endpoint should have one shape and one cost, and
+  // that still holds for the step — but the length is now the client's own
+  // choice, and the grid genuinely differs: a 240-minute recording has far
+  // fewer legal starts than a 90-minute one. Serving one grid and letting the
+  // screen filter it would be the version that lies, because a start that fits
+  // 90 minutes may run past closing at 240.
+  //
+  // ⚠️ VALIDATED AGAINST A CLOSED LIST, never clamped: `validateDuration`
+  // returns the default for an ABSENT value and null for a stated-but-wrong
+  // one, and the two are answered differently — 400 for the second, because a
+  // grid computed for a length nobody approved is worse than no grid.
+  const duration = validateDuration(new URL(request.url).searchParams.get("minutes"));
+  if (duration === null) {
+    return NextResponse.json({ error: "אורך הקלטה אינו תקין" }, { status: 400, headers: HEADERS });
+  }
+
   try {
     const loaded = await loadAvailability(admin, {
       now: new Date(),
       stepMinutes: PUBLIC_SLOT_STEP_MINUTES,
+      durationMinutes: duration,
     });
     return NextResponse.json(
       toPublicAvailability(loaded.result, loaded, loaded.rooms),

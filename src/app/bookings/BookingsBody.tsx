@@ -65,6 +65,23 @@ export function calendarFailedText(error: string): string {
   return `האישור נשמר, אך היצירה ביומן נכשלה — ${error}. אפשר לנסות שוב.`;
 }
 
+/**
+ * The non-standard length, as a tag beside the time range (E9-2, rule ג).
+ *
+ * ⚠️ RENDERS NOTHING FOR 90 MINUTES — `durationTag` is null there, and that
+ * is deliberate: it is the overwhelming majority of rows, the time range
+ * already says 09:00–10:30, and a badge on every line would bury the four-hour
+ * booking that actually needs the owner's attention.
+ */
+function DurationTag({ tag }: { tag: string | null }) {
+  if (!tag) return null;
+  return (
+    <span className="ms-2 text-xs rounded px-1.5 py-0.5 bg-[var(--cyan)]/15 text-[var(--cyan)] align-middle">
+      {tag}
+    </span>
+  );
+}
+
 /** "לאשר הקלטה של דעה לא פופולרית ביום א׳ 27.9, 09:00–10:30, אולפן גבעון?" */
 export function approveQuestion(v: QueueView): string {
   return `לאשר הקלטה של ${v.showName} ביום ${dowHebrew(v.dateIsrael)} ${dayMonth(v.dateIsrael)}, ${
@@ -307,7 +324,10 @@ function Row({
         ) : null}
       </div>
 
-      <p className="text-sm">{v.whenLine}</p>
+      <p className="text-sm">
+        {v.whenLine}
+        <DurationTag tag={v.durationTag} />
+      </p>
       {/* guestLine is never empty — it is the guest or the approved "בלי אורח",
           so a guestless request reads as a fact rather than as a missing field */}
       <p className="text-xs text-[var(--dim)]">{v.guestLine}</p>
@@ -520,7 +540,10 @@ function ApprovedCard({
   return (
     <div className="rounded-lg border border-[var(--cyan)]/50 bg-[var(--cyan)]/5 p-3 space-y-2">
       <p className="text-sm font-semibold">{COPY.approvedLead}</p>
-      <p className="text-sm">{panel.view.whenLine}</p>
+      <p className="text-sm">
+        {panel.view.whenLine}
+        <DurationTag tag={panel.view.durationTag} />
+      </p>
       <HandoffButtons
         view={panel.view}
         title={panel.title}

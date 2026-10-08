@@ -30,6 +30,7 @@ import AvailabilityBody, {
 } from "../src/app/calendar/availability/AvailabilityBody";
 import DeadLink, { DEAD_LINK } from "../src/app/b/[token]/DeadLink";
 import type { FreeSlot } from "../src/app/calendar/availability/booking";
+import { DURATION_LABEL, type BookingDuration } from "../src/lib/booking/duration";
 import { myRequests, whatsappHref, whatsappNumberFrom, whatsappText, type RequestRow } from "../src/lib/booking/publicView";
 import { israelInstant } from "../src/lib/calendar/availability";
 
@@ -91,6 +92,10 @@ const PUBLIC_BASE: BodyProps = {
   skipped: [],
   roomsRefused: [],
   step: 30,
+  // E9-2 (rule ג) — exactly what BookClient passes: the client's own chosen
+  // length, defaulting to 90.
+  durationMinutes: 90 as BookingDuration,
+  onDurationChange: () => {},
   shows: [{ id: "public", name: SHOW, defaultRoom: GIVON }],
   selectedShowId: "public",
   selectedRoom: GIVON,
@@ -150,8 +155,25 @@ console.log("\n=== 1. the public page shows NOTHING of the owner's screen ===");
   // asserting that the summary card is missing.
   check("the word אולפן appears twice — the label and the summary line", countOf(html, COPY.studioLabel), 2);
   check("and exactly once when no hour is picked", countOf(render(), COPY.studioLabel), 1);
-  check("the duration note once", countOf(html, COPY.durationNote), 1);
-  check("three room options", countRe(html, /<option /g), 3);
+  check("the duration label once", countOf(html, COPY.durationLabel), 1);
+  check("the duration hint once", countOf(html, COPY.durationHint), 1);
+  // ὓ4 SIX: three rooms + the three lengths. This number is the assertion that
+  // the picker actually RENDERED — the suite exists because a client component
+  // once shipped a blank screen behind an HTTP 200, and a control nobody counts
+  // is a control that can vanish silently.
+  check("six options — three rooms and three lengths", countRe(html, /<option /g), 6);
+  for (const [label, text] of [
+    ["90", DURATION_LABEL[90]],
+    ["180", DURATION_LABEL[180]],
+    ["240", DURATION_LABEL[240]],
+  ] as const) {
+    check(`the ${label}-minute option renders once`, countOf(html, text), 1);
+  }
+  check(
+    "the 90-minute option is the selected one by default",
+    countOf(html, '<option value="90" selected="">'),
+    1
+  );
 
   // the same props on the OWNER's screen prove the switch is what removed them
   const owner = renderOwner({ selectedDate: SUN, selectedStart: "11:00" });

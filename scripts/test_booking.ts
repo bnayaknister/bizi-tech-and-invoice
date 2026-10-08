@@ -367,7 +367,23 @@ console.log("\n=== 10. the public payload leaks nothing ===");
     check(`${label} — 0 occurrences`, json.split(needle).length - 1, 0);
   }
 
-  check("exactly five keys come back", Object.keys(pub).sort(), ["free", "fromIsrael", "refusedRooms", "rooms", "toIsrael"]);
+  // 🔴 SIX SINCE E9-2, AND THE SIXTH IS DELIBERATE. `durationMinutes` is the
+  // length the grid was computed for, echoed back so BookClient can drop a
+  // grid that belongs to a length the client has since changed away from. It
+  // is a NUMBER WE CHOSE from a closed list of three — it carries no calendar
+  // content, no title, no uid and nothing about any other client — which is
+  // exactly why it is allowed through a payload whose whole purpose is to
+  // withhold those. This assertion existing is what made adding it a decision
+  // rather than an accident: it failed on the first run of the suite.
+  check("exactly six keys come back", Object.keys(pub).sort(), [
+    "durationMinutes",
+    "free",
+    "fromIsrael",
+    "refusedRooms",
+    "rooms",
+    "toIsrael",
+  ]);
+  check("and the sixth is a plain number, not an object that could carry more", typeof pub.durationMinutes, "number");
   check("a slot has exactly four keys", Object.keys(pub.free[0]).sort(), ["dateIsrael", "endIsrael", "room", "startIsrael"]);
   check("the window is carried through", [pub.fromIsrael, pub.toIsrael], [SUNDAY, MONDAY]);
   // passed through EXACTLY as given — the projection does not reorder or

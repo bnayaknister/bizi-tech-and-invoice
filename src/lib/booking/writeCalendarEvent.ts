@@ -58,7 +58,16 @@ export type BookingCalendarWriteInput = {
   title: string;
   /** from `calendarEventIdFor` — saved by the caller BEFORE this is called */
   eventId: string;
-  actorId: string;
+  /**
+   * Who approved it — or NULL for an automatic approval (E9-2).
+   *
+   * `events.actor_id` is nullable (0002:306) and the null is the RECORD of the
+   * decision having been automatic, not a missing value: see the note on the
+   * flip in lib/booking/decide.ts. Widened from `string` here rather than
+   * passing a sentinel id, because a fake profile row called "the bot" is a
+   * fake person in an audit trail.
+   */
+  actorId: string | null;
 };
 
 export type BookingCalendarWriteResult = {

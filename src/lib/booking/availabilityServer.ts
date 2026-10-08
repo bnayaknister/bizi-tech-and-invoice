@@ -10,6 +10,7 @@ import {
   type AvailabilityResult,
 } from "@/lib/calendar/availability";
 import { bookingWindowFor } from "@/lib/calendar/bookingWindow";
+import { DEFAULT_BOOKING_DURATION, type BookingDuration } from "./duration";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // "What is actually free right now" — the ONE place that answers it.
@@ -32,6 +33,8 @@ export type LoadedAvailability = {
   fromIsrael: string;
   toIsrael: string;
   rooms: string[];
+  /** the length the grid was computed FOR — echoed so no caller re-derives it */
+  durationMinutes: BookingDuration;
   result: AvailabilityResult;
 };
 
@@ -125,7 +128,24 @@ async function loadApprovedRequests(
  */
 export async function loadAvailability(
   admin: SupabaseClient<Database>,
-  opts: { now: Date; stepMinutes: number; includeApproved?: boolean }
+  opts: {
+    now: Date;
+    stepMinutes: number;
+    includeApproved?: boolean;
+    /**
+     * How long the booking is (E9-2, owner rule ג). Omitted = 90, which is
+     * what every caller meant before the client could choose — so this
+     * parameter is additive and no existing call site changes meaning.
+     *
+     * 🔴 IT CHANGES THE GRID, NOT JUST A LABEL. `computeAvailability`
+     * already loops `m + win.slotMinutes <= closeMinutes` (availability.ts:533)
+     * and measures every busy overlap against the slot's own end, so a longer
+     * duration automatically produces fewer legal starts, refuses a start that
+     * would run past 19:00, and refuses one that collides with an event two
+     * hours later. Nothing downstream needed teaching.
+     */
+    durationMinutes?: BookingDuration;
+  }
 ): Promise<LoadedAvailability> {
   const url = process.env.STUDIO_ICS_URL;
   if (!url) throw new Error("STUDIO_ICS_URL לא מוגדר");
@@ -153,7 +173,7 @@ export async function loadAvailability(
       openDays: [0, 1, 2, 3, 4], // Sun–Thu; Friday and Saturday are closed
       openHour: 9,
       closeHour: 19,
-      slotMinutes: 90,
+      slotMinutes: opts.durationMinutes ?? DEFAULT_BOOKING_DURATION,
       slotStepMinutes: opts.stepMinutes,
     },
     approved
@@ -163,6 +183,7 @@ export async function loadAvailability(
     fromIsrael,
     toIsrael,
     rooms: STUDIOS.filter((s) => s.bookable).map((s) => s.canonical),
+    durationMinutes: opts.durationMinutes ?? DEFAULT_BOOKING_DURATION,
     result,
   };
 }

@@ -3,6 +3,8 @@ import { createTypedAdminClient } from "@/lib/supabase/admin";
 import { resolveBookingLink } from "@/lib/booking/links";
 import { loadAvailability } from "@/lib/booking/availabilityServer";
 import { PUBLIC_SLOT_STEP_MINUTES } from "@/lib/booking/publicView";
+import { validateDuration, durationTag } from "@/lib/booking/duration";
+import { autoApproveNewRequest } from "@/lib/booking/decide";
 import {
   duplicateWrite,
   findDuplicatePending,
@@ -69,10 +71,17 @@ export async function POST(request: Request, { params }: { params: { token: stri
     endIsrael?: unknown;
     guest?: unknown;
     note?: unknown;
+    durationMinutes?: unknown;
   };
 
   const studio = validateStudio(body.studio);
   if (!studio) return fail(COPY.generic, 400);
+
+  // The chosen length (E9-2, rule ג). Absent = 90, which is what every
+  // request meant before the picker existed; a stated-but-invalid value is the
+  // generic refusal, because our own screen cannot produce one.
+  const duration = validateDuration(body.durationMinutes);
+  if (duration === null) return fail(COPY.generic, 400);
 
   // The guest is the ONE field with its own sentence, because it is the one a
   // client can get wrong by typing: everything else on this screen is chosen
@@ -86,7 +95,15 @@ export async function POST(request: Request, { params }: { params: { token: stri
 
   let free;
   try {
-    const loaded = await loadAvailability(admin, { now: new Date(), stepMinutes: PUBLIC_SLOT_STEP_MINUTES });
+    // 🔴 FOR THE CHOSEN LENGTH. `matchSlot` below takes the END from the slot
+    // it finds, so this single parameter is what makes a 240-minute request
+    // store a 240-minute range — and what makes a start that would run past
+    // 19:00 simply not be in `free` to match.
+    const loaded = await loadAvailability(admin, {
+      now: new Date(),
+      stepMinutes: PUBLIC_SLOT_STEP_MINUTES,
+      durationMinutes: duration,
+    });
     free = loaded.result.free;
   } catch (e) {
     // Logged, never returned — the ICS URL is a secret. And NOT treated as "the
@@ -208,6 +225,35 @@ export async function POST(request: Request, { params }: { params: { token: stri
     return fail(COPY.generic, 500);
   }
 
+  // ═══ THE AUTOMATIC APPROVAL (E9-2, owner decision 8.10) ═══
+  //
+  // 🔴 EVERY DECISION IS IN @/lib/booking/decide, WHICH THE OWNER'S OWN
+  // APPROVE BUTTON NOW CALLS TOO. Not a second implementation that happens to
+  // agree — the same function, so a rule added to one is added to both.
+  //
+  // ⚠️ IT CANNOT THROW AND IT CANNOT FAIL THIS REQUEST. The row above
+  // already exists and the client is owed an answer; every refusal inside
+  // leaves the request `pending`, which is exactly the state it had before
+  // E9-2 existed and a perfectly good outcome. With BOOKING_AUTO_APPROVE unset
+  // it does nothing at all.
+  //
+  // ⚠️ AND IT RUNS *AFTER* THE BRAKES, not instead of them. The duplicate
+  // branch above returns early, so a double-tapped phone cannot trigger two
+  // approvals of two rows — there is only ever one row.
+  const auto = await autoApproveNewRequest(admin, {
+    bookingId: inserted.id,
+    showId: link.link.show_id,
+    // from the RESOLVED LINK, which already read it (links.ts:63-78) — not a
+    // second join on the insert for a string we are holding.
+    showName: link.show.name,
+    dateIsrael: slot.dateIsrael,
+    startIsrael: slot.startIsrael,
+    endIsrael: slot.endIsrael,
+    studio,
+    guest: guest.value,
+    durationTag: durationTag(slot.start.toISOString(), slot.end.toISOString()),
+  });
+
   return NextResponse.json(
     {
       ok: true,
@@ -219,7 +265,11 @@ export async function POST(request: Request, { params }: { params: { token: stri
         startIsrael: slot.startIsrael,
         endIsrael: slot.endIsrael,
         guest: guest.value,
-        status: "pending",
+        // 🔴 THE REAL STATUS, NOT THE LITERAL "pending" THIS LINE USED TO BE.
+        // The client's screen renders the label from this field; an approved
+        // booking that reports "pending" would tell the one person who needs to
+        // know the opposite of what the database says.
+        status: auto.approved ? "approved" : "pending",
       },
     },
     { headers: HEADERS }

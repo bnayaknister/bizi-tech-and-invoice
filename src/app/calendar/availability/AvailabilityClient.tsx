@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { DEFAULT_BOOKING_DURATION, type BookingDuration } from "@/lib/booking/duration";
 import AvailabilityBody, {
   type Refused,
   type Show,
@@ -31,6 +32,10 @@ type Payload = {
 
 export default function AvailabilityClient({ shows }: { shows: Show[] }) {
   const [step, setStep] = useState<30 | 90>(30);
+  // E9-2: the owner's preview must offer the same lengths the client does, or
+  // it stops being a preview of what the client sees — which is the whole
+  // reason this screen and /b/[token] render the SAME component.
+  const [duration, setDuration] = useState<BookingDuration>(DEFAULT_BOOKING_DURATION);
   const [data, setData] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +49,7 @@ export default function AvailabilityClient({ shows }: { shows: Show[] }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [copyError, setCopyError] = useState<string | null>(null);
 
-  const load = useCallback(async (s: 30 | 90) => {
+  const load = useCallback(async (s: 30 | 90, d: BookingDuration) => {
     setLoading(true);
     setError(null);
     // The previous answer is DROPPED before the new request, never kept as a
@@ -52,7 +57,7 @@ export default function AvailabilityClient({ shows }: { shows: Show[] }) {
     // is wrong, and slots left visible after a failed reload are worse.
     setData(null);
     try {
-      const res = await fetch(`/api/calendar/availability?step=${s}`, { cache: "no-store" });
+      const res = await fetch(`/api/calendar/availability?step=${s}&minutes=${d}`, { cache: "no-store" });
       if (!res.ok) {
         setError("failed");
         return;
@@ -66,8 +71,8 @@ export default function AvailabilityClient({ shows }: { shows: Show[] }) {
   }, []);
 
   useEffect(() => {
-    void load(step);
-  }, [step, load]);
+    void load(step, duration);
+  }, [step, duration, load]);
 
   // The visible month follows the window, not the wall clock: `from` is
   // tomorrow, so the window's first month is the only sensible opening view.
@@ -148,6 +153,15 @@ export default function AvailabilityClient({ shows }: { shows: Show[] }) {
     setStart(null);
   }, []);
 
+  /** Changing the length clears the day and the hour — same reason as the room,
+   *  and the same handler shape as BookClient's, because the two screens are
+   *  the same component and must behave identically. */
+  const onDurationChange = useCallback((next: BookingDuration) => {
+    setDuration(next);
+    setDate(null);
+    setStart(null);
+  }, []);
+
   return (
     <AvailabilityBody
       loading={loading}
@@ -167,6 +181,8 @@ export default function AvailabilityClient({ shows }: { shows: Show[] }) {
       selectedStart={start}
       visibleMonth={month}
       warningsOpen={warningsOpen}
+      durationMinutes={duration}
+      onDurationChange={onDurationChange}
       onStepChange={setStep}
       onShowChange={onShowChange}
       onRoomChange={onRoomChange}

@@ -11,7 +11,8 @@ import {
   type FreeSlot,
   type Month,
 } from "@/app/calendar/availability/booking";
-import { whatsappHref, whatsappText, type RequestView } from "@/lib/booking/publicView";
+import { STATUS_LABEL, whatsappHref, whatsappText, type RequestView } from "@/lib/booking/publicView";
+import { DEFAULT_BOOKING_DURATION, type BookingDuration } from "@/lib/booking/duration";
 
 /**
  * The public container: owns the fetch, the selections and the submit, and
@@ -32,9 +33,18 @@ type Payload = {
   rooms: string[];
   free: FreeSlot[];
   refusedRooms: string[];
+  /** the length this grid was computed for — see the stale-answer guard in `load` */
+  durationMinutes: number;
 };
 
-type Sent = { dateIsrael: string; startIsrael: string; studio: string; guest: string | null };
+type Sent = {
+  dateIsrael: string;
+  startIsrael: string;
+  studio: string;
+  guest: string | null;
+  /** "אושרה" when the automatic approval took it (E9-2), "ממתינה לאישור" otherwise */
+  statusLabel: string;
+};
 
 const GENERIC_ERROR = "לא הצלחנו לשלוח את הבקשה. נסו שוב בעוד כמה דקות.";
 
@@ -55,6 +65,7 @@ export default function BookClient({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [duration, setDuration] = useState<BookingDuration>(DEFAULT_BOOKING_DURATION);
   const [room, setRoom] = useState<string | null>(defaultRoom);
   const [date, setDate] = useState<string | null>(null);
   const [start, setStart] = useState<string | null>(null);
@@ -74,18 +85,29 @@ export default function BookClient({
     // screen after a failed reload are the one failure a client would act on.
     setData(null);
     try {
-      const res = await fetch(`/api/book/${token}/availability`, { cache: "no-store" });
+      const res = await fetch(`/api/book/${token}/availability?minutes=${duration}`, {
+        cache: "no-store",
+      });
       if (!res.ok) {
         setError("failed");
         return;
       }
-      setData((await res.json()) as Payload);
+      const payload = (await res.json()) as Payload;
+      // 🔴 A GRID FOR THE WRONG LENGTH IS DROPPED, NOT RENDERED. Two changes in
+      // quick succession (90 → 240 → 180) put two fetches in flight and nothing
+      // guarantees they resolve in order. Without this check the LAST answer to
+      // arrive wins, which may be the 240 grid under a screen that says 180 —
+      // and every start time in it would be one the client cannot actually
+      // book. The route echoes the length it computed for exactly so this
+      // comparison is possible.
+      if (payload.durationMinutes !== duration) return;
+      setData(payload);
     } catch {
       setError("failed");
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, duration]);
 
   useEffect(() => {
     void load();
@@ -109,6 +131,20 @@ export default function BookClient({
     setSubmitError(null);
   }, []);
 
+  /**
+   * Changing the LENGTH clears the day and the hour too — same reason as the
+   * room, and more strongly: a 09:00 start that was legal at 90 minutes may
+   * not exist at all at 240, so keeping the selection would leave a chosen
+   * time that the new grid does not contain and the server would refuse.
+   */
+  const onDurationChange = useCallback((next: BookingDuration) => {
+    setDuration(next);
+    setDate(null);
+    setStart(null);
+    setSent(null);
+    setSubmitError(null);
+  }, []);
+
   const onSubmit = useCallback(async () => {
     if (!room || !date || !start || submitting) return;
     setSubmitting(true);
@@ -117,12 +153,27 @@ export default function BookClient({
       const res = await fetch(`/api/book/${token}/request`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ studio: room, startIsrael: `${date} ${start}`, guest, note }),
+        body: JSON.stringify({
+          studio: room,
+          startIsrael: `${date} ${start}`,
+          guest,
+          note,
+          durationMinutes: duration,
+        }),
       });
       const body = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         error?: string;
-        request?: { id: string; studio: string; dateIsrael: string; startIsrael: string; guest: string | null };
+        request?: {
+          id: string;
+          studio: string;
+          dateIsrael: string;
+          startIsrael: string;
+          endIsrael?: string;
+          guest: string | null;
+          /** 'pending' or — since E9-2 — 'approved' */
+          status?: string;
+        };
       };
       if (!res.ok || !body.ok || !body.request) {
         // The server's sentence is shown verbatim when it sent one: 409, 429
@@ -138,7 +189,19 @@ export default function BookClient({
       // database, so the confirmation, the WhatsApp text and the stored request
       // cannot say three different things. Reading `guest` (the input) here
       // instead of `r.guest` is precisely what broke it.
-      setSent({ dateIsrael: r.dateIsrael, startIsrael: r.startIsrael, studio: r.studio, guest: r.guest });
+      // 🔴 THE LABEL COMES FROM THE SERVER'S `status`, through the SAME map the
+      // page's own list uses (STATUS_LABEL). Before E9-2 this was the literal
+      // "ממתינה לאישור" in two places; with an automatic approval that
+      // literal would tell the one person who needs to know the opposite of
+      // what the database says.
+      const statusLabel = STATUS_LABEL[r.status ?? "pending"] ?? STATUS_LABEL.pending;
+      setSent({
+        dateIsrael: r.dateIsrael,
+        startIsrael: r.startIsrael,
+        studio: r.studio,
+        guest: r.guest,
+        statusLabel,
+      });
       // Merged locally rather than re-fetched: the row the server just
       // confirmed IS the row, and a second round trip could only disagree with
       // it. A duplicate answer carries the EXISTING id — so it REPLACES that
@@ -156,7 +219,7 @@ export default function BookClient({
                 timeIsrael: r.startIsrael,
                 studio: r.studio,
                 guest: r.guest,
-                statusLabel: "ממתינה לאישור",
+                statusLabel,
         };
         return prev.some((p) => p.id === r.id)
           ? prev.map((p) => (p.id === r.id ? view : p))
@@ -170,7 +233,7 @@ export default function BookClient({
     } finally {
       setSubmitting(false);
     }
-  }, [room, date, start, guest, note, token, submitting, load]);
+  }, [room, date, start, guest, note, token, submitting, load, duration]);
 
   const href = sent
     ? whatsappHref(
@@ -212,6 +275,8 @@ export default function BookClient({
       warningsOpen={false}
       onStepChange={() => {}}
       onShowChange={() => {}}
+      durationMinutes={duration}
+      onDurationChange={onDurationChange}
       onRoomChange={onRoomChange}
       onDateChange={(d) => {
         setDate(d);

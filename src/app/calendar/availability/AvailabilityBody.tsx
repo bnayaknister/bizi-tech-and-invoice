@@ -2,6 +2,11 @@
 
 import type { RequestView } from "@/lib/booking/publicView";
 import {
+  BOOKING_DURATIONS,
+  DURATION_LABEL,
+  type BookingDuration,
+} from "@/lib/booking/duration";
+import {
   clickableDays,
   dayPhrase,
   hoursFor,
@@ -54,7 +59,11 @@ export const COPY = {
   bookingTitle: "הזמנת הקלטה",
   studioLabel: "אולפן",
   pickStudio: "בחרו אולפן כדי לראות מועדים פנויים",
-  durationNote: "הקלטה של שעה וחצי",
+  // E9-2 (rule ג): the length stopped being a fact we announce and became a
+  // choice the client makes. The old sentence is gone rather than kept as a
+  // hint, because it would now contradict the control next to it.
+  durationLabel: "אורך ההקלטה",
+  durationHint: "המועדים הפנויים משתנים לפי האורך שבחרתם.",
   error: "לא הצלחתי לקרוא את היומן. לא מוצגת שום זמינות.",
   // ── public screen only (3ב) ──────────────────────────────────────────────
   // ⚠️ `error` above is the OWNER'S sentence and says "no availability is
@@ -167,6 +176,8 @@ export default function AvailabilityBody({
   copyError = null,
   guest = "",
   note = "",
+  durationMinutes,
+  onDurationChange,
   onGuestChange,
   onNoteChange,
   onSubmit,
@@ -219,6 +230,9 @@ export default function AvailabilityBody({
   // public only — the request form, its outcome, and the client's own history
   guest?: string;
   note?: string;
+  /** E9-2: the chosen length. The grid is computed FOR it, not filtered by it. */
+  durationMinutes: BookingDuration;
+  onDurationChange: (m: BookingDuration) => void;
   onGuestChange?: (v: string) => void;
   onNoteChange?: (v: string) => void;
   onSubmit?: () => void;
@@ -322,7 +336,30 @@ export default function AvailabilityBody({
         </select>
       </label>
 
-      <p className="text-xs text-[var(--faint)]">{COPY.durationNote}</p>
+      {/* 🔴 ABOVE THE BOARD AND BELOW THE STUDIO, because changing it
+          INVALIDATES the board. A length control placed under the calendar
+          would read as a property of a slot already chosen, when in fact it
+          decides which slots exist at all — the container clears the day and
+          the hour on change, exactly as it does for the room. */}
+      <label className="block space-y-1">
+        <span className="text-xs text-[var(--dim)]">{COPY.durationLabel}</span>
+        <select
+          value={String(durationMinutes)}
+          onChange={(e) => onDurationChange(Number(e.target.value) as BookingDuration)}
+          className="w-full rounded-lg bg-[var(--panel)] border border-[var(--rule)] px-3 py-2 text-sm"
+        >
+          {/* No empty option: unlike the room, this one always has a value —
+              90 is the default and "no length" is not a state a booking can be
+              in. BOOKING_DURATIONS is the single closed list the server
+              validates against, imported rather than re-typed here. */}
+          {BOOKING_DURATIONS.map((m) => (
+            <option key={m} value={String(m)}>
+              {DURATION_LABEL[m]}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="text-xs text-[var(--faint)]">{COPY.durationHint}</p>
 
       {/* "הבקשות שלכם" sits ABOVE the board (owner, 23.9) and only on the
           public page. With no future requests it is not rendered at all — an

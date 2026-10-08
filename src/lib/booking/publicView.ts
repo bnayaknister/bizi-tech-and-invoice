@@ -1,5 +1,6 @@
 import { israelDateOf, type AvailabilityResult, type Slot } from "@/lib/calendar/availability";
 import { dayMonth, dowHebrew } from "@/app/calendar/availability/booking";
+import { DEFAULT_BOOKING_DURATION } from "./duration";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // What a stranger holding a link is allowed to receive. PURE.
@@ -31,6 +32,15 @@ export type PublicAvailability = {
   fromIsrael: string;
   toIsrael: string;
   rooms: string[];
+  /**
+   * The length the grid was computed FOR (E9-2). Echoed back so the screen can
+   * prove it is drawing the grid it asked for: the client picks 240, the fetch
+   * is in flight, they pick 180, and the two answers arrive out of order. A
+   * payload that does not say which duration it describes cannot be checked
+   * against the current selection, and the grid silently belongs to the other
+   * one.
+   */
+  durationMinutes: number;
   free: PublicSlot[];
   /**
    * Rooms offering nothing at all, BY NAME ONLY.
@@ -51,13 +61,17 @@ export type PublicAvailability = {
  */
 export function toPublicAvailability(
   result: AvailabilityResult,
-  win: { fromIsrael: string; toIsrael: string },
+  win: { fromIsrael: string; toIsrael: string; durationMinutes?: number },
   rooms: string[]
 ): PublicAvailability {
   return {
     fromIsrael: win.fromIsrael,
     toIsrael: win.toIsrael,
     rooms: rooms ?? [],
+    // from the LOADED window, never a literal here: the one place that decides
+    // the length is loadAvailability, and a default typed in a second place is
+    // a default that will disagree with it.
+    durationMinutes: win.durationMinutes ?? DEFAULT_BOOKING_DURATION,
     // Israeli wall-clock strings, never Date objects: the same choice the
     // internal route made, and it keeps timezone arithmetic out of the browser.
     free: (result?.free ?? []).map((s: Slot) => ({

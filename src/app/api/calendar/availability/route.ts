@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient, createTypedClient } from "@/lib/supabase/server";
 import { loadAvailability } from "@/lib/booking/availabilityServer";
+import { validateDuration } from "@/lib/booking/duration";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET /api/calendar/availability — the internal availability check.
@@ -58,12 +59,27 @@ export async function GET(request: Request) {
     );
   }
 
+  // The length, same closed-list rule as the public route (E9-2, rule ג). The
+  // owner's preview has to be able to ask for all three, or it is a preview of
+  // one third of what the client sees.
+  const duration = validateDuration(new URL(request.url).searchParams.get("minutes"));
+  if (duration === null) {
+    return NextResponse.json(
+      { error: "minutes חייב להיות 90, 180 או 240" },
+      { status: 400, headers: { "Cache-Control": "no-store" } }
+    );
+  }
+
   try {
     // ⚠️ THE SAME ASSEMBLY THE PUBLIC ROUTE USES — one feed read, one query for
     // approved requests, one computation. The owner's preview and the client's
     // screen must never disagree about what is free, and the only way to
     // guarantee that is for neither to own the assembly.
-    const loaded = await loadAvailability(createTypedClient(), { now: new Date(), stepMinutes: step });
+    const loaded = await loadAvailability(createTypedClient(), {
+      now: new Date(),
+      stepMinutes: step,
+      durationMinutes: duration,
+    });
     const fetchedAt = new Date().toISOString();
     const result = loaded.result;
 
@@ -72,6 +88,9 @@ export async function GET(request: Request) {
         fromIsrael: loaded.fromIsrael,
         toIsrael: loaded.toIsrael,
         step,
+        // echoed beside `step` for the same reason: the screen must be able to
+        // tell which grid it is holding (BookClient's stale-answer guard).
+        durationMinutes: loaded.durationMinutes,
         fetchedAt,
         rooms: loaded.rooms,
         // Date objects would serialise to ISO strings anyway; the Israeli

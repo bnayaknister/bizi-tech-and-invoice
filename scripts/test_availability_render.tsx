@@ -40,6 +40,7 @@ import AvailabilityBody, {
   type UnknownBlock,
 } from "../src/app/calendar/availability/AvailabilityBody";
 import { monthOf, toPickerShows, type FreeSlot, type Month, type ShowRow } from "../src/app/calendar/availability/booking";
+import type { BookingDuration } from "../src/lib/booking/duration";
 import { bookableRoomForDefault } from "../src/lib/calendar/rooms";
 import { STUDIOS } from "../src/lib/calendar/studios";
 
@@ -127,6 +128,9 @@ const BASE = {
   onStartChange: () => {},
   onMonthChange: () => {},
   onToggleWarnings: () => {},
+  // E9-2 (rule ג): the length picker. 90 is the default the client lands on.
+  durationMinutes: 90 as BookingDuration,
+  onDurationChange: () => {},
 };
 const render = (props: Partial<typeof BASE>) => renderToString(<AvailabilityBody {...BASE} {...props} />);
 
@@ -146,7 +150,8 @@ console.log("\n=== 1. the client screen, loaded: every fixed sentence exactly on
     ["preview lead", COPY.previewLead],
     ["booking title", COPY.bookingTitle],
     ["studio label", COPY.studioLabel],
-    ["duration note", COPY.durationNote],
+    ["duration label", COPY.durationLabel],
+    ["duration hint", COPY.durationHint],
     ["warnings empty sentence", COPY.warningsEmpty],
     ["step: half hour", COPY.stepHalf],
     ["step: ninety", COPY.stepFull],
@@ -196,10 +201,10 @@ console.log("\n=== 3. no default room: the sentence, and nothing to click ===");
   check("zero hour buttons", hourButtons(html), 0);
   check("no month label", countOf(html, "ספטמבר 2026"), 0);
   check("no weekday column heads", countOf(html, ">א׳<"), 0);
-  check("the studio select is still present", countOf(html, `<select`), 2); // preview show picker + studio
+  check("the studio select is still present", countOf(html, `<select`), 3); // preview show picker + studio + duration
   check("an empty option is offered while nothing is chosen", countOf(html, '<option value="" selected="">'), 1);
   check("the show's own name heads the screen once", countOf(html, ">פודקאסט בלי ברירת מחדל</p>"), 1);
-  check("the duration note still renders once", countOf(html, COPY.durationNote), 1);
+  check("the duration label still renders once", countOf(html, COPY.durationLabel), 1);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@ import { israelDateOf } from "@/lib/calendar/availability";
 import { dayMonth, dowHebrew } from "@/app/calendar/availability/booking";
 import { israelHHMM } from "./publicView";
 import { eventTitle, googleCalendarUrl } from "./title";
+import { durationTag } from "./duration";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // The owner's request queue. PURE — rows in, view models out.
@@ -79,6 +80,15 @@ export type QueueView = {
   /** see QueueRow — carried through unchanged, for every row regardless of status */
   calendarWriteStatus: "created" | "failed" | null;
   calendarWriteError: string | null;
+  /**
+   * "3 שעות" / "4 שעות" — or NULL for the standard 90 minutes (E9-2).
+   *
+   * Null on the common case is the point: a tag on every row is noise that
+   * makes the exceptional ones harder to spot, and the exceptional one is
+   * exactly what the owner needs to see here — a four-hour booking blocks
+   * most of a studio's day.
+   */
+  durationTag: string | null;
 };
 
 /** Approved copy, 24.9. "המועד עבר" is a STATE, not a decision — see below. */
@@ -194,6 +204,9 @@ function toView(row: QueueRow, all: QueueRow[], now: Date): QueueView | null {
     googleUrl: googleCalendarUrl({ title, start, end, details: row.note }),
     calendarWriteStatus: row.calendarWriteStatus,
     calendarWriteError: row.calendarWriteError,
+    // derived from the two instants, not stored: there is no duration column,
+    // and a third copy of the length could disagree with the range it describes.
+    durationTag: durationTag(row.start_at, row.end_at),
   };
 }
 
