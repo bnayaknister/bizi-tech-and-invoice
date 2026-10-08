@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import EntityFieldRows from "@/components/EntityFieldRows";
 import ClientMorningCard from "@/components/ClientMorningCard";
+import ClientBookingContactsCard from "@/components/ClientBookingContactsCard";
 import MorningMappingCard from "@/components/MorningMappingCard";
 import {
   EMPTY_LIST,
@@ -288,6 +289,8 @@ function ClientCardPanel({ data }: { data: ClientsScreenData }) {
           clientName={card.name}
           onChanged={() => router.refresh()}
         />
+        {/* the same component the drawer renders — see its own header */}
+        <ClientBookingContactsCard clientId={card.id} />
       </div>
 
       {/* ── תוכניות וחוזים ── */}

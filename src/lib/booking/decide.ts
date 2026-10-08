@@ -517,7 +517,7 @@ export async function autoApproveNewRequest(
       if (verdict.reason === "second-same-day") {
         await recordBookingNotification(admin, {
           kind: "booking-pending",
-          bookingId: input.bookingId,
+          subjectId: input.bookingId,
           facts,
           reason: "second-same-day",
         });
@@ -541,7 +541,7 @@ export async function autoApproveNewRequest(
       if (result.code === "taken-in-calendar" || result.code === "exclusion") {
         await recordBookingNotification(admin, {
           kind: "booking-pending",
-          bookingId: input.bookingId,
+          subjectId: input.bookingId,
           facts,
           reason: "slot-taken",
         });
@@ -554,7 +554,7 @@ export async function autoApproveNewRequest(
     if (result.outcome === "reverted-to-pending") {
       await recordBookingNotification(admin, {
         kind: "booking-pending",
-        bookingId: input.bookingId,
+        subjectId: input.bookingId,
         facts: { ...facts, durationTag: result.request.durationTag },
         reason: "calendar-failed",
       });
@@ -563,7 +563,7 @@ export async function autoApproveNewRequest(
 
     await recordBookingNotification(admin, {
       kind: "booking-approved",
-      bookingId: input.bookingId,
+      subjectId: input.bookingId,
       // the STORED row's own facts, not the caller's copy of them — the same
       // rule BookClient follows about the server's answer being the truth
       facts: {

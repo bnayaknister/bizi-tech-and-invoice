@@ -8,7 +8,7 @@ import {
   declinedWhatsappText,
   whatsappComposeHref,
 } from "@/lib/booking/title";
-import type { QueueView } from "@/lib/booking/queue";
+import { DECIDED_LABEL, type QueueView } from "@/lib/booking/queue";
 
 /**
  * The owner's request queue — PURE. No hooks, no fetch, no router: every value
@@ -50,6 +50,17 @@ export const COPY = {
   calendarCreated: "נוצר ביומן גוגל.",
   calendarDryRunNotice: "מצב בדיקה — האירוע לא נוצר ביומן.",
   retryCalendar: "נסה שוב ליצור ביומן",
+  // E9-3 — the approved lead when the event ALREADY exists. The old one
+  // ("עכשיו הוסיפו אותה ליומן") is an instruction to do something that is
+  // already done, and following it creates a SECOND event.
+  approvedLeadCreated: "ההקלטה אושרה ונכתבה ליומן.",
+  // ⚠️ NOT `cancel` — that key is already the DIALOG's "ביטול" button
+  // (line 38). Two meanings of one word, and the collision was caught by tsc.
+  cancelBooking: "בטל הקלטה",
+  cancelled: "ההקלטה בוטלה והמשבצת שוחררה.",
+  deleteEventReminder: "מחקו את האירוע ביומן",
+  openCalendarDay: "פתיחת היום ביומן",
+  noEventToDelete: "להקלטה הזו לא נוצר אירוע ביומן — אין מה למחוק.",
   eventLink: "קישור לאירוע",
 } as const;
 
@@ -87,6 +98,35 @@ export function approveQuestion(v: QueueView): string {
   return `לאשר הקלטה של ${v.showName} ביום ${dowHebrew(v.dateIsrael)} ${dayMonth(v.dateIsrael)}, ${
     v.startIsrael
   }–${v.endIsrael}, אולפן ${v.studio}?`;
+}
+
+/** "לבטל את ההקלטה של דעה לא פופולרית ביום א׳ 27.9, 09:00–10:30?" */
+export function cancelQuestion(v: QueueView): string {
+  return `לבטל את ההקלטה של ${v.showName} ביום ${dowHebrew(v.dateIsrael)} ${dayMonth(v.dateIsrael)}, ${
+    v.startIsrael
+  }–${v.endIsrael}?`;
+}
+
+/**
+ * "אושר אוטומטית" / "אושר ידנית" — E9-2.
+ *
+ * ⚠️ ON EVERY APPROVED ROW, both ways round. A badge that appeared only on
+ * the automatic ones would leave the owner unable to tell "approved by a human"
+ * from "this screen is too old to know".
+ */
+function DecidedTag({ view }: { view: QueueView }) {
+  if (view.status !== "approved") return null;
+  const auto = view.autoApproved;
+  return (
+    <span
+      className={
+        "ms-2 text-[10px] rounded px-1.5 py-0.5 align-middle " +
+        (auto ? "bg-[var(--signal)]/15 text-[var(--signal)]" : "bg-[var(--panel)] text-[var(--dim)]")
+      }
+    >
+      {auto ? DECIDED_LABEL.auto : DECIDED_LABEL.manual}
+    </span>
+  );
 }
 
 /** "לדחות את הבקשה של דעה לא פופולרית ליום א׳ 27.9 09:00?" */
@@ -145,6 +185,20 @@ export type ApprovedPanel = {
   calendar: CalendarWriteState;
 };
 
+/** What a cancellation hands back — see the route for why the flag is here. */
+export type CancelledPanel = {
+  view: QueueView;
+  /**
+   * 🔴 Whether an event was EVER written for this booking. The reminder is
+   * driven by this and not by "we cancelled something": a booking whose
+   * calendar write failed or never ran has no event to delete, and telling the
+   * owner to go and delete one sends them looking for something that was never
+   * there.
+   */
+  calendarEventExisted: boolean;
+  calendarDayUrl: string;
+};
+
 export default function BookingsBody({
   waiting,
   history,
@@ -163,6 +217,10 @@ export default function BookingsBody({
   onCopyTitle,
   onRetryCalendar,
   retryingId,
+  cancelFor,
+  cancelled,
+  onAskCancel,
+  onConfirmCancel,
 }: {
   waiting: QueueView[];
   history: QueueView[];
@@ -183,6 +241,13 @@ export default function BookingsBody({
   onRetryCalendar: (v: QueueView) => void;
   /** the one row currently retrying, so only ITS button disables */
   retryingId: string | null;
+  // ── E9-3: cancelling an approved recording ──────────────────────
+  /** the row whose cancel confirmation is open */
+  cancelFor: QueueView | null;
+  /** the FRESH result of a cancellation — carries whether an event exists */
+  cancelled: CancelledPanel | null;
+  onAskCancel: (v: QueueView) => void;
+  onConfirmCancel: (v: QueueView) => void;
 }) {
   // every array is defaulted before it is walked — the habit from 2026-09-15,
   // where an undefined the TYPE promised took a page down
@@ -211,6 +276,7 @@ export default function BookingsBody({
       ) : null}
 
       {declined ? <DeclinedCard view={declined} /> : null}
+      {cancelled ? <CancelledCard panel={cancelled} /> : null}
 
       <section className="space-y-2">
         <h2 className="text-[10px] uppercase tracking-wider font-semibold text-[var(--faint)]">
@@ -228,6 +294,7 @@ export default function BookingsBody({
                 copied={copiedTitleId === v.id}
                 onAskApprove={onAskApprove}
                 onAskDecline={onAskDecline}
+                onAskCancel={onAskCancel}
                 onCopyTitle={onCopyTitle}
                 onRetryCalendar={onRetryCalendar}
                 retrying={retryingId === v.id}
@@ -254,6 +321,7 @@ export default function BookingsBody({
                 copied={copiedTitleId === v.id}
                 onAskApprove={onAskApprove}
                 onAskDecline={onAskDecline}
+                onAskCancel={onAskCancel}
                 onCopyTitle={onCopyTitle}
                 onRetryCalendar={onRetryCalendar}
                 retrying={retryingId === v.id}
@@ -289,6 +357,23 @@ export default function BookingsBody({
           onCancel={onCancelDialog}
         />
       ) : null}
+
+      {/* 🔴 A CONFIRMATION, AND NOT OPTIONAL (owner, 9.10). Cancelling destroys
+          an approval the CLIENT has already been told about and frees a slot
+          somebody else can take within seconds — and unlike a decline there is
+          no undo path that puts it back. The warning is the calendar reminder,
+          stated at the moment of deciding rather than only afterwards. */}
+      {cancelFor ? (
+        <ConfirmDialog
+          question={cancelQuestion(cancelFor)}
+          warning={COPY.deleteEventReminder}
+          confirmLabel={COPY.cancelBooking}
+          tone="stop"
+          busy={busy}
+          onConfirm={() => onConfirmCancel(cancelFor)}
+          onCancel={onCancelDialog}
+        />
+      ) : null}
     </div>
   );
 }
@@ -297,6 +382,7 @@ function Row({
   v,
   busy,
   copied,
+  onAskCancel,
   onAskApprove,
   onAskDecline,
   onCopyTitle,
@@ -308,6 +394,7 @@ function Row({
   copied: boolean;
   onAskApprove: (v: QueueView) => void;
   onAskDecline: (v: QueueView) => void;
+  onAskCancel: (v: QueueView) => void;
   onCopyTitle: (v: QueueView, title: string) => void;
   onRetryCalendar: (v: QueueView) => void;
   retrying: boolean;
@@ -330,7 +417,10 @@ function Row({
       </p>
       {/* guestLine is never empty — it is the guest or the approved "בלי אורח",
           so a guestless request reads as a fact rather than as a missing field */}
-      <p className="text-xs text-[var(--dim)]">{v.guestLine}</p>
+      <p className="text-xs text-[var(--dim)]">
+        {v.guestLine}
+        <DecidedTag view={v} />
+      </p>
       {v.note ? <p className="text-xs text-[var(--dim)] whitespace-pre-line">{v.note}</p> : null}
       <p className="text-[11px] text-[var(--faint)]">{v.sentLine}</p>
 
@@ -338,7 +428,7 @@ function Row({
           A greyed button invites a click and then explains why it was refused;
           an absent one says the same thing without the detour. `canApprove`
           and `canDecline` are computed in ./queue, not re-derived here. */}
-      {v.canApprove || v.canDecline ? (
+      {v.canApprove || v.canDecline || v.canCancel ? (
         <div className="flex gap-2 pt-1">
           {v.canApprove ? (
             <button
@@ -358,6 +448,20 @@ function Row({
               className="rounded-lg px-3 py-1.5 text-xs border border-[var(--rule)] text-[var(--dim)] disabled:opacity-50"
             >
               {COPY.decline}
+            </button>
+          ) : null}
+          {/* ⚠️ ABSENT ON A PAST ROW, not disabled — `canCancel` already says so
+              (./queue). Cancelling a recording that has happened frees a slot
+              nobody can use and points the owner at an event that documents
+              something real. */}
+          {v.canCancel ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onAskCancel(v)}
+              className="rounded-lg px-3 py-1.5 text-xs border border-rose-500/50 text-rose-300 disabled:opacity-50"
+            >
+              {COPY.cancelBooking}
             </button>
           ) : null}
         </div>
@@ -418,20 +522,38 @@ function HandoffButtons({
       studio: view.studio,
     })
   );
+  // 🔴 E9-3 — THE FIX. When the event ALREADY EXISTS in the calendar, the
+  // "פתיחה ביומן גוגל" button must not render: it opens Google's
+  // create-event form pre-filled, and pressing it produces a SECOND event for
+  // the same recording. E9-1's note said it "stays available in EVERY one of
+  // the four states (owner, step 5)" — that was written when the write was new
+  // and the manual paste was the proven fallback. The write is now live and
+  // verified in production (9.10), so the fallback has become a duplicate
+  // generator and the owner asked for it gone.
+  //
+  // ⚠️ IT STAYS IN EVERY OTHER STATE. A failed write, a dry run, or a row
+  // from before the feature all still need a way to get the event in by hand —
+  // that is precisely when a human must be able to create it.
+  const eventAlreadyCreated = calendar.status === "created" && !calendar.dryRun;
+
   return (
     <div className="space-y-1.5 pt-1">
+      {/* the title is still shown when the event exists — the owner compares it
+          against what is in the calendar — but it is no longer a hand-off */}
       <p className="text-xs font-mono bg-[var(--panel)] border border-[var(--rule)] rounded px-2 py-1.5 break-words">
         {title}
       </p>
       <div className="flex flex-wrap gap-2">
-        <a
-          href={googleUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="rounded-lg px-3 py-1.5 text-xs font-bold border border-[var(--cyan)]/60"
-        >
-          {COPY.openInGoogle}
-        </a>
+        {eventAlreadyCreated ? null : (
+          <a
+            href={googleUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-lg px-3 py-1.5 text-xs font-bold border border-[var(--cyan)]/60"
+          >
+            {COPY.openInGoogle}
+          </a>
+        )}
         <button
           type="button"
           onClick={() => onCopyTitle(view, title)}
@@ -451,9 +573,10 @@ function HandoffButtons({
       </div>
       {copied ? <p className="text-[11px] text-[var(--cyan)]">{COPY.titleCopied}</p> : null}
 
-      {/* feat/calendar-write (7.10) — the four states. "פתיחה ביומן גוגל"
-          above stays available in EVERY one of them (owner, step 5): the
-          event write is new, the manual paste is the proven fallback. */}
+      {/* feat/calendar-write (7.10) — the four states. ⚠️ The sentence that used
+          to be here said the Google button stays available in all four; E9-3
+          removed it from the `created` state only — see eventAlreadyCreated
+          above for why, and why it remains in the other three. */}
       <CalendarStatus
         view={view}
         calendar={calendar}
@@ -539,7 +662,14 @@ function ApprovedCard({
 }) {
   return (
     <div className="rounded-lg border border-[var(--cyan)]/50 bg-[var(--cyan)]/5 p-3 space-y-2">
-      <p className="text-sm font-semibold">{COPY.approvedLead}</p>
+      {/* 🔴 E9-3: the lead depends on whether the event EXISTS. "עכשיו
+          הוסיפו אותה ליומן" above a booking that is already in the calendar
+          is an instruction whose only effect is a duplicate event. */}
+      <p className="text-sm font-semibold">
+        {panel.calendar.status === "created" && !panel.calendar.dryRun
+          ? COPY.approvedLeadCreated
+          : COPY.approvedLead}
+      </p>
       <p className="text-sm">
         {panel.view.whenLine}
         <DurationTag tag={panel.view.durationTag} />
@@ -554,6 +684,44 @@ function ApprovedCard({
         onRetryCalendar={onRetryCalendar}
         retrying={retrying}
       />
+    </div>
+  );
+}
+
+/**
+ * What the owner sees right after cancelling.
+ *
+ * 🔴 THE REMINDER IS CONDITIONAL ON AN EVENT HAVING EXISTED. A booking whose
+ * calendar write failed, never ran, or ran in dry-run mode has nothing in the
+ * calendar — and "מחקו את האירוע ביומן" would send the owner
+ * looking for something that was never there, which is how a person stops
+ * trusting a reminder.
+ *
+ * ⚠️ AND THE CODE DOES NOT DELETE IT. lib/calendar/write.ts has no
+ * `events.delete` and must not grow one (write.ts:24-32): `writer` on a shared
+ * calendar can delete the advertising company's recordings too, so the
+ * capability does not exist here at all. A human deletes; this is the nudge.
+ */
+function CancelledCard({ panel }: { panel: CancelledPanel }) {
+  return (
+    <div className="rounded-lg border border-rose-500/40 bg-rose-500/5 p-3 space-y-2">
+      <p className="text-sm font-semibold">{COPY.cancelled}</p>
+      <p className="text-sm">{panel.view.whenLine}</p>
+      {panel.calendarEventExisted ? (
+        <div className="space-y-1.5">
+          <p className="text-xs font-bold text-rose-300">{COPY.deleteEventReminder}</p>
+          <a
+            href={panel.calendarDayUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-block rounded-lg px-3 py-1.5 text-xs font-bold border border-rose-500/60 text-rose-200"
+          >
+            {COPY.openCalendarDay}
+          </a>
+        </div>
+      ) : (
+        <p className="text-[11px] text-[var(--faint)]">{COPY.noEventToDelete}</p>
+      )}
     </div>
   );
 }

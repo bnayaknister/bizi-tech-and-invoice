@@ -407,9 +407,10 @@ console.log("\n=== 7. the notification rows (dry run records, never sends) ===")
   // the rows
   const rows = buildNotificationRows({
     kind: "booking-approved",
-    bookingId: "b-1",
+    subjectId: "b-1",
     recipients: ["972501234567", "972542242526"],
     templateName: "bizi_booking_approved",
+    params: ["x"],
     variables: { showName: "x" },
     body: approved,
     status: "dry_run",
@@ -419,17 +420,19 @@ console.log("\n=== 7. the notification rows (dry run records, never sends) ===")
   check("🔴 status is dry_run — nothing was sent", rows.map((r) => r.status), ["dry_run", "dry_run"]);
   check("the template name travels with the row", rows[0].template_name, "bizi_booking_approved");
   check("the body is the rendered sentence", rows[0].body, approved);
-  check("the payload carries the booking and the variables", JSON.stringify(rows[0].payload), JSON.stringify({
+  check("the payload carries the subject, the template, the POSITIONAL params and the variables", JSON.stringify(rows[0].payload), JSON.stringify({
     kind: "booking-approved",
-    booking_id: "b-1",
+    subject_id: "b-1",
     template: "bizi_booking_approved",
+    language: "he",
+    params: ["x"],
     variables: { showName: "x" },
     dry_run: true,
   }));
   check("a non-dry-run row says queued, and its payload says so too", (() => {
     const q = buildNotificationRows({
-      kind: "booking-pending", bookingId: "b-1", recipients: ["972501234567"],
-      templateName: "t", variables: {}, body: "x", status: "queued",
+      kind: "booking-pending", subjectId: "b-1", recipients: ["972501234567"],
+      templateName: "t", params: [], variables: {}, body: "x", status: "queued",
     })[0];
     return [q.status, (q.payload as { dry_run: boolean }).dry_run];
   })(), ["queued", false]);

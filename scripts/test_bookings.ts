@@ -84,6 +84,9 @@ function row(over: Partial<QueueRow> = {}): QueueRow {
     alias: SHOW,
     calendarWriteStatus: null,
     calendarWriteError: null,
+    // E9-2: null would mean "automatic", so the DEFAULT fixture is a
+    // manual approval and the automatic case is opted into per test.
+    decidedBy: "owner-uuid",
     ...over,
   };
 }

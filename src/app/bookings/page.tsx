@@ -40,7 +40,7 @@ export default async function BookingsPage() {
   // built from.
   const { data: rows } = await admin
     .from("booking_requests")
-    .select("id,show_id,studio,start_at,end_at,guest,note,status,created_at,calendar_write_status,calendar_write_error,shows(name,aliases)")
+    .select("id,show_id,studio,start_at,end_at,guest,note,status,created_at,decided_by,calendar_write_status,calendar_write_error,shows(name,aliases)")
     .order("start_at", { ascending: false })
     // A ceiling well above the 30 history rows the screen shows, so the split
     // is done over a superset rather than over a window that might not contain
@@ -74,6 +74,10 @@ export default async function BookingsPage() {
       alias: cleanAliasFor({ name: show?.name ?? "", aliases: show?.aliases ?? [] }, STUDIOS) ?? show?.name ?? "",
       calendarWriteStatus: (r.calendar_write_status as "created" | "failed" | null) ?? null,
       calendarWriteError: (r.calendar_write_error as string | null) ?? null,
+      // 🔴 NULL ON AN APPROVED ROW MEANS AUTOMATIC (E9-2). Selected for the
+      // first time here: before the automatic path existed, every approval had
+      // an actor and the column had nothing to say.
+      decidedBy: (r.decided_by as string | null) ?? null,
     };
   });
 

@@ -43,9 +43,16 @@ export type QueueRow = {
    */
   calendarWriteStatus: "created" | "failed" | null;
   calendarWriteError: string | null;
+  /**
+   * Who decided — and **NULL MEANS AUTOMATIC** (E9-2). `decided_by` is
+   * nullable (0096:157) and the automatic approval writes null deliberately,
+   * so the absence of a value is the record of the decision having been made
+   * by nobody. See lib/booking/decide.ts's note on the flip.
+   */
+  decidedBy: string | null;
 };
 
-export type QueueStatus = "pending" | "approved" | "declined" | "past";
+export type QueueStatus = "pending" | "approved" | "declined" | "cancelled" | "past";
 
 export type QueueView = {
   id: string;
@@ -89,6 +96,16 @@ export type QueueView = {
    * most of a studio's day.
    */
   durationTag: string | null;
+  /**
+   * `true` when this approval was automatic (E9-2). Shown on the screen,
+   * because "who approved this" is the first question about a booking nobody
+   * remembers approving — and the answer is now sometimes "nobody did".
+   */
+  autoApproved: boolean;
+  /** `true` only for an APPROVED, future row — the only thing worth cancelling */
+  canCancel: boolean;
+  /** Google's day view for this recording's date — the cancel reminder's link */
+  calendarDayUrl: string;
 };
 
 /** Approved copy, 24.9. "המועד עבר" is a STATE, not a decision — see below. */
@@ -96,8 +113,32 @@ export const QUEUE_STATUS_LABEL: Record<QueueStatus, string> = {
   pending: "ממתינה",
   approved: "אושרה",
   declined: "נדחתה",
+  cancelled: "בוטלה",
   past: "המועד עבר",
 };
+
+/** Approved copy (E9-2): how the screen says who decided. */
+export const DECIDED_LABEL = { auto: "אושר אוטומטית", manual: "אושר ידנית" } as const;
+
+/**
+ * Google Calendar's day view for one Israeli date.
+ *
+ * 🔴 A DAY VIEW AND NOT THE EVENT ITSELF, and that is a measured choice:
+ * `writeBookingCalendarEvent` stores `calendar_event_uid` but never Google's
+ * own `htmlLink` (writeCalendarEvent.ts:124-131), so for any row older than
+ * the request that created it we do not have an event URL — and deriving one
+ * from the event id depends on an undocumented base64 format that would break
+ * in silence. A day view always opens, always on the right date.
+ *
+ * ⚠️ NO `/u/0/` IN THE PATH. Pinning account zero sends an owner who is
+ * signed into two Google accounts to the wrong one; without it Google picks
+ * the account that holds the calendar.
+ */
+export function calendarDayUrl(dateIsrael: string): string {
+  const [y, m, d] = (dateIsrael ?? "").split("-");
+  if (!y || !m || !d) return "https://calendar.google.com/calendar/r";
+  return `https://calendar.google.com/calendar/r/day/${y}/${Number(m)}/${Number(d)}`;
+}
 
 export const NO_GUEST = "בלי אורח";
 
@@ -167,6 +208,7 @@ function toView(row: QueueRow, all: QueueRow[], now: Date): QueueView | null {
   const status: QueueStatus =
     row.status === "approved" ? "approved"
     : row.status === "declined" ? "declined"
+    : row.status === "cancelled" ? "cancelled"
     : isPast ? "past"
     : "pending";
 
@@ -207,6 +249,15 @@ function toView(row: QueueRow, all: QueueRow[], now: Date): QueueView | null {
     // derived from the two instants, not stored: there is no duration column,
     // and a third copy of the length could disagree with the range it describes.
     durationTag: durationTag(row.start_at, row.end_at),
+    // null decidedBy on an APPROVED row = the automatic path. Only meaningful
+    // for an approval: a pending row has no decision at all.
+    autoApproved: status === "approved" && row.decidedBy === null,
+    // ⚠️ NOT for a past one. Cancelling a recording that already happened
+    // frees a slot nobody can use and tells the owner to delete an event that
+    // documents something real. `decline` is still available on a past
+    // PENDING row, because that one still owes the client an answer.
+    canCancel: status === "approved" && !isPast,
+    calendarDayUrl: calendarDayUrl(dateIsrael),
   };
 }
 

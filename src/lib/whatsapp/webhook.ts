@@ -278,6 +278,87 @@ export function parseInboundMessages(payload: unknown): InboundMessage[] {
   return out;
 }
 
+// ─── delivery status updates (E9-3) ─────────────────────────────
+
+export type StatusUpdate = {
+  /** Meta's id for the message WE sent — matched against `provider_wamid` */
+  providerWamid: string;
+  /** sent / delivered / read / failed */
+  status: string;
+  /** the recipient, for the log */
+  waId: string | null;
+  /** Meta's own error text on a failure, already flattened to one line */
+  errorText: string | null;
+  /** ISO, from Meta's unix `timestamp` when it parses — else our own clock */
+  at: string;
+};
+
+/**
+ * Every delivery-status update in one webhook delivery.
+ *
+ * 🔴 THESE SHARE THE `messages` FIELD WITH INBOUND MESSAGES. E9-1 dropped
+ * them on the floor deliberately — we sent nothing, so a status row would have
+ * been about a message that did not exist in our log. E9-3 sends, so they are
+ * now the only way to know a notification actually arrived.
+ *
+ * ⚠️ `id` HERE IS META'S OWN MESSAGE ID, i.e. what we store in
+ * `provider_wamid` — **not** our `local:…` key, which Meta has never seen. The
+ * two are different columns for exactly this reason (0102's header).
+ *
+ * ⚠️ AND THE ERROR IS FLATTENED TO ONE LINE. Meta nests it as
+ * `errors[0].title` + `errors[0].message` + an optional `error_data.details`,
+ * and which of the three is populated varies by failure. Whichever exists is
+ * joined — an empty string would record a failure with no reason, which is the
+ * one thing the column exists to prevent.
+ */
+export function parseStatusUpdates(payload: unknown): StatusUpdate[] {
+  const out: StatusUpdate[] = [];
+  const root = obj(payload);
+  const entries = Array.isArray(root?.entry) ? root!.entry : [];
+
+  for (const entry of entries) {
+    const changes = Array.isArray(obj(entry)?.changes) ? (obj(entry)!.changes as unknown[]) : [];
+    for (const change of changes) {
+      const c = obj(change);
+      if (str(c?.field) !== "messages") continue;
+      const value = obj(c?.value);
+      const statuses = Array.isArray(value?.statuses) ? (value!.statuses as unknown[]) : [];
+
+      for (const st of statuses) {
+        const s = obj(st);
+        if (!s) continue;
+        const providerWamid = str(s.id);
+        const status = str(s.status);
+        if (!providerWamid || !status) continue;
+
+        // Meta sends unix SECONDS as a string. A value we cannot parse falls
+        // back to our own clock rather than dropping the update: the status is
+        // the point, the timestamp is metadata.
+        const ts = Number(str(s.timestamp) ?? "");
+        const at =
+          Number.isFinite(ts) && ts > 0 ? new Date(ts * 1000).toISOString() : new Date().toISOString();
+
+        const firstError = Array.isArray(s.errors) ? obj((s.errors as unknown[])[0]) : null;
+        const parts = [
+          str(firstError?.title),
+          str(firstError?.message),
+          str(obj(firstError?.error_data)?.details),
+        ].filter((x): x is string => x !== null);
+
+        out.push({
+          providerWamid,
+          status,
+          waId: normalizeWaId(str(s.recipient_id)),
+          errorText: parts.length > 0 ? parts.join(" — ") : null,
+          at,
+        });
+      }
+    }
+  }
+
+  return out;
+}
+
 export type WaMessageRow = {
   wamid: string;
   direction: "in";

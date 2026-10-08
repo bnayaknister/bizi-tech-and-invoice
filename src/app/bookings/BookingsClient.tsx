@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
-import BookingsBody, { type ApprovedPanel } from "./BookingsBody";
+import BookingsBody, { type ApprovedPanel, type CancelledPanel } from "./BookingsBody";
 import type { QueueView } from "@/lib/booking/queue";
 
 /**
@@ -32,6 +32,9 @@ export default function BookingsClient({
   const [error, setError] = useState<string | null>(null);
   const [copiedTitleId, setCopiedTitleId] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  // E9-3: cancelling an approved recording
+  const [cancelFor, setCancelFor] = useState<QueueView | null>(null);
+  const [cancelled, setCancelled] = useState<CancelledPanel | null>(null);
 
   const onConfirmApprove = useCallback(
     async (v: QueueView) => {
@@ -169,6 +172,51 @@ export default function BookingsClient({
   );
 
   /**
+   * Cancel an APPROVED recording — E9-3, owner decision 8.10.
+   *
+   * ⚠️ THE RESPONSE IS WHAT DECIDES WHAT THE SCREEN SAYS, not this file:
+   * `calendarEventExisted` comes from the stored row's own
+   * `calendar_write_status`, because only the server knows whether an event
+   * was ever written. Guessing here would tell the owner to go and delete
+   * something that never existed.
+   */
+  const onConfirmCancel = useCallback(
+    async (v: QueueView) => {
+      if (busy) return;
+      setBusy(true);
+      setError(null);
+      try {
+        const res = await fetch(`/api/bookings/${v.id}/cancel`, { method: "POST", cache: "no-store" });
+        const body = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          error?: string;
+          request?: { calendarEventExisted: boolean; calendarDayUrl: string };
+        };
+        if (!res.ok || !body.ok || !body.request) {
+          setError(body.error ?? GENERIC);
+          return;
+        }
+        setCancelled({
+          view: v,
+          calendarEventExisted: body.request.calendarEventExisted,
+          calendarDayUrl: body.request.calendarDayUrl,
+        });
+        // the two other ephemeral panels describe a row that is no longer in
+        // the state they describe
+        setApproved(null);
+        setDeclined(null);
+        router.refresh();
+      } catch {
+        setError(GENERIC);
+      } finally {
+        setBusy(false);
+        setCancelFor(null);
+      }
+    },
+    [busy, router]
+  );
+
+  /**
    * The title to the clipboard.
    *
    * The write is INSIDE the try: navigator.clipboard rejects on an insecure
@@ -211,9 +259,20 @@ export default function BookingsClient({
       onCancelDialog={() => {
         setApproveFor(null);
         setDeclineFor(null);
+        // ⚠️ the cancel dialog shares this one dismiss handler. Leaving it out
+        // would make Escape close two of the three dialogs and silently leave
+        // the third one open.
+        setCancelFor(null);
       }}
       onCopyTitle={(v, title) => void onCopyTitle(v, title)}
       onRetryCalendar={(v) => void onRetryCalendar(v)}
+      cancelFor={cancelFor}
+      cancelled={cancelled}
+      onAskCancel={(v) => {
+        setCancelFor(v);
+        setError(null);
+      }}
+      onConfirmCancel={(v) => void onConfirmCancel(v)}
     />
   );
 }

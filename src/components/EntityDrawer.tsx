@@ -27,6 +27,7 @@ import {
   nextStatus as prodNextStatus,
 } from "@/lib/productions/status";
 import ClientMorningCard from "@/components/ClientMorningCard";
+import ClientBookingContactsCard from "@/components/ClientBookingContactsCard";
 import EntityFieldRows, { type FieldMeta } from "@/components/EntityFieldRows";
 import ClientNotesModal from "./ClientNotesModal";
 import IconTile, { type IconAccent } from "@/components/IconTile";
@@ -1927,6 +1928,14 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                     onChanged={broadcast}
                   />
                 )}
+
+                {/* Who may book a room for each of this client's shows (E9-3).
+                    Its own self-fetching block for the same reason as the card
+                    above, and the same component /clients renders — the phone
+                    conversion and its refusal sentences live on the server, and
+                    a second copy of this form is a second chance to store a
+                    number the bot will never match. */}
+                {data.type === "client" && ref && <ClientBookingContactsCard clientId={ref.id} />}
 
                 {/* the two workflow lines — where daily work happens. Each is
                     independent: its own stage steps, its own client-review

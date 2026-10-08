@@ -1,53 +1,66 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database, Json } from "@/lib/supabase/database.types";
-import { isWhatsappDryRun } from "./client";
+import type { Json } from "@/lib/supabase/database.types";
+import { isWhatsappDryRun, sendWhatsapp, templatePayload } from "./client";
 import { dayMonth, dowHebrew } from "@/app/calendar/availability/booking";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// The notifications to the owner and to Eli. E9-2.
+// The notifications to the owner and to Eli. E9-2 rendered and recorded them;
+// E9-3 SENDS them.
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// ⛔ NOTHING IS SENT FROM THIS FILE, AND THERE IS NO CODE HERE THAT COULD.
-// `lib/whatsapp/client.ts` still has no send function (E9-1's decision), so
-// what this module does is RENDER a notification and RECORD it in
-// `wa_messages`. In dry run — the default, rule 40 — that is the whole of it.
-// When the switch is off, the row is recorded as `queued` and a line goes to
-// the server log saying that sending is not implemented yet; E9-3 is where the
-// Graph call appears and reads those rows.
+// ═══ 🔴 THE ORDER: RECORD, THEN SEND, THEN SETTLE ═══
+//   1. upsert the row (`queued`, or `dry_run` when the switch is on)
+//   2. if NOTHING was inserted -> this notification already exists. STOP, and
+//      send nothing.
+//   3. dry run -> stop here. The row is the whole deliverable.
+//   4. send
+//   5. update the row: `sent` + `provider_wamid`, or `failed` + `error`
 //
-// ⚠️ SO A `queued` ROW IS AN HONEST STATE, NOT A BUG: it means "this would
-// have been sent, the dry run is off, and the sender does not exist yet". The
-// alternative — recording it as `sent` — would put a lie in the one table that
-// is supposed to be the evidence.
+// Step 2 is the idempotency lock, and it is the database's unique index doing
+// the work rather than a check of ours: `wamid` is our own deterministic
+// `local:<kind>:<booking>:<recipient>` (see notificationWamid), so a second
+// call for the same notification inserts zero rows and we never reach the
+// send. A select-then-insert would lose that race against two approvals
+// landing in the same second.
+//
+// Recording BEFORE sending is the other half: a crash between the two leaves a
+// visible `queued` row, which is a thing somebody can see and act on. Sending
+// first and crashing leaves a message in a client's phone that our database
+// has never heard of.
+//
+// ⚠️ ONE CASE THIS CANNOT MAKE SAFE, AND IT IS STATED RATHER THAN HIDDEN: a
+// TIMEOUT. Graph may have accepted the message and we will never know. The row
+// goes to `failed` and keeps its deterministic wamid, so no second ROW is ever
+// created — but a human retry can produce a second WhatsApp MESSAGE. At two
+// recipients and a few bookings a day that is the right trade against the
+// alternative (recording a timeout as `sent` and losing real failures).
 //
 // ═══ 🔴 THE RECIPIENTS COME FROM THE ENVIRONMENT, NOT FROM THE CODE ═══
 // Owner decision 8.10: `WHATSAPP_NOTIFY_NUMBERS`, comma-separated, digits
-// only. Eli's number is NOT in this repository and must not be: a phone
-// number in source is a phone number in every clone, every fork and every
-// screenshot of a diff. The same reasoning that keeps the studio's own number
-// out (`STUDIO_WHATSAPP_NUMBER`, publicView.ts:164-167).
+// only. Eli's number is NOT in this repository and must not be: a phone number
+// in source is a phone number in every clone, every fork and every screenshot
+// of a diff. Same reasoning that keeps the studio's own number out
+// (`STUDIO_WHATSAPP_NUMBER`, publicView.ts:164-167).
 //
 // ⚠️ AND IT IS VALIDATED, NOT SANITISED — the exact rule `whatsappNumberFrom`
-// already applies: an entry with a `+`, a dash or a space is DROPPED rather
-// than cleaned up, because silently stripping characters hides a typo'd number
-// that still dials somewhere. A list of three where one is malformed notifies
-// two people and says so in the log.
+// applies: an entry with a `+`, a dash or a space is DROPPED rather than
+// cleaned up, because silently stripping characters hides a typo'd number that
+// still dials somewhere. A list of three with one malformed notifies two
+// people and says so in the log.
 
 // ─── the templates ──────────────────────────────────────────────────────────
 //
-// 🔴 NAMES AND VARIABLE ORDER ARE A CONTRACT WITH META, not an internal
-// detail. A template is registered once, approved once, and from then on the
-// Graph call sends POSITIONAL parameters — so reordering this list silently
-// swaps the studio and the guest inside a message the owner reads as fact.
-// The order below is the order the body text uses, and the suite asserts that
-// the rendered body contains each variable exactly where the list says.
-//
-// ⚠️ THE BODIES BELOW ARE *PROPOSED* COPY, pending the owner's approval, and
-// they are deliberately written as the exact string a template would render
-// with these parameters filled in. That is what makes them reviewable: the
-// owner reads the sentence, not a schema.
+// 🔴 NAMES, LANGUAGE AND VARIABLE ORDER ARE A CONTRACT WITH META. A template
+// is registered once and approved once; from then on Graph fills `{{1}}`,
+// `{{2}}` … POSITIONALLY from the array `templatePayload` builds. Reordering
+// one of the `*_VARS` lists below silently swaps two values inside a message
+// the owner reads as fact — so each list is the single source of the order,
+// the body builders read the same fields, and the suite asserts they agree.
 
-/** Utility template — one recording was approved automatically. */
+/** Every template is registered in Hebrew. */
+export const TEMPLATE_LANGUAGE = "he";
+
+/** Utility — one recording was approved automatically. */
 export const TEMPLATE_BOOKING_APPROVED = "bizi_booking_approved";
 export const TEMPLATE_BOOKING_APPROVED_VARS = [
   "showName",
@@ -57,7 +70,7 @@ export const TEMPLATE_BOOKING_APPROVED_VARS = [
   "guest",
 ] as const;
 
-/** Utility template — a request did NOT auto-approve and is waiting. */
+/** Utility — a request did NOT auto-approve and is waiting. */
 export const TEMPLATE_BOOKING_PENDING = "bizi_booking_pending";
 export const TEMPLATE_BOOKING_PENDING_VARS = [
   "showName",
@@ -67,27 +80,26 @@ export const TEMPLATE_BOOKING_PENDING_VARS = [
   "reason",
 ] as const;
 
+/** Utility — an unknown number messaged the bot (E9-3). Owner only. */
+export const TEMPLATE_UNKNOWN_CONTACT = "bizi_unknown_contact";
+export const TEMPLATE_UNKNOWN_CONTACT_VARS = ["waId", "excerpt"] as const;
+
 /** Why a request stayed pending. Each one is a different sentence to the owner. */
 export type PendingReason = "second-same-day" | "calendar-failed" | "slot-taken";
 
-/** Approved copy (proposed, 8.10). */
 export const PENDING_REASON_LABEL: Record<PendingReason, string> = {
   "second-same-day": "הזמנה שנייה באותו יום",
   "calendar-failed": "הכתיבה ליומן נכשלה",
   "slot-taken": "המשבצת נתפסה ביומן",
 };
 
-export type NotificationKind = "booking-approved" | "booking-pending";
+export type NotificationKind = "booking-approved" | "booking-pending" | "unknown-contact";
+
+/** How much of an unknown sender's message travels into the notification. */
+export const EXCERPT_MAX_CHARS = 120;
 
 // ─── recipients ─────────────────────────────────────────────────────────────
 
-/**
- * `WHATSAPP_NOTIFY_NUMBERS` -> the numbers to notify.
- *
- * Duplicates are collapsed — the owner's number appearing twice in the
- * variable must not produce two identical messages — and ORDER IS PRESERVED,
- * so the log reads in the order the owner wrote the list.
- */
 export function parseNotifyNumbers(raw: string | null | undefined): string[] {
   const out: string[] = [];
   for (const part of (raw ?? "").split(",")) {
@@ -124,12 +136,12 @@ export type BookingFacts = {
   guest: string | null;
 };
 
-/** "יום א׳ 27.9, 09:00–12:00" — shared by both templates as one parameter. */
+/** "יום א׳ 27.9, 09:00–12:00" — shared by both booking templates as one parameter. */
 export function whenPhrase(f: BookingFacts): string {
   return `יום ${dowHebrew(f.dateIsrael)} ${dayMonth(f.dateIsrael)}, ${f.startIsrael}–${f.endIsrael}`;
 }
 
-/** The duration parameter, never empty — a template parameter may not be blank. */
+/** The duration parameter, never empty — Meta rejects a blank template parameter. */
 export function durationParam(f: BookingFacts): string {
   return f.durationTag ?? "שעה וחצי";
 }
@@ -141,12 +153,25 @@ export function guestParam(f: BookingFacts): string {
 }
 
 /**
- * "הקלטה אושרה אוטומטית: {תוכנית}, {יום א׳ 27.9, 09:00–12:00}, אולפן {גבעון},
- *  {3 שעות}. אורח/ת: {דנה לוי}."
+ * The excerpt parameter, never empty and never a newline.
  *
- * PROPOSED copy. The word "אוטומטית" is in it on purpose: the owner needs to
- * know from the first three words that nobody pressed anything, because that
- * is exactly what changed about his day.
+ * 🔴 NEWLINES ARE COLLAPSED, AND THAT IS A META CONSTRAINT, NOT COSMETICS. A
+ * template parameter may not contain a newline or a tab — Graph rejects the
+ * whole send — and a client's WhatsApp message very often has one. Collapsing
+ * to single spaces is what lets a multi-line message be quoted at all.
+ */
+export function excerptParam(body: string | null | undefined): string {
+  const collapsed = (body ?? "").replace(/\s+/g, " ").trim();
+  if (collapsed === "") return "(הודעה בלי טקסט)";
+  return Array.from(collapsed).slice(0, EXCERPT_MAX_CHARS).join("");
+}
+
+/**
+ * APPROVED copy (owner, 9.10).
+ *
+ * The word "אוטומטית" is in it on purpose: the owner needs to know from the
+ * first three words that nobody pressed anything, because that is exactly
+ * what changed about his day.
  */
 export function approvedNoticeBody(f: BookingFacts): string {
   return (
@@ -156,12 +181,9 @@ export function approvedNoticeBody(f: BookingFacts): string {
 }
 
 /**
- * "בקשת הקלטה ממתינה לאישור: {תוכנית}, {יום א׳ 27.9, 09:00–12:00}, אולפן
- *  {גבעון}, {3 שעות}. הסיבה: {הזמנה שנייה באותו יום}. אפשר לאשר במסך הבקשות."
- *
- * PROPOSED copy. The reason is a parameter rather than three separate
- * templates: all three mean the same thing to the owner — go and look at
- * /bookings — and three templates is three approvals from Meta for one
+ * APPROVED copy (owner, 9.10). The reason is a PARAMETER rather than three
+ * separate templates: all three mean the same thing to the owner — go and look
+ * at /bookings — and three templates is three approvals from Meta for one
  * sentence.
  */
 export function pendingNoticeBody(f: BookingFacts, reason: PendingReason): string {
@@ -171,7 +193,17 @@ export function pendingNoticeBody(f: BookingFacts, reason: PendingReason): strin
   );
 }
 
+/** PROPOSED copy (E9-3), pending the owner's approval — see the report. */
+export function unknownContactBody(waId: string, excerpt: string): string {
+  return (
+    `מספר לא מוכר פנה לבוט: ${waId}. ההודעה: ${excerpt}. ` +
+    `אפשר לשייך אותו בכרטיס הלקוח, בכרטיסיית הרשאות הזמנת חדרים.`
+  );
+}
+
 // ─── the rows ───────────────────────────────────────────────────────────────
+
+export type OutboundStatus = "dry_run" | "queued" | "sent" | "failed";
 
 export type WaOutboundRow = {
   wamid: string;
@@ -180,7 +212,7 @@ export type WaOutboundRow = {
   type: "template";
   body: string;
   template_name: string;
-  status: "dry_run" | "queued";
+  status: OutboundStatus;
   payload: Json;
 };
 
@@ -189,141 +221,204 @@ export type WaOutboundRow = {
  *
  * 🔴 0101 MADE `wamid` NOT NULL UNIQUE because it is Meta's id and the de-dup
  * key for inbound deliveries. An outbound notification has no Meta id until it
- * is actually sent, so it needs one of ours — and making it DETERMINISTIC over
- * (kind, booking, recipient) buys the same protection for free:
+ * is sent, so it needs one of ours — and making it DETERMINISTIC over
+ * (kind, subject, recipient) buys the same protection for free:
  *
- *   **one notification per booking per kind per recipient, ever.**
+ *   **one notification per subject per kind per recipient, ever.**
  *
- * ⚠️ THAT IS A DELIBERATE SEMANTIC, NOT A SIDE EFFECT. A booking that is
- * approved, reverted to pending by a calendar failure, and approved again by
- * hand will NOT send a second "approved" notice. The owner is looking at
- * /bookings at that point — the screen carries the state, with the error text
- * — so the second message would be noise, and the failure mode of the
- * alternative is a notification storm aimed at two people's phones.
+ * ⚠️ A DELIBERATE SEMANTIC, NOT A SIDE EFFECT. A booking that is approved,
+ * reverted by a calendar failure, and approved again by hand will NOT send a
+ * second "approved" notice. The owner is looking at /bookings at that point —
+ * the screen carries the state, with the error text — so the second message
+ * would be noise, and the failure mode of the alternative is a notification
+ * storm aimed at two people's phones.
  *
- * `local:` prefixes it so no value here can ever collide with a real Meta id,
- * and so a human reading the table can see at a glance which rows we minted.
+ * 🔴 AND IT IS WHY 0102 ADDED `provider_wamid` AS A SEPARATE COLUMN rather
+ * than overwriting this one after a send: overwriting would change the key
+ * AFTER the send, a retry would no longer collide, and the same notification
+ * would go out twice.
+ *
+ * `local:` prefixes it so no value here can collide with a real Meta id, and
+ * so a human reading the table can see at a glance which rows we minted.
  */
-export function notificationWamid(kind: NotificationKind, bookingId: string, waId: string): string {
-  return `local:${kind}:${bookingId}:${waId}`;
+export function notificationWamid(kind: NotificationKind, subjectId: string, waId: string): string {
+  return `local:${kind}:${subjectId}:${waId}`;
 }
 
-/** One row per recipient. PURE — the status comes in, it is not read from env here. */
+/** One row per recipient. PURE — the status comes in, it is not read from env. */
 export function buildNotificationRows(input: {
   kind: NotificationKind;
-  bookingId: string;
+  subjectId: string;
   recipients: string[];
   templateName: string;
+  /** POSITIONAL, in the template's `{{1}}..{{n}}` order */
+  params: string[];
   variables: Record<string, string>;
   body: string;
-  status: "dry_run" | "queued";
+  status: OutboundStatus;
 }): WaOutboundRow[] {
   return input.recipients.map((waId) => ({
-    wamid: notificationWamid(input.kind, input.bookingId, waId),
+    wamid: notificationWamid(input.kind, input.subjectId, waId),
     direction: "out" as const,
     wa_id: waId,
     type: "template" as const,
     body: input.body,
     template_name: input.templateName,
     status: input.status,
-    // 🔴 THE FULL PAYLOAD, so a row is reproducible without this code. The
-    // owner asked for "המטען המלא": the template, the positional variables in
-    // order, and which booking it is about. When E9-3 adds the sender, this is
-    // the object it serialises — it does not re-derive it.
+    // 🔴 THE FULL PAYLOAD, so a row is reproducible without this code: the
+    // template, the positional parameters IN ORDER, the named variables for a
+    // human reading the table, and which subject it is about.
     payload: {
       kind: input.kind,
-      booking_id: input.bookingId,
+      subject_id: input.subjectId,
       template: input.templateName,
+      language: TEMPLATE_LANGUAGE,
+      params: input.params,
       variables: input.variables,
       dry_run: input.status === "dry_run",
     } as Json,
   }));
 }
 
-// ─── the one impure function ────────────────────────────────────────────────
+// ─── incoming status updates (PURE half) ────────────────────────────────────
 
-export type RecordResult = { recorded: number; recipients: number; dryRun: boolean };
+/** Meta's four delivery statuses, in the order they can only ever advance. */
+const STATUS_RANK: Record<string, number> = { queued: 0, sent: 1, delivered: 2, read: 3, failed: 4 };
 
 /**
- * Render a notification and record it. Writes to `wa_messages` and nothing else.
+ * Should an incoming status replace the one on the row?
  *
- * 🔴 IT NEVER THROWS. Every caller is in the middle of something that matters
- * more than the notification — a client's booking being approved, a calendar
- * write being retried — and a notification failure must not fail that. The
- * contract is "best effort, loudly logged", and the return value says what
- * happened so the caller can log it too.
+ * 🔴 STATUSES ARRIVE OUT OF ORDER, AND WITHOUT THIS GUARD THAT CORRUPTS THE
+ * ROW. Meta delivers `sent`, `delivered` and `read` as three separate webhook
+ * calls with no ordering promise, and it retries any of them that did not get
+ * a 200. So a `read` can land before the `delivered` that preceded it — and a
+ * naive write would move a message that was read back to merely delivered.
  *
- * ⚠️ `ignoreDuplicates` on the deterministic wamid: see notificationWamid. The
- * second call for the same (kind, booking, recipient) writes nothing and
- * reports `recorded: 0`, which is the honest number.
+ * ⚠️ `failed` IS THE EXCEPTION AND ALWAYS WINS. It is the only status that is
+ * not a step forward along the same path: a message can fail after being sent,
+ * and the owner needs to see that even though `failed` arrives "late".
  */
-export async function recordBookingNotification(
-  admin: SupabaseClient<Database>,
-  input:
-    | { kind: "booking-approved"; bookingId: string; facts: BookingFacts }
-    | { kind: "booking-pending"; bookingId: string; facts: BookingFacts; reason: PendingReason }
-): Promise<RecordResult> {
-  const dryRun = isWhatsappDryRun();
-  const raw = process.env.WHATSAPP_NOTIFY_NUMBERS;
-  const recipients = parseNotifyNumbers(raw);
-  const rejected = rejectedNotifyNumbers(raw);
+export function shouldApplyStatus(current: string | null | undefined, incoming: string): boolean {
+  if (!(incoming in STATUS_RANK)) return false;
+  if (incoming === "failed") return true;
+  const cur = STATUS_RANK[current ?? ""] ?? -1;
+  return STATUS_RANK[incoming] > cur;
+}
 
-  if (rejected.length > 0) {
-    // Counted, not printed: these are phone numbers, and a malformed one is
-    // still somebody's number. The count is what tells the owner the variable
-    // has a typo in it.
-    console.error("wa/notify: WHATSAPP_NOTIFY_NUMBERS נדחו רשומות, nrejected=", rejected.length);
-  }
-  if (recipients.length === 0) {
-    // The CRON_SECRET lesson (api/calendar/sync/route.ts:45-46): a variable
-    // that was never set must not fail silently. Nothing is recorded, because
-    // there is no recipient to record a message to.
-    console.error("wa/notify: אין נמענים — WHATSAPP_NOTIFY_NUMBERS ריק או שגוי. לא נרשמה התראה");
-    return { recorded: 0, recipients: 0, dryRun };
+// ─── the impure functions ───────────────────────────────────────────────────
+
+export type RecordResult = {
+  recipients: number;
+  recorded: number;
+  sent: number;
+  failed: number;
+  dryRun: boolean;
+};
+
+type NotifyInput =
+  | { kind: "booking-approved"; subjectId: string; facts: BookingFacts }
+  | { kind: "booking-pending"; subjectId: string; facts: BookingFacts; reason: PendingReason }
+  | { kind: "unknown-contact"; subjectId: string; waId: string; excerpt: string };
+
+/** The template name, the positional params, the named variables and the body. */
+function renderNotification(input: NotifyInput): {
+  templateName: string;
+  params: string[];
+  variables: Record<string, string>;
+  body: string;
+} {
+  if (input.kind === "unknown-contact") {
+    const excerpt = excerptParam(input.excerpt);
+    return {
+      templateName: TEMPLATE_UNKNOWN_CONTACT,
+      // {{1}} = the number, {{2}} = the excerpt — TEMPLATE_UNKNOWN_CONTACT_VARS
+      params: [input.waId, excerpt],
+      variables: { waId: input.waId, excerpt },
+      body: unknownContactBody(input.waId, excerpt),
+    };
   }
 
   const f = input.facts;
-  const templateName =
-    input.kind === "booking-approved" ? TEMPLATE_BOOKING_APPROVED : TEMPLATE_BOOKING_PENDING;
+  const common = {
+    showName: f.showName,
+    whenLine: whenPhrase(f),
+    studio: f.studio,
+    duration: durationParam(f),
+  };
 
-  const variables: Record<string, string> =
-    input.kind === "booking-approved"
-      ? {
-          showName: f.showName,
-          whenLine: whenPhrase(f),
-          studio: f.studio,
-          duration: durationParam(f),
-          guest: guestParam(f),
-        }
-      : {
-          showName: f.showName,
-          whenLine: whenPhrase(f),
-          studio: f.studio,
-          duration: durationParam(f),
-          reason: PENDING_REASON_LABEL[input.reason],
-        };
+  if (input.kind === "booking-approved") {
+    const variables = { ...common, guest: guestParam(f) };
+    return {
+      templateName: TEMPLATE_BOOKING_APPROVED,
+      // ⚠️ BUILT FROM THE *_VARS LIST, not hand-ordered. The list is the single
+      // source of the `{{1}}..{{5}}` order, so the array and the approved
+      // template cannot drift apart by someone editing one of the two.
+      params: TEMPLATE_BOOKING_APPROVED_VARS.map((k) => variables[k]),
+      variables,
+      body: approvedNoticeBody(f),
+    };
+  }
 
-  const body =
-    input.kind === "booking-approved" ? approvedNoticeBody(f) : pendingNoticeBody(f, input.reason);
+  const variables = { ...common, reason: PENDING_REASON_LABEL[input.reason] };
+  return {
+    templateName: TEMPLATE_BOOKING_PENDING,
+    params: TEMPLATE_BOOKING_PENDING_VARS.map((k) => variables[k]),
+    variables,
+    body: pendingNoticeBody(f, input.reason),
+  };
+}
 
+/**
+ * Render, record, and (outside a dry run) send one notification to everyone on
+ * the list.
+ *
+ * 🔴 IT NEVER THROWS. Every caller is in the middle of something that matters
+ * more — a client's booking being approved, a webhook that owes Meta a 200 —
+ * and a notification failure must not fail that. "Best effort, loudly logged",
+ * and the return value says exactly what happened.
+ *
+ * ⚠️ `onlyOwner` exists for the unknown-contact notice: owner decision 9.10
+ * sends that one to the OWNER ALONE, while the two booking notices go to both
+ * recipients. "The owner" is the FIRST entry in `WHATSAPP_NOTIFY_NUMBERS` —
+ * documented in the report, because it is the one place where the order of
+ * that variable carries meaning.
+ */
+export async function recordBookingNotification(
+  admin: SupabaseClient,
+  input: NotifyInput & { onlyOwner?: boolean }
+): Promise<RecordResult> {
+  const dryRun = isWhatsappDryRun();
+  const raw = process.env.WHATSAPP_NOTIFY_NUMBERS;
+  const all = parseNotifyNumbers(raw);
+  const rejected = rejectedNotifyNumbers(raw);
+  const recipients = input.onlyOwner ? all.slice(0, 1) : all;
+
+  if (rejected.length > 0) {
+    // Counted, not printed: a malformed entry is still somebody's number. The
+    // count is what tells the owner the variable has a typo in it.
+    console.error("wa/notify: WHATSAPP_NOTIFY_NUMBERS נדחו רשומות, nrejected=", rejected.length);
+  }
+  if (recipients.length === 0) {
+    // The CRON_SECRET lesson: a variable that was never set must not fail
+    // silently. Nothing is recorded, because there is no recipient.
+    console.error("wa/notify: אין נמענים — WHATSAPP_NOTIFY_NUMBERS ריק או שגוי. לא נרשמה התראה");
+    return { recipients: 0, recorded: 0, sent: 0, failed: 0, dryRun };
+  }
+
+  const r = renderNotification(input);
   const rows = buildNotificationRows({
     kind: input.kind,
-    bookingId: input.bookingId,
+    subjectId: input.subjectId,
     recipients,
-    templateName,
-    variables,
-    body,
+    templateName: r.templateName,
+    params: r.params,
+    variables: r.variables,
+    body: r.body,
     status: dryRun ? "dry_run" : "queued",
   });
 
-  if (!dryRun) {
-    // Honest about the gap rather than silently producing rows that look sent.
-    console.error(
-      "wa/notify: WHATSAPP_DRY_RUN=false אבל השליחה עוד לא ממומשת (E9-3). ההתראה נרשמת כ-queued, nrows=",
-      rows.length
-    );
-  }
-
+  // ── step 1-2: record, and let the unique index decide who is new ────────
+  let fresh: string[] = [];
   try {
     const { data, error } = await admin
       .from("wa_messages")
@@ -331,11 +426,93 @@ export async function recordBookingNotification(
       .select("wamid");
     if (error) {
       console.error("wa/notify: רישום ההתראה נכשל", error);
-      return { recorded: 0, recipients: recipients.length, dryRun };
+      return { recipients: recipients.length, recorded: 0, sent: 0, failed: 0, dryRun };
     }
-    return { recorded: (data ?? []).length, recipients: recipients.length, dryRun };
+    fresh = (data ?? []).map((d) => (d as { wamid: string }).wamid);
   } catch (e) {
     console.error("wa/notify: רישום ההתראה זרק", e);
-    return { recorded: 0, recipients: recipients.length, dryRun };
+    return { recipients: recipients.length, recorded: 0, sent: 0, failed: 0, dryRun };
+  }
+
+  // ── step 3: a dry run stops here. The row IS the deliverable. ───────────
+  if (dryRun || fresh.length === 0) {
+    return { recipients: recipients.length, recorded: fresh.length, sent: 0, failed: 0, dryRun };
+  }
+
+  // ── step 4-5: send only the rows that were actually inserted ────────────
+  let sent = 0;
+  let failed = 0;
+  for (const row of rows.filter((x) => fresh.includes(x.wamid))) {
+    const result = await sendWhatsapp(
+      templatePayload({
+        to: row.wa_id,
+        name: row.template_name,
+        language: TEMPLATE_LANGUAGE,
+        params: r.params,
+      })
+    );
+    const at = new Date().toISOString();
+    if (result.ok && !result.dryRun) {
+      sent++;
+      await admin
+        .from("wa_messages")
+        .update({ status: "sent", provider_wamid: result.providerWamid, status_at: at })
+        .eq("wamid", row.wamid);
+    } else if (!result.ok) {
+      failed++;
+      console.error("wa/notify: שליחה נכשלה", row.template_name, result.error);
+      await admin
+        .from("wa_messages")
+        .update({ status: "failed", error: result.error, status_at: at })
+        .eq("wamid", row.wamid);
+    }
+  }
+
+  return { recipients: recipients.length, recorded: fresh.length, sent, failed, dryRun };
+}
+
+/**
+ * Apply one delivery-status update from Meta.
+ *
+ * Matched on `provider_wamid` — 0102's partial unique index is what makes that
+ * a single row. Never on our own `wamid`: Meta has never seen that value.
+ *
+ * ⚠️ READ-THEN-WRITE, GUARDED BY `shouldApplyStatus`. The read is what lets
+ * an out-of-order `delivered` arriving after a `read` be DROPPED instead of
+ * regressing the row. A blind update would be one round trip cheaper and
+ * wrong.
+ */
+export async function applyStatusUpdate(
+  admin: SupabaseClient,
+  update: { providerWamid: string; status: string; errorText: string | null; at: string }
+): Promise<"applied" | "skipped" | "unknown" | "error"> {
+  try {
+    const { data, error } = await admin
+      .from("wa_messages")
+      .select("wamid,status")
+      .eq("provider_wamid", update.providerWamid)
+      .maybeSingle();
+    if (error) {
+      console.error("wa/notify: קריאת שורת ההודעה לעדכון מצב נכשלה", error);
+      return "error";
+    }
+    // A status for a message we never recorded. Not an error: Meta also
+    // reports on messages sent from the WhatsApp Manager by hand.
+    if (!data) return "unknown";
+
+    const row = data as { wamid: string; status: string };
+    if (!shouldApplyStatus(row.status, update.status)) return "skipped";
+
+    const patch: Record<string, unknown> = { status: update.status, status_at: update.at };
+    if (update.errorText) patch.error = update.errorText;
+    const { error: updErr } = await admin.from("wa_messages").update(patch).eq("wamid", row.wamid);
+    if (updErr) {
+      console.error("wa/notify: עדכון מצב ההודעה נכשל", updErr);
+      return "error";
+    }
+    return "applied";
+  } catch (e) {
+    console.error("wa/notify: עדכון מצב ההודעה זרק", e);
+    return "error";
   }
 }

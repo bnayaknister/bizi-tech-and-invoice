@@ -91,6 +91,9 @@ function row(over: Partial<QueueRow> = {}): QueueRow {
     alias: SHOW,
     calendarWriteStatus: null,
     calendarWriteError: null,
+    // E9-2: null would mean "automatic", so the DEFAULT fixture is a
+    // manual approval and the automatic case is opted into per test.
+    decidedBy: "owner-uuid",
     ...over,
   };
 }
@@ -120,6 +123,12 @@ const BASE: BodyProps = {
   onCopyTitle: () => {},
   onRetryCalendar: () => {},
   retryingId: null,
+  // E9-3: the cancel flow. Closed and empty in the base props; the tests that
+  // care open it explicitly.
+  cancelFor: null,
+  cancelled: null,
+  onAskCancel: () => {},
+  onConfirmCancel: () => {},
 };
 
 const NO_CALENDAR_WRITE: CalendarWriteState = {
@@ -358,7 +367,32 @@ console.log("\n=== 8. the hand-off is on EVERY approved history row, not only th
   check("the whatsapp button once", countAnchor(html, COPY.approvedWhatsapp), 1);
   check("אושרה once", countOf(html, "אושרה"), 1);
   check("נדחתה once", countOf(html, "נדחתה"), 1);
-  check("no approve/decline buttons on decided rows", countRe(html, /<button/g), 1); // the copy-title button
+  check("no approve/decline buttons on decided rows", countButton(html, COPY.approve), 0);
+  check("…and none for decline either", countButton(html, COPY.decline), 0);
+  // 🔴 E9-3: an APPROVED, FUTURE row now carries a cancel button — so the
+  // total is two (copy-title + cancel), not one. Asserted by NAME rather than
+  // by counting `<button`, because a bare count cannot say which button
+  // appeared and this one was previously asserted as "there is only the copy
+  // button", which is exactly the kind of assertion that hides a new control.
+  check("the cancel button once — on the approved future row only", countButton(html, COPY.cancelBooking), 1);
+  check("two buttons in total: copy-title and cancel", countRe(html, /<button/g), 2);
+  // and the auto/manual badge: the fixture's decidedBy is an owner uuid
+  check("the approved row says it was approved manually", countOf(html, "אושר ידנית"), 1);
+  check("and does not claim it was automatic", countOf(html, "אושר אוטומטית"), 0);
+
+  // the automatic case, by flipping the one column that decides it
+  const autoHtml = render({
+    history: splitQueue([row({ id: "au", status: "approved", decidedBy: null, start_at: iso(SUN, 15), end_at: iso(SUN, 16, 30) })], NOW).history,
+  });
+  check("a null decidedBy renders as automatic", countOf(autoHtml, "אושר אוטומטית"), 1);
+  check("…and not as manual", countOf(autoHtml, "אושר ידנית"), 0);
+
+  // 🔴 and a PAST approved row offers no cancel — freeing a slot nobody can
+  // use, and pointing at an event that documents something real
+  const pastHtml = render({
+    history: splitQueue([row({ id: "pa", status: "approved", start_at: iso("2026-09-20", 15), end_at: iso("2026-09-20", 16, 30) })], NOW).history,
+  });
+  check("no cancel button on a past approved row", countButton(pastHtml, COPY.cancelBooking), 0);
   check("and no approve button anywhere", countButton(html, COPY.approve), 0);
 
   const onlyDeclined = render({ history: splitQueue([declinedRow], NOW).history });
