@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import type { Json } from "@/lib/supabase/database.types";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Everything the WhatsApp webhook DECIDES. PURE — no fetch, no client, no
@@ -153,8 +154,18 @@ export type InboundMessage = {
   type: string;
   /** the readable content, or null for a type that has none */
   body: string | null;
-  /** the single message object, for `wa_messages.payload` */
-  raw: unknown;
+  /**
+   * The single message object, for `wa_messages.payload` — typed as `Json`
+   * because that column is `jsonb`.
+   *
+   * ⚠️ THE CAST IN parseInboundMessages IS SOUND, AND THIS IS WHY: every
+   * value that reaches it came out of `JSON.parse` in the route, so it is a
+   * JSON value by construction. The cast asserts something already true
+   * rather than hiding something unknown — and keeping the field `unknown`
+   * instead was what the typed client rejected (TS2345 on the upsert), which
+   * is the check doing its job.
+   */
+  raw: Json;
 };
 
 /** 0101's cap on `body`, restated so the app truncates before the database refuses. */
@@ -258,7 +269,7 @@ export function parseInboundMessages(payload: unknown): InboundMessage[] {
           // row, and a refused row is a lost message. A body longer than the
           // cap is a body we keep the beginning of.
           body: body === null ? null : Array.from(body).slice(0, BODY_MAX_CHARS).join(""),
-          raw: m,
+          raw: m as Json,
         });
       }
     }
@@ -275,7 +286,7 @@ export type WaMessageRow = {
   body: string | null;
   template_name: null;
   status: "received";
-  payload: unknown;
+  payload: Json;
 };
 
 /**

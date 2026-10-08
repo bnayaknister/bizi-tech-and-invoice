@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createTypedAdminClient } from "@/lib/supabase/admin";
 import {
   parseInboundMessages,
   toWaMessageRows,
@@ -116,15 +116,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, received: 0, stored: 0 }, { status: 200, headers: NO_STORE });
   }
 
-  // ⚠️ THE UNTYPED CLIENT, DELIBERATELY. `wa_messages` is created by 0101,
-  // which the owner applies by hand, and `database.types.ts` is regenerated
-  // only after that (supabase/migrations/README.md, step 3) — committing a
-  // types entry for a table that does not exist yet would make
-  // scripts/check-schema-drift.mjs fail the build on the dangerous "-" side
-  // (a type vouching for something absent). Same choice, and the same
-  // sentence, as api/bookings/[id]/retry-calendar/route.ts before 0099 was
-  // applied.
-  const admin = createAdminClient();
+  // The TYPED client. 0101 was applied on 2026-10-08 and `database.types.ts`
+  // was regenerated against it (step 3 of supabase/migrations/README.md), so
+  // the ten columns below are known to the generated types and the drift
+  // check vouches for them. This route shipped on the untyped client for
+  // exactly one commit — the window between writing the migration and the
+  // owner applying it, where a types entry would have failed the build on the
+  // dangerous "-" side (a type vouching for something absent).
+  const admin = createTypedAdminClient();
 
   const rows = toWaMessageRows(messages);
   const { data, error } = await admin

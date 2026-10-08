@@ -1881,6 +1881,45 @@ export type Database = {
         }
         Relationships: []
       }
+      wa_messages: {
+        Row: {
+          body: string | null
+          created_at: string
+          direction: string
+          id: string
+          payload: Json
+          status: string
+          template_name: string | null
+          type: string | null
+          wa_id: string
+          wamid: string
+        }
+        Insert: {
+          body?: string | null
+          created_at?: string
+          direction: string
+          id?: string
+          payload?: Json
+          status: string
+          template_name?: string | null
+          type?: string | null
+          wa_id: string
+          wamid: string
+        }
+        Update: {
+          body?: string | null
+          created_at?: string
+          direction?: string
+          id?: string
+          payload?: Json
+          status?: string
+          template_name?: string | null
+          type?: string | null
+          wa_id?: string
+          wamid?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       production_stage_rollup: {
