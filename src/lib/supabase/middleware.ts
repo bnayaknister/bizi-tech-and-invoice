@@ -54,7 +54,14 @@ export async function updateSession(request: NextRequest) {
       // the token is the only credential, and a signed-in-but-unapproved user
       // must not be bounced to /pending off a link a client sent them
       path.startsWith("/b/") ||
-      path.startsWith("/api/book/");
+      path.startsWith("/api/book/") ||
+      // the WhatsApp webhook (E9-1). Meta sends no cookies, so `user` is null
+      // and this wall never fires for a real delivery — it is listed anyway
+      // because the one person who WILL arrive here with a session is whoever
+      // is debugging the handshake from a browser tab, and a /pending bounce
+      // in the middle of that reads as the route being broken. The route's own
+      // gate is the HMAC signature, which is strictly stronger than this wall.
+      path.startsWith("/api/wa/");
     if (!open) {
       const { data: prof } = await supabase.from("profiles").select("approved").eq("id", user.id).maybeSingle();
       if (!prof?.approved) {
