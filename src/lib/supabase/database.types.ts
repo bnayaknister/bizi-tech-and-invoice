@@ -139,6 +139,48 @@ export type Database = {
           },
         ]
       }
+      booking_contacts: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          id: string
+          name: string
+          show_id: string
+          wa_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          name: string
+          show_id: string
+          wa_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          name?: string
+          show_id?: string
+          wa_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "booking_contacts_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "booking_contacts_show_id_fkey"
+            columns: ["show_id"]
+            isOneToOne: false
+            referencedRelation: "shows"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       booking_links: {
         Row: {
           created_at: string
@@ -1886,9 +1928,12 @@ export type Database = {
           body: string | null
           created_at: string
           direction: string
+          error: string | null
           id: string
           payload: Json
+          provider_wamid: string | null
           status: string
+          status_at: string | null
           template_name: string | null
           type: string | null
           wa_id: string
@@ -1898,9 +1943,12 @@ export type Database = {
           body?: string | null
           created_at?: string
           direction: string
+          error?: string | null
           id?: string
           payload?: Json
+          provider_wamid?: string | null
           status: string
+          status_at?: string | null
           template_name?: string | null
           type?: string | null
           wa_id: string
@@ -1910,9 +1958,12 @@ export type Database = {
           body?: string | null
           created_at?: string
           direction?: string
+          error?: string | null
           id?: string
           payload?: Json
+          provider_wamid?: string | null
           status?: string
+          status_at?: string | null
           template_name?: string | null
           type?: string | null
           wa_id?: string

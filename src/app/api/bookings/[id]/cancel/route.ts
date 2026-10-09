@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createTypedAdminClient } from "@/lib/supabase/admin";
 import { israelHHMM } from "@/lib/booking/publicView";
 import { israelDateOf } from "@/lib/calendar/availability";
 import { calendarDayUrl } from "@/lib/booking/queue";
@@ -60,10 +60,9 @@ export async function POST(_request: Request, { params }: { params: { id: string
     return NextResponse.json({ error: "המסך הזה פתוח לבעלים בלבד" }, { status: 403 });
   }
 
-  // ⚠️ Untyped: `cancelled` is 0102's value and the column's type is plain
-  // text either way, but this route also reads nothing the generated types
-  // need. Same choice as the webhook route while 0102 is unapplied.
-  const admin = createAdminClient();
+  // Typed: 0102 (which made `cancelled` a legal status) was applied on
+  // 2026-10-09 and the generated types were regenerated against it.
+  const admin = createTypedAdminClient();
 
   const { data: row, error: readErr } = await admin
     .from("booking_requests")
@@ -74,16 +73,7 @@ export async function POST(_request: Request, { params }: { params: { id: string
     return NextResponse.json({ error: "הבקשה לא נמצאה" }, { status: 404, headers: NO_STORE });
   }
 
-  const r = row as unknown as {
-    id: string;
-    show_id: string;
-    studio: string;
-    start_at: string;
-    end_at: string;
-    status: string;
-    calendar_write_status: string | null;
-    shows?: { name: string } | null;
-  };
+  const r = row;
 
   if (r.status !== "approved") {
     return NextResponse.json(

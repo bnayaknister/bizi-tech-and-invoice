@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createTypedAdminClient } from "@/lib/supabase/admin";
 import { PHONE_ERROR, displayWaId, toWaId } from "@/lib/whatsapp/phone";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -29,9 +29,9 @@ import { PHONE_ERROR, displayWaId, toWaId } from "@/lib/whatsapp/phone";
 // check above is the whole authorisation, which is why it is the first thing
 // in every handler.
 //
-// ⚠️ UNTYPED CLIENT: 0103 is applied by hand and `database.types.ts` is
-// regenerated only afterwards (README step 3). Same choice as the webhook
-// route before 0101.
+// TYPED CLIENT: 0103 was applied on 2026-10-09 and `database.types.ts`
+// regenerated against it. Until then this route ran on the untyped one, for
+// the same reason the webhook route did before 0101.
 //
 // ═══ 🔴 WHY THE SHOWS ARE READ TOO, AND NOT JUST THE CONTACTS ═══
 // The card is a table PER PODCAST, including the podcasts that have nobody
@@ -73,7 +73,7 @@ export async function GET(_request: Request, { params }: { params: { id: string 
   const g = await gate();
   if (!g.ok) return g.res;
 
-  const admin = createAdminClient();
+  const admin = createTypedAdminClient();
 
   // every show of this client, including the ones with nobody authorised
   const { data: showRows, error: showErr } = await admin
@@ -86,7 +86,7 @@ export async function GET(_request: Request, { params }: { params: { id: string 
     return NextResponse.json({ error: "לא הצלחתי לקרוא את התוכניות" }, { status: 500, headers: NO_STORE });
   }
 
-  const shows = (showRows ?? []) as { id: string; name: string; active: boolean }[];
+  const shows = showRows ?? [];
   const ids = shows.map((s) => s.id);
 
   let contacts: { id: string; show_id: string; name: string; wa_id: string }[] = [];
@@ -100,7 +100,7 @@ export async function GET(_request: Request, { params }: { params: { id: string 
       console.error("booking-contacts: קריאת אנשי הקשר נכשלה", error);
       return NextResponse.json({ error: "לא הצלחתי לקרוא את אנשי הקשר" }, { status: 500, headers: NO_STORE });
     }
-    contacts = (data ?? []) as typeof contacts;
+    contacts = data ?? [];
   }
 
   return NextResponse.json(
@@ -159,7 +159,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     return NextResponse.json({ error: PHONE_ERROR[phone.reason] }, { status: 400, headers: NO_STORE });
   }
 
-  const admin = createAdminClient();
+  const admin = createTypedAdminClient();
 
   // ⚠️ THE SHOW MUST BELONG TO THIS CLIENT. Without this check the route would
   // let anyone who can edit one client attach a contact to ANY show by id —
@@ -173,7 +173,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
   if (showErr || !show) {
     return NextResponse.json({ error: "התוכנית לא נמצאה" }, { status: 404, headers: NO_STORE });
   }
-  if ((show as { client_id: string | null }).client_id !== params.id) {
+  if (show.client_id !== params.id) {
     return NextResponse.json(
       { error: "התוכנית אינה של הלקוח הזה" },
       { status: 403, headers: NO_STORE }
@@ -200,7 +200,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     return NextResponse.json({ error: "לא הצלחתי להוסיף את איש הקשר" }, { status: 500, headers: NO_STORE });
   }
 
-  const row = inserted as { id: string; show_id: string; name: string; wa_id: string };
+  const row = inserted;
   await admin.from("events").insert({
     entity_type: "show",
     entity_id: row.show_id,
@@ -229,7 +229,7 @@ export async function DELETE(request: Request, { params }: { params: { id: strin
     return NextResponse.json({ error: "חסר מזהה איש קשר" }, { status: 400, headers: NO_STORE });
   }
 
-  const admin = createAdminClient();
+  const admin = createTypedAdminClient();
 
   // Same ownership re-assertion as POST, in the other direction: the row is
   // read, its show is read, and the show must belong to the client in the URL.
@@ -241,13 +241,7 @@ export async function DELETE(request: Request, { params }: { params: { id: strin
   if (readErr || !row) {
     return NextResponse.json({ error: "איש הקשר לא נמצא" }, { status: 404, headers: NO_STORE });
   }
-  const r = row as unknown as {
-    id: string;
-    show_id: string;
-    name: string;
-    wa_id: string;
-    shows?: { client_id: string | null } | null;
-  };
+  const r = row;
   if ((r.shows?.client_id ?? null) !== params.id) {
     return NextResponse.json({ error: "איש הקשר אינו של הלקוח הזה" }, { status: 403, headers: NO_STORE });
   }

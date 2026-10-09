@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Json } from "@/lib/supabase/database.types";
+import type { Database, Json } from "@/lib/supabase/database.types";
 import { isWhatsappDryRun, sendWhatsapp, templatePayload } from "./client";
 import { dayMonth, dowHebrew } from "@/app/calendar/availability/booking";
 
@@ -384,7 +384,7 @@ function renderNotification(input: NotifyInput): {
  * that variable carries meaning.
  */
 export async function recordBookingNotification(
-  admin: SupabaseClient,
+  admin: SupabaseClient<Database>,
   input: NotifyInput & { onlyOwner?: boolean }
 ): Promise<RecordResult> {
   const dryRun = isWhatsappDryRun();
@@ -428,7 +428,7 @@ export async function recordBookingNotification(
       console.error("wa/notify: רישום ההתראה נכשל", error);
       return { recipients: recipients.length, recorded: 0, sent: 0, failed: 0, dryRun };
     }
-    fresh = (data ?? []).map((d) => (d as { wamid: string }).wamid);
+    fresh = (data ?? []).map((d) => d.wamid);
   } catch (e) {
     console.error("wa/notify: רישום ההתראה זרק", e);
     return { recipients: recipients.length, recorded: 0, sent: 0, failed: 0, dryRun };
@@ -483,7 +483,7 @@ export async function recordBookingNotification(
  * wrong.
  */
 export async function applyStatusUpdate(
-  admin: SupabaseClient,
+  admin: SupabaseClient<Database>,
   update: { providerWamid: string; status: string; errorText: string | null; at: string }
 ): Promise<"applied" | "skipped" | "unknown" | "error"> {
   try {
@@ -500,10 +500,13 @@ export async function applyStatusUpdate(
     // reports on messages sent from the WhatsApp Manager by hand.
     if (!data) return "unknown";
 
-    const row = data as { wamid: string; status: string };
+    const row = data;
     if (!shouldApplyStatus(row.status, update.status)) return "skipped";
 
-    const patch: Record<string, unknown> = { status: update.status, status_at: update.at };
+    const patch: Database["public"]["Tables"]["wa_messages"]["Update"] = {
+      status: update.status,
+      status_at: update.at,
+    };
     if (update.errorText) patch.error = update.errorText;
     const { error: updErr } = await admin.from("wa_messages").update(patch).eq("wamid", row.wamid);
     if (updErr) {

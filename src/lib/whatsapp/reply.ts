@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Json } from "@/lib/supabase/database.types";
+import type { Database, Json } from "@/lib/supabase/database.types";
 import { isWhatsappDryRun, listPayload, sendWhatsapp, textPayload } from "./client";
 import { recordBookingNotification } from "./notify";
 import { bookingUrlForShow, showsForNumber, type ContactShow } from "@/lib/booking/contacts";
@@ -146,7 +146,7 @@ export type ReplyOutcome =
  * storm.
  */
 async function recordAndSend(
-  admin: SupabaseClient,
+  admin: SupabaseClient<Database>,
   input: {
     inboundWamid: string;
     waId: string;
@@ -222,7 +222,7 @@ async function recordAndSend(
  * ⛔ NEVER THROWS, and the route depends on it — see recordAndSend.
  */
 export async function replyToInbound(
-  admin: SupabaseClient,
+  admin: SupabaseClient<Database>,
   request: Request,
   message: InboundMessage
 ): Promise<ReplyOutcome> {
@@ -321,7 +321,7 @@ export async function replyToInbound(
  * stranger's phone number, and Eli has nothing to do with it).
  */
 async function replyUnknown(
-  admin: SupabaseClient,
+  admin: SupabaseClient<Database>,
   message: InboundMessage,
   waId: string
 ): Promise<ReplyOutcome> {

@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "@/lib/supabase/database.types";
 import { ensureBookingLink } from "./links";
 import { getAppBaseUrl } from "@/lib/appUrl";
 
@@ -11,11 +12,9 @@ import { getAppBaseUrl } from "@/lib/appUrl";
 // show: several people may book one podcast, and one number may be authorised
 // for several podcasts. The second half is what produces the list message.
 //
-// ⚠️ UNTYPED CLIENT THROUGHOUT. 0103 is applied by hand and
-// `database.types.ts` is regenerated only afterwards (README step 3), so a
-// types entry for `booking_contacts` would fail the drift check on the
-// dangerous "-" side. Same choice, and the same sentence, as the webhook route
-// before 0101 was applied.
+// The TYPED client throughout. 0103 was applied on 2026-10-09 and
+// `database.types.ts` regenerated against it; until then this file ran on the
+// untyped one, for the same reason the webhook route did before 0101.
 
 export type ContactShow = {
   showId: string;
@@ -36,7 +35,7 @@ export type ContactShow = {
  * Sorted by show name so the list message is stable between two messages from
  * the same person; an unordered list that reshuffles reads as a different list.
  */
-export async function showsForNumber(admin: SupabaseClient, waId: string): Promise<ContactShow[]> {
+export async function showsForNumber(admin: SupabaseClient<Database>, waId: string): Promise<ContactShow[]> {
   const { data, error } = await admin
     .from("booking_contacts")
     .select("show_id,name,shows(id,name)")
@@ -51,19 +50,11 @@ export async function showsForNumber(admin: SupabaseClient, waId: string): Promi
 
   const out: ContactShow[] = [];
   for (const row of data ?? []) {
-    // `as unknown as` and not a direct cast: on the UNTYPED client PostgREST's
-    // embed is inferred as an ARRAY even for a to-one relation, so the two
-    // shapes do not overlap and TypeScript is right to refuse the short form.
-    // Same idiom as every other embed read in this codebase
-    // (e.g. approve/route.ts's `row.shows as unknown as {...} | null`).
-    const r = row as unknown as {
-      show_id: string;
-      name: string;
-      shows?: { id: string; name: string } | null;
-    };
-    const show = r.shows ?? null;
+    // No cast: on the typed client `booking_contacts_show_id_fkey` makes the
+    // embed a to-one object, so a misspelt column here fails the build.
+    const show = row.shows ?? null;
     if (!show) continue;
-    out.push({ showId: r.show_id, showName: show.name, contactName: r.name });
+    out.push({ showId: row.show_id, showName: show.name, contactName: row.name });
   }
   return out.sort((a, b) => a.showName.localeCompare(b.showName, "he"));
 }
@@ -104,12 +95,11 @@ export type BookingUrlResult =
  * lands on an SSO screen (appUrl.ts:1-13 documents exactly this failure).
  */
 export async function bookingUrlForShow(
-  admin: SupabaseClient,
+  admin: SupabaseClient<Database>,
   request: Request,
   showId: string
 ): Promise<BookingUrlResult> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const result = await ensureBookingLink(admin as any, showId, null);
+  const result = await ensureBookingLink(admin, showId, null);
   if (!result.ok) return { ok: false, reason: result.reason };
   return { ok: true, url: `${getAppBaseUrl(request)}/b/${result.token}` };
 }

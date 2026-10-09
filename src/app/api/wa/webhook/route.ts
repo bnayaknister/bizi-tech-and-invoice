@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createTypedAdminClient } from "@/lib/supabase/admin";
 import {
   parseInboundMessages,
   parseStatusUpdates,
@@ -127,14 +127,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, stored: 0 }, { status: 200, headers: NO_STORE });
   }
 
-  // ⚠️ THE UNTYPED CLIENT, DELIBERATELY — AGAIN, AND FOR THE SAME REASON AS
-  // BEFORE 0101 WAS APPLIED. 0102 adds `provider_wamid`, `error` and
-  // `status_at`, and the owner applies it by hand; `database.types.ts` is
-  // regenerated only afterwards (supabase/migrations/README.md, step 3).
-  // Committing a types entry for a column that does not exist yet would fail
-  // scripts/check-schema-drift.mjs on the dangerous "-" side. This route goes
-  // back to the typed client in the commit that follows the apply.
-  const admin = createAdminClient();
+  // The TYPED client, again. 0102 (`provider_wamid`, `error`, `status_at`) was
+  // applied on 2026-10-09 and `database.types.ts` regenerated against it, so
+  // every column the status path and the reply path touch is vouched for by
+  // the drift check. Like 0101 before it, the untyped client lasted exactly
+  // the window between writing the migration and the owner applying it.
+  const admin = createTypedAdminClient();
 
   // ── step 2: delivery statuses ─────────────────────────────────
   // Before the messages, because a delivery can carry both and a status about
@@ -177,7 +175,7 @@ export async function POST(request: Request) {
   }
 
   // ── step 3: reply, ONLY to what we just inserted ───────────────────
-  const storedIds = new Set((data ?? []).map((d) => (d as { wamid: string }).wamid));
+  const storedIds = new Set((data ?? []).map((d) => d.wamid));
   let replied = 0;
   for (const m of messages) {
     if (!storedIds.has(m.wamid)) continue; // a re-delivery. Already answered.
