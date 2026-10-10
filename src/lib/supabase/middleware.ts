@@ -61,7 +61,11 @@ export async function updateSession(request: NextRequest) {
       // is debugging the handshake from a browser tab, and a /pending bounce
       // in the middle of that reads as the route being broken. The route's own
       // gate is the HMAC signature, which is strictly stronger than this wall.
-      path.startsWith("/api/wa/");
+      path.startsWith("/api/wa/") ||
+      // the public privacy policy Meta's app settings link to (E9). Anyone may
+      // read it, an unapproved account included — a /pending bounce would make
+      // the policy unreachable for exactly the people it describes.
+      path === "/privacy";
     if (!open) {
       const { data: prof } = await supabase.from("profiles").select("approved").eq("id", user.id).maybeSingle();
       if (!prof?.approved) {
