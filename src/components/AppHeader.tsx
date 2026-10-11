@@ -4,6 +4,8 @@ import NavMenu, { type NavItem } from "@/components/NavMenu";
 import SignOutButton from "@/components/SignOutButton";
 import type { Profile } from "@/lib/profile";
 import { MODULES } from "@/modules/registry";
+import RegistrationsPopup from "@/components/RegistrationsPopup";
+import { isStudioAdmin } from "@/lib/clients/access";
 
 // Dropped into every authenticated screen so global search is truly global.
 // `animatedLogo` is passed only on the hub (DESIGN.md §3.1) — working
@@ -67,6 +69,8 @@ export default function AppHeader({
       )}
       <span className="text-xs text-[var(--dim)]">{profile.name || profile.email}</span>
       <SignOutButton />
+      {/* E17-5: once a session, studio_admin only — see the component */}
+      {isStudioAdmin(profile) && <RegistrationsPopup />}
     </header>
   );
 }

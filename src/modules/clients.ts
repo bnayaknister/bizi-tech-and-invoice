@@ -1,5 +1,5 @@
 import type { ModuleDef } from "@/modules/types";
-import { canSeeClients } from "@/lib/clients/access";
+import { canSeeClients, isStudioAdmin } from "@/lib/clients/access";
 import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 // The clients screen on the hub (owner 7.10). Reachable from every screen as
@@ -30,7 +30,7 @@ export const clientsModule: ModuleDef = {
    * `head: true` with an exact count — no rows cross the wire, so this is a
    * COUNT(*) and not a page of clients. One query, like every other card.
    */
-  getMetric: async (supabase) => {
+  getMetric: async (supabase, profile) => {
     const { count } = await supabase
       .from("clients")
       .select("id", { count: "exact", head: true })
@@ -38,6 +38,25 @@ export const clientsModule: ModuleDef = {
       .is("merged_into", null)
       .not("morning_client_id", "is", null);
     const n = count ?? 0;
-    return { label: "לקוחות פעילים לחיוב", value: String(n), tone: "default" };
+    const metric = { label: "לקוחות פעילים לחיוב", value: String(n), tone: "default" as const };
+
+    // E17-5: a standing counter of registrations waiting — studio_admin only.
+    // `client_registrations` is closed to every session (0107), so this one
+    // read goes through the service role, imported lazily so the registry's
+    // module graph does not carry the admin client for anyone else.
+    if (!isStudioAdmin(profile)) return metric;
+    try {
+      const { createTypedAdminClient } = await import("@/lib/supabase/admin");
+      const { pendingRegistrationCount } = await import("@/lib/registration/review");
+      const waiting = await pendingRegistrationCount(createTypedAdminClient());
+      return waiting > 0 ? { ...metric, badge: registrationsBadge(waiting) } : metric;
+    } catch {
+      return metric;
+    }
   },
 };
+
+/** The card's badge: "3 ממתינות לאישור". */
+export function registrationsBadge(n: number): string {
+  return `${n} ממתינות לאישור`;
+}

@@ -131,6 +131,8 @@ export type ClientCard = {
   }[];
   /** 0107 (E17): `active`, or `pending` in the studio_admin's own tab */
   status: string;
+  /** E17-5: the registration behind a pending card (studio_admin only) */
+  registrationId?: string | null;
   debt: number;
   debtJobs: ClientCardJob[];
   documents: {
@@ -333,6 +335,7 @@ async function loadCard(
     id: base.id,
     name: base.name,
     status: base.status,
+    registrationId: base.status === "pending" ? await registrationOf(admin, base.id) : null,
     entity: (entity as Record<string, unknown> | null) ?? { id: base.id, name: base.name },
     fields: clientFieldMeta(profile),
     shows: shows
@@ -344,6 +347,21 @@ async function loadCard(
     documents: (documents.data ?? []) as ClientCard["documents"],
     productions: (productions.data ?? []) as ClientCard["productions"],
   };
+}
+
+/** The pending registration that created this pending client (service role: 0107 closes the table). */
+async function registrationOf(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  admin: any,
+  clientId: string
+): Promise<string | null> {
+  const { data } = await admin
+    .from("client_registrations")
+    .select("id")
+    .eq("client_id", clientId)
+    .eq("status", "pending")
+    .limit(1);
+  return ((data ?? [])[0] as { id: string } | undefined)?.id ?? null;
 }
 
 /** overdueDays from the pure module, narrowed to "only if actually late" */

@@ -5,6 +5,8 @@ export type ModuleMetric = {
   label: string;
   value: string;
   tone: "default" | "warn" | "peak" | "signal";
+  /** E17-5: a small standing counter on the card (e.g. registrations waiting) */
+  badge?: string;
 };
 
 export type ModuleDef = {

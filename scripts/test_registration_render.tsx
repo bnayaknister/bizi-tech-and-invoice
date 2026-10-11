@@ -18,6 +18,10 @@ import JoinPage, { metadata } from "../src/app/join/[token]/page";
 import { POST as submitPOST } from "../src/app/api/join/submit/route";
 import ClientsScreen, { NEW_LINK_LABEL } from "../src/app/clients/ClientsScreen";
 import type { ClientsScreenData } from "../src/app/clients/data";
+import ModuleCard from "../src/components/ModuleCard";
+import RegistrationsPopup from "../src/components/RegistrationsPopup";
+import { clientFieldMeta } from "../src/lib/clients/fields";
+import type { Profile } from "../src/lib/profile";
 
 global.fetch = (() => {
   throw new Error("F19: this suite must not perform any fetch");
@@ -102,6 +106,43 @@ async function main() {
     const r = (d: ClientsScreenData) => renderToString(<AppRouterContext.Provider value={router}><ClientsScreen data={d} /></AppRouterContext.Provider>);
     check("not allowed (or switch off): the button is drawn ZERO times", countOf(r(data({})), NEW_LINK_LABEL), 0);
     check("studio_admin + switch on: once", countOf(r(data({ canCreateRegistrationLink: true })), NEW_LINK_LABEL), 1);
+  }
+
+  console.log("\n── 5. E17-5: the approval section, the badge, the popup");
+  {
+    const noop = () => {};
+    const router = { back: noop, forward: noop, refresh: noop, push: noop, replace: noop, prefetch: noop } as unknown as React.ContextType<typeof AppRouterContext>;
+    const owner: Profile = {
+      id: "u", name: "x", email: "x@x", role: "owner", approved: true, can_view_money: true, can_edit_money: true,
+      can_view_stages: true, can_edit_stages: true, can_manage_users: true, can_import: true, studio_admin: true,
+    };
+    const card = {
+      id: "p1", name: "נרשם", status: "pending", registrationId: "reg-1", entity: { id: "p1" }, fields: clientFieldMeta(owner),
+      shows: [], contracts: [], debt: 0, debtJobs: [], documents: [], productions: [],
+    };
+    const data = (over: Partial<ClientsScreenData>): ClientsScreenData => ({
+      rows: [], card, canEditMoney: true, canSeePending: true, canManageBookingContacts: true,
+      canCreateRegistrationLink: false, matchedRegistrations: [], today: "2026-10-11", ...over,
+    });
+    const r = (d: ClientsScreenData, tab?: string) =>
+      renderToString(<AppRouterContext.Provider value={router}><ClientsScreen data={d} initialTab={tab ?? null} /></AppRouterContext.Provider>);
+    check("pending card, studio_admin: 'אישור הרשמה' once", countOf(r(data({})), ">אישור הרשמה<"), 1);
+    check("pending card without the pending tab right: ZERO times", countOf(r(data({ canSeePending: false })), ">אישור הרשמה<"), 0);
+    check("an active card: ZERO times", countOf(r(data({ card: { ...card, status: "active", registrationId: null } })), ">אישור הרשמה<"), 0);
+    const pendingRow = {
+      id: "p1", name: "נרשם חדש", normalized_name: "pending:x", activeShows: [], debt: 0, overdueCount: 0,
+      worstOverdueDays: null, mapped: false, merged: false, pending: true, lastActivity: null,
+    };
+    check("default tab: the pending row is NOT listed", countOf(r(data({ card: null, rows: [pendingRow] })), ">נרשם חדש<"), 0);
+    check("?tab=pending (the popup's link): the pending row IS listed", countOf(r(data({ card: null, rows: [pendingRow] }), "pending"), ">נרשם חדש<"), 1);
+    check("?tab=pending without the right: ignored", countOf(r(data({ card: null, rows: [pendingRow], canSeePending: false }), "pending"), ">נרשם חדש<"), 0);
+    const withBadge = renderToString(
+      <ModuleCard moduleKey="clients" title="לקוחות" icon="users" href="/clients" metric={{ label: "x", value: "5", tone: "default", badge: "2 ממתינות לאישור" }} />
+    );
+    check("hub card: the badge once", countOf(withBadge, "2 ממתינות לאישור"), 1);
+    const noBadge = renderToString(<ModuleCard moduleKey="clients" title="לקוחות" icon="users" href="/clients" metric={{ label: "x", value: "5", tone: "default" }} />);
+    check("hub card without a badge: none", countOf(noBadge, "ממתינות לאישור"), 0);
+    check("the popup renders nothing until it has a count (server render)", renderToString(<RegistrationsPopup />), "");
   }
 
   console.log(`\n${failed === 0 ? "✅" : "❌"}  ${passed}/${passed + failed} assertions passed\n`);

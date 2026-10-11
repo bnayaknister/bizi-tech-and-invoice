@@ -150,7 +150,7 @@ export function approvedSameDayCount(
 
 export type AutoApproveVerdict =
   | { auto: true }
-  | { auto: false; reason: "switch-off" | "second-same-day" };
+  | { auto: false; reason: "switch-off" | "second-same-day" | "first-booking" };
 
 /**
  * Should this brand-new request approve itself?
@@ -171,15 +171,63 @@ export type AutoApproveVerdict =
 export function autoApproveVerdict(input: {
   switchOn: boolean;
   approvedSameDay: number;
+  /**
+   * E17-5: the show was opened through registration and has not had a
+   * booking approved yet (`shows.first_booking_needs_approval`). Checked
+   * FIRST — before the switch — because it is a business rule, not an
+   * automation setting: the owner and Eli are told about it even when
+   * auto-approval is off (owner decision 11.10).
+   */
+  firstBookingNeedsApproval?: boolean;
 }): AutoApproveVerdict {
+  if (input.firstBookingNeedsApproval) return { auto: false, reason: "first-booking" };
   if (!input.switchOn) return { auto: false, reason: "switch-off" };
   if (input.approvedSameDay >= 1) return { auto: false, reason: "second-same-day" };
   return { auto: true };
 }
 
 /** The verdict's refusal mapped to the sentence the owner's notification carries. */
-export function pendingReasonFor(reason: "second-same-day"): PendingReason {
+export function pendingReasonFor(reason: "second-same-day" | "first-booking"): PendingReason {
   return reason;
+}
+
+/**
+ * E17-5 — the first APPROVED booking of a show opened through registration
+ * lowers `first_booking_needs_approval` (owner decision 11.10): from then on
+ * the show books like any other.
+ *
+ * Called by approveBookingRequest right after the flip succeeded — the one
+ * function every approval passes through, manual or automatic. Guarded by
+ * `= true`, so it is a no-op for every show that never carried the flag, and
+ * evented only when it actually lowered something.
+ *
+ * ⚠️ A SECOND REQUEST THAT WAS ALREADY WAITING STAYS PENDING. Lowering the flag
+ * decides nothing about it — it waits for a human like it did a moment ago.
+ * The service role passes 0107's guard (`auth.uid()` is null there).
+ */
+export async function lowerFirstBookingFlag(
+  admin: SupabaseClient<Database>,
+  input: { showId: string; requestId: string; actorId: string | null }
+): Promise<boolean> {
+  const { data: lowered, error } = await admin
+    .from("shows")
+    .update({ first_booking_needs_approval: false })
+    .eq("id", input.showId)
+    .eq("first_booking_needs_approval", true)
+    .select("id");
+  if (error) {
+    console.error("decide: הורדת דגל ההזמנה הראשונה נכשלה", error);
+    return false;
+  }
+  if ((lowered ?? []).length === 0) return false;
+  await admin.from("events").insert({
+    entity_type: "show",
+    entity_id: input.showId,
+    event_type: "first_booking_flag_lowered",
+    actor_id: input.actorId,
+    payload: { request_id: input.requestId },
+  });
+  return true;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -402,6 +450,9 @@ export async function approveBookingRequest(
     }
   }
 
+  // ── E17-5: the first approved booking lowers the show's flag ──────────────
+  await lowerFirstBookingFlag(admin, { showId: row.show_id, requestId: row.id, actorId: input.actorId });
+
   const show = row.shows as unknown as { name: string; aliases: string[] | null } | null;
   const alias =
     cleanAliasFor({ name: show?.name ?? "", aliases: show?.aliases ?? [] }, STUDIOS) ?? show?.name ?? "";
@@ -561,7 +612,10 @@ export async function approveBookingRequest(
 
 export type AutoApproveOutcome =
   | { approved: true; request: ApprovedRequestView }
-  | { approved: false; reason: "switch-off" | "second-same-day" | "slot-taken" | "calendar-failed" | "error" };
+  | {
+      approved: false;
+      reason: "switch-off" | "second-same-day" | "first-booking" | "slot-taken" | "calendar-failed" | "error";
+    };
 
 /**
  * Decide and, if eligible, approve — then notify.
@@ -597,12 +651,26 @@ export async function autoApproveNewRequest(
   try {
     const switchOn = isAutoApproveOn();
 
+    // ── E17-5: a show's first booking waits for a human ──────────────────────
+    // Read on every request: one indexed row. A failed read is "cannot prove
+    // it is not the first booking" -> stays pending, the safe direction.
+    const { data: showFlag, error: flagErr } = await admin
+      .from("shows")
+      .select("first_booking_needs_approval")
+      .eq("id", input.showId)
+      .maybeSingle();
+    if (flagErr) {
+      console.error("decide/auto: קריאת דגל ההזמנה הראשונה נכשלה", flagErr);
+      return { approved: false, reason: "error" };
+    }
+    const firstBookingNeedsApproval = showFlag?.first_booking_needs_approval === true;
+
     // ── rule א, checked SERVER-SIDE (owner requirement 4) ─────────────────
     // Read even when the switch is off? No — nothing is decided then, and a
     // round trip that cannot change the answer is a round trip on the client's
     // critical path. The switch is checked first for that reason.
     let approvedSameDay = 0;
-    if (switchOn) {
+    if (switchOn && !firstBookingNeedsApproval) {
       const { data, error } = await admin
         .from("booking_requests")
         .select("id,start_at,status")
@@ -617,7 +685,7 @@ export async function autoApproveNewRequest(
       approvedSameDay = approvedSameDayCount(data, input.dateIsrael, input.replacesId);
     }
 
-    const verdict = autoApproveVerdict({ switchOn, approvedSameDay });
+    const verdict = autoApproveVerdict({ switchOn, approvedSameDay, firstBookingNeedsApproval });
 
     const facts = {
       showName: input.showName,
@@ -630,12 +698,12 @@ export async function autoApproveNewRequest(
     };
 
     if (!verdict.auto) {
-      if (verdict.reason === "second-same-day") {
+      if (verdict.reason === "second-same-day" || verdict.reason === "first-booking") {
         await recordBookingNotification(admin, {
           kind: "booking-pending",
           subjectId: input.bookingId,
           facts,
-          reason: "second-same-day",
+          reason: pendingReasonFor(verdict.reason),
         });
       }
       return { approved: false, reason: verdict.reason };

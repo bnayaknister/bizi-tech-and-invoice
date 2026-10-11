@@ -169,12 +169,15 @@ export const BOOKING_CHANGE_LABEL: Record<BookingChange, string> = {
 };
 
 /** Why a request stayed pending. Each one is a different sentence to the owner. */
-export type PendingReason = "second-same-day" | "calendar-failed" | "slot-taken";
+export type PendingReason = "second-same-day" | "calendar-failed" | "slot-taken" | "first-booking";
 
 export const PENDING_REASON_LABEL: Record<PendingReason, string> = {
   "second-same-day": "הזמנה שנייה באותו יום",
   "calendar-failed": "הכתיבה ליומן נכשלה",
   "slot-taken": "המשבצת נתפסה ביומן",
+  // E17-5: a podcast opened through registration — its first booking waits
+  // for Bnaya or Eli (owner decision 11.10)
+  "first-booking": "הזמנה ראשונה של לקוח חדש",
 };
 
 export type NotificationKind =
@@ -182,7 +185,8 @@ export type NotificationKind =
   | "booking-pending"
   | "unknown-contact"
   | "booking-change"
-  | "client-registration";
+  | "client-registration"
+  | "client-approved";
 
 // ─── E17-4: the registration notice, and which templates Meta approved ──────
 
@@ -473,6 +477,8 @@ export function buildNotificationRows(input: {
   variables: Record<string, string>;
   body: string;
   status: OutboundStatus;
+  /** the template language; Hebrew unless said otherwise (E17-5: the client's) */
+  language?: string;
 }): WaOutboundRow[] {
   return input.recipients.map((waId) => ({
     wamid: notificationWamid(input.kind, input.subjectId, waId),
@@ -489,7 +495,7 @@ export function buildNotificationRows(input: {
       kind: input.kind,
       subject_id: input.subjectId,
       template: input.templateName,
-      language: TEMPLATE_LANGUAGE,
+      language: input.language ?? TEMPLATE_LANGUAGE,
       params: input.params,
       variables: input.variables,
       dry_run: input.status === "dry_run",
@@ -540,6 +546,15 @@ type NotifyInput =
   | { kind: "unknown-contact"; subjectId: string; waId: string; excerpt: string }
   | { kind: "booking-change"; subjectId: string; change: BookingChange; facts: BookingFacts; details: string }
   | {
+      /** E17-5: to the CLIENT's first authorised number, in their language */
+      kind: "client-approved";
+      subjectId: string;
+      to: string;
+      lang: "he" | "en";
+      name: string;
+      podcast: string;
+    }
+  | {
       kind: "client-registration";
       subjectId: string;
       event: RegistrationEvent;
@@ -564,6 +579,17 @@ function renderNotification(input: NotifyInput): {
       params: [input.waId, excerpt],
       variables: { waId: input.waId, excerpt },
       body: unknownContactBody(input.waId, excerpt),
+    };
+  }
+
+  if (input.kind === "client-approved") {
+    const variables = { name: excerptParam(input.name), podcast: excerptParam(input.podcast) };
+    const params = TEMPLATE_CLIENT_APPROVED_VARS.map((k) => variables[k]);
+    return {
+      templateName: TEMPLATE_CLIENT_APPROVED,
+      params,
+      variables,
+      body: fillTemplate(TEMPLATE_CLIENT_APPROVED_TEXT[input.lang], params),
     };
   }
 
@@ -635,7 +661,9 @@ export async function recordBookingNotification(
   const raw = process.env.WHATSAPP_NOTIFY_NUMBERS;
   const all = parseNotifyNumbers(raw);
   const rejected = rejectedNotifyNumbers(raw);
-  const recipients = input.onlyOwner ? all.slice(0, 1) : all;
+  // E17-5: the approval notice goes to the CLIENT, never to the notify list
+  const recipients = input.kind === "client-approved" ? [input.to] : input.onlyOwner ? all.slice(0, 1) : all;
+  const language = input.kind === "client-approved" ? input.lang : TEMPLATE_LANGUAGE;
 
   if (rejected.length > 0) {
     // Counted, not printed: a malformed entry is still somebody's number. The
@@ -667,6 +695,7 @@ export async function recordBookingNotification(
     variables: r.variables,
     body: r.body,
     status: dryRun ? "dry_run" : "queued",
+    language,
   });
 
   // ── step 1-2: record, and let the unique index decide who is new ────────
@@ -699,7 +728,7 @@ export async function recordBookingNotification(
       templatePayload({
         to: row.wa_id,
         name: row.template_name,
-        language: TEMPLATE_LANGUAGE,
+        language,
         params: r.params,
       })
     );

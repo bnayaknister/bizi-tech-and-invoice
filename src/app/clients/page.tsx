@@ -8,7 +8,7 @@ import { loadClientsScreen } from "./data";
 // cached debt total.
 export const dynamic = "force-dynamic";
 
-export default async function ClientsPage() {
+export default async function ClientsPage({ searchParams }: { searchParams?: { tab?: string } }) {
   // The gate is `loadClientsScreen`'s own (canSeeClients: owner ||
   // can_view_money, owner 7.10) — asked BEFORE any read happens, and asked
   // again by /clients/[id]. A hidden hub card is not an authorisation, so the
@@ -19,7 +19,7 @@ export default async function ClientsPage() {
   return (
     <div className="min-h-screen">
       <AppHeader profile={res.profile} />
-      <ClientsScreen data={res.data} />
+      <ClientsScreen data={res.data} initialTab={searchParams?.tab ?? null} />
     </div>
   );
 }

@@ -28,7 +28,13 @@ function get(r: Row, path: string): unknown {
 
 export function fakeDb(
   tables: Record<string, Row[]>,
-  opts: { unique?: Unique[]; failOn?: Record<string, string[]>; now?: () => Date } = {}
+  opts: {
+    unique?: Unique[];
+    failOn?: Record<string, string[]>;
+    now?: () => Date;
+    /** stand-ins for SQL functions: (args, store) -> what PostgREST would return */
+    rpc?: Record<string, (args: Record<string, unknown>, store: Record<string, Row[]>) => { data?: unknown; error?: { message: string; code?: string } | null }>;
+  } = {}
 ) {
   const calls: Call[] = [];
   const now = opts.now ?? (() => new Date());
@@ -145,7 +151,15 @@ export function fakeDb(
     return b;
   }
 
-  return { client: { from } as never, calls, store };
+  function rpc(name: string, args: Record<string, unknown>) {
+    calls.push({ table: `rpc:${name}`, op: "rpc", payload: args });
+    const fn = opts.rpc?.[name];
+    if (!fn) return Promise.resolve({ data: null, error: { message: `no fake for rpc ${name}` } });
+    const r = fn(args, store);
+    return Promise.resolve({ data: r.data ?? null, error: r.error ?? null });
+  }
+
+  return { client: { from, rpc } as never, calls, store };
 }
 
 /** The 0001/0107/0101 unique indexes the registration suites lean on. */

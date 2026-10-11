@@ -1,6 +1,8 @@
 {
   "framework": "nextjs",
-  "regions": ["fra1"],
+  "regions": [
+    "fra1"
+  ],
   "crons": [
     {
       "path": "/api/calendar/sync",
@@ -13,6 +15,10 @@
     {
       "path": "/api/documents/sync",
       "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/purge-registrations",
+      "schedule": "30 2 * * *"
     }
   ]
 }

@@ -18,6 +18,7 @@ import {
   type ListSort,
 } from "@/lib/clients/overview";
 import type { ClientsScreenData, MatchedRegistration } from "./data";
+import RegistrationReview from "@/components/RegistrationReview";
 
 /**
  * /clients — the owner's 7.10 screen. A list on the right, the open client's
@@ -68,10 +69,11 @@ export const PENDING_BADGE = "ממתין לאישור";
 
 const nis = (n: number) => `₪${n.toLocaleString("he-IL")}`;
 
-export default function ClientsScreen({ data }: { data: ClientsScreenData }) {
+export default function ClientsScreen({ data, initialTab }: { data: ClientsScreenData; initialTab?: string | null }) {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<ListSort>("name");
-  const [scope, setScope] = useState<ListScope>("active");
+  // E17-5: the popup links to ?tab=pending; honoured only for whoever has the tab
+  const [scope, setScope] = useState<ListScope>(initialTab === "pending" && data.canSeePending ? "pending" : "active");
 
   const shown = useMemo(
     () => sortClients(filterClients(data.rows, scope, q), sort),
@@ -134,7 +136,7 @@ export default function ClientsScreen({ data }: { data: ClientsScreenData }) {
           ) : (
             <div className="space-y-1">
               {shown.map((r) => (
-                <ClientRowItem key={r.id} row={r} selected={data.card?.id === r.id} />
+                <ClientRowItem key={r.id} row={r} selected={data.card?.id === r.id} keepPendingTab={scope === "pending"} />
               ))}
             </div>
           )}
@@ -152,10 +154,10 @@ export default function ClientsScreen({ data }: { data: ClientsScreenData }) {
   );
 }
 
-function ClientRowItem({ row, selected }: { row: ClientListRow; selected: boolean }) {
+function ClientRowItem({ row, selected, keepPendingTab }: { row: ClientListRow; selected: boolean; keepPendingTab?: boolean }) {
   return (
     <Link
-      href={`/clients/${row.id}`}
+      href={`/clients/${row.id}${keepPendingTab ? "?tab=pending" : ""}`}
       aria-current={selected ? "page" : undefined}
       className={`block rounded-xl px-3 py-2 border transition-colors ${
         selected
@@ -281,6 +283,15 @@ function ClientCardPanel({ data }: { data: ClientsScreenData }) {
       </div>
 
       {error && <div className="text-xs text-red-400">{error}</div>}
+
+      {/* E17-5: a pending registration is decided here — studio_admin only
+          (the card is only reachable from their tab; the routes refuse others) */}
+      {pending && card.registrationId && data.canSeePending && (
+        <div className="space-y-2">
+          <SectionTitle>אישור הרשמה</SectionTitle>
+          <RegistrationReview registrationId={card.registrationId} onDone={() => router.refresh()} />
+        </div>
+      )}
 
       {/* ── סקירה ── the drawer's own rows, plus the drawer's own Morning card */}
       <div className="space-y-3">
@@ -513,6 +524,8 @@ function RegistrationLinkButton() {
 
 /** Registrations matched to an existing card — they created no client. */
 function MatchedRegistrations({ rows }: { rows: MatchedRegistration[] }) {
+  const router = useRouter();
+  const [open, setOpen] = useState<string | null>(null);
   return (
     <div className="mb-3 rounded-xl border border-[var(--rule)] p-2 space-y-1">
       <div className="text-[11px] font-bold text-[var(--dim)]">{MATCHED_TITLE}</div>
@@ -525,6 +538,14 @@ function MatchedRegistrations({ rows }: { rows: MatchedRegistration[] }) {
             <Link href={`/clients/${r.matchedClientId}`} className="text-[var(--violet-light)]">
               → {r.matchedClientName ?? "הכרטיס הקיים"}
             </Link>
+          )}
+          <button className="ms-auto text-[var(--violet-light)]" onClick={() => setOpen(open === r.id ? null : r.id)}>
+            {open === r.id ? "סגירה" : "טיפול"}
+          </button>
+          {open === r.id && (
+            <div className="w-full mt-1">
+              <RegistrationReview registrationId={r.id} onDone={() => router.refresh()} />
+            </div>
           )}
         </div>
       ))}

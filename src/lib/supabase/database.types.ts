@@ -2275,6 +2275,18 @@ export type Database = {
       }
     }
     Functions: {
+      approve_client_registration: {
+        Args: {
+          p_actor: string
+          p_client_name: string
+          p_contacts: Json
+          p_normalized_name: string
+          p_registration_id: string
+          p_show: Json
+          p_tax_id: string
+        }
+        Returns: Json
+      }
       archive_jobs_for_backfill: {
         Args: never
         Returns: {
@@ -2292,6 +2304,16 @@ export type Database = {
           job_count: number
           total: number
         }[]
+      }
+      attach_client_registration: {
+        Args: {
+          p_actor: string
+          p_contacts: Json
+          p_registration_id: string
+          p_show: Json
+          p_show_id: string
+        }
+        Returns: Json
       }
       backfill_archive_job_external_id: {
         Args: { p_external_id: string; p_id: string }
@@ -2344,6 +2366,14 @@ export type Database = {
       production_status_rank: {
         Args: { s: Database["public"]["Enums"]["production_status"] }
         Returns: number
+      }
+      purge_rejected_registrations: {
+        Args: { p_cutoff: string }
+        Returns: Json
+      }
+      reject_client_registration: {
+        Args: { p_actor: string; p_reason: string; p_registration_id: string }
+        Returns: Json
       }
     }
     Enums: {

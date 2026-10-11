@@ -143,6 +143,14 @@ export default function ModuleCard({
         <div className="flex items-center gap-2.5">
           <IconTile icon={icon} accent={theme.tile} />
           <span className="float-label font-bold text-sm">{title}</span>
+          {metric.badge && (
+            <span
+              className="ms-auto text-[10px] font-bold rounded-full px-2 py-0.5"
+              style={{ background: "rgba(251,191,36,0.18)", color: "rgb(251,191,36)" }}
+            >
+              {metric.badge}
+            </span>
+          )}
         </div>
         <div>
           {/* calibrated number with a restrained violet halo (DESIGN.md §2);

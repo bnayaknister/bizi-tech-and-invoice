@@ -11,7 +11,13 @@ export const dynamic = "force-dynamic";
 //
 // The gate is the same function the list page uses, asked again here: a
 // per-client URL is exactly the kind of link that gets shared past the hub.
-export default async function ClientPage({ params }: { params: { id: string } }) {
+export default async function ClientPage({
+  params,
+  searchParams,
+}: {
+  params: { id: string };
+  searchParams?: { tab?: string };
+}) {
   const res = await loadClientsScreen(params.id);
   if (!res.ok) redirect("/");
   // An id that matches no client leaves `card` null and the list renders alone —
@@ -20,7 +26,7 @@ export default async function ClientPage({ params }: { params: { id: string } })
   return (
     <div className="min-h-screen">
       <AppHeader profile={res.profile} />
-      <ClientsScreen data={res.data} />
+      <ClientsScreen data={res.data} initialTab={searchParams?.tab ?? null} />
     </div>
   );
 }
