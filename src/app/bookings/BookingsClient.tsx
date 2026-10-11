@@ -35,6 +35,8 @@ export default function BookingsClient({
   // E9-3: cancelling an approved recording
   const [cancelFor, setCancelFor] = useState<QueueView | null>(null);
   const [cancelled, setCancelled] = useState<CancelledPanel | null>(null);
+  // E9-5: the one row whose calendar delete is being retried
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const onConfirmApprove = useCallback(
     async (v: QueueView) => {
@@ -175,10 +177,9 @@ export default function BookingsClient({
    * Cancel an APPROVED recording — E9-3, owner decision 8.10.
    *
    * ⚠️ THE RESPONSE IS WHAT DECIDES WHAT THE SCREEN SAYS, not this file:
-   * `calendarEventExisted` comes from the stored row's own
-   * `calendar_write_status`, because only the server knows whether an event
-   * was ever written. Guessing here would tell the owner to go and delete
-   * something that never existed.
+   * `calendarDelete` is what actually happened to the event (E9-5) — only the
+   * server knows whether the system created it and whether the delete went
+   * through.
    */
   const onConfirmCancel = useCallback(
     async (v: QueueView) => {
@@ -190,7 +191,11 @@ export default function BookingsClient({
         const body = (await res.json().catch(() => ({}))) as {
           ok?: boolean;
           error?: string;
-          request?: { calendarEventExisted: boolean; calendarDayUrl: string };
+          request?: {
+            calendarDelete: CancelledPanel["calendarDelete"];
+            calendarDeleteError: string | null;
+            calendarDayUrl: string;
+          };
         };
         if (!res.ok || !body.ok || !body.request) {
           setError(body.error ?? GENERIC);
@@ -198,7 +203,8 @@ export default function BookingsClient({
         }
         setCancelled({
           view: v,
-          calendarEventExisted: body.request.calendarEventExisted,
+          calendarDelete: body.request.calendarDelete,
+          calendarDeleteError: body.request.calendarDeleteError,
           calendarDayUrl: body.request.calendarDayUrl,
         });
         // the two other ephemeral panels describe a row that is no longer in
@@ -214,6 +220,41 @@ export default function BookingsClient({
       }
     },
     [busy, router]
+  );
+
+  /**
+   * Retry a failed calendar delete (E9-5). The fresh outcome replaces the
+   * card's, and the page refreshes so the history row's state follows.
+   */
+  const onRetryDelete = useCallback(
+    async (id: string) => {
+      if (deletingId) return;
+      setDeletingId(id);
+      setError(null);
+      try {
+        const res = await fetch(`/api/bookings/${id}/retry-calendar-delete`, { method: "POST", cache: "no-store" });
+        const body = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          calendarDelete?: CancelledPanel["calendarDelete"];
+          calendarDeleteError?: string | null;
+        };
+        if (body.calendarDelete) {
+          setCancelled((c) =>
+            c && c.view.id === id
+              ? { ...c, calendarDelete: body.calendarDelete!, calendarDeleteError: body.calendarDeleteError ?? null }
+              : c
+          );
+        } else {
+          setError(body.error ?? GENERIC);
+        }
+        router.refresh();
+      } catch {
+        setError(GENERIC);
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [deletingId, router]
   );
 
   /**
@@ -273,6 +314,8 @@ export default function BookingsClient({
         setError(null);
       }}
       onConfirmCancel={(v) => void onConfirmCancel(v)}
+      onRetryDelete={(id) => void onRetryDelete(id)}
+      deletingId={deletingId}
     />
   );
 }

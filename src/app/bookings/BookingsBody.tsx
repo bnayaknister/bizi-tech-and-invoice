@@ -62,7 +62,39 @@ export const COPY = {
   openCalendarDay: "פתיחת היום ביומן",
   noEventToDelete: "להקלטה הזו לא נוצר אירוע ביומן — אין מה למחוק.",
   eventLink: "קישור לאירוע",
+  // E9-5 (owner decision 11.10) — the system deletes the events it created.
+  // DRAFT wording, pending the owner's approval.
+  calendarDeleted: "האירוע נמחק מהיומן.",
+  calendarDeleteDryRun: "מצב בדיקה — האירוע לא נמחק מהיומן.",
+  willDeleteEvent: "האירוע יימחק מהיומן אוטומטית.",
+  retryDelete: "נסה שוב למחוק מהיומן",
 } as const;
+
+/** "ההקלטה בוטלה, אבל המחיקה מהיומן נכשלה — {שגיאה}. אפשר לנסות שוב." (draft) */
+export function calendarDeleteFailedText(error: string): string {
+  return `ההקלטה בוטלה, אבל המחיקה מהיומן נכשלה — ${error}. אפשר לנסות שוב.`;
+}
+
+/** "הזזה של ההקלטה מ־{מועד}" — the tag on a pending MOVE (E9-5, draft) */
+export function moveTagText(replacesWhen: string): string {
+  return `הזזה של ההקלטה מ־${replacesWhen}`;
+}
+
+/** The approve dialog's warning for a MOVE: what approving it does to the original. */
+export function moveApproveWarning(replacesWhen: string): string {
+  return `האישור יבטל את ההקלטה המקורית (${replacesWhen}) וימחק אותה מהיומן.`;
+}
+
+/**
+ * The cancel dialog's warning, by what will happen to the event (E9-5):
+ * the system deletes its own; a pre-E8 booking's event is a human's to delete;
+ * a booking whose write failed has nothing in the calendar.
+ */
+export function cancelWarning(v: QueueView): string | null {
+  if (v.calendarWriteStatus === "created") return COPY.willDeleteEvent;
+  if (v.calendarWriteStatus === null) return COPY.deleteEventReminder;
+  return null;
+}
 
 /**
  * "האישור נשמר, אך היצירה ביומן נכשלה — {שגיאה}. אפשר לנסות שוב." — approved
@@ -185,17 +217,20 @@ export type ApprovedPanel = {
   calendar: CalendarWriteState;
 };
 
-/** What a cancellation hands back — see the route for why the flag is here. */
+/** What happened to the event when a recording was cancelled (lib/booking/manage). */
+export type CalendarDeleteOutcome = "deleted" | "already-gone" | "dry-run" | "not-ours" | "none" | "failed";
+
+/** What a cancellation hands back — the server decides; this only renders it. */
 export type CancelledPanel = {
   view: QueueView;
   /**
-   * 🔴 Whether an event was EVER written for this booking. The reminder is
-   * driven by this and not by "we cancelled something": a booking whose
-   * calendar write failed or never ran has no event to delete, and telling the
-   * owner to go and delete one sends them looking for something that was never
-   * there.
+   * 🔴 What happened to the event (E9-5). Only the server knows whether the
+   * system created it, and whether the delete went through — the card says
+   * "deleted", shows the manual reminder, says there is nothing to delete, or
+   * offers a retry, and never guesses.
    */
-  calendarEventExisted: boolean;
+  calendarDelete: CalendarDeleteOutcome;
+  calendarDeleteError: string | null;
   calendarDayUrl: string;
 };
 
@@ -221,6 +256,8 @@ export default function BookingsBody({
   cancelled,
   onAskCancel,
   onConfirmCancel,
+  onRetryDelete,
+  deletingId,
 }: {
   waiting: QueueView[];
   history: QueueView[];
@@ -248,6 +285,10 @@ export default function BookingsBody({
   cancelled: CancelledPanel | null;
   onAskCancel: (v: QueueView) => void;
   onConfirmCancel: (v: QueueView) => void;
+  // ── E9-5: a failed calendar delete, retried ─────────────────────
+  onRetryDelete: (id: string) => void;
+  /** the one row whose delete is being retried */
+  deletingId: string | null;
 }) {
   // every array is defaulted before it is walked — the habit from 2026-09-15,
   // where an undefined the TYPE promised took a page down
@@ -276,7 +317,9 @@ export default function BookingsBody({
       ) : null}
 
       {declined ? <DeclinedCard view={declined} /> : null}
-      {cancelled ? <CancelledCard panel={cancelled} /> : null}
+      {cancelled ? (
+        <CancelledCard panel={cancelled} onRetryDelete={onRetryDelete} deleting={deletingId === cancelled.view.id} />
+      ) : null}
 
       <section className="space-y-2">
         <h2 className="text-[10px] uppercase tracking-wider font-semibold text-[var(--faint)]">
@@ -298,6 +341,8 @@ export default function BookingsBody({
                 onCopyTitle={onCopyTitle}
                 onRetryCalendar={onRetryCalendar}
                 retrying={retryingId === v.id}
+                onRetryDelete={onRetryDelete}
+                deleting={deletingId === v.id}
               />
             ))}
           </div>
@@ -325,6 +370,8 @@ export default function BookingsBody({
                 onCopyTitle={onCopyTitle}
                 onRetryCalendar={onRetryCalendar}
                 retrying={retryingId === v.id}
+                onRetryDelete={onRetryDelete}
+                deleting={deletingId === v.id}
               />
             ))}
           </div>
@@ -337,7 +384,14 @@ export default function BookingsBody({
           // ⚠️ the warning lives in the DIALOG, not on the row: it is advice
           // about what to do AFTER approving, and it is only actionable at the
           // moment of deciding.
-          warning={guestWarns(approveFor.guest) ? COPY.guestRoomWarning : null}
+          warning={
+            [
+              approveFor.replacesWhen ? moveApproveWarning(approveFor.replacesWhen) : null,
+              guestWarns(approveFor.guest) ? COPY.guestRoomWarning : null,
+            ]
+              .filter(Boolean)
+              .join(" ") || null
+          }
           confirmLabel={COPY.approve}
           tone="go"
           busy={busy}
@@ -366,7 +420,7 @@ export default function BookingsBody({
       {cancelFor ? (
         <ConfirmDialog
           question={cancelQuestion(cancelFor)}
-          warning={COPY.deleteEventReminder}
+          warning={cancelWarning(cancelFor)}
           confirmLabel={COPY.cancelBooking}
           tone="stop"
           busy={busy}
@@ -388,6 +442,8 @@ function Row({
   onCopyTitle,
   onRetryCalendar,
   retrying,
+  onRetryDelete,
+  deleting,
 }: {
   v: QueueView;
   busy: boolean;
@@ -398,6 +454,8 @@ function Row({
   onCopyTitle: (v: QueueView, title: string) => void;
   onRetryCalendar: (v: QueueView) => void;
   retrying: boolean;
+  onRetryDelete: (id: string) => void;
+  deleting: boolean;
 }) {
   return (
     <div className="rounded-lg border border-[var(--rule)] p-3 space-y-1.5">
@@ -423,6 +481,16 @@ function Row({
       </p>
       {v.note ? <p className="text-xs text-[var(--dim)] whitespace-pre-line">{v.note}</p> : null}
       <p className="text-[11px] text-[var(--faint)]">{v.sentLine}</p>
+      {/* E9-5: a pending request that MOVES an approved recording says so —
+          approving it cancels the original */}
+      {v.replacesWhen ? (
+        <p className="text-[11px] text-[var(--cyan)]">{moveTagText(v.replacesWhen)}</p>
+      ) : null}
+      {/* E9-5: a cancelled row whose event could not be deleted keeps saying
+          so, with the retry, until it is — even after a refresh */}
+      {v.calendarDeleteFailed ? (
+        <DeleteFailed error={v.calendarDeleteError} onRetry={() => onRetryDelete(v.id)} deleting={deleting} />
+      ) : null}
 
       {/* ⚠️ APPROVE IS ABSENT, NOT DISABLED, on a request whose moment passed.
           A greyed button invites a click and then explains why it was refused;
@@ -688,26 +756,53 @@ function ApprovedCard({
   );
 }
 
+/** "המחיקה מהיומן נכשלה" + "נסה שוב" — on the fresh card and on the history row alike. */
+function DeleteFailed({ error, onRetry, deleting }: { error: string | null; onRetry: () => void; deleting: boolean }) {
+  return (
+    <div className="space-y-1 pt-0.5">
+      <p className="text-[11px] text-rose-400">{calendarDeleteFailedText(error ?? "")}</p>
+      <button
+        type="button"
+        disabled={deleting}
+        onClick={onRetry}
+        className="rounded-lg px-2.5 py-1 text-[11px] border border-rose-500/60 text-rose-300 disabled:opacity-50"
+      >
+        {COPY.retryDelete}
+      </button>
+    </div>
+  );
+}
+
 /**
- * What the owner sees right after cancelling.
+ * What the owner sees right after cancelling (E9-5, owner decision 11.10).
  *
- * 🔴 THE REMINDER IS CONDITIONAL ON AN EVENT HAVING EXISTED. A booking whose
- * calendar write failed, never ran, or ran in dry-run mode has nothing in the
- * calendar — and "מחקו את האירוע ביומן" would send the owner
- * looking for something that was never there, which is how a person stops
- * trusting a reminder.
- *
- * ⚠️ AND THE CODE DOES NOT DELETE IT. lib/calendar/write.ts has no
- * `events.delete` and must not grow one (write.ts:24-32): `writer` on a shared
- * calendar can delete the advertising company's recordings too, so the
- * capability does not exist here at all. A human deletes; this is the nudge.
+ * Exactly ONE of five renders, decided by the server:
+ *   deleted / already-gone  "האירוע נמחק מהיומן."
+ *   dry-run                 the dry-run notice
+ *   not-ours                the EXISTING reminder + day link — the system did
+ *                           not create this event, so a human deletes it
+ *   none                    "nothing to delete" — no event was ever written
+ *   failed                  the cancellation stands; "נכשלה" + retry
  */
-function CancelledCard({ panel }: { panel: CancelledPanel }) {
+function CancelledCard({
+  panel,
+  onRetryDelete,
+  deleting,
+}: {
+  panel: CancelledPanel;
+  onRetryDelete: (id: string) => void;
+  deleting: boolean;
+}) {
+  const o = panel.calendarDelete;
   return (
     <div className="rounded-lg border border-rose-500/40 bg-rose-500/5 p-3 space-y-2">
       <p className="text-sm font-semibold">{COPY.cancelled}</p>
       <p className="text-sm">{panel.view.whenLine}</p>
-      {panel.calendarEventExisted ? (
+      {o === "deleted" || o === "already-gone" ? (
+        <p className="text-[11px] text-[var(--cyan)]">{COPY.calendarDeleted}</p>
+      ) : o === "dry-run" ? (
+        <p className="text-[11px] text-[var(--faint)]">{COPY.calendarDeleteDryRun}</p>
+      ) : o === "not-ours" ? (
         <div className="space-y-1.5">
           <p className="text-xs font-bold text-rose-300">{COPY.deleteEventReminder}</p>
           <a
@@ -719,6 +814,8 @@ function CancelledCard({ panel }: { panel: CancelledPanel }) {
             {COPY.openCalendarDay}
           </a>
         </div>
+      ) : o === "failed" ? (
+        <DeleteFailed error={panel.calendarDeleteError} onRetry={() => onRetryDelete(panel.view.id)} deleting={deleting} />
       ) : (
         <p className="text-[11px] text-[var(--faint)]">{COPY.noEventToDelete}</p>
       )}

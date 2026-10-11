@@ -12,6 +12,7 @@ import { approvedWhatsappText } from "@/lib/booking/title";
 import { bookableRoomForDefault } from "@/lib/calendar/rooms";
 import { STUDIOS } from "@/lib/calendar/studios";
 import type { SubmitResult } from "@/lib/booking/submit";
+import { selfServeAllowed } from "@/lib/booking/manage";
 import * as C from "./copy";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -44,9 +45,23 @@ import * as C from "./copy";
 //        → summary → submitting → done
 // "חזרה" walks one step back (or one PAGE back inside a paged list);
 // "התחלה מחדש" returns to the menu with nothing chosen.
+//
+// ═══ E9-5: CANCEL AND MOVE (owner decision 11.10) ═══
+//   menu → mine → manage → cancel-confirm → submitting → done
+//                        → (move) studio-default → day → hour → summary
+//                          → submitting → done
+// A move REUSES the booking steps with `mode: "move"`: the length and the
+// room come from the original recording (the room can be changed), the guest
+// and the note are carried over, and the summary shows "מ־… ל־…". More than
+// 24 hours ahead the bot acts; within 24 hours it forwards to the team (the
+// driver re-checks at execution, with a fresh read — the conversation can
+// cross the boundary while the client is tapping).
 
 /** Meta allows 10 list rows IN TOTAL; 7 choices + "more" + back + restart. */
 export const PAGE_SIZE = 7;
+
+/** "ההקלטות שלי": at most 8 recordings + back + restart = 10 rows. */
+export const MINE_MAX = 8;
 
 /** A conversation that has not moved for this long is over (owner-approved, 11.10). */
 export const FLOW_TTL_MS = 30 * 60 * 1000;
@@ -63,8 +78,28 @@ export const FLOW_STEPS = [
   "summary",
   "submitting",
   "done",
+  // E9-5
+  "mine",
+  "manage",
+  "cancel-confirm",
 ] as const;
 export type FlowStep = (typeof FLOW_STEPS)[number];
+
+/** One of the client's own upcoming approved recordings (E9-5). */
+export type RecordingOption = {
+  id: string;
+  showId: string;
+  showName: string;
+  studio: string;
+  date: string;
+  start: string;
+  end: string;
+  startIso: string;
+  /** from the two instants; null for a length that is not one of the three */
+  durationMinutes: number | null;
+  guest: string | null;
+  note: string | null;
+};
 
 export type FlowState = {
   v: 1;
@@ -92,6 +127,17 @@ export type FlowState = {
   notice: string | null;
   /** set once a request exists, so a second "לקבוע" can never make another */
   requestId: string | null;
+  // ── E9-5 ──
+  /** "book" a new recording, or "move" `target` */
+  mode: "book" | "move";
+  /** is cancel/move switched on (WHATSAPP_BOOKING_MANAGE)? decides the menu */
+  manageOn: boolean;
+  /** the show's booking link, shown in the menu's body */
+  linkUrl: string | null;
+  /** the recordings "ההקלטות שלי" offered — the validation set */
+  recordings: RecordingOption[];
+  /** the recording being cancelled or moved */
+  target: RecordingOption | null;
 };
 
 export type FlowEvent =
@@ -112,7 +158,13 @@ export type FlowEvent =
   | { type: "confirm" }
   | { type: "cancel" }
   | { type: "back" }
-  | { type: "restart" };
+  | { type: "restart" }
+  // E9-5
+  | { type: "mine" }
+  | { type: "recording"; id: string }
+  | { type: "move" }
+  | { type: "cancel-booking" }
+  | { type: "confirm-cancel" };
 
 export type FlowRow = { id: string; title: string; description?: string };
 
@@ -130,7 +182,17 @@ export type Transition =
   /** send the show's existing booking link (the E9-3 reply) */
   | { kind: "link"; state: FlowState }
   /** send the existing podcast list (step 0) */
-  | { kind: "switch-show"; state: FlowState };
+  | { kind: "switch-show"; state: FlowState }
+  // E9-5
+  /** load the client's upcoming approved recordings, then call withRecordings */
+  | { kind: "need-recordings"; state: FlowState }
+  /** state.step is "submitting": cancel state.target, then call afterCancel */
+  | { kind: "cancel"; state: FlowState }
+  /** within 24 hours: notify the team, then call afterForward */
+  | { kind: "forward"; state: FlowState; change: "cancel-request" | "move-request" };
+
+/** What a cancellation by the bot came to (E9-5). */
+export type CancelOutcome = "cancelled" | "not-active" | "error";
 
 // ─── ids: a tap -> a structured event ──────────────────────────────────────
 
@@ -154,7 +216,15 @@ export const FLOW_ID = {
   cancel: `${P}cancel`,
   back: `${P}back`,
   restart: `${P}restart`,
+  // E9-5
+  mine: `${P}mine`,
+  recording: (id: string) => `${P}rec:${id}`,
+  move: `${P}move`,
+  cancelBooking: `${P}cxl`,
+  confirmCancel: `${P}cxl-yes`,
 } as const;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const HHMM_RE = /^\d{2}:\d{2}$/;
@@ -183,6 +253,10 @@ export function parseFlowId(raw: unknown): FlowEvent | null {
     cancel: { type: "cancel" },
     back: { type: "back" },
     restart: { type: "restart" },
+    mine: { type: "mine" },
+    move: { type: "move" },
+    cxl: { type: "cancel-booking" },
+    "cxl-yes": { type: "confirm-cancel" },
   };
   if (simple[id]) return simple[id];
   const [kind, ...rest] = id.split(":");
@@ -191,6 +265,7 @@ export function parseFlowId(raw: unknown): FlowEvent | null {
   if (kind === "st" && value !== "") return { type: "studio", studio: value };
   if (kind === "day" && DATE_RE.test(value)) return { type: "day", date: value };
   if (kind === "hr" && HHMM_RE.test(value)) return { type: "hour", start: value };
+  if (kind === "rec" && UUID_RE.test(value)) return { type: "recording", id: value };
   return null;
 }
 
@@ -204,12 +279,17 @@ export function textEvent(text: string): FlowEvent {
 
 // ─── starting ──────────────────────────────────────────────────────────────
 
-export function initialState(show: {
+export type ShowInfo = {
   showId: string;
   showName: string;
   defaultStudio: string | null;
   multiShow: boolean;
-}): FlowState {
+  /** E9-5; absent = off */
+  manageOn?: boolean;
+  linkUrl?: string | null;
+};
+
+export function initialState(show: ShowInfo): FlowState {
   return {
     v: 1,
     step: "menu",
@@ -234,14 +314,27 @@ export function initialState(show: {
     note: null,
     notice: null,
     requestId: null,
+    mode: "book",
+    manageOn: show.manageOn ?? false,
+    linkUrl: show.linkUrl ?? null,
+    recordings: [],
+    target: null,
   };
 }
 
+/** The show, as `start` takes it, from a live state — so a restart keeps it. */
+const showOf = (s: FlowState): ShowInfo => ({
+  showId: s.showId,
+  showName: s.showName,
+  // already resolved; bookableRoomForDefault maps a canonical name to itself
+  defaultStudio: s.defaultStudio,
+  multiShow: s.multiShow,
+  manageOn: s.manageOn,
+  linkUrl: s.linkUrl,
+});
+
 /** A fresh conversation: the menu, optionally under a one-line notice. */
-export function start(
-  show: Parameters<typeof initialState>[0],
-  notice: string | null = null
-): Transition {
+export function start(show: ShowInfo, notice: string | null = null): Transition {
   const s = { ...initialState(show), notice };
   return render(s);
 }
@@ -265,15 +358,61 @@ export function render(s: FlowState): Transition {
 
   switch (s.step) {
     case "menu":
+      // E9-5: with cancel/move on, "ההקלטות שלי" takes the link button's
+      // place (Meta allows three) and the link moves into the body, where a
+      // tap opens it just the same.
       return out({
         type: "buttons",
-        body: body(C.MENU.body(s.showName)),
+        body: body(s.manageOn ? C.MENU.bodyWithLink(s.showName, s.linkUrl) : C.MENU.body(s.showName)),
         buttons: [
           { id: FLOW_ID.go, title: C.MENU.go },
-          { id: FLOW_ID.link, title: C.MENU.link },
+          s.manageOn ? { id: FLOW_ID.mine, title: C.MENU.mine } : { id: FLOW_ID.link, title: C.MENU.link },
           ...(s.multiShow ? [{ id: FLOW_ID.switchShow, title: C.MENU.switchShow }] : []),
         ],
       });
+
+    case "mine":
+      return out({
+        type: "list",
+        body: body(C.MINE.body),
+        button: C.MINE.button,
+        sections: [
+          {
+            title: C.NAV.sectionChoices,
+            rows: s.recordings.map((r) => ({
+              id: FLOW_ID.recording(r.id),
+              title: C.MINE.title(r.date, r.start),
+              description: C.MINE.description(r.showName, r.studio),
+            })),
+          },
+          { title: C.NAV.sectionNav, rows: navRows() },
+        ],
+      });
+
+    case "manage": {
+      const t = s.target as RecordingOption;
+      return out({
+        type: "buttons",
+        body: body(C.MANAGE.body(t)),
+        buttons: [
+          { id: FLOW_ID.move, title: C.MANAGE.move },
+          { id: FLOW_ID.cancelBooking, title: C.MANAGE.cancel },
+          { id: FLOW_ID.back, title: C.NAV.back },
+        ],
+      });
+    }
+
+    case "cancel-confirm": {
+      const t = s.target as RecordingOption;
+      return out({
+        type: "buttons",
+        body: body(C.CANCEL_CONFIRM.body(t)),
+        buttons: [
+          { id: FLOW_ID.confirmCancel, title: C.CANCEL_CONFIRM.yes },
+          { id: FLOW_ID.back, title: C.NAV.back },
+        ],
+      });
+    }
 
     case "duration":
       return out({
@@ -294,10 +433,10 @@ export function render(s: FlowState): Transition {
       });
 
     case "studio-default": {
-      const d = s.defaultStudio as BookableRoom;
+      const d = preferredStudio(s) as BookableRoom;
       return out({
         type: "buttons",
-        body: body(C.STUDIO_DEFAULT.body(d)),
+        body: body(s.mode === "move" ? C.STUDIO_DEFAULT.moveBody(d) : C.STUDIO_DEFAULT.body(d)),
         buttons: [
           { id: FLOW_ID.studioYes, title: C.STUDIO_DEFAULT.yes(d) },
           { id: FLOW_ID.studioOther, title: C.STUDIO_DEFAULT.other },
@@ -383,6 +522,24 @@ export function render(s: FlowState): Transition {
       });
 
     case "summary":
+      if (s.mode === "move") {
+        const t = s.target as RecordingOption;
+        return out({
+          type: "buttons",
+          body: body(
+            C.MOVE_SUMMARY.body({
+              showName: t.showName,
+              from: { dateIsrael: t.date, start: t.start, end: t.end, studio: t.studio },
+              to: { dateIsrael: s.date as string, start: s.start as string, end: s.end as string, studio: s.studio as string },
+            })
+          ),
+          buttons: [
+            { id: FLOW_ID.confirm, title: C.MOVE_SUMMARY.confirm },
+            { id: FLOW_ID.cancel, title: C.SUMMARY.cancel },
+            { id: FLOW_ID.back, title: C.NAV.back },
+          ],
+        });
+      }
       return out({
         type: "buttons",
         body: body(
@@ -433,7 +590,17 @@ function clearFrom(step: FlowStep): Partial<FlowState> {
   return patch;
 }
 
-const studioStep = (s: FlowState): FlowStep => (s.defaultStudio ? "studio-default" : "studio");
+/** The room the "as usual?" question offers: the show's default, or — in a move — the original's. */
+function preferredStudio(s: FlowState): BookableRoom | null {
+  if (s.mode === "move") return validateStudio(s.target?.studio ?? null);
+  return s.defaultStudio;
+}
+
+const studioStep = (s: FlowState): FlowStep => (preferredStudio(s) ? "studio-default" : "studio");
+
+/** Leave a move: back to the recording it was about, nothing of the move kept. */
+const leaveMove = (s: FlowState): Transition =>
+  go(s, { ...clearFrom("duration"), mode: "book", step: "manage" });
 
 /** Choosing a studio: the days come from availability, so ask for it. */
 const chooseStudio = (s: FlowState, studio: BookableRoom): Transition => ({
@@ -446,12 +613,20 @@ function back(s: FlowState): Transition {
   switch (s.step) {
     case "menu":
       return render(s);
+    case "mine":
+      return go(s, { step: "menu", recordings: [], target: null });
+    case "manage":
+      return go(s, { step: "mine", target: null });
+    case "cancel-confirm":
+      return go(s, { step: "manage" });
     case "duration":
       return go(s, { step: "menu", ...clearFrom("duration") });
     case "studio-default":
     case "studio":
       // from the free list back to the "as usual?" question, if there is one
-      if (s.step === "studio" && s.defaultStudio) return go(s, { step: "studio-default", ...clearFrom("studio") });
+      if (s.step === "studio" && preferredStudio(s)) return go(s, { step: "studio-default", ...clearFrom("studio") });
+      // a move has no duration step to go back to: it goes back to the recording
+      if (s.mode === "move") return leaveMove(s);
       return go(s, { step: "duration", ...clearFrom("studio") });
     case "day":
       if (s.dayPage > 0) return go(s, { dayPage: s.dayPage - 1 });
@@ -465,6 +640,8 @@ function back(s: FlowState): Transition {
     case "note":
       return go(s, { step: "guest", guest: null, note: null });
     case "summary":
+      // a move skipped the guest and the note: back to the hours
+      if (s.mode === "move") return go(s, { step: "hour", start: null, end: null });
       return go(s, { step: "note", note: null });
     case "submitting":
     case "done":
@@ -479,11 +656,11 @@ function back(s: FlowState): Transition {
  * the current step under "this button is no longer active" — never by acting
  * on it. That one rule is what makes an old message's buttons harmless.
  */
-export function reduce(s: FlowState, e: FlowEvent): Transition {
+export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Transition {
   // ── always available ──
   if (e.type === "restart") {
     if (s.step === "submitting") return render(s);
-    return start({ showId: s.showId, showName: s.showName, defaultStudio: s.defaultStudio, multiShow: s.multiShow });
+    return start(showOf(s));
   }
   if (e.type === "back") return back(s);
 
@@ -496,6 +673,9 @@ export function reduce(s: FlowState, e: FlowEvent): Transition {
   switch (s.step) {
     case "menu":
       if (e.type === "go") return go(s, { step: "duration" });
+      if (e.type === "mine" && s.manageOn) {
+        return { kind: "need-recordings", state: { ...s, step: "mine", recordings: [], target: null } };
+      }
       if (e.type === "link") return { kind: "link", state: s };
       if (e.type === "switch-show" && s.multiShow) return { kind: "switch-show", state: s };
       if (e.type === "text") return render(s);
@@ -513,8 +693,50 @@ export function reduce(s: FlowState, e: FlowEvent): Transition {
       return stale();
     }
 
+    // ── E9-5: "ההקלטות שלי" ──
+    case "mine":
+      if (e.type === "recording") {
+        const r = s.recordings.find((x) => x.id === e.id);
+        if (!r) return stale();
+        return go(s, { step: "manage", target: r });
+      }
+      if (e.type === "text") return pick();
+      return stale();
+
+    case "manage": {
+      const t = s.target as RecordingOption;
+      // 🔴 within 24 hours the bot does not act (owner rule 3): it forwards.
+      // Checked here for an immediate answer, and AGAIN by the driver at
+      // execution, against a fresh read.
+      const late = ctx.now ? !selfServeAllowed(t.startIso, ctx.now) : false;
+      if (e.type === "cancel-booking") {
+        if (late) return { kind: "forward", state: { ...s, step: "submitting" }, change: "cancel-request" };
+        return go(s, { step: "cancel-confirm" });
+      }
+      if (e.type === "move") {
+        const d = validateDuration(t.durationMinutes ?? undefined);
+        // a length that is not one of the three cannot go through the shared
+        // path unchanged — a human moves it
+        if (late || d === null || d !== t.durationMinutes) {
+          return { kind: "forward", state: { ...s, step: "submitting" }, change: "move-request" };
+        }
+        return go(s, { ...clearFrom("duration"), mode: "move", duration: d, step: "studio-default" });
+      }
+      if (e.type === "text") return pick();
+      return stale();
+    }
+
+    case "cancel-confirm":
+      if (e.type === "confirm-cancel") {
+        // the same claim as "לקבוע": "submitting" is saved under the version
+        // lock before anything is cancelled
+        return { kind: "cancel", state: { ...s, step: "submitting", notice: null } };
+      }
+      if (e.type === "text") return pick();
+      return stale();
+
     case "studio-default":
-      if (e.type === "studio-yes" && s.defaultStudio) return chooseStudio(s, s.defaultStudio);
+      if (e.type === "studio-yes" && preferredStudio(s)) return chooseStudio(s, preferredStudio(s) as BookableRoom);
       if (e.type === "studio-other") return go(s, { step: "studio" });
       if (e.type === "studio") {
         const r = validateStudio(e.studio);
@@ -549,6 +771,10 @@ export function reduce(s: FlowState, e: FlowEvent): Transition {
       if (e.type === "hour") {
         const h = s.hours.find((x) => x.start === e.start);
         if (!h) return stale();
+        // a move keeps the original's guest and note: straight to "מ־… ל־…"
+        if (s.mode === "move") {
+          return go(s, { start: h.start, end: h.end, guest: s.target?.guest ?? null, note: s.target?.note ?? null, step: "summary" });
+        }
         return go(s, { start: h.start, end: h.end, step: "guest" });
       }
       if (e.type === "more-hours") {
@@ -587,7 +813,8 @@ export function reduce(s: FlowState, e: FlowEvent): Transition {
         return { kind: "submit", state: { ...s, step: "submitting", notice: null } };
       }
       if (e.type === "cancel") {
-        return { kind: "reply", state: { ...s, step: "done", notice: null }, reply: { type: "text", body: C.OUTCOME.cancelled } };
+        const body = s.mode === "move" ? C.OUTCOME.moveAbandoned : C.OUTCOME.cancelled;
+        return { kind: "reply", state: { ...s, step: "done", notice: null }, reply: { type: "text", body } };
       }
       if (e.type === "text") return pick();
       return stale();
@@ -599,7 +826,7 @@ export function reduce(s: FlowState, e: FlowEvent): Transition {
       // a stale "לקבוע" on the summary that already went through
       if (e.type === "confirm") return render(s);
       // anything else starts a new booking — a new message, a new request
-      return start({ showId: s.showId, showName: s.showName, defaultStudio: s.defaultStudio, multiShow: s.multiShow });
+      return start(showOf(s));
   }
 }
 
@@ -654,6 +881,22 @@ export function withAvailability(s: FlowState, pub: PublicAvailability): Transit
  * anything else returns to the summary so the client can simply try again.
  */
 export function afterSubmit(s: FlowState, r: SubmitResult): Transition {
+  if (s.mode === "move") {
+    const t = s.target as RecordingOption;
+    if (r.ok) {
+      const done: FlowState = { ...s, step: "done", requestId: r.request.id, notice: null };
+      const body =
+        r.request.status === "approved"
+          ? C.OUTCOME.moved(t.showName, r.request.dateIsrael, r.request.startIsrael, r.request.studio)
+          : // 🔴 the original STAYS until the new slot is approved (owner, 11.10)
+            C.OUTCOME.movePending(r.request.dateIsrael, r.request.startIsrael);
+      return { kind: "reply", state: done, reply: { type: "text", body } };
+    }
+    if (r.code === "original-gone") {
+      return { kind: "reply", state: { ...s, step: "done", notice: null }, reply: { type: "text", body: C.OUTCOME.notActive } };
+    }
+  }
+
   if (r.ok) {
     const done: FlowState = { ...s, step: "done", requestId: r.request.id, notice: null };
     if (r.request.status === "approved") {
@@ -721,5 +964,49 @@ export function parseFlowState(raw: unknown): FlowState | null {
   if (typeof s.showId !== "string" || typeof s.showName !== "string") return null;
   if (!Array.isArray(s.days) || !Array.isArray(s.hours)) return null;
   if (typeof s.dayPage !== "number" || typeof s.hourPage !== "number") return null;
-  return s as FlowState;
+  // E9-5 fields, defaulted for a state saved by E9-4 (they expire in 30
+  // minutes anyway, but a live one must not crash the webhook)
+  return {
+    ...s,
+    mode: s.mode ?? "book",
+    manageOn: s.manageOn ?? false,
+    linkUrl: s.linkUrl ?? null,
+    recordings: s.recordings ?? [],
+    target: s.target ?? null,
+  } as FlowState;
+}
+
+// ─── E9-5: fed by the driver (PURE) ────────────────────────────────────────
+
+/** The client's upcoming approved recordings arrived. None -> the menu, saying so. */
+export function withRecordings(s: FlowState, recordings: RecordingOption[]): Transition {
+  if (recordings.length === 0) {
+    return render({ ...s, step: "menu", recordings: [], target: null, notice: C.NOTICE.noRecordings });
+  }
+  return render({ ...s, step: "mine", recordings: recordings.slice(0, MINE_MAX), target: null });
+}
+
+/** The bot's own cancellation answered. */
+export function afterCancel(s: FlowState, outcome: CancelOutcome): Transition {
+  const t = s.target as RecordingOption;
+  if (outcome === "cancelled") {
+    return {
+      kind: "reply",
+      state: { ...s, step: "done", notice: null },
+      reply: { type: "text", body: C.OUTCOME.bookingCancelled(t.showName, t.date, t.start) },
+    };
+  }
+  if (outcome === "not-active") {
+    return { kind: "reply", state: { ...s, step: "done", notice: null }, reply: { type: "text", body: C.OUTCOME.notActive } };
+  }
+  return render({ ...s, step: "manage", notice: C.NOTICE.manageFailed });
+}
+
+/** Within 24 hours: the team was told; the client is told that it was. */
+export function afterForward(s: FlowState, change: "cancel-request" | "move-request"): Transition {
+  return {
+    kind: "reply",
+    state: { ...s, step: "done", mode: "book", notice: null },
+    reply: { type: "text", body: change === "cancel-request" ? C.OUTCOME.forwardedCancel : C.OUTCOME.forwardedMove },
+  };
 }

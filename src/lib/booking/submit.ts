@@ -4,6 +4,7 @@ import { loadAvailability } from "./availabilityServer";
 import { PUBLIC_SLOT_STEP_MINUTES } from "./publicView";
 import { validateDuration, durationTag } from "./duration";
 import { autoApproveNewRequest } from "./decide";
+import { setReplaces } from "./moveStore";
 import {
   duplicateWrite,
   findDuplicatePending,
@@ -56,6 +57,13 @@ export type SubmitInput = {
   note: unknown;
   durationMinutes: unknown;
   now?: Date;
+  /**
+   * E9-5: this request MOVES an approved recording. The original must not
+   * block its own slots (it is ignored in availability), must not count as
+   * "another recording that day", and is cancelled only if the new one is
+   * approved — atomically, by the shared approval (decide.ts → 0105).
+   */
+  replacing?: { id: string };
 };
 
 export type SubmittedRequest = {
@@ -70,7 +78,10 @@ export type SubmittedRequest = {
 
 export type SubmitResult =
   | { ok: true; duplicate: boolean; request: SubmittedRequest }
-  | { ok: false; code: "bad-input" | "guest-too-long" | "feed-failed" | "taken" | "too-many" | "error" };
+  | {
+      ok: false;
+      code: "bad-input" | "guest-too-long" | "feed-failed" | "taken" | "too-many" | "error" | "original-gone";
+    };
 
 export async function submitBookingRequest(
   admin: SupabaseClient<Database>,
@@ -95,6 +106,21 @@ export async function submitBookingRequest(
   const note = normalizeNote(input.note);
   if (!note.ok) return { ok: false, code: "bad-input" };
 
+  // ── E9-5: a move — the original, read fresh ───────────────────────────────
+  let ignore: { requestId: string; calendarUid: string | null } | undefined;
+  if (input.replacing) {
+    const { data: original } = await admin
+      .from("booking_requests")
+      .select("id,show_id,status,calendar_event_uid")
+      .eq("id", input.replacing.id)
+      .maybeSingle();
+    // cancelled meanwhile, or not this show's: there is nothing to move
+    if (!original || original.status !== "approved" || original.show_id !== input.showId) {
+      return { ok: false, code: "original-gone" };
+    }
+    ignore = { requestId: original.id, calendarUid: original.calendar_event_uid };
+  }
+
   let free;
   try {
     // 🔴 FOR THE CHOSEN LENGTH. `matchSlot` below takes the END from the slot
@@ -105,6 +131,7 @@ export async function submitBookingRequest(
       now,
       stepMinutes: PUBLIC_SLOT_STEP_MINUTES,
       durationMinutes: duration,
+      ignore,
     });
     free = loaded.result.free;
   } catch (e) {
@@ -207,6 +234,23 @@ export async function submitBookingRequest(
     return { ok: false, code: "error" };
   }
 
+  // 🔴 E9-5: a move request is LINKED before anything can approve it. If the
+  // link cannot be written (0105 not applied, or a database error), the new
+  // row must not survive as a free-standing pending request — approving it
+  // later would leave two approved recordings. It is declined on the spot and
+  // the move is refused; the original is untouched.
+  if (input.replacing) {
+    const linked = await setReplaces(admin, inserted.id, input.replacing.id);
+    if (!linked) {
+      await admin
+        .from("booking_requests")
+        .update({ status: "declined", decided_at: now.toISOString(), decided_by: null })
+        .eq("id", inserted.id)
+        .eq("status", "pending");
+      return { ok: false, code: "error" };
+    }
+  }
+
   // ═══ THE AUTOMATIC APPROVAL (E9-2, owner decision 8.10) ═══
   // Every decision is in @/lib/booking/decide, which the owner's own approve
   // button calls too. It cannot throw and cannot fail this request: every
@@ -222,6 +266,7 @@ export async function submitBookingRequest(
     studio,
     guest: guest.value,
     durationTag: durationTag(slot.start.toISOString(), slot.end.toISOString()),
+    replacesId: input.replacing?.id ?? null,
   });
 
   return {

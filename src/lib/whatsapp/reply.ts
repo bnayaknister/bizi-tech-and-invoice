@@ -12,6 +12,7 @@ import { recordBookingNotification } from "./notify";
 import { bookingUrlForShow, showsForNumber, type ContactShow } from "@/lib/booking/contacts";
 import type { InboundMessage } from "./webhook";
 import { isFlowOn, runFlow } from "./flow/run";
+import { getAppBaseUrl } from "@/lib/appUrl";
 import type { FlowReply } from "./flow/machine";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -269,7 +270,14 @@ export async function replyToInbound(
 
     // ── E9-4: the booking conversation, when it is switched on ──────────
     if (isFlowOn() && shows.length > 0) {
-      const flow = await runFlow(admin, { waId, message, shows, pickedShowId: picked, now: new Date() });
+      const flow = await runFlow(admin, {
+        waId,
+        message,
+        shows,
+        pickedShowId: picked,
+        now: new Date(),
+        baseUrl: getAppBaseUrl(request),
+      });
       if (flow.kind === "drop") return { sent: false, reason: "duplicate", kind: "flow" };
       if (flow.kind === "shows") return await sendShowList(admin, message, waId, shows);
       if (flow.kind === "link") return await sendLink(admin, request, message, waId, flow.show);

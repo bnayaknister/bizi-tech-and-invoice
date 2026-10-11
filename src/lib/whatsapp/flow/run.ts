@@ -4,11 +4,22 @@ import { loadAvailability } from "@/lib/booking/availabilityServer";
 import { PUBLIC_SLOT_STEP_MINUTES, toPublicAvailability } from "@/lib/booking/publicView";
 import { ensureBookingLink } from "@/lib/booking/links";
 import { submitBookingRequest } from "@/lib/booking/submit";
+import { cancelApprovedBooking, factsOf } from "@/lib/booking/cancel";
+import { DELETE_DETAILS, forwardedDetails, selfServeAllowed } from "@/lib/booking/manage";
+import { durationFromRange } from "@/lib/booking/duration";
+import { israelHHMM } from "@/lib/booking/publicView";
+import { israelDateOf } from "@/lib/calendar/availability";
+import { notifyBookingChange } from "../notify";
 import type { ContactShow } from "@/lib/booking/contacts";
 import type { InboundMessage } from "../webhook";
 import { NOTICE } from "./copy";
 import {
+  afterCancel,
+  afterForward,
   afterSubmit,
+  withRecordings,
+  type CancelOutcome,
+  type RecordingOption,
   isLive,
   parseFlowId,
   reduce,
@@ -51,6 +62,16 @@ export function isFlowOn(): boolean {
   return process.env.WHATSAPP_BOOKING_FLOW === "true";
 }
 
+/**
+ * E9-5's activation switch — cancel and move through the bot. Same direction
+ * as the one above (rule 40: OFF unless exactly "true"), and for the same
+ * reason: the push reaches the live bot before 0105 is applied. Off, the menu
+ * is exactly E9-4's.
+ */
+export function isManageOn(): boolean {
+  return process.env.WHATSAPP_BOOKING_MANAGE === "true";
+}
+
 export type FlowOutcome =
   | { kind: "send"; reply: FlowReply; meta: Record<string, unknown> }
   /** send the show's booking link — the E9-3 reply, including its no-link path */
@@ -84,12 +105,73 @@ export function eventFromMessage(message: InboundMessage): FlowEvent {
   return { type: "text", text: "" };
 }
 
-const showInfo = (show: ContactShow, multiShow: boolean) => ({
+const showInfo = (show: ContactShow, multiShow: boolean, linkUrl: string | null) => ({
   showId: show.showId,
   showName: show.showName,
   defaultStudio: show.defaultStudio ?? null,
   multiShow,
+  manageOn: isManageOn(),
+  linkUrl,
 });
+
+/** A booking row -> the option "ההקלטות שלי" offers. PURE. */
+export function toRecordingOption(r: {
+  id: string;
+  show_id: string;
+  studio: string;
+  start_at: string;
+  end_at: string;
+  guest: string | null;
+  note: string | null;
+  showName: string;
+}): RecordingOption {
+  const start = new Date(r.start_at);
+  return {
+    id: r.id,
+    showId: r.show_id,
+    showName: r.showName,
+    studio: r.studio,
+    date: israelDateOf(start),
+    start: israelHHMM(start),
+    end: israelHHMM(new Date(r.end_at)),
+    startIso: r.start_at,
+    durationMinutes: durationFromRange(r.start_at, r.end_at),
+    guest: r.guest,
+    note: r.note,
+  };
+}
+
+/** The upcoming APPROVED recordings of this number's own podcasts, soonest first. */
+async function loadRecordings(
+  admin: SupabaseClient<Database>,
+  showIds: string[],
+  showNames: Map<string, string>,
+  now: Date
+): Promise<RecordingOption[] | null> {
+  const { data, error } = await admin
+    .from("booking_requests")
+    .select("id,show_id,studio,start_at,end_at,guest,note")
+    .in("show_id", showIds)
+    .eq("status", "approved")
+    .gte("start_at", now.toISOString())
+    .order("start_at", { ascending: true })
+    .limit(20);
+  if (error) {
+    console.error("wa/flow: קריאת ההקלטות נכשלה", error.message);
+    return null;
+  }
+  return (data ?? []).map((r) => toRecordingOption({ ...r, showName: showNames.get(r.show_id) ?? "" }));
+}
+
+/** The original of a move/cancel, read FRESH — never trusted from the stored state. */
+async function readTarget(admin: SupabaseClient<Database>, id: string) {
+  const { data } = await admin
+    .from("booking_requests")
+    .select("id,show_id,status,studio,start_at,end_at,guest,calendar_event_uid,shows(name)")
+    .eq("id", id)
+    .maybeSingle();
+  return data;
+}
 
 /**
  * Run one message through the conversation.
@@ -105,6 +187,8 @@ export async function runFlow(
     shows: ContactShow[];
     pickedShowId: string | null;
     now: Date;
+    /** the app's public base URL, for the link in the menu */
+    baseUrl: string;
   }
 ): Promise<FlowOutcome> {
   const { waId, message, shows, now } = input;
@@ -119,38 +203,48 @@ export async function runFlow(
   // removed this number from the show since the conversation began, the stored
   // state names a show this number may no longer book — it is discarded.
   const live: FlowState | null =
-    row?.state && isLive(row.expiresAt, now) && shows.some((s) => s.showId === row.state!.showId) ? row.state : null;
+    row?.state &&
+    isLive(row.expiresAt, now) &&
+    shows.some((s) => s.showId === row.state!.showId) &&
+    // E9-5: the recording being cancelled or moved may belong to ANOTHER of
+    // this number's podcasts — and that permission is re-checked too
+    (!row.state.target || shows.some((s) => s.showId === row.state!.target!.showId))
+      ? row.state
+      : null;
 
   const event = eventFromMessage(message);
-  let t: Transition;
-  let fresh = false;
 
+  /**
+   * A new conversation. The link is resolved FIRST: a show that cannot get
+   * one (the alias gate) could never be submitted, and the E9-3 path already
+   * handles that — it tells the owner and answers the client neutrally. And
+   * the menu carries the link in its body (E9-5), so it must exist before the
+   * menu is rendered.
+   */
+  const fresh = async (show: ContactShow, notice: string | null): Promise<Transition | null> => {
+    const link = await ensureBookingLink(admin, show.showId, null);
+    if (!link.ok) return null;
+    return start(showInfo(show, multi, `${input.baseUrl}/b/${link.token}`), notice);
+  };
+
+  let t: Transition;
   if (input.pickedShowId) {
     const show = shows.find((s) => s.showId === input.pickedShowId);
     if (!show) return { kind: "shows" };
-    t = start(showInfo(show, multi));
-    fresh = true;
+    const f = await fresh(show, null);
+    if (!f) return { kind: "link", show };
+    t = f;
   } else if (live) {
-    t = reduce(live, event);
+    // the switch is read on every message: turning it off takes effect at once
+    t = reduce({ ...live, manageOn: isManageOn() }, event, { now });
   } else {
     // step 0 (owner, E9-3): several podcasts and no conversation -> the list
     if (multi) return { kind: "shows" };
     // a tap on a conversation that expired: say so once, then start over
     const tappedOld = parseFlowId(interactiveId(message)) !== null;
-    t = start(showInfo(shows[0], false), tappedOld ? NOTICE.expired : null);
-    fresh = true;
-  }
-
-  // A new conversation for a show that cannot get a link (the alias gate)
-  // could never be submitted. The E9-3 path already handles that case — it
-  // tells the owner and answers the client neutrally — so it goes there now,
-  // rather than at the end of a ten-tap conversation.
-  if (fresh) {
-    const link = await ensureBookingLink(admin, t.state.showId, null);
-    if (!link.ok) {
-      const show = shows.find((s) => s.showId === t.state.showId) as ContactShow;
-      return { kind: "link", show };
-    }
+    const f = await fresh(shows[0], tappedOld ? NOTICE.expired : null);
+    if (!f) return { kind: "link", show: shows[0] };
+    t = f;
   }
 
   let currentVersion = version;
@@ -167,10 +261,19 @@ export async function runFlow(
 
     if (t.kind === "need-availability") {
       try {
+        // a move: the original must not block its own slots (owner, 11.10)
+        let ignore: { requestId: string; calendarUid: string | null } | undefined;
+        if (t.state.mode === "move" && t.state.target) {
+          const original = await readTarget(admin, t.state.target.id);
+          if (original?.status === "approved") {
+            ignore = { requestId: original.id, calendarUid: original.calendar_event_uid };
+          }
+        }
         const avail = await loadAvailability(admin, {
           now,
           stepMinutes: PUBLIC_SLOT_STEP_MINUTES,
           durationMinutes: t.state.duration ?? undefined,
+          ignore,
         });
         t = withAvailability(t.state, toPublicAvailability(avail.result, avail, avail.rooms));
       } catch (e) {
@@ -180,6 +283,68 @@ export async function runFlow(
         console.error("wa/flow: קריאת הזמינות נכשלה", e);
         return { kind: "send", reply: { type: "text", body: NOTICE.feedFailed }, meta: { flow_error: "feed" } };
       }
+      continue;
+    }
+
+    if (t.kind === "need-recordings") {
+      const recs = await loadRecordings(
+        admin,
+        shows.map((s) => s.showId),
+        new Map(shows.map((s) => [s.showId, s.showName])),
+        now
+      );
+      if (recs === null) {
+        return { kind: "send", reply: { type: "text", body: NOTICE.manageFailed }, meta: { flow_error: "recordings" } };
+      }
+      t = withRecordings(t.state, recs);
+      continue;
+    }
+
+    if (t.kind === "forward" || t.kind === "cancel") {
+      // the same claim as a submission: only the delivery that wins acts
+      const claimed = await saveConversation(admin, waId, t.state, currentVersion, now);
+      if (claimed.kind === "conflict") return { kind: "drop" };
+      if (claimed.kind === "error") return { kind: "fallback" };
+      currentVersion = claimed.version;
+      submitted = true;
+
+      const target = t.state.target as RecordingOption;
+      const row = await readTarget(admin, target.id);
+      if (!row || row.status !== "approved") {
+        t = afterCancel(t.state, "not-active");
+        continue;
+      }
+      const facts = factsOf({ ...row, showName: row.shows?.name ?? target.showName });
+
+      // 🔴 THE 24-HOUR RULE, AGAIN, ON A FRESH READ — whatever the machine
+      // decided when the button was tapped.
+      const late = !selfServeAllowed(row.start_at, now);
+      if (t.kind === "forward" || late) {
+        const change = t.kind === "forward" ? t.change : "cancel-request";
+        await notifyBookingChange(admin, {
+          change,
+          bookingId: row.id,
+          facts,
+          details: forwardedDetails(waId, change === "cancel-request" ? "cancel" : "move"),
+        });
+        t = afterForward(t.state, change);
+        continue;
+      }
+
+      const cancelled = await cancelApprovedBooking(admin, { id: row.id, actorId: null, now, source: "bot" });
+      let outcome: CancelOutcome = "error";
+      if (cancelled.ok) {
+        outcome = "cancelled";
+        await notifyBookingChange(admin, {
+          change: "client-cancelled",
+          bookingId: row.id,
+          facts: cancelled.request.facts,
+          details: DELETE_DETAILS[cancelled.calendar.outcome],
+        });
+      } else if (cancelled.code === "not-approved") {
+        outcome = "not-active";
+      }
+      t = afterCancel(t.state, outcome);
       continue;
     }
 
@@ -197,12 +362,38 @@ export async function runFlow(
       currentVersion = saved.version;
 
       const s = t.state;
-      const link = await ensureBookingLink(admin, s.showId, null);
+
+      // ── E9-5: a move — the original read fresh, and the 24-hour rule again ──
+      if (s.mode === "move" && s.target) {
+        const original = await readTarget(admin, s.target.id);
+        if (!original || original.status !== "approved") {
+          submitted = true;
+          t = afterSubmit(s, { ok: false, code: "original-gone" });
+          continue;
+        }
+        if (!selfServeAllowed(original.start_at, now)) {
+          await notifyBookingChange(admin, {
+            change: "move-request",
+            bookingId: original.id,
+            facts: factsOf({ ...original, showName: original.shows?.name ?? s.target.showName }),
+            details: forwardedDetails(waId, "move"),
+          });
+          submitted = true;
+          t = afterForward(s, "move-request");
+          continue;
+        }
+      }
+
+      // a move books for the ORIGINAL's show — in a multi-podcast number that
+      // need not be the show the conversation started with
+      const showId = s.mode === "move" && s.target ? s.target.showId : s.showId;
+      const showName = s.mode === "move" && s.target ? s.target.showName : s.showName;
+      const link = await ensureBookingLink(admin, showId, null);
       const result = link.ok
         ? await submitBookingRequest(admin, {
-            showId: s.showId,
+            showId,
             linkId: link.linkId,
-            showName: s.showName,
+            showName,
             studio: s.studio,
             startIsrael: `${s.date} ${s.start}`,
             endIsrael: s.end,
@@ -210,6 +401,7 @@ export async function runFlow(
             note: s.note,
             durationMinutes: s.duration,
             now,
+            replacing: s.mode === "move" && s.target ? { id: s.target.id } : undefined,
           })
         : ({ ok: false, code: "error" } as const);
       submitted = true;

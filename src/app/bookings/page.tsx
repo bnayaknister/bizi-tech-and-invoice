@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getSessionAndProfile } from "@/lib/profile";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { readMoveFacts } from "@/lib/booking/moveStore";
 import AppHeader from "@/components/AppHeader";
 import { cleanAliasFor } from "@/lib/booking/alias";
 import { splitQueue, type QueueRow } from "@/lib/booking/queue";
@@ -47,6 +48,10 @@ export default async function BookingsPage() {
     // the 30 newest decided rows. Cheap: the table gains a handful of rows a week.
     .limit(400);
 
+  // E9-5: 0105's three columns, read separately and TOLERANTLY (moveStore):
+  // before 0105 is applied this map is empty and the screen is exactly as it was.
+  const moveFacts = await readMoveFacts(admin, (rows ?? []).map((r) => r.id));
+
   const queueRows: QueueRow[] = (rows ?? []).map((r) => {
     const show = r.shows as unknown as { name: string; aliases: string[] | null } | null;
     return {
@@ -78,6 +83,9 @@ export default async function BookingsPage() {
       // first time here: before the automatic path existed, every approval had
       // an actor and the column had nothing to say.
       decidedBy: (r.decided_by as string | null) ?? null,
+      replacesId: moveFacts.get(r.id)?.replacesId ?? null,
+      calendarDeleteStatus: moveFacts.get(r.id)?.calendarDeleteStatus ?? null,
+      calendarDeleteError: moveFacts.get(r.id)?.calendarDeleteError ?? null,
     };
   });
 

@@ -68,6 +68,17 @@ export function toApprovedRequests(
     }));
 }
 
+/**
+ * The feed minus ONE event, by its iCalUID — the moved recording's own (E9-5).
+ * PURE. A null uid ignores nothing: a booking whose event the system never
+ * wrote has no uid to match, and guessing one by title or time could hide a
+ * different recording.
+ */
+export function ignoreEvent<T extends { uid: string }>(events: T[], calendarUid: string | null): T[] {
+  if (!calendarUid) return events;
+  return events.filter((e) => e.uid !== calendarUid);
+}
+
 /** Read-only fetch of the secret feed URL. Never writes to it. */
 async function fetchIcsText(url: string): Promise<string> {
   const res = await fetch(url, { cache: "no-store" });
@@ -145,6 +156,13 @@ export async function loadAvailability(
      * hours later. Nothing downstream needed teaching.
      */
     durationMinutes?: BookingDuration;
+    /**
+     * A recording being MOVED (E9-5, owner decision 11.10): it must not block
+     * its own slots. Its approved row is left out of the approved list, and its
+     * event — matched on the iCalUID the system stored when it wrote it — is
+     * left out of the feed. Everything else blocks exactly as before.
+     */
+    ignore?: { requestId: string; calendarUid: string | null };
   }
 ): Promise<LoadedAvailability> {
   const url = process.env.STUDIO_ICS_URL;
@@ -158,10 +176,12 @@ export async function loadAvailability(
   // recurring-series gate must come from the same read of the same feed, or the
   // busy blocks and the refusals describe two different calendars.
   const icsText = await fetchIcsText(url);
-  const events = parseIcsText(icsText);
+  const events = ignoreEvent(parseIcsText(icsText), opts.ignore?.calendarUid ?? null);
   const liveSeries = findLiveSeriesInWindow(icsText, windowStart, windowEnd, STUDIOS);
   const approved =
-    opts.includeApproved === false ? [] : await loadApprovedRequests(admin, windowStart, windowEnd);
+    opts.includeApproved === false
+      ? []
+      : (await loadApprovedRequests(admin, windowStart, windowEnd)).filter((r) => r.id !== opts.ignore?.requestId);
 
   const result = computeAvailability(
     events,

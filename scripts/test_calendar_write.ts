@@ -15,7 +15,7 @@
  * that holds even for a code path nobody wrote a test for yet. Same pattern
  * as scripts/test_create_job_for_production.ts's G2 checks.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
 import {
@@ -279,19 +279,51 @@ async function run() {
   // 🔴 ENFORCEMENT — read the files' own text. See the header note on why a
   // mocked-fetch test cannot be the thing that guarantees this.
   // ═══════════════════════════════════════════════════════════════════════
-  console.log("\n=== 9. 🔴 enforcement: this code never writes PATCH or DELETE to Google Calendar ===");
+  console.log("\n=== 9. 🔴 enforcement: ONE guarded DELETE in the whole codebase, and no PATCH (owner decision 11.10) ===");
   {
-    const FILES = [
-      "src/lib/calendar/write.ts",
+    // The rule changed on 11.10: the system may delete events IT created —
+    // through ONE function, with the guard inside it. So this no longer bans
+    // DELETE outright; it proves there is exactly one, in exactly that place,
+    // and that nothing anywhere else in src/ talks to Google Calendar at all.
+    const strip = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    const walk = (dir: string): string[] =>
+      readdirSync(join(process.cwd(), dir), { withFileTypes: true }).flatMap((d) =>
+        d.isDirectory() ? walk(join(dir, d.name)) : /\.(ts|tsx)$/.test(d.name) ? [join(dir, d.name)] : []
+      );
+    const files = walk("src");
+    check("the scan actually walked the codebase", files.length > 100, true);
+
+    const CALENDAR_HOST = /googleapis\.com\/calendar/;
+    // RAW text, not stripped: the comment stripper would eat the "//" of the
+    // URL itself. A comment naming the host would show up here too — which
+    // errs on the loud side, the right side for this check.
+    const talkers = files.filter((f) => CALENDAR_HOST.test(readFileSync(join(process.cwd(), f), "utf8")));
+    check("only lib/calendar/write.ts talks to the Google Calendar API", talkers, ["src/lib/calendar/write.ts"]);
+
+    const NAMED = /events\.(patch|delete|update)\b/;
+    check("no file anywhere names events.patch / events.delete / events.update", files.filter((f) => NAMED.test(strip(readFileSync(join(process.cwd(), f), "utf8")))), []);
+
+    const w = strip(readFileSync(join(process.cwd(), "src/lib/calendar/write.ts"), "utf8"));
+    const deletes = Array.from(w.matchAll(/method:\s*["']DELETE["']/gi));
+    check("write.ts: exactly ONE DELETE", deletes.length, 1);
+    check("write.ts: zero PATCH", /method:\s*["']PATCH["']/i.test(w), false);
+    // the one DELETE sits inside deleteSystemCalendarEvent, after its guard
+    const fnStart = w.indexOf("export async function deleteSystemCalendarEvent(");
+    const guardAt = w.indexOf("calendarDeletionAllowed(input)", fnStart);
+    const deleteAt = deletes[0]?.index ?? -1;
+    check("…inside deleteSystemCalendarEvent", fnStart >= 0 && deleteAt > fnStart, true);
+    check("…and AFTER the guard call", guardAt > fnStart && deleteAt > guardAt, true);
+    const callers = files.filter((f) => f !== "src/lib/calendar/write.ts" && /deleteSystemCalendarEvent\(/.test(strip(readFileSync(join(process.cwd(), f), "utf8"))));
+    check("deleteSystemCalendarEvent is called from ONE place: lib/booking/cancel.ts", callers, ["src/lib/booking/cancel.ts"]);
+
+    // the three approval-path files still never delete
+    for (const rel of [
       "src/lib/booking/writeCalendarEvent.ts",
       "src/app/api/bookings/[id]/approve/route.ts",
       "src/app/api/bookings/[id]/retry-calendar/route.ts",
-    ];
-    const BANNED = /events\.patch|events\.delete|method:\s*["']PATCH["']|method:\s*["']DELETE["']/i;
-    for (const rel of FILES) {
-      const src = readFileSync(join(process.cwd(), rel), "utf8");
-      const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-      check(`${rel}: zero PATCH/DELETE-shaped calls`, BANNED.test(code), false);
+    ]) {
+      const code = strip(readFileSync(join(process.cwd(), rel), "utf8"));
+      check(`${rel}: zero DELETE/PATCH-shaped calls`, /method:\s*["'](PATCH|DELETE)["']|deleteSystemCalendarEvent/.test(code), false);
     }
   }
 

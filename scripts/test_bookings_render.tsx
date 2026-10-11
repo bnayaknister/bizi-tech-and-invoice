@@ -129,6 +129,9 @@ const BASE: BodyProps = {
   cancelled: null,
   onAskCancel: () => {},
   onConfirmCancel: () => {},
+  // E9-5: the calendar-delete retry
+  onRetryDelete: () => {},
+  deletingId: null,
 };
 
 const NO_CALENDAR_WRITE: CalendarWriteState = {

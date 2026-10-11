@@ -50,6 +50,15 @@ export type QueueRow = {
    * by nobody. See lib/booking/decide.ts's note on the flip.
    */
   decidedBy: string | null;
+  /**
+   * E9-5 (0105). Optional so every row built before 0105 — and every suite
+   * fixture — still type-checks; absent means "nothing to say".
+   *   replacesId           this pending request MOVES that approved recording
+   *   calendarDeleteStatus what happened to the event when it was cancelled
+   */
+  replacesId?: string | null;
+  calendarDeleteStatus?: "deleted" | "failed" | "not_ours" | "dry_run" | null;
+  calendarDeleteError?: string | null;
 };
 
 export type QueueStatus = "pending" | "approved" | "declined" | "cancelled" | "past";
@@ -106,6 +115,11 @@ export type QueueView = {
   canCancel: boolean;
   /** Google's day view for this recording's date — the cancel reminder's link */
   calendarDayUrl: string;
+  /** E9-5: the recording this pending request would MOVE, as a when-line — or null */
+  replacesWhen: string | null;
+  /** E9-5: a cancelled row whose calendar delete failed — shown with a retry */
+  calendarDeleteFailed: boolean;
+  calendarDeleteError: string | null;
 };
 
 /** Approved copy, 24.9. "המועד עבר" is a STATE, not a decision — see below. */
@@ -190,6 +204,21 @@ export function isOverlapping(row: QueueRow, all: QueueRow[]): boolean {
   });
 }
 
+/**
+ * The recording a pending MOVE replaces, as the owner reads it — only while
+ * that recording is still approved (a move whose original was cancelled
+ * meanwhile is just a request).
+ */
+function replacesWhenFor(row: QueueRow, all: QueueRow[]): string | null {
+  if (row.status !== "pending" || !row.replacesId) return null;
+  const old = all.find((r) => r.id === row.replacesId && r.status === "approved");
+  if (!old) return null;
+  const s = new Date(Date.parse(old.start_at));
+  const e = new Date(Date.parse(old.end_at));
+  if (!Number.isFinite(s.getTime()) || !Number.isFinite(e.getTime())) return null;
+  return whenLine(israelDateOf(s), israelHHMM(s), israelHHMM(e), old.studio);
+}
+
 function toView(row: QueueRow, all: QueueRow[], now: Date): QueueView | null {
   const s = Date.parse(row.start_at);
   const e = Date.parse(row.end_at);
@@ -258,6 +287,9 @@ function toView(row: QueueRow, all: QueueRow[], now: Date): QueueView | null {
     // PENDING row, because that one still owes the client an answer.
     canCancel: status === "approved" && !isPast,
     calendarDayUrl: calendarDayUrl(dateIsrael),
+    replacesWhen: replacesWhenFor(row, all),
+    calendarDeleteFailed: status === "cancelled" && row.calendarDeleteStatus === "failed",
+    calendarDeleteError: row.calendarDeleteError ?? null,
   };
 }
 

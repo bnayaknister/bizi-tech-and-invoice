@@ -41,9 +41,59 @@ export const MENU = {
   body: (showName: string) =>
     `היי! 🎙️ רוצים לקבוע הקלטה ל${showName}?\n` +
     `אפשר לבדוק זמינות ולקבוע כאן בצ׳אט, או לראות את כל הזמינות במסך.`,
+  /**
+   * E9-5: with "📋 ההקלטות שלי" in the menu there is no room for a third
+   * button and the link button both (Meta: three buttons), so the link moves
+   * into the body — WhatsApp makes it tappable all the same.
+   */
+  bodyWithLink: (showName: string, url: string | null) =>
+    `היי! 🎙️ רוצים לקבוע הקלטה ל${showName}?\n` +
+    `אפשר לבדוק זמינות ולקבוע כאן בצ׳אט, או לנהל הקלטות שכבר נקבעו.` +
+    (url ? `\n\nכל הזמינות במסך:\n${url}` : ""),
   go: "📅 בדיקת זמינות",
   link: "🔗 לראות במסך",
+  mine: "📋 ההקלטות שלי",
   switchShow: "🔄 פודקאסט אחר",
+} as const;
+
+// ─── E9-5: "ההקלטות שלי", cancel and move ──────────────────────────────────
+
+type Rec = { showName: string; date: string; start: string; end: string; studio: string };
+
+const recLines = (r: Rec) =>
+  [`🎙️ ${r.showName}`, `📅 יום ${dowHebrew(r.date)} ${dayMonth(r.date)}, ${r.start}–${r.end}`, `📍 אולפן ${r.studio}`].join("\n");
+
+export const MINE = {
+  body: "אלה ההקלטות הקרובות שלכם. על איזו מדובר?",
+  button: "בחירת הקלטה",
+  title: (date: string, start: string) => `יום ${dowHebrew(date)} ${dayMonth(date)} · ${start}`,
+  description: (showName: string, studio: string) => `${showName} · אולפן ${studio}`,
+} as const;
+
+export const MANAGE = {
+  body: (r: Rec) => `מה עושים עם ההקלטה הזאת?\n${recLines(r)}`,
+  move: "🔁 להזיז",
+  cancel: "❌ לבטל",
+} as const;
+
+export const CANCEL_CONFIRM = {
+  body: (r: Rec) => `בטוח שמבטלים את ההקלטה?\n${recLines(r)}`,
+  yes: "✅ כן, לבטל",
+} as const;
+
+export const MOVE_SUMMARY = {
+  body: (f: {
+    showName: string;
+    from: { dateIsrael: string; start: string; end: string; studio: string };
+    to: { dateIsrael: string; start: string; end: string; studio: string };
+  }) =>
+    [
+      "רגע לפני שמזיזים:",
+      `🎙️ ${f.showName}`,
+      `מ־: יום ${dowHebrew(f.from.dateIsrael)} ${dayMonth(f.from.dateIsrael)}, ${f.from.start}–${f.from.end}, אולפן ${f.from.studio}`,
+      `ל־: יום ${dowHebrew(f.to.dateIsrael)} ${dayMonth(f.to.dateIsrael)}, ${f.to.start}–${f.to.end}, אולפן ${f.to.studio}`,
+    ].join("\n"),
+  confirm: "✅ להזיז",
 } as const;
 
 export const DURATION = {
@@ -55,6 +105,8 @@ export const DURATION = {
 
 export const STUDIO_DEFAULT = {
   body: (studio: string) => `באולפן ${studio}, כמו תמיד?`,
+  /** E9-5: a move offers the ORIGINAL's room first */
+  moveBody: (studio: string) => `להשאיר את ההקלטה באולפן ${studio}?`,
   yes: (studio: string) => `כן, ${studio}`,
   other: "אולפן אחר",
 } as const;
@@ -124,6 +176,20 @@ export const OUTCOME = {
   submitting: "רגע, הבקשה בטיפול ⏳",
   // the same sentence the public route answers with (owner, 23.9)
   tooMany: "יש כבר כמה בקשות שממתינות לאישור. נחזור אליכם עליהן קודם.",
+  // ── E9-5 ──
+  bookingCancelled: (showName: string, date: string, start: string) =>
+    `ההקלטה של ${showName} ביום ${dowHebrew(date)} ${dayMonth(date)} ב-${start} בוטלה ✔️ כשתרצו לקבוע מועד חדש, פשוט כתבו לנו.`,
+  moved: (showName: string, date: string, start: string, studio: string) =>
+    `ההקלטה של ${showName} הוזזה ליום ${dowHebrew(date)} ${dayMonth(date)} ב-${start}, אולפן ${studio} ✔️ נתראה!`,
+  movePending: (date: string, start: string) =>
+    `קיבלנו! המועד החדש (יום ${dowHebrew(date)} ${dayMonth(date)} ב-${start}) נשלח לאישור הצוות. ` +
+    `עד שיאושר, ההקלטה המקורית נשארת בתוקף.`,
+  moveAbandoned: "בסדר, לא הזזנו כלום. ההקלטה נשארת כמו שהיא 🙂",
+  forwardedCancel:
+    "ההקלטה מתחילה בעוד פחות מ-24 שעות, אז את הביטול מעבירים לצוות. הבקשה הועברה, ונחזור אליכם בהקדם 🙏",
+  forwardedMove:
+    "ההקלטה מתחילה בעוד פחות מ-24 שעות, אז את ההזזה מעבירים לצוות. הבקשה הועברה, ונחזור אליכם בהקדם 🙏",
+  notActive: "ההקלטה הזאת כבר לא פעילה. אפשר לבדוק שוב ב\"ההקלטות שלי\".",
 } as const;
 
 /** One-line prefixes, put above a re-sent step. */
@@ -137,4 +203,7 @@ export const NOTICE = {
     `אין כרגע מקום ל${DURATION_SHORT[d]} באולפן ${studio} בשבועות הקרובים. אפשר לבחור אולפן אחר, או לחזור ולבחור אורך אחר:`,
   submitFailed: "משהו השתבש ולא הצלחנו לשלוח את הבקשה. אפשר לנסות שוב:",
   feedFailed: "לא הצלחנו לטעון את המועדים כרגע. נסו שוב בעוד דקה 🙏",
+  // ── E9-5 ──
+  noRecordings: "אין כרגע הקלטות מאושרות קרובות 🙂",
+  manageFailed: "משהו השתבש ולא הצלחנו לבצע את זה. אפשר לנסות שוב:",
 } as const;

@@ -104,6 +104,7 @@ function failFor(code: Extract<SubmitResult, { ok: false }>["code"]) {
     case "too-many":
       return fail(COPY.tooMany, 429);
     case "error":
+    case "original-gone": // only a move can produce it, and this route never moves
       return fail(COPY.generic, 500);
   }
 }

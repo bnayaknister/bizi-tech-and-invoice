@@ -1,46 +1,30 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createTypedAdminClient } from "@/lib/supabase/admin";
-import { israelHHMM } from "@/lib/booking/publicView";
-import { israelDateOf } from "@/lib/calendar/availability";
 import { calendarDayUrl } from "@/lib/booking/queue";
+import { cancelApprovedBooking } from "@/lib/booking/cancel";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/bookings/[id]/cancel — the owner cancels an APPROVED recording.
-// E9-3, owner decision 8.10.
+// E9-3; E9-5 (owner decision 11.10) adds the automatic calendar delete.
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // Owner-only, same gate as approve/decline.
 //
-// ═══ 🔴 WHAT IT DOES, AND THE ONE THING IT DOES NOT ═══
-// It writes `status = 'cancelled'` (0102) and a stamp. 0096's EXCLUDE
-// constraint covers rows `where status = 'approved'`, and
-// `toApprovedRequests` filters on the same value — so the slot is free again
-// the instant this row lands, with no second place to update and no DELETE.
-//
-// ⛔ AND IT DOES NOT TOUCH THE GOOGLE CALENDAR. `lib/calendar/write.ts` has
-// never had an `events.delete` and must not grow one (write.ts:24-32, enforced
-// by a test that reads that file's own text): Google's sharing model has no
-// "write only your own events" role, so a `writer` on the shared calendar can
-// delete the ADVERTISING COMPANY's recordings too. The capability simply does
-// not exist in this codebase, which is the only wall that cannot be routed
-// around by a bug.
-//
-// So the response carries a reminder and a link to the right day in the
-// calendar, and a human deletes the event. That is the owner's own decision
-// ("הביטול נעשה ידנית ע"י הבעלים או הצוות"), not a limitation we are working
-// around.
-//
-// ⚠️ WHY A DAY LINK AND NOT A LINK TO THE EVENT ITSELF: `writeBookingCalendar‐
-// Event` stores `calendar_event_uid` but never `htmlLink` (writeCalendarEvent
-// .ts:124-131), so for any row older than this request we do not have Google's
-// own URL — and deriving one from the event id relies on an undocumented
-// base64 format that would break silently. A day view always opens, always on
-// the right date, and the event is the one with this show's name on it.
+// Everything it does is lib/booking/cancel.ts — the SAME function the bot
+// calls for a client's own cancellation ("ביטול במקום אחד", rule 2):
+//   · `status = 'cancelled'` — frees the slot (0096's EXCLUDE and
+//     `toApprovedRequests` both read 'approved'), and it stands regardless of
+//     what happens to the event;
+//   · the event is deleted ONLY if the system created it (rule 1 — the guard
+//     lives inside the one delete function in lib/calendar/write.ts);
+//   · an event the system did not create (pre-E8) -> the existing manual
+//     reminder with the day link;
+//   · a failed delete -> the cancellation stays, the screen shows "המחיקה
+//     מהיומן נכשלה" with a retry, and the owner gets a notification.
 //
 // ⚠️ ONLY AN APPROVED ROW. A pending one is `decline`; a declined or already
-// cancelled one has no slot to release. Re-cancelling would also move
-// `decided_at` and lose when the cancellation actually happened.
+// cancelled one has no slot to release.
 
 export const dynamic = "force-dynamic";
 
@@ -60,74 +44,42 @@ export async function POST(_request: Request, { params }: { params: { id: string
     return NextResponse.json({ error: "המסך הזה פתוח לבעלים בלבד" }, { status: 403 });
   }
 
-  // Typed: 0102 (which made `cancelled` a legal status) was applied on
-  // 2026-10-09 and the generated types were regenerated against it.
-  const admin = createTypedAdminClient();
+  const result = await cancelApprovedBooking(createTypedAdminClient(), {
+    id: params.id,
+    actorId: user.id,
+    now: new Date(),
+    source: "owner",
+  });
 
-  const { data: row, error: readErr } = await admin
-    .from("booking_requests")
-    .select("id,show_id,studio,start_at,end_at,status,calendar_write_status,shows(name)")
-    .eq("id", params.id)
-    .maybeSingle();
-  if (readErr || !row) {
-    return NextResponse.json({ error: "הבקשה לא נמצאה" }, { status: 404, headers: NO_STORE });
-  }
-
-  const r = row;
-
-  if (r.status !== "approved") {
-    return NextResponse.json(
-      { error: "אפשר לבטל רק הקלטה מאושרת. רעננו את המסך." },
-      { status: 409, headers: NO_STORE }
-    );
-  }
-
-  const { error: updErr } = await admin
-    .from("booking_requests")
-    .update({ status: "cancelled", decided_at: new Date().toISOString(), decided_by: user.id })
-    .eq("id", r.id)
-    // re-asserted in the WHERE clause, same reason as approve and decline:
-    // another tab may have decided this row since the read above.
-    .eq("status", "approved");
-  if (updErr) {
-    console.error("bookings/cancel: העדכון נכשל", updErr);
+  if (!result.ok) {
+    if (result.code === "not-found") {
+      return NextResponse.json({ error: "הבקשה לא נמצאה" }, { status: 404, headers: NO_STORE });
+    }
+    if (result.code === "not-approved") {
+      return NextResponse.json(
+        { error: "אפשר לבטל רק הקלטה מאושרת. רעננו את המסך." },
+        { status: 409, headers: NO_STORE }
+      );
+    }
     return NextResponse.json({ error: GENERIC }, { status: 500, headers: NO_STORE });
   }
 
-  const start = new Date(r.start_at);
-  const dateIsrael = israelDateOf(start);
-
-  await admin.from("events").insert({
-    entity_type: "show",
-    entity_id: r.show_id,
-    event_type: "booking_request_cancelled",
-    actor_id: user.id,
-    payload: {
-      request_id: r.id,
-      studio: r.studio,
-      start_at: r.start_at,
-      // 🔵 whether an event was ever written is what decides if anyone has to
-      // go and delete one. Recorded so the question is answerable later.
-      calendar_event_existed: r.calendar_write_status === "created",
-    },
-  });
-
+  const r = result.request;
   return NextResponse.json(
     {
       ok: true,
       request: {
         id: r.id,
-        showName: r.shows?.name ?? "",
+        showName: r.showName,
         studio: r.studio,
-        dateIsrael,
-        startIsrael: israelHHMM(start),
-        endIsrael: israelHHMM(new Date(r.end_at)),
-        // 🔴 the reminder is driven by THIS, not by "we cancelled something":
-        // a booking whose calendar write failed or never ran has no event to
-        // delete, and telling the owner to go and delete one would send them
-        // looking for something that was never there.
-        calendarEventExisted: r.calendar_write_status === "created",
-        calendarDayUrl: calendarDayUrl(dateIsrael),
+        dateIsrael: r.dateIsrael,
+        startIsrael: r.startIsrael,
+        endIsrael: r.endIsrael,
+        // 🔴 what happened to the event drives the card: deleted / a manual
+        // reminder / nothing to delete / failed with a retry
+        calendarDelete: result.calendar.outcome,
+        calendarDeleteError: result.calendar.error,
+        calendarDayUrl: calendarDayUrl(r.dateIsrael),
       },
     },
     { headers: NO_STORE }

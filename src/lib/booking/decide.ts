@@ -10,7 +10,10 @@ import { STUDIOS } from "@/lib/calendar/studios";
 import { israelDateOf } from "@/lib/calendar/availability";
 import { calendarEventIdFor } from "@/lib/calendar/write";
 import { writeBookingCalendarEvent } from "./writeCalendarEvent";
-import { recordBookingNotification, type PendingReason } from "@/lib/whatsapp/notify";
+import { notifyBookingChange, recordBookingNotification, type PendingReason } from "@/lib/whatsapp/notify";
+import { approveReplacing, readReplaces, revertReplacing } from "./moveStore";
+import { factsOf, removeBookingCalendarEvent, type CalendarDeleteResult } from "./cancel";
+import { DELETE_DETAILS, movedDetails, shouldDeleteReplacedEvent } from "./manage";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Approving one booking request — THE one implementation, for both callers.
@@ -102,7 +105,7 @@ export function isAutoApproveOn(): boolean {
   return process.env.BOOKING_AUTO_APPROVE === "true";
 }
 
-export type SameDayRow = { start_at: string; status: string };
+export type SameDayRow = { id?: string; start_at: string; status: string };
 
 /**
  * How many APPROVED requests this show already has on that Israeli date.
@@ -123,10 +126,21 @@ export type SameDayRow = { start_at: string; status: string };
  * counting them would make the second request block the third while the first
  * two are still undecided.
  */
-export function approvedSameDayCount(rows: SameDayRow[] | null | undefined, dateIsrael: string): number {
+export function approvedSameDayCount(
+  rows: SameDayRow[] | null | undefined,
+  dateIsrael: string,
+  /**
+   * A MOVE's original recording (E9-5, owner decision 11.10): it is about to
+   * be cancelled by this very approval, so it is not "another recording that
+   * day". Without this, moving a recording to a different hour of the SAME day
+   * would be refused by the recording it replaces.
+   */
+  excludeId?: string | null
+): number {
   let n = 0;
   for (const r of rows ?? []) {
     if (r?.status !== "approved") continue;
+    if (excludeId && r.id === excludeId) continue;
     const t = Date.parse(r.start_at);
     if (!Number.isFinite(t)) continue;
     if (israelDateOf(new Date(t)) === dateIsrael) n++;
@@ -202,9 +216,19 @@ export type ApprovedRequestView = {
   calendarDryRun: boolean;
 };
 
+/** The recording a MOVE replaced, as the approval left it (E9-5). */
+export type ReplacedView = {
+  id: string;
+  facts: ReturnType<typeof factsOf>;
+  /** the original's event — deleted only once the new one stuck */
+  calendar: CalendarDeleteResult | null;
+};
+
 export type ApproveResult =
   | {
       ok: true;
+      /** set when this approval MOVED a recording: the original, now cancelled */
+      replaced: ReplacedView | null;
       /**
        * approved                 — flipped and the event exists (or a dry run)
        * approved-calendar-failed — flipped, event failed, row LEFT approved
@@ -263,6 +287,33 @@ export async function approveBookingRequest(
   const startIsrael = israelHHMM(start);
   const endIsrael = israelHHMM(end);
 
+  // ── E9-5: is this a MOVE? ────────────────────────────────────────────────
+  // A request that replaces an approved recording is approved through 0105's
+  // atomic swap — whoever approves it, the bot or the owner — so the two can
+  // never both be approved, nor both cancelled. The original is read fresh:
+  // if it is no longer approved (cancelled meanwhile), this is a plain
+  // approval and there is nothing to swap.
+  const replacesId = await readReplaces(admin, row.id);
+  let original: {
+    id: string;
+    studio: string;
+    start_at: string;
+    end_at: string;
+    guest: string | null;
+    calendar_event_id: string | null;
+    calendar_event_uid: string | null;
+    calendar_write_status: string | null;
+    shows: { name: string } | null;
+  } | null = null;
+  if (replacesId) {
+    const { data: old } = await admin
+      .from("booking_requests")
+      .select("id,studio,start_at,end_at,guest,status,calendar_event_id,calendar_event_uid,calendar_write_status,shows(name)")
+      .eq("id", replacesId)
+      .maybeSingle();
+    if (old && old.status === "approved") original = old;
+  }
+
   // ── still free in the calendar? ──────────────────────────────────────────
   // 🔴 A LIVE READ OF THE FEED, EVERY TIME — including on the automatic path,
   // milliseconds after the request route computed availability for the insert.
@@ -282,6 +333,8 @@ export async function approveBookingRequest(
         | BookingDuration
         | undefined,
       includeApproved: false,
+      // a move: the original's own event does not block its replacement
+      ignore: original ? { requestId: original.id, calendarUid: original.calendar_event_uid } : undefined,
     });
     const stillFree = loaded.result.free.some(
       (s) => s.room === row.studio && s.dateIsrael === dateIsrael && s.startIsrael === startIsrael
@@ -310,21 +363,43 @@ export async function approveBookingRequest(
   // sentinel profile row called "the bot" would be a fake person in an audit
   // trail, and an env var holding a profile id would be a second place for the
   // owner's identity to drift from `profiles`.
-  const { error: updErr } = await admin
-    .from("booking_requests")
-    .update({ status: "approved", decided_at: now.toISOString(), decided_by: input.actorId })
-    .eq("id", row.id)
-    // re-asserted in the WHERE clause: between the read above and this write
-    // another tab — or the owner — may have decided the same row.
-    .eq("status", "pending");
+  let swap: "swapped" | "approved-only" | null = null;
+  if (original) {
+    // 🔴 E9-5: the original cancelled and this one approved, in ONE
+    // transaction (0105). 23P01 and "not pending" leave BOTH untouched.
+    const swapped = await approveReplacing(admin, {
+      newId: row.id,
+      oldId: original.id,
+      now,
+      actorId: input.actorId,
+    });
+    if (!swapped.ok) {
+      const mapped = approveErrorMessage(swapped.code);
+      if (mapped) return { ok: false, code: "exclusion", message: mapped, status: 409 };
+      if (swapped.code === "P0002") {
+        return { ok: false, code: "not-pending", message: APPROVE_COPY.notPending, status: 409 };
+      }
+      console.error("decide: ההחלפה נכשלה", swapped.message);
+      return { ok: false, code: "failed", message: APPROVE_COPY.generic, status: 500 };
+    }
+    swap = swapped.result;
+  } else {
+    const { error: updErr } = await admin
+      .from("booking_requests")
+      .update({ status: "approved", decided_at: now.toISOString(), decided_by: input.actorId })
+      .eq("id", row.id)
+      // re-asserted in the WHERE clause: between the read above and this write
+      // another tab — or the owner — may have decided the same row.
+      .eq("status", "pending");
 
-  if (updErr) {
-    // 23P01 = 0096's EXCLUDE firing. It has just PREVENTED a double-booked
-    // studio, which is the whole reason the flip comes first.
-    const mapped = approveErrorMessage((updErr as { code?: string }).code);
-    if (mapped) return { ok: false, code: "exclusion", message: mapped, status: 409 };
-    console.error("decide: העדכון נכשל", updErr);
-    return { ok: false, code: "failed", message: APPROVE_COPY.generic, status: 500 };
+    if (updErr) {
+      // 23P01 = 0096's EXCLUDE firing. It has just PREVENTED a double-booked
+      // studio, which is the whole reason the flip comes first.
+      const mapped = approveErrorMessage((updErr as { code?: string }).code);
+      if (mapped) return { ok: false, code: "exclusion", message: mapped, status: 409 };
+      console.error("decide: העדכון נכשל", updErr);
+      return { ok: false, code: "failed", message: APPROVE_COPY.generic, status: 500 };
+    }
   }
 
   const show = row.shows as unknown as { name: string; aliases: string[] | null } | null;
@@ -345,6 +420,8 @@ export async function approveBookingRequest(
       guest: row.guest,
       // 🔵 the one new fact in this audit row: whether a human did it.
       automatic: input.actorId === null,
+      // E9-5: the recording this approval moved, when it is a move
+      replaces_request_id: swap === "swapped" ? original?.id ?? null : null,
     },
   });
 
@@ -381,13 +458,22 @@ export async function approveBookingRequest(
       // `decided_at` MUST go back to null with the status, or
       // booking_requests_decided_chk refuses the update — the pairing is the
       // constraint, not a convention.
-      const { error: revErr } = await admin
-        .from("booking_requests")
-        .update({ status: "pending", decided_at: null, decided_by: null })
-        .eq("id", row.id)
-        // only revert what WE just approved: if a human approved it in the
-        // meantime, their decision stands.
-        .eq("status", "approved");
+      //
+      // 🔴 E9-5: a reverted MOVE restores the original too, atomically (0105)
+      // — its event was never deleted, so the client is back exactly where
+      // they started, and never with both recordings cancelled.
+      const revErr =
+        swap === "swapped" && original
+          ? await revertReplacing(admin, { newId: row.id, oldId: original.id }).then((r) => (r.ok ? null : r.message))
+          : (
+              await admin
+                .from("booking_requests")
+                .update({ status: "pending", decided_at: null, decided_by: null })
+                .eq("id", row.id)
+                // only revert what WE just approved: if a human approved it in
+                // the meantime, their decision stands.
+                .eq("status", "approved")
+            ).error;
       if (revErr) {
         // The row is approved with no calendar event and we could not put it
         // back. Loud, because /bookings will show it as approved-but-failed
@@ -410,10 +496,38 @@ export async function approveBookingRequest(
     }
   }
 
+  // ── E9-5: the moved recording's event, once the new one stuck ────────────
+  let replaced: ReplacedView | null = null;
+  if (original && swap === "swapped") {
+    const outcome = reverted ? "reverted-to-pending" : calendarWriteStatus === "failed" ? "approved-calendar-failed" : "approved";
+    const facts = factsOf({ ...original, showName: original.shows?.name ?? show?.name ?? "" });
+    let calendar: CalendarDeleteResult | null = null;
+    if (shouldDeleteReplacedEvent({ swap, outcome })) {
+      calendar = await removeBookingCalendarEvent(admin, original, input.actorId);
+      await admin.from("events").insert({
+        entity_type: "show",
+        entity_id: row.show_id,
+        event_type: "booking_request_moved",
+        actor_id: input.actorId,
+        payload: { from_request_id: original.id, to_request_id: row.id, calendar_delete: calendar.outcome },
+      });
+      if (calendar.outcome === "failed") {
+        await notifyBookingChange(admin, {
+          change: "calendar-delete-failed",
+          bookingId: original.id,
+          facts,
+          details: calendar.error ?? DELETE_DETAILS.failed,
+        });
+      }
+      replaced = { id: original.id, facts, calendar };
+    }
+  }
+
   const durationMinutes = durationFromRange(row.start_at, row.end_at);
 
   return {
     ok: true,
+    replaced,
     outcome: reverted
       ? "reverted-to-pending"
       : calendarWriteStatus === "failed"
@@ -476,6 +590,8 @@ export async function autoApproveNewRequest(
     guest: string | null;
     durationTag: string | null;
     now?: Date;
+    /** E9-5: the recording this request MOVES, if it is a move */
+    replacesId?: string | null;
   }
 ): Promise<AutoApproveOutcome> {
   try {
@@ -489,7 +605,7 @@ export async function autoApproveNewRequest(
     if (switchOn) {
       const { data, error } = await admin
         .from("booking_requests")
-        .select("start_at,status")
+        .select("id,start_at,status")
         .eq("show_id", input.showId)
         .eq("status", "approved");
       if (error) {
@@ -498,7 +614,7 @@ export async function autoApproveNewRequest(
         console.error("decide/auto: קריאת המאושרות של התוכנית נכשלה", error);
         return { approved: false, reason: "error" };
       }
-      approvedSameDay = approvedSameDayCount(data, input.dateIsrael);
+      approvedSameDay = approvedSameDayCount(data, input.dateIsrael, input.replacesId);
     }
 
     const verdict = autoApproveVerdict({ switchOn, approvedSameDay });
@@ -559,6 +675,18 @@ export async function autoApproveNewRequest(
         reason: "calendar-failed",
       });
       return { approved: false, reason: "calendar-failed" };
+    }
+
+    // E9-5: a MOVE is announced as a move — the original's slot in `{{3}}`,
+    // the new one in the details — instead of as a brand-new booking.
+    if (result.replaced) {
+      await notifyBookingChange(admin, {
+        change: "client-moved",
+        bookingId: result.replaced.id,
+        facts: result.replaced.facts,
+        details: movedDetails(result.request),
+      });
+      return { approved: true, request: result.request };
     }
 
     await recordBookingNotification(admin, {

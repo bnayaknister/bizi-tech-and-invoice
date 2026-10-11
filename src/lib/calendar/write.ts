@@ -19,17 +19,25 @@ import { createSign } from "node:crypto";
 // google-auth-library pulls in its own dependency tree for what is, here, a
 // single signed POST and a single authenticated POST/GET.) If a second
 // Google API is ever needed, that calculus may change — this file is scoped
-// to Calendar's `events.insert`/read, and nothing else.
+// to Calendar's `events.insert`/read and the one guarded delete below.
 //
-// ⛔ THIS FILE NEVER CALLS events.patch OR events.delete, AND MUST NOT GROW
-// THAT CALL. The shared calendar carries the advertising company's own
-// recordings (owner note, 7.10) — Google's sharing model has no "write your
-// own events only" role (`writer` on a shared calendar can edit or delete
-// ANY event on it, not only ours), so the one wall that exists is this file
-// never offering the capability at all. scripts/test_calendar_write.ts
-// enforces this by reading this file's own text, not by trusting a runtime
-// check that a bug could route around.
+// ═══ 🔴 DELETE: ONE FUNCTION, OUR OWN EVENTS ONLY (owner decision 11.10) ═══
+// Until E9-5 this file never deleted anything, and that was the whole wall:
+// the shared calendar carries the advertising company's own recordings, and
+// Google's sharing model has no "write your own events only" role — `writer`
+// can delete ANY event on it. The owner has now ruled that the system may
+// delete events IT CREATED, and only those. So the wall moved, it did not go:
 //
+//   · ONE function calls DELETE — `deleteSystemCalendarEvent`, below.
+//   · Its guard is INSIDE it, not at the call sites: it deletes only when the
+//     booking's `calendar_write_status` is 'created' AND the stored id equals
+//     `calendarEventIdFor(booking id)` — the deterministic id only this code
+//     ever mints. Any other id is refused before a token is even fetched.
+//   · events.patch still does not exist here.
+//
+// scripts/test_calendar_write.ts reads this codebase's own text and fails if a
+// second DELETE (or any PATCH) to Google Calendar appears anywhere in src/.
+
 // ═══ DRY_RUN, THE SAME SHAPE AS MORNING (rule 40) ═══
 // `isCalendarDryRun()` mirrors `isDryRun()` in lib/morning/client.ts exactly:
 // defaults ON, so a missing or mistyped env var can never start writing to the
@@ -251,5 +259,81 @@ export async function createCalendarEvent(
   } catch (e) {
     if (e instanceof CalendarWriteError) return { ok: false, error: e.message, status: e.status };
     return { ok: false, error: e instanceof Error ? e.message : "שגיאת רשת לא ידועה", status: 500 };
+  }
+}
+
+// ═══ the delete — the ONE place, guarded (owner decision 11.10) ═══
+
+export type CalendarDeletionInput = {
+  bookingId: string;
+  /** `booking_requests.calendar_event_id` exactly as stored */
+  calendarEventId: string | null;
+  /** `booking_requests.calendar_write_status` exactly as stored */
+  calendarWriteStatus: string | null;
+};
+
+export type DeletionVerdict =
+  | { ok: true; eventId: string }
+  | { ok: false; reason: "not-created" | "no-id" | "id-mismatch" | "bad-booking-id" };
+
+/**
+ * May the system delete this booking's event? PURE — the guard itself.
+ *
+ * Only an event THIS CODE wrote: the row says the write succeeded, and the id
+ * stored on it is the deterministic one derived from the booking's own id. An
+ * id that merely looks valid but was not derived from this booking — a typo, a
+ * hand-edited row, another event's id — is refused, because deleting it could
+ * delete somebody else's recording.
+ */
+export function calendarDeletionAllowed(input: CalendarDeletionInput): DeletionVerdict {
+  if (input.calendarWriteStatus !== "created") return { ok: false, reason: "not-created" };
+  if (!input.calendarEventId) return { ok: false, reason: "no-id" };
+  let expected: string;
+  try {
+    expected = calendarEventIdFor(input.bookingId);
+  } catch {
+    return { ok: false, reason: "bad-booking-id" };
+  }
+  if (input.calendarEventId !== expected) return { ok: false, reason: "id-mismatch" };
+  return { ok: true, eventId: expected };
+}
+
+export type DeleteCalendarEventResult =
+  | { ok: true; dryRun: boolean; alreadyGone: boolean }
+  | { ok: false; refused: true; reason: Extract<DeletionVerdict, { ok: false }>["reason"] }
+  | { ok: false; refused: false; error: string; status: number };
+
+/**
+ * Delete ONE event this system created. THE ONLY DELETE IN THE CODEBASE.
+ *
+ * Order: the guard, then the dry-run switch, then the network. A refused id
+ * never reaches the network in either mode; a dry run records and deletes
+ * nothing (rule 40 — `CALENDAR_WRITE_DRY_RUN` defaults ON).
+ *
+ * 410 / 404 from Google = the event is already gone = SUCCESS: the goal is
+ * "no such event in the calendar", and it holds.
+ */
+export async function deleteSystemCalendarEvent(input: CalendarDeletionInput): Promise<DeleteCalendarEventResult> {
+  const verdict = calendarDeletionAllowed(input);
+  if (!verdict.ok) return { ok: false, refused: true, reason: verdict.reason };
+
+  if (isCalendarDryRun()) return { ok: true, dryRun: true, alreadyGone: false };
+
+  const calendarId = process.env.GOOGLE_CALENDAR_ID;
+  if (!calendarId) return { ok: false, refused: false, error: "GOOGLE_CALENDAR_ID לא מוגדר", status: 500 };
+
+  try {
+    const token = await getAccessToken();
+    const url = `${CALENDAR_API}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(verdict.eventId)}`;
+    const res = await fetchWithTimeout(url, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+    if (res.status === 410 || res.status === 404) return { ok: true, dryRun: false, alreadyGone: true };
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return { ok: false, refused: false, error: `המחיקה מהיומן נכשלה: ${res.status} ${body.slice(0, 300)}`, status: res.status };
+    }
+    return { ok: true, dryRun: false, alreadyGone: false };
+  } catch (e) {
+    if (e instanceof CalendarWriteError) return { ok: false, refused: false, error: e.message, status: e.status };
+    return { ok: false, refused: false, error: e instanceof Error ? e.message : "שגיאת רשת לא ידועה", status: 500 };
   }
 }

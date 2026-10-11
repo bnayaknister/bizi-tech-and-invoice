@@ -118,6 +118,14 @@ export const TEMPLATE_UNKNOWN_CONTACT_TEXT =
   "תוכן ההודעה: {{2}}\n" +
   "כדי לאפשר לו להזמין, יש לשייך אותו בכרטיס הלקוח, בכרטיסיית הרשאות הזמנת חדרים.";
 
+export const TEMPLATE_BOOKING_CHANGE_TEXT =
+  "עדכון על הקלטה במערכת ביזי: {{1}}.\n" +
+  "פודקאסט: {{2}}\n" +
+  "המועד: {{3}}\n" +
+  "אולפן: {{4}}\n" +
+  "פרטים: {{5}}\n" +
+  "את כל הפרטים אפשר לראות במסך הבקשות במערכת.";
+
 /** The `{{n}}` numbers in a template text, in the order they appear. */
 export function templatePlaceholders(text: string): number[] {
   return Array.from(text.matchAll(/\{\{(\d+)\}\}/g), (m) => Number(m[1]));
@@ -132,6 +140,33 @@ export function fillTemplate(text: string, params: readonly string[]): string {
   return text.replace(/\{\{(\d+)\}\}/g, (whole, n: string) => params[Number(n) - 1] ?? whole);
 }
 
+/**
+ * Utility — a recording was changed or a change was asked for (E9-5). ONE
+ * template for five situations, the situation itself being `{{1}}`: every one
+ * of them means "go and look at /bookings", and five templates would be five
+ * approvals from Meta for one sentence (the same reasoning as the pending
+ * template's reason parameter). PROPOSED — not yet submitted to Meta; until it
+ * is approved, a send fails, is logged, and fails nothing else.
+ */
+export const TEMPLATE_BOOKING_CHANGE = "bizi_booking_change";
+export const TEMPLATE_BOOKING_CHANGE_VARS = ["change", "showName", "whenLine", "studio", "details"] as const;
+
+export type BookingChange =
+  | "client-cancelled"
+  | "client-moved"
+  | "cancel-request"
+  | "move-request"
+  | "calendar-delete-failed";
+
+/** `{{1}}` — what happened, in the owner's words. Never starts the template. */
+export const BOOKING_CHANGE_LABEL: Record<BookingChange, string> = {
+  "client-cancelled": "הלקוח ביטל הקלטה דרך הבוט",
+  "client-moved": "הלקוח הזיז הקלטה דרך הבוט",
+  "cancel-request": "בקשת ביטול בתוך 24 השעות שלפני ההקלטה",
+  "move-request": "בקשת הזזה בתוך 24 השעות שלפני ההקלטה",
+  "calendar-delete-failed": "הקלטה בוטלה אבל המחיקה מהיומן נכשלה",
+};
+
 /** Why a request stayed pending. Each one is a different sentence to the owner. */
 export type PendingReason = "second-same-day" | "calendar-failed" | "slot-taken";
 
@@ -141,7 +176,7 @@ export const PENDING_REASON_LABEL: Record<PendingReason, string> = {
   "slot-taken": "המשבצת נתפסה ביומן",
 };
 
-export type NotificationKind = "booking-approved" | "booking-pending" | "unknown-contact";
+export type NotificationKind = "booking-approved" | "booking-pending" | "unknown-contact" | "booking-change";
 
 /** How much of an unknown sender's message travels into the notification. */
 export const EXCERPT_MAX_CHARS = 120;
@@ -254,6 +289,22 @@ export function approvedNoticeBody(f: BookingFacts): string {
 export function pendingNoticeBody(f: BookingFacts, reason: PendingReason): string {
   const v = pendingNoticeVariables(f, reason);
   return fillTemplate(TEMPLATE_BOOKING_PENDING_TEXT, TEMPLATE_BOOKING_PENDING_VARS.map((k) => v[k]));
+}
+
+/** The change template's named variables. `details` is never empty and never multi-line. */
+export function changeNoticeVariables(f: BookingFacts, change: BookingChange, details: string) {
+  return {
+    change: BOOKING_CHANGE_LABEL[change],
+    showName: f.showName,
+    whenLine: whenPhrase(f),
+    studio: f.studio,
+    details: excerptParam(details),
+  } satisfies Record<(typeof TEMPLATE_BOOKING_CHANGE_VARS)[number], string>;
+}
+
+export function changeNoticeBody(f: BookingFacts, change: BookingChange, details: string): string {
+  const v = changeNoticeVariables(f, change, details);
+  return fillTemplate(TEMPLATE_BOOKING_CHANGE_TEXT, TEMPLATE_BOOKING_CHANGE_VARS.map((k) => v[k]));
 }
 
 /** The unknown-contact notice (registered text, owner 11.10). Owner only. */
@@ -378,7 +429,8 @@ export type RecordResult = {
 type NotifyInput =
   | { kind: "booking-approved"; subjectId: string; facts: BookingFacts }
   | { kind: "booking-pending"; subjectId: string; facts: BookingFacts; reason: PendingReason }
-  | { kind: "unknown-contact"; subjectId: string; waId: string; excerpt: string };
+  | { kind: "unknown-contact"; subjectId: string; waId: string; excerpt: string }
+  | { kind: "booking-change"; subjectId: string; change: BookingChange; facts: BookingFacts; details: string };
 
 /** The template name, the positional params, the named variables and the body. */
 function renderNotification(input: NotifyInput): {
@@ -399,6 +451,16 @@ function renderNotification(input: NotifyInput): {
   }
 
   const f = input.facts;
+
+  if (input.kind === "booking-change") {
+    const variables = changeNoticeVariables(f, input.change, input.details);
+    return {
+      templateName: TEMPLATE_BOOKING_CHANGE,
+      params: TEMPLATE_BOOKING_CHANGE_VARS.map((k) => variables[k]),
+      variables,
+      body: changeNoticeBody(f, input.change, input.details),
+    };
+  }
 
   if (input.kind === "booking-approved") {
     const variables = approvedNoticeVariables(f);
@@ -572,4 +634,24 @@ export async function applyStatusUpdate(
     console.error("wa/notify: עדכון מצב ההודעה זרק", e);
     return "error";
   }
+}
+
+/**
+ * A change notice (E9-5), keyed ONCE per (change, booking): a client who asks
+ * twice inside the 24 hours does not page the owner twice, and a re-delivered
+ * webhook cannot either. The owner and Eli get the client's own changes; a
+ * calendar-delete failure goes to the owner alone (owner decision 11.10, 2).
+ */
+export async function notifyBookingChange(
+  admin: SupabaseClient<Database>,
+  input: { change: BookingChange; bookingId: string; facts: BookingFacts; details: string }
+): Promise<RecordResult> {
+  return recordBookingNotification(admin, {
+    kind: "booking-change",
+    subjectId: `${input.change}:${input.bookingId}`,
+    change: input.change,
+    facts: input.facts,
+    details: input.details,
+    onlyOwner: input.change === "calendar-delete-failed",
+  });
 }
