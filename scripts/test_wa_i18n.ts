@@ -326,7 +326,7 @@ section("2. no Hebrew in the English dictionary (except naming Hebrew itself)");
   check("every studio has an English name", ROOMS.filter((r) => !STUDIO_EN[r]), []);
   check("the picker is the same in both dictionaries", COPY.en.LANG.pickerBody, COPY.he.LANG.pickerBody);
   check("the picker body is bilingual", [HEBREW.test(COPY.he.LANG.pickerBody), /[A-Za-z]/.test(COPY.he.LANG.pickerBody)], [true, true]);
-  check("English link replies say the page is in Hebrew (recommendation, not yet approved)", COPY.en.REPLY.link("X", URL).includes("(the page is in Hebrew)"), true);
+  check("English link replies say the page is in Hebrew (owner decision 11.10)", COPY.en.REPLY.link("X", URL).includes("(the page is in Hebrew)"), true);
   check("…and the Hebrew does not", COPY.he.REPLY.link("X", URL).includes("Hebrew"), false);
 }
 

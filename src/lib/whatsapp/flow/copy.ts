@@ -20,8 +20,8 @@ import { approvedWhatsappText } from "@/lib/booking/title";
 // texts in ../notify.ts are not here, and must not be.
 //
 // ═══ THE ENGLISH ═══
-// Written once, at build time, by Claude Code; the owner reviews it (owner
-// decision 11.10 — no runtime translation). The Hebrew is the approved copy and
+// Written once, at build time, by Claude Code, and approved by the owner as a
+// whole on 11.10 (owner decisions 11.10 — no runtime translation). The Hebrew is the approved copy and
 // is unchanged by E19, word for word.
 //
 // ⚠️ META'S LIMITS SHAPE SOME OF THESE, and they are not style:
@@ -55,7 +55,7 @@ export const STUDIOS_PHOTOS_URL = "https://www.bi-zi.co.il";
  * The studios' English names — ONE spelling, everywhere the bot writes in
  * English. The Hebrew name stays the identifier (ids, validation, the
  * database); this is display only. An unknown value falls back to itself.
- * Proposed transliteration — see the E19 report.
+ * Approved by the owner, 11.10.
  */
 export const STUDIO_EN: Record<string, string> = {
   "גבעון": "Givon",
@@ -332,8 +332,7 @@ export type BotCopy = typeof HE;
 
 const studioEn = (s: string) => STUDIO_EN[s] ?? s;
 /**
- * ⚠️ "The booking page is in Hebrew" — Claude's recommendation, NOT yet
- * approved by the owner (E19 report). Delete this one constant to drop it.
+ * "The booking page is in Hebrew" — owner decision 11.10: it stays.
  */
 const SCREEN_IS_HEBREW = " (the page is in Hebrew)";
 const recLinesEn = (r: Rec) =>
@@ -385,7 +384,7 @@ const EN: BotCopy = {
       `You can check availability and book right here in the chat, or manage recordings you've already booked.` +
       (url ? `\n\nAll availability on our booking page${SCREEN_IS_HEBREW}:\n${url}` : ""),
     go: "📅 See availability",
-    link: "🔗 View on screen",
+    link: "🔗 Booking page",
     mine: "📋 My recordings",
     switchShow: "🔄 Other podcast",
   },

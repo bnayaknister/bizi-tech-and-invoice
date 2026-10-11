@@ -19,8 +19,8 @@ import { COPY, DEFAULT_LANG, LANG_WORDS, isLang, type Lang } from "./flow/copy";
 //
 // ═══ 🔴 THE ACTIVATION SWITCH (rule 40: OFF unless exactly "true") ═══
 // `WHATSAPP_BILINGUAL`. Off, the bot is exactly what it was: Hebrew, and no
-// question. The English is Claude's and the owner reviews it before the switch
-// goes on.
+// question. The English was approved by the owner on 11.10; turning the switch
+// on is the remaining step.
 //
 // ═══ 🔴 THE STORE NEVER SILENCES THE BOT ═══
 // A failed read is "Hebrew, do not ask"; a failed write still answers in the

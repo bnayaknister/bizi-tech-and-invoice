@@ -327,6 +327,12 @@
 הפודקאסט {{2}} מחובר עכשיו לבוט ההזמנות.
 כדי לקבוע הקלטה פשוט כתבו לנו כאן. את ההזמנה הראשונה הצוות יאשר ידנית, ומשם הכול אוטומטי.
 ```
+גרסה אנגלית מוצעת (E19, אותו שם תבנית, שפה `en`, אותם משתנים) — טיוטה, להגשה יחד עם העברית:
+```
+Hi {{1}}! Your account at Bizi Podclub is approved ✅
+{{2}} is now connected to our booking bot.
+To book a recording, just message us here. The team will approve your first booking manually, and from then on it's automatic.
+```
 
 **`bizi_client_rejected`** — רק אם ההכרעה בשאלה 6 היא "כן". טיוטה — לאישור בעלים:
 ```
