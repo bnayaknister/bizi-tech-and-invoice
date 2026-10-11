@@ -36,7 +36,7 @@ const check = (label: string, ok: boolean, detail = "") => {
   if (!ok) failures++;
 };
 
-const CLIENT: ClientForBilling = { id: "c1", name: "מכון דוידסון", morning_client_id: "m1" };
+const CLIENT: ClientForBilling = { id: "c1", name: "מכון דוידסון", morning_client_id: "m1", status: "active" };
 
 const prod = (over: Partial<ProductionForBilling> = {}): ProductionForBilling => ({
   id: "p1",

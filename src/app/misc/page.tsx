@@ -4,6 +4,7 @@ import { createTypedAdminClient } from "@/lib/supabase/admin";
 import { mustRows } from "@/lib/supabase/unwrap";
 import AppHeader from "@/components/AppHeader";
 import MiscClient, { type MiscRow, type SupplierLine, type MiscClientOption } from "./MiscClient";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 export const dynamic = "force-dynamic";
 
@@ -139,7 +140,7 @@ export default async function MiscPage() {
     // lets the form say so while the client is being picked, instead of after
     // eight fields have been filled in. The id itself never leaves the server;
     // only the boolean does.
-    admin.from("clients").select("id,name,morning_client_id"),
+    admin.from("clients").select("id,name,morning_client_id").eq("status", ACTIVE_CLIENT),
   ]);
 
   const clientRows = mustRows(

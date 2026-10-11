@@ -61,6 +61,11 @@ const SCOPES: { key: ListScope; label: string }[] = [
   { key: "merged", label: "מוזגו" },
 ];
 
+// E17-3: a studio_admin's own tab. Drawn only for them — for anyone else the
+// server never loaded a pending row, so an empty tab would only be noise.
+const PENDING_SCOPE: { key: ListScope; label: string } = { key: "pending", label: "ממתינים לאישור" };
+export const PENDING_BADGE = "ממתין לאישור";
+
 const nis = (n: number) => `₪${n.toLocaleString("he-IL")}`;
 
 export default function ClientsScreen({ data }: { data: ClientsScreenData }) {
@@ -101,7 +106,7 @@ export default function ClientsScreen({ data }: { data: ClientsScreenData }) {
           </div>
 
           <div className="flex items-center gap-1.5 mb-2">
-            {SCOPES.map((s) => (
+            {(data.canSeePending ? [...SCOPES, PENDING_SCOPE] : SCOPES).map((s) => (
               <button
                 key={s.key}
                 onClick={() => setScope(s.key)}
@@ -156,6 +161,7 @@ function ClientRowItem({ row, selected }: { row: ClientListRow; selected: boolea
     >
       <div className="flex items-center gap-2">
         <span className="font-bold text-sm flex-1 min-w-0 truncate">{row.name}</span>
+        {row.pending && <span className="text-[10px] text-amber-400 shrink-0">{PENDING_BADGE}</span>}
         {row.debt > 0 ? (
           <span className="text-xs font-mono text-[var(--red)]">{nis(row.debt)}</span>
         ) : (
@@ -253,12 +259,20 @@ function ClientCardPanel({ data }: { data: ClientsScreenData }) {
   }
 
   const row = data.rows.find((r) => r.id === card.id);
+  // E17-3: a pending registration enters Morning only through its approval
+  // (E17-5), so neither Morning block is offered on its card — the mapping
+  // route refuses it too, this only keeps the button from being drawn.
+  const pending = card.status === "pending";
 
   return (
     <section className="rounded-2xl border border-[var(--rule)] p-4 space-y-4">
       <div className="flex items-center gap-2">
         <h2 className="font-bold text-base flex-1 min-w-0 truncate">{card.name}</h2>
-        {row && !row.mapped && <span className="text-[10px] text-amber-400">{NOT_MAPPED}</span>}
+        {pending ? (
+          <span className="text-[10px] text-amber-400">{PENDING_BADGE}</span>
+        ) : (
+          row && !row.mapped && <span className="text-[10px] text-amber-400">{NOT_MAPPED}</span>
+        )}
       </div>
 
       {error && <div className="text-xs text-red-400">{error}</div>}
@@ -277,20 +291,30 @@ function ClientCardPanel({ data }: { data: ClientsScreenData }) {
         {/* the Morning CARD this client bills on — beside the ח.פ and the
             contacts, because all three are Morning's facts about the same
             client and the owner asked for them in one place (7.10) */}
-        <MorningMappingCard
-          clientId={card.id}
-          clientName={card.name}
-          mapped={!!row?.mapped}
-          canEdit={data.canEditMoney}
-          onChanged={() => router.refresh()}
-        />
-        <ClientMorningCard
-          clientId={card.id}
-          clientName={card.name}
-          onChanged={() => router.refresh()}
-        />
-        {/* the same component the drawer renders — see its own header */}
-        <ClientBookingContactsCard clientId={card.id} />
+        {!pending && (
+          <>
+            <MorningMappingCard
+              clientId={card.id}
+              clientName={card.name}
+              mapped={!!row?.mapped}
+              canEdit={data.canEditMoney}
+              onChanged={() => router.refresh()}
+            />
+            <ClientMorningCard
+              clientId={card.id}
+              clientName={card.name}
+              onChanged={() => router.refresh()}
+            />
+          </>
+        )}
+        {/* the same component the drawer renders — see its own header.
+            studio_admin only (owner 11.10, E17-3): not drawn at all for anyone
+            else, and the route refuses them too. */}
+        {data.canManageBookingContacts && (
+          <div data-block="booking-contacts">
+            <ClientBookingContactsCard clientId={card.id} />
+          </div>
+        )}
       </div>
 
       {/* ── תוכניות וחוזים ── */}

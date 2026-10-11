@@ -5,6 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import ProductionsClient, { type BoardProduction } from "./ProductionsClient";
 import { hoursMissing } from "@/lib/productions/hours";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 export const dynamic = "force-dynamic";
 
@@ -178,7 +179,7 @@ export default async function ProductionsPage() {
       fetchLogCounts(supabase),
       admin.from("profiles").select("id,name,email"),
       canViewMoney
-        ? supabase.from("clients").select("id,name")
+        ? supabase.from("clients").select("id,name").eq("status", ACTIVE_CLIENT)
         : Promise.resolve({ data: [] as { id: string; name: string }[] }),
     ]);
   const prods = allProds.filter((p) => !p.merged_into);

@@ -167,6 +167,7 @@ export async function GET(_request: Request, { params }: { params: { mid: string
   const chains = chainIds(docs);
 
   const { data: client } = await admin
+    // clients-status: by id — a display name for a contract that already exists
     .from("clients")
     .select("name")
     .eq("id", contract.client_id as string)

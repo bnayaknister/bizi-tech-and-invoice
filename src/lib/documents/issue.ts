@@ -8,6 +8,7 @@ import {
 } from "@/lib/morning/types";
 import { upsertDocument } from "@/lib/documents/registry";
 import { findCancelledWork, CANCELLED_WORK_MESSAGE } from "@/lib/documents/cancelledWork";
+import { findInactiveClients, inactiveClientMessage } from "@/lib/clients/status";
 import { todayInIsrael } from "@/lib/dates";
 
 // Turning an APPROVED queue row into a real document. This is the only
@@ -244,6 +245,37 @@ export async function issuePendingDocument(
     }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "בדיקת ביטול העבודה נכשלה" };
+  }
+
+  // ---- iron rule 1c: the client must be ACTIVE (E17-3) ---------------------
+  // A pending registration or a rejected one is not a client yet, and no
+  // document goes to it — whoever enqueued the row, by whatever route, and
+  // even if someone crafted the request by hand. Here for the same reason 1b
+  // is: this is the only function that calls Morning, so one check covers
+  // every caller. The enqueue paths refuse earlier with the same sentence;
+  // this is the floor under them.
+  //
+  // A row with no client_id (a document addressed to a Morning client we
+  // never mapped locally) has nothing to check: a pending client has no
+  // Morning id by construction (0107 — it enters Morning only on approval),
+  // so it cannot be that row's addressee. A THROWN lookup is a refusal (rule 46).
+  if (row.client_id) {
+    try {
+      const inactive = await findInactiveClients(admin, [row.client_id]);
+      const hit = inactive.get(row.client_id);
+      if (hit) {
+        await admin.from("events").insert({
+          entity_type: "pending_document",
+          entity_id: row.id,
+          event_type: "issue_blocked_client_inactive",
+          actor_id: actorId,
+          payload: { doc_type: row.doc_type, client_id: row.client_id, client_status: hit.status, status: row.status },
+        });
+        return { ok: false, error: inactiveClientMessage(hit.name, hit.status) };
+      }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : "בדיקת סטטוס הלקוח נכשלה" };
+    }
   }
 
   // A document's date is its ISSUANCE date — today, in Israel time — never the

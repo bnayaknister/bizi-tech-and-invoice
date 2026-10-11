@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { deriveState, TAB_META } from "@/lib/finance/state";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 // Free-text search over ALL jobs, for the "שייך ל-job" manual fallback (owner
 // spec 2026-07-27): when the engine can't auto-match a document — e.g. a
@@ -28,7 +29,7 @@ export async function GET(request: Request) {
       .from("jobs")
       .select("id,client_id,campaign,amount,date,paid,invoice_biz,invoice_tax")
       .eq("dismissed", false),
-    admin.from("clients").select("id,name,morning_client_id"),
+    admin.from("clients").select("id,name,morning_client_id").eq("status", ACTIVE_CLIENT),
     admin.from("job_productions").select("job_id,production_id"),
     admin.from("productions").select("id,show_id,podcast_name,guest,record_date"),
     admin.from("shows").select("id,name"),

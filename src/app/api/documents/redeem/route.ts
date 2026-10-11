@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createWorkOrderBundle, type AccruedWorkOrder } from "@/lib/documents/bundle";
 import { hasBeenPerformed } from "@/lib/productions/status";
 import { rowsInAccruedMonth } from "@/lib/documents/accruedMonth";
+import { inactiveClientMessage, isActiveClient } from "@/lib/clients/status";
 
 // "פדה [לקוח]" (owner spec 2026-07-28): the bookkeeper releases a monthly /
 // every_n client's accrued episodes. It produces ONE consolidated work order
@@ -58,11 +59,18 @@ export async function POST(request: Request) {
   //     this, and it must fail loudly rather than quietly do the old thing to
   //     real money.
   const { data: clientRow } = await admin
+    // clients-status: by id — `status` is read and refused below (E17-3)
     .from("clients")
-    .select("billing_cadence")
+    .select("name,billing_cadence,status")
     .eq("id", clientId)
     .maybeSingle();
   if (!clientRow) return NextResponse.json({ error: "הלקוח לא נמצא" }, { status: 404 });
+  if (!isActiveClient(clientRow.status as string | null)) {
+    return NextResponse.json(
+      { error: inactiveClientMessage(clientRow.name as string | null, clientRow.status as string | null) },
+      { status: 400 }
+    );
+  }
   const cadence = clientRow.billing_cadence ?? "per_episode";
   if (monthKey && cadence !== "monthly") {
     return NextResponse.json(

@@ -59,6 +59,7 @@ export async function persistMorningMapping(
 > {
   const d = mappingDecision(input);
   if (!d.write) return { written: false, reason: d.reason };
+  // clients-status: a write by id — callers gate on status first
   const { error } = await admin.from("clients").update({ morning_client_id: input.morningId }).eq("id", input.clientId);
   if (error) return { written: false, reason: "error", code: error.code ?? null, message: error.message };
   return { written: true };

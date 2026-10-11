@@ -135,6 +135,7 @@ export async function executeApproval(
         const { count } = await admin.from(table).select("id", { count: "exact", head: true }).eq("client_id", entityId);
         if ((count ?? 0) > 0) return { ok: false, error: `ללקוח יש רשומות מקושרות ב-${table} — נתק אותן קודם` };
       }
+      // clients-status: a delete by id, behind an approved request
       const { error } = await admin.from("clients").delete().eq("id", entityId);
       if (error) return { ok: false, error: error.message };
       return { ok: true };

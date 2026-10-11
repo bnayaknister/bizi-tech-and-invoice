@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 /**
  * F10 — the ONE map from a Morning client id to one of ours.
@@ -55,7 +56,7 @@ export async function loadMorningIdMap(admin: SupabaseClient): Promise<Map<strin
   // this replaces did.
   const { data: clients } = await admin
     .from("clients")
-    .select("id,morning_client_id")
+    .select("id,morning_client_id").eq("status", ACTIVE_CLIENT)
     .is("merged_into", null)
     .order("name");
 
@@ -107,7 +108,7 @@ export async function loadMorningIdMap(admin: SupabaseClient): Promise<Map<strin
 export async function loadMorningIdsByClient(admin: SupabaseClient): Promise<Map<string, string[]>> {
   const { data: clients } = await admin
     .from("clients")
-    .select("id,morning_client_id")
+    .select("id,morning_client_id").eq("status", ACTIVE_CLIENT)
     .is("merged_into", null)
     .order("name");
   const live = (clients ?? []) as { id: string; morning_client_id: string | null }[];

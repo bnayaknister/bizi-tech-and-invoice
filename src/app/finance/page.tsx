@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import { deriveState, isFinanceFilterKey, isUnpaidDebt, type FinanceState } from "@/lib/finance/state";
 import FinanceClient, { type FinanceJob, type FinanceSummary, type HiddenJob } from "./FinanceClient";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 export const dynamic = "force-dynamic";
 
@@ -41,7 +42,7 @@ export default async function FinancePage({
         // for the header button — they do not take part in any pipeline state.
         .from("jobs")
         .select("id,client_id,date,campaign,amount,invoice_biz,invoice_tax,paid,due_date,notes,dismissed,dismiss_reason,dismissed_by,dismissed_at,manual_only,contract_id"),
-      admin.from("clients").select("id,name,payment_terms"),
+      admin.from("clients").select("id,name,payment_terms").eq("status", ACTIVE_CLIENT),
       admin.from("job_productions").select("job_id,production_id"),
       admin.from("productions").select("id,show_id,podcast_name"),
       admin.from("shows").select("id,name"),

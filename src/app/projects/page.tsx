@@ -39,6 +39,7 @@ import ProjectsClient, {
   type MonthBucket,
   type ProjectRow,
 } from "./ProjectsClient";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 export const dynamic = "force-dynamic";
 
@@ -300,7 +301,7 @@ export default async function ProjectsPage() {
     // billing_cadence / billing_every_n / payment_terms joined for the stuck
     // rule and the empty-cell labels (2026-09-17). payment_terms is only ever
     // used to ASK public.due_date_for — never to compute a date here.
-    admin.from("clients").select("id,name,billing_cadence,billing_every_n,payment_terms"),
+    admin.from("clients").select("id,name,billing_cadence,billing_every_n,payment_terms").eq("status", ACTIVE_CLIENT),
     // ═══ EVERY JOB, AND NOW EVERY COLUMN A ROW NEEDS ═══
     //
     // This read used to be five columns, because a job was only ever a ROUTE to

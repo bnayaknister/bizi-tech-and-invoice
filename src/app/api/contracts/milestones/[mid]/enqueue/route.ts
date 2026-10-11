@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { buildDocumentPayload } from "@/lib/documents/enqueue";
 import { DOC_TYPE_LABEL } from "@/lib/morning/types";
+import { inactiveClientMessage, isActiveClient } from "@/lib/clients/status";
 
 // Queue a WORK ORDER for a contract milestone.
 //
@@ -90,11 +91,16 @@ export async function POST(_request: Request, { params }: { params: { mid: strin
   }
 
   const { data: client } = await admin
+    // clients-status: by id — `status` is read and refused below (E17-3)
     .from("clients")
-    .select("id,name,morning_client_id")
+    .select("id,name,morning_client_id,status")
     .eq("id", contract.client_id as string)
     .maybeSingle();
   if (!client) return NextResponse.json({ error: "הלקוח לא נמצא" }, { status: 404 });
+  // E17-3: a pending/rejected client gets no document, whatever the UI showed
+  if (!isActiveClient(client.status as string | null)) {
+    return NextResponse.json({ error: inactiveClientMessage(client.name as string | null, client.status as string | null) }, { status: 400 });
+  }
   // iron rule: no issuance without a Morning-mapped client
   if (!client.morning_client_id) {
     return NextResponse.json({ error: `הלקוח '${client.name ?? ""}' לא ממופה למורנינג` }, { status: 400 });

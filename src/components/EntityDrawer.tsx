@@ -105,6 +105,9 @@ type DrawerData = {
   // `linked` is populated for can_view_money, and creating a job is a money
   // WRITE — a bookkeeper who may read the pipeline must not be offered it.
   canEditMoney: boolean;
+  // E17-3: studio_admin only — "הרשאות הזמנת חדרים" is not drawn otherwise.
+  // Optional: an older response without it reads as "no", never as "yes".
+  canManageBookingContacts?: boolean;
   // 0098 — set only when THIS episode is beyond its contract's package quota.
   // null is the ordinary case: no contract, no quota, or inside it.
   quotaOver: { included: number; contract_name: string | null } | null;
@@ -1935,7 +1938,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                     conversion and its refusal sentences live on the server, and
                     a second copy of this form is a second chance to store a
                     number the bot will never match. */}
-                {data.type === "client" && ref && <ClientBookingContactsCard clientId={ref.id} />}
+                {data.type === "client" && ref && data.canManageBookingContacts === true && <ClientBookingContactsCard clientId={ref.id} />}
 
                 {/* the two workflow lines — where daily work happens. Each is
                     independent: its own stage steps, its own client-review

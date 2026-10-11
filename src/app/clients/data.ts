@@ -14,7 +14,7 @@ import {
 } from "@/lib/clients/overview";
 import type { FieldMeta } from "@/components/EntityFieldRows";
 import type { Profile } from "@/lib/profile";
-import { canSeeClients } from "@/lib/clients/access";
+import { canManageBookingContacts, canSeeClients, clientStatusesVisibleTo } from "@/lib/clients/access";
 import { clientFieldMeta } from "@/lib/clients/fields";
 
 /**
@@ -62,6 +62,33 @@ async function fetchAll<T>(
   }
 }
 
+/**
+ * The clients, 1,000 at a time like `fetchAll`, but only the statuses this
+ * viewer may see (E17-3): `active` for everyone, plus `pending` for a
+ * studio_admin. `rejected` is never read. Its own function rather than a
+ * filter argument to `fetchAll`, so the status filter sits in the same chain
+ * as `.from("clients")` — where the suite's scan looks for it.
+ */
+async function fetchVisibleClients(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  statuses: string[]
+): Promise<ClientRow[]> {
+  const out: ClientRow[] = [];
+  const page = 1000;
+  for (let from = 0; ; from += page) {
+    const { data, error } = await supabase
+      .from("clients")
+      .select("id,name,normalized_name,morning_client_id,merged_into,status")
+      .in("status", statuses)
+      .range(from, from + page - 1);
+    if (error) throw new Error(`clients: ${error.message}`);
+    const rows = (data ?? []) as ClientRow[];
+    out.push(...rows);
+    if (rows.length < page) return out;
+  }
+}
+
 /** a job row with the three columns only the card reads */
 type CardJobRow = JobRow & {
   campaign: string | null;
@@ -95,6 +122,8 @@ export type ClientCard = {
     start_date: string | null;
     end_date: string | null;
   }[];
+  /** 0107 (E17): `active`, or `pending` in the studio_admin's own tab */
+  status: string;
   debt: number;
   debtJobs: ClientCardJob[];
   documents: {
@@ -118,6 +147,10 @@ export type ClientsScreenData = {
   rows: ClientListRow[];
   card: ClientCard | null;
   canEditMoney: boolean;
+  /** studio_admin (E17-3): the "ממתינים לאישור" tab is drawn */
+  canSeePending: boolean;
+  /** studio_admin (E17-3): "הרשאות הזמנת חדרים" is drawn at all */
+  canManageBookingContacts: boolean;
   today: string;
 };
 
@@ -132,7 +165,7 @@ export async function loadClientsScreen(selectedId: string | null): Promise<
   const today = todayInIsrael();
 
   const [clients, shows, jobs]: [ClientRow[], ShowRow[], CardJobRow[]] = await Promise.all([
-    fetchAll<ClientRow>(admin, "clients", "id,name,normalized_name,morning_client_id,merged_into"),
+    fetchVisibleClients(admin, clientStatusesVisibleTo(p)),
     fetchAll<ShowRow>(admin, "shows", "id,name,client_id,active"),
     // campaign/invoice_biz/invoice_tax are for the CARD's debt table and its
     // deriveState colour. Three more columns on a read the list already makes,
@@ -148,7 +181,18 @@ export async function loadClientsScreen(selectedId: string | null): Promise<
     if (base) card = await loadCard(base, shows, jobs, today, p);
   }
 
-  return { ok: true, profile: p, data: { rows, card, canEditMoney: !!p.can_edit_money, today } };
+  return {
+    ok: true,
+    profile: p,
+    data: {
+      rows,
+      card,
+      canEditMoney: !!p.can_edit_money,
+      canSeePending: clientStatusesVisibleTo(p).length > 1,
+      canManageBookingContacts: canManageBookingContacts(p),
+      today,
+    },
+  };
 }
 
 async function loadCard(
@@ -166,6 +210,7 @@ async function loadCard(
   // it edits on the same permission footing as the drawer.
   const viewer = createClient();
   const { data: entity } = await viewer
+    // clients-status: by id — `base` came from the status-filtered list above
     .from("clients")
     .select(selectColumns("client", profile))
     .eq("id", base.id)
@@ -219,6 +264,7 @@ async function loadCard(
   return {
     id: base.id,
     name: base.name,
+    status: base.status,
     entity: (entity as Record<string, unknown> | null) ?? { id: base.id, name: base.name },
     fields: clientFieldMeta(profile),
     shows: shows

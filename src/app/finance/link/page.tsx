@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import AppHeader from "@/components/AppHeader";
 import { suggestForJob, type Suggestion } from "@/lib/linking";
 import LinkClient, { type JobRow, type ProductionOption } from "./LinkClient";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 export const dynamic = "force-dynamic";
 
@@ -30,7 +31,7 @@ export default async function LinkJobsPage() {
       .select("id,show_id,record_date,guest,client_id,episode_no")
       .order("record_date", { ascending: false }),
     supabase.from("shows").select("id,name,aliases"),
-    supabase.from("clients").select("id,name"),
+    supabase.from("clients").select("id,name").eq("status", ACTIVE_CLIENT),
   ]);
 
   // before migration 0009 runs, job_productions / jobs.manual_only don't

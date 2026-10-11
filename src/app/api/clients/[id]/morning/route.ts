@@ -19,6 +19,7 @@ export async function GET(_request: Request, { params }: { params: { id: string 
 
   const admin = createAdminClient();
   const { data: client } = await admin
+    // clients-status: by id — suggestions for one card; mapping itself refuses a non-active client
     .from("clients")
     .select("id,name,morning_client_id")
     .eq("id", params.id)

@@ -11,6 +11,7 @@ import { shortDate, todayInIsrael } from "@/lib/dates";
 import { SupabaseReadError } from "@/lib/supabase/unwrap";
 import { hasBeenPerformed } from "@/lib/productions/status";
 import { certainBillingMatchForJobs } from "@/lib/documents/reconcile";
+import { inactiveClientMessage, isActiveClient } from "@/lib/clients/status";
 
 // Enqueueing, not issuing. Nothing in this file talks to Morning — it
 // decides whether a document is OWED, builds the exact payload that would
@@ -194,6 +195,8 @@ export type ClientForBilling = {
   id: string;
   name: string | null;
   morning_client_id: string | null;
+  /** 0107 (E17). Required, not optional: a select that omits it must refuse. */
+  status: string | null;
 };
 
 // The active contract of a contract-billed show (0056). Fetched by
@@ -223,6 +226,7 @@ export async function getClientCadence(
   clientId: string | null
 ): Promise<BillingCadence> {
   if (!clientId) return "per_episode";
+  // clients-status: by id — the cadence of a client the caller already resolved
   const { data, error } = await admin.from("clients").select("billing_cadence").eq("id", clientId).maybeSingle();
   // Throw, not per_episode: a failed read that defaults to per_episode issues
   // immediately to a monthly client instead of accruing.
@@ -299,6 +303,12 @@ export function checkEligibility(
   }
   if (!show.client_id) return { ok: false, applicable: true, reason: "לתוכנית אין לקוח משויך" };
   if (!client) return { ok: false, applicable: true, reason: "הלקוח של התוכנית לא נמצא" };
+  // E17-3: a pending or rejected client is not billed. Before the Morning-id
+  // test on purpose — a pending client has no Morning id either, and "לא ממופה
+  // למורנינג" would send someone to map a client that was never approved.
+  if (!isActiveClient(client.status)) {
+    return { ok: false, applicable: true, reason: inactiveClientMessage(client.name, client.status) };
+  }
   if (!client.morning_client_id) {
     return { ok: false, applicable: true, reason: `הלקוח '${client.name ?? ""}' לא ממופה למורנינג` };
   }
@@ -865,8 +875,9 @@ export async function enqueueDocument(
   const clientId = (show as ShowForBilling | null)?.client_id ?? production.client_id;
   const { data: client, error: clientErr } = clientId
     ? await admin
+        // clients-status: by id — `status` is read and checkEligibility refuses on it
         .from("clients")
-        .select("id,name,morning_client_id,billing_cadence")
+        .select("id,name,morning_client_id,billing_cadence,status")
         .eq("id", clientId)
         .maybeSingle()
     : { data: null, error: null };

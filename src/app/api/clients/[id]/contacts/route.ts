@@ -38,6 +38,7 @@ export async function GET(_request: Request, { params }: { params: { id: string 
 
   const admin = createAdminClient();
   const { data: row } = await admin
+    // clients-status: by id — Morning contacts of one card (a pending client has no Morning id)
     .from("clients")
     .select("id,morning_client_id")
     .eq("id", params.id)

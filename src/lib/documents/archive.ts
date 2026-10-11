@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 // Archiving unassigned registry documents (owner spec). Reversible: archived_at
 // is the only flag, restore clears it. Never touched by the pull.
@@ -20,7 +21,7 @@ function chunk<T>(arr: T[], size: number): T[][] {
 
 // The set of Morning client ids that ARE mapped to one of our clients.
 async function mappedMorningIds(admin: SupabaseClient): Promise<Set<string>> {
-  const { data } = await admin.from("clients").select("morning_client_id").not("morning_client_id", "is", null);
+  const { data } = await admin.from("clients").select("morning_client_id").eq("status", ACTIVE_CLIENT).not("morning_client_id", "is", null);
   return new Set((data ?? []).map((c) => c.morning_client_id as string));
 }
 

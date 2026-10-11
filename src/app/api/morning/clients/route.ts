@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { listClients, MorningError } from "@/lib/morning/client";
 import { normalizeClientName, levenshtein } from "@/lib/clients/match";
 import { backfillDocumentClients } from "@/lib/documents/backfill";
+import { ACTIVE_CLIENT, isActiveClient } from "@/lib/clients/status";
 
 // Client mapping: "my client X = Morning client Y".
 //
@@ -26,7 +27,7 @@ export async function GET() {
 
   const { data: ours } = await supabase
     .from("clients")
-    .select("id,name,normalized_name,morning_client_id,merged_into")
+    .select("id,name,normalized_name,morning_client_id,merged_into").eq("status", ACTIVE_CLIENT)
     .order("name");
 
   let morning;
@@ -141,15 +142,22 @@ export async function POST(request: Request) {
   // Unmapping (null) stays allowed — it is the direction that repairs.
   if (body.morning_client_id) {
     const { data: target } = await admin
+      // clients-status: by id — `status` is read and refused below (E17-3)
       .from("clients")
-      .select("merged_into")
+      .select("merged_into,status")
       .eq("id", body.client_id)
       .maybeSingle();
+    // E17-3: a pending registration enters Morning only through its approval
+    // (E17-5), never by being mapped here first
+    if (target && !isActiveClient(target.status as string | null)) {
+      return NextResponse.json({ error: "הלקוח אינו פעיל (ממתין לאישור או נדחה) — אין למפות אותו למורנינג" }, { status: 409 });
+    }
     const mergedInto = (target?.merged_into as string | null) ?? null;
     if (mergedInto) {
       // a second plain lookup rather than an embedded resource: the join name
       // would depend on the FK's generated identifier, and this path must not
       // be the thing that discovers it is wrong
+      // clients-status: by id — the name of the row a merge points at
       const { data: keeper } = await admin.from("clients").select("name").eq("id", mergedInto).maybeSingle();
       const into = (keeper?.name as string | null) ?? "לקוח אחר";
       return NextResponse.json(
@@ -170,6 +178,7 @@ export async function POST(request: Request) {
     const { data: already } = await admin
       .from("clients")
       .select("name")
+      .eq("status", ACTIVE_CLIENT)
       .eq("morning_client_id", body.morning_client_id)
       .neq("id", body.client_id);
     const sharedWith = (already ?? []).map((r) => r.name as string);
@@ -186,6 +195,7 @@ export async function POST(request: Request) {
   }
 
   const { error } = await admin
+    // clients-status: a write by id — the target was checked above
     .from("clients")
     .update({ morning_client_id: body.morning_client_id || null })
     .eq("id", body.client_id);

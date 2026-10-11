@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 // Active shows with the fields a document needs: who the client is, whether
 // that client can be billed at all, and what an episode costs.
@@ -35,7 +36,7 @@ export async function GET() {
 
   const clientIds = Array.from(new Set((shows ?? []).map((s) => s.client_id).filter(Boolean))) as string[];
   const { data: clients } = clientIds.length
-    ? await admin.from("clients").select("id,name,morning_client_id").in("id", clientIds)
+    ? await admin.from("clients").select("id,name,morning_client_id").eq("status", ACTIVE_CLIENT).in("id", clientIds)
     : { data: [] };
   const byId = new Map((clients ?? []).map((c) => [c.id as string, c]));
 

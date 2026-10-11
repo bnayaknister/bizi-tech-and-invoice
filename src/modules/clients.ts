@@ -1,5 +1,6 @@
 import type { ModuleDef } from "@/modules/types";
 import { canSeeClients } from "@/lib/clients/access";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 // The clients screen on the hub (owner 7.10). Reachable from every screen as
 // well, through the header menu — which reads this very registry, so the card
@@ -33,6 +34,7 @@ export const clientsModule: ModuleDef = {
     const { count } = await supabase
       .from("clients")
       .select("id", { count: "exact", head: true })
+      .eq("status", ACTIVE_CLIENT)
       .is("merged_into", null)
       .not("morning_client_id", "is", null);
     const n = count ?? 0;

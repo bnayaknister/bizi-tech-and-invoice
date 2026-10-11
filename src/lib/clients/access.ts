@@ -1,4 +1,5 @@
 import type { Profile } from "@/lib/profile";
+import { ACTIVE_CLIENT, PENDING_CLIENT } from "@/lib/clients/status";
 
 /**
  * Who may see the clients screen — owner 7.10: "owner או can_view_money בלבד.
@@ -31,4 +32,45 @@ import type { Profile } from "@/lib/profile";
  */
 export function canSeeClients(profile: Profile | null | undefined): boolean {
   return !!profile?.approved && (profile.role === "owner" || !!profile.can_view_money);
+}
+
+/**
+ * Bnaya and Eli — `profiles.studio_admin` (0107). The flag is set only from the
+ * SQL Editor; `guard_studio_admin_flag` refuses every session write to it, so
+ * reading it from the viewer's own profile row is reading something the
+ * viewer cannot have granted themselves.
+ *
+ * `approved` on top, like every gate in this file: an unapproved account is
+ * nobody, whatever its flags say.
+ */
+export function isStudioAdmin(
+  profile: Pick<Profile, "approved" | "studio_admin"> | null | undefined
+): boolean {
+  return !!profile?.approved && !!profile.studio_admin;
+}
+
+/**
+ * "הרשאות הזמנת חדרים" — owner decision 11.10 (E17): Bnaya and Eli only, to
+ * VIEW as well as to edit. Before E17-3 it was can_view_money / can_edit_money,
+ * which also let Shiri (and any bookkeeper with money sight) in. One predicate
+ * for the drawer, the /clients card and the route, so the tab cannot be drawn
+ * for someone the route would refuse.
+ */
+export const BOOKING_CONTACTS_FORBIDDEN = "הרשאות הזמנת חדרים — לבניה ולאלי בלבד";
+
+export function canManageBookingContacts(
+  profile: Pick<Profile, "approved" | "studio_admin"> | null | undefined
+): boolean {
+  return isStudioAdmin(profile);
+}
+
+/**
+ * Which client statuses the /clients list loads for this viewer (E17-3).
+ * Everyone: `active`. A studio_admin also gets `pending`, shown in its own
+ * "ממתינים לאישור" tab. `rejected` is in nobody's list — it is never read.
+ */
+export function clientStatusesVisibleTo(
+  profile: Pick<Profile, "approved" | "studio_admin"> | null | undefined
+): string[] {
+  return isStudioAdmin(profile) ? [ACTIVE_CLIENT, PENDING_CLIENT] : [ACTIVE_CLIENT];
 }

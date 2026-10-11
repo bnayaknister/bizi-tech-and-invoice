@@ -57,6 +57,7 @@ const base: Omit<Profile, "role"> = {
   can_edit_stages: true,
   can_manage_users: true,
   can_import: true,
+  studio_admin: false,
 };
 const owner: Profile = { ...base, role: "owner" };
 const tech: Profile = { ...base, role: "tech" };

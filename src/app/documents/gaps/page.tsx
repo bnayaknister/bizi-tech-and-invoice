@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import { computeReconciliation } from "@/lib/documents/reconcile";
 import GapsClient, { type Gap1Row, type Gap2Row, type Gap3Row } from "./GapsClient";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +23,7 @@ export default async function GapsPage() {
   const admin = createAdminClient();
   const recon = await computeReconciliation(admin);
 
-  const { data: clients } = await admin.from("clients").select("id,name");
+  const { data: clients } = await admin.from("clients").select("id,name").eq("status", ACTIVE_CLIENT);
   const clientName = new Map((clients ?? []).map((c) => [c.id as string, c.name as string]));
 
   const jobLabel = (j: { client_id: string | null; campaign: string | null }) =>

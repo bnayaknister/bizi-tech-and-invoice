@@ -5,6 +5,7 @@ import { listClients, createMorningClient, MorningError, morningEnv, isDryRun } 
 import { normalizeClientName } from "@/lib/clients/match";
 import { backfillDocumentClients } from "@/lib/documents/backfill";
 import { persistMorningMapping } from "@/lib/morning/clientMapping";
+import { ACTIVE_CLIENT, isActiveClient } from "@/lib/clients/status";
 
 // Create a client in Morning and map it — the single shared "צור לקוח במורנינג"
 // action behind the ClientPicker (owner spec). Two modes, one route:
@@ -49,8 +50,13 @@ export async function POST(request: Request) {
 
   // if mapping an existing client of ours, it must exist and be unmapped
   if (body.client_id) {
-    const { data: c } = await admin.from("clients").select("id,morning_client_id").eq("id", body.client_id).maybeSingle();
+    // clients-status: by id — `status` is read and refused below (E17-3)
+    const { data: c } = await admin.from("clients").select("id,morning_client_id,status").eq("id", body.client_id).maybeSingle();
     if (!c) return NextResponse.json({ error: "הלקוח לא נמצא" }, { status: 404 });
+    // E17-3: a pending registration enters Morning only through its approval (E17-5)
+    if (!isActiveClient(c.status as string | null)) {
+      return NextResponse.json({ error: "הלקוח אינו פעיל (ממתין לאישור או נדחה) — לא נפתח במורנינג מכאן" }, { status: 409 });
+    }
     if (c.morning_client_id) return NextResponse.json({ error: "הלקוח כבר ממופה למורנינג" }, { status: 409 });
   }
 
@@ -74,7 +80,7 @@ export async function POST(request: Request) {
   // in brand-new mode, also look for an existing client of OURS by name
   let existingClient: { id: string; name: string; morning_client_id: string | null } | null = null;
   if (!body.client_id) {
-    const { data: ours } = await admin.from("clients").select("id,name,normalized_name,morning_client_id");
+    const { data: ours } = await admin.from("clients").select("id,name,normalized_name,morning_client_id").eq("status", ACTIVE_CLIENT);
     existingClient =
       (ours ?? []).map((c) => ({ id: c.id as string, name: c.name as string, normalized_name: c.normalized_name as string, morning_client_id: (c.morning_client_id as string | null) ?? null }))
         .find((c) => (c.normalized_name || normalizeClientName(c.name)) === target) ?? null;
@@ -99,6 +105,7 @@ export async function POST(request: Request) {
       ourClientId = existingClient.id; // reuse the unmapped existing client
     } else {
       const { data: created, error: insErr } = await admin
+        // clients-status: an insert — a new client is born active (0107 default)
         .from("clients")
         .insert({ name, normalized_name: target })
         .select("id")

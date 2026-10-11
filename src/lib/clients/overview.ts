@@ -14,6 +14,7 @@
 // `!== "כן"`.
 
 import { isUnpaidDebt } from "@/lib/finance/state";
+import { PENDING_CLIENT } from "@/lib/clients/status";
 
 export type ClientRow = {
   id: string;
@@ -21,6 +22,8 @@ export type ClientRow = {
   normalized_name: string;
   morning_client_id: string | null;
   merged_into: string | null;
+  /** 0107 (E17): only `active` and, for a studio_admin, `pending` are ever loaded */
+  status: string;
 };
 
 export type ShowRow = { id: string; name: string; client_id: string | null; active: boolean | null };
@@ -49,11 +52,13 @@ export type ClientListRow = {
   worstOverdueDays: number | null;
   mapped: boolean;
   merged: boolean;
+  /** a self-registration waiting for a studio_admin (E17) — its own tab, nowhere else */
+  pending: boolean;
   /** the client's most recent job date (YYYY-MM-DD), or null */
   lastActivity: string | null;
 };
 
-export type ListScope = "active" | "all" | "merged";
+export type ListScope = "active" | "all" | "merged" | "pending";
 export type ListSort = "name" | "debt" | "activity";
 
 const amount = (v: number | null) => v ?? 0;
@@ -132,6 +137,7 @@ export function buildClientList(
       worstOverdueDays: d?.worst ?? null,
       mapped: !!c.morning_client_id,
       merged: !!c.merged_into,
+      pending: c.status === PENDING_CLIENT,
       lastActivity: lastByClient.get(c.id) ?? null,
     };
   });
@@ -150,6 +156,10 @@ export function buildClientList(
  */
 export function filterClients(rows: ClientListRow[], scope: ListScope, q: string): ClientListRow[] {
   const inScope = rows.filter((r) => {
+    // E17-3: a pending registration is its own tab and never in another one —
+    // the same rule as merged rows, for a stronger reason: it is not a client yet
+    if (scope === "pending") return r.pending;
+    if (r.pending) return false;
     if (scope === "merged") return r.merged;
     if (r.merged) return false;
     if (scope === "active") return r.activeShows.length > 0;

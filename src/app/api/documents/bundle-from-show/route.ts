@@ -7,6 +7,7 @@ import {
   VAT_TYPE_DEFAULT,
   type MorningDocumentRequest,
 } from "@/lib/morning/types";
+import { inactiveClientMessage, isActiveClient } from "@/lib/clients/status";
 
 // One work order for N episodes of a show that were edited but never entered
 // as productions. It creates the job it bills and queues the document in the
@@ -69,11 +70,16 @@ export async function POST(request: Request) {
   if (!show.client_id) return NextResponse.json({ error: "לתוכנית לא משויך לקוח" }, { status: 400 });
 
   const { data: client } = await admin
+    // clients-status: by id — `status` is read and refused below (E17-3)
     .from("clients")
-    .select("id,name,morning_client_id")
+    .select("id,name,morning_client_id,status")
     .eq("id", show.client_id as string)
     .maybeSingle();
   if (!client) return NextResponse.json({ error: "הלקוח לא נמצא" }, { status: 404 });
+  // E17-3: a pending/rejected client gets no document, whatever the UI showed
+  if (!isActiveClient(client.status as string | null)) {
+    return NextResponse.json({ error: inactiveClientMessage(client.name as string | null, client.status as string | null) }, { status: 400 });
+  }
   // iron rule: no issuance without a Morning-mapped client
   if (!client.morning_client_id) {
     return NextResponse.json({ error: "הלקוח אינו ממופה למורנינג" }, { status: 400 });

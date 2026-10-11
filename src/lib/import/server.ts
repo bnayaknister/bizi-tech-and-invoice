@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { norm, type DbRow, type ImportKind } from "./merge";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 // Load current DB rows for an import kind, each pre-tagged with the exact
 // fingerprint string buildPlan expects (see fingerprintCsv in merge.ts).
@@ -18,7 +19,7 @@ export async function loadDbRows(admin: SupabaseClient, kind: ImportKind): Promi
   }
   const [{ data: jobs, error }, { data: clients }] = await Promise.all([
     admin.from("jobs").select("id,external_id,client_id,campaign,date,amount,invoice_biz,invoice_tax,notes").limit(5000),
-    admin.from("clients").select("id,name"),
+    admin.from("clients").select("id,name").eq("status", ACTIVE_CLIENT),
   ]);
   if (error) throw error;
   const clientName = new Map((clients ?? []).map((c) => [c.id, c.name as string]));

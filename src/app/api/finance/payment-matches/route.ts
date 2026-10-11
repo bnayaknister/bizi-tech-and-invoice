@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { computePaymentMatches, paymentMatchFingerprint } from "@/lib/documents/reconcile";
 import { amountBasisLabel } from "@/lib/documents/confidence";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 // The payment matches the engine WOULD link, shown and never written
 // (F14 stage B, owner decision 2026-09-21).
@@ -49,7 +50,7 @@ export async function GET() {
   );
 
   const [{ data: clients }, { data: links }] = await Promise.all([
-    clientIds.length ? admin.from("clients").select("id,name").in("id", clientIds) : Promise.resolve({ data: [] }),
+    clientIds.length ? admin.from("clients").select("id,name").eq("status", ACTIVE_CLIENT).in("id", clientIds) : Promise.resolve({ data: [] }),
     admin.from("job_productions").select("job_id,production_id").in("job_id", jobIds),
   ]);
 

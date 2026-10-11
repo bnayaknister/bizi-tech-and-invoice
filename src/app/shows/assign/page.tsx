@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import AppHeader from "@/components/AppHeader";
 import AssignClient, { type OrphanRow } from "./AssignClient";
 import { countsAsEpisode } from "@/lib/productions/status";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +27,7 @@ export default async function AssignPage() {
       .is("client_id", null)
       .order("name"),
     supabase.from("productions").select("show_id,status,cancelled_at,merged_into"),
-    supabase.from("clients").select("id,name").order("name"),
+    supabase.from("clients").select("id,name").eq("status", ACTIVE_CLIENT).order("name"),
   ]);
 
   // Same predicate as the /shows column (countsAsEpisode) — one definition,

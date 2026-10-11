@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getSessionAndProfile } from "@/lib/profile";
 import { billMiscProduction } from "@/lib/misc/workOrder";
+import { inactiveClientMessage, isActiveClient } from "@/lib/clients/status";
 
 /**
  * "צור הזמנת עבודה" — step 6. The retry the create route promised.
@@ -85,11 +86,16 @@ export async function POST(_request: Request, { params }: { params: { id: string
   // Morning-mapped client. Checked BEFORE the job is made, so a client that
   // cannot be billed never mints one.
   const { data: client } = await admin
+    // clients-status: by id — `status` is read and refused below (E17-3)
     .from("clients")
-    .select("id,name,morning_client_id")
+    .select("id,name,morning_client_id,status")
     .eq("id", entity.client_id as string)
     .maybeSingle();
   if (!client) return NextResponse.json({ error: "הלקוח לא נמצא" }, { status: 404 });
+  // E17-3: a pending/rejected client gets no document, whatever the UI showed
+  if (!isActiveClient(client.status as string | null)) {
+    return NextResponse.json({ error: inactiveClientMessage(client.name as string | null, client.status as string | null) }, { status: 400 });
+  }
   if (!client.morning_client_id) {
     return NextResponse.json(
       { error: `הלקוח '${client.name ?? ""}' אינו ממופה למורנינג — לא ניתן להנפיק לו מסמכים` },

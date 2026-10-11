@@ -57,6 +57,7 @@ export async function fetchClientEmails(
   clientId: string | null
 ): Promise<{ emails: string[]; ok: boolean }> {
   if (!clientId) return { emails: [], ok: true };
+  // clients-status: by id — recipients of a document; issuePendingDocument gates status
   const { data } = await admin.from("clients").select("morning_client_id").eq("id", clientId).maybeSingle();
   const mid = (data as { morning_client_id?: string } | null)?.morning_client_id;
   if (!mid) return { emails: [], ok: true };

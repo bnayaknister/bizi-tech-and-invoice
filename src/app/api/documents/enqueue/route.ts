@@ -9,6 +9,7 @@ import {
   refusalMessage,
 } from "@/lib/documents/parentRef";
 import { DOC_TYPE_LABEL, type PendingDocType } from "@/lib/morning/types";
+import { inactiveClientMessage, isActiveClient } from "@/lib/clients/status";
 
 // Issue a work order or deal invoice straight from the documents registry
 // (owner spec — Feature 2): the bookkeeper picks a job, and a queue row is
@@ -58,11 +59,16 @@ export async function POST(request: Request) {
   if (!job.client_id) return NextResponse.json({ error: "ל-job אין לקוח" }, { status: 400 });
 
   const { data: client } = await admin
+    // clients-status: by id — `status` is read and refused below (E17-3)
     .from("clients")
-    .select("id,name,morning_client_id")
+    .select("id,name,morning_client_id,status")
     .eq("id", job.client_id as string)
     .maybeSingle();
   if (!client) return NextResponse.json({ error: "הלקוח לא נמצא" }, { status: 404 });
+  // E17-3: a pending/rejected client gets no document, whatever the UI showed
+  if (!isActiveClient(client.status as string | null)) {
+    return NextResponse.json({ error: inactiveClientMessage(client.name as string | null, client.status as string | null) }, { status: 400 });
+  }
   // iron rule: no issuance without a Morning-mapped client
   if (!client.morning_client_id) {
     return NextResponse.json({ error: `הלקוח '${client.name ?? ""}' לא ממופה למורנינג` }, { status: 400 });

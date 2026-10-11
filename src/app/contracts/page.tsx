@@ -6,6 +6,7 @@ import { deriveMilestoneState } from "@/lib/finance/milestone";
 import { MORNING_DOC_CODE } from "@/lib/morning/types";
 import { contractQuotas, type QuotaProduction } from "@/lib/contracts/quota";
 import ContractsClient, { type ContractCard } from "./ContractsClient";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +32,7 @@ export default async function ContractsPage() {
       // morning_client_id rides along so the screen can say WHY a milestone
       // cannot be issued instead of hiding the button — an unmapped client is
       // the one refusal the bookkeeper can fix herself.
-      admin.from("clients").select("id,name,morning_client_id"),
+      admin.from("clients").select("id,name,morning_client_id").eq("status", ACTIVE_CLIENT),
       admin.from("jobs").select("id,invoice_biz,invoice_tax,date,paid"),
       // Every queue row that can bear on a milestone's buttons. It cannot be
       // read off `jobs`: that table models the deal invoice (invoice_biz) and

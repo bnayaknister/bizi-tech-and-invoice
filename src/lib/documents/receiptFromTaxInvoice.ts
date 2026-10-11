@@ -413,6 +413,7 @@ export async function createReceiptFromTaxInvoices(
 
   // ---- the payload --------------------------------------------------------
   const { data: clientRow } = localClientIds.length
+    // clients-status: by id — the display name on a document; issuePendingDocument gates status
     ? await admin.from("clients").select("name").eq("id", localClientIds[0] as string).maybeSingle()
     : { data: null };
   const clientName = ((clientRow?.name as string | null) ?? rows[0].payload?.client?.name ?? "").trim();

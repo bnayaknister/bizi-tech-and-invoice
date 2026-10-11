@@ -2,26 +2,22 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createTypedAdminClient } from "@/lib/supabase/admin";
 import { PHONE_ERROR, displayWaId, toWaId } from "@/lib/whatsapp/phone";
+import { BOOKING_CONTACTS_FORBIDDEN, canManageBookingContacts } from "@/lib/clients/access";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // "הרשאות הזמנת חדרים" — who may book a room for each of this client's shows.
 // GET / POST / DELETE. E9-3, owner decision 8.10 (rule ד).
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// ═══ 🔴 THE GATE IS can_view_money / can_edit_money, AND IT IS NOT A NEW ONE ═══
-// The same two flags that already guard the client NAME (entities.ts:158,
-// `edit: "money"`) and the Morning contact block
-// (`api/clients/[id]/contacts/route.ts:20-25`). The reason is not that phone
-// numbers are financial — they are not — but that this card sits INSIDE the
-// client card, and RLS `clients_view` is `can_view_money()` at row level, so
-// nobody below that flag can reach a client card at all. A third, looser gate
-// here would be a gate that lets somebody read rows belonging to a client
-// whose card they cannot open.
-//
-// ⚠️ A `can_view_stages` user (production staff) therefore cannot see this
-// card. Worth knowing: they CAN see shows, so an operational reading of "who
-// may book" would arguably belong to them. That is a product question, not a
-// code one — flagged in the report rather than decided here.
+// ═══ 🔴 THE GATE IS studio_admin — VIEW AND EDIT (E17-3, owner 11.10) ═══
+// Bnaya and Eli only. Until E17-3 it was can_view_money to read and
+// can_edit_money to write, which also let Shiri and any bookkeeper with money
+// sight in — the owner closed that when registrations were specified ("רק בניה
+// ואלי מאשרים הרשמות. באותו שלב גם טאב הרשאות הזמנת חדרים מוגבל לבניה ולאלי").
+// One predicate, `canManageBookingContacts` (lib/clients/access.ts), is shared
+// with the drawer and the /clients card, so the tab is never drawn for someone
+// this route refuses. The flag itself is set only from the SQL Editor (0107's
+// guard_studio_admin_flag), so a session cannot grant it to itself.
 //
 // ═══ SERVICE ROLE FOR EVERY READ AND WRITE ═══
 // 0103 revokes everything from every session role and carries no policy, so
@@ -57,16 +53,18 @@ async function gate(): Promise<Gate> {
   }
   const { data: profile } = await supabase
     .from("profiles")
-    .select("can_view_money,can_edit_money,approved")
+    .select("approved,studio_admin")
     .eq("id", user.id)
     .single();
   if (!profile?.approved) {
     return { ok: false, res: NextResponse.json({ error: "החשבון ממתין לאישור" }, { status: 403 }) };
   }
-  if (!profile.can_view_money) {
-    return { ok: false, res: NextResponse.json({ error: "אין הרשאת צפייה בכספים" }, { status: 403 }) };
+  if (!canManageBookingContacts(profile)) {
+    return { ok: false, res: NextResponse.json({ error: BOOKING_CONTACTS_FORBIDDEN }, { status: 403 }) };
   }
-  return { ok: true, canEdit: !!profile.can_edit_money, userId: user.id };
+  // viewing and editing are one permission now; `canEdit` stays in the
+  // response so the component keeps its shape
+  return { ok: true, canEdit: true, userId: user.id };
 }
 
 export async function GET(_request: Request, { params }: { params: { id: string } }) {

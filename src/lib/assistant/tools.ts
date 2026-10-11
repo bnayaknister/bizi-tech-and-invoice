@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { Profile } from "@/lib/profile";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 // The AI business-question assistant's tool surface (owner spec 2026-07-21).
 //
@@ -168,7 +169,7 @@ async function resolveClient(
   supabase: SupabaseClient,
   name: string
 ): Promise<{ status: "found"; id: string; name: string } | { status: "none" } | { status: "ambiguous"; candidates: string[] }> {
-  const { data } = await supabase.from("clients").select("id,name").ilike("name", `%${name.trim()}%`).limit(10);
+  const { data } = await supabase.from("clients").select("id,name").eq("status", ACTIVE_CLIENT).ilike("name", `%${name.trim()}%`).limit(10);
   const rows = data ?? [];
   if (rows.length === 0) return { status: "none" };
   if (rows.length === 1) return { status: "found", id: rows[0].id, name: rows[0].name };

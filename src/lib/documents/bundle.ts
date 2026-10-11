@@ -13,6 +13,7 @@ import {
   recordParentRefusal,
   refusalMessage,
 } from "@/lib/documents/parentRef";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 // Bundling: several per-episode documents folded into ONE Morning document with
 // a line per episode. Two shapes share this file so redemption (owner spec
@@ -159,7 +160,9 @@ export async function createDealInvoiceBundle(
   }
 
   const clientIds = Array.from(new Set(jobs.map((j) => j.client_id).filter(Boolean))) as string[];
-  const { data: clients } = await admin.from("clients").select("id,name,morning_client_id").in("id", clientIds);
+  // E17-3: active only — a pending client's jobs read as "not mapped" and are
+  // refused; issuePendingDocument refuses them again on the way to Morning
+  const { data: clients } = await admin.from("clients").select("id,name,morning_client_id").eq("status", ACTIVE_CLIENT).in("id", clientIds);
   const morningIds = new Set((clients ?? []).map((c) => c.morning_client_id).filter(Boolean));
   if (morningIds.size !== 1) {
     return {
@@ -607,6 +610,7 @@ export async function createDealInvoiceFromWorkOrder(
   }
 
   const { data: clientRow } = localClientIds.length
+    // clients-status: by id — the display name on a document; issuePendingDocument gates status
     ? await admin.from("clients").select("name").eq("id", localClientIds[0]).maybeSingle()
     : { data: null };
   const clientName = ((clientRow?.name as string | null) ?? rows[0].payload?.client?.name ?? "").trim();

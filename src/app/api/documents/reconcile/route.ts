@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { linkDocumentToJob, suggestDocsForJob, suggestJobsForDoc } from "@/lib/documents/reconcile";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 const DOC_TYPE_LABEL: Record<number, string> = { 300: "חשבון עסקה", 305: "חשבונית מס", 320: "מס / קבלה" };
 const docTypeLabel = (t: number) => DOC_TYPE_LABEL[t] ?? `סוג ${t}`;
@@ -24,7 +25,7 @@ export async function GET(request: Request) {
   const jobId = url.searchParams.get("jobId");
   const docId = url.searchParams.get("docId");
   const admin = createAdminClient();
-  const { data: clients } = await admin.from("clients").select("id,name");
+  const { data: clients } = await admin.from("clients").select("id,name").eq("status", ACTIVE_CLIENT);
   const clientName = new Map((clients ?? []).map((c) => [c.id as string, c.name as string]));
 
   if (jobId) {

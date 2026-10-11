@@ -8,6 +8,7 @@ import { findUnsyncedRecurring } from "@/lib/calendar/recurring";
 import { STUDIOS } from "@/lib/calendar/studios";
 import { createProductionFromEvent } from "@/lib/calendar/createProductionFromEvent";
 import { must, mustRows, type QueryResult } from "@/lib/supabase/unwrap";
+import { ACTIVE_CLIENT, excludeShowsOfInactiveClients } from "@/lib/clients/status";
 import { israelDate, israelTimeHHMM } from "@/lib/dates";
 
 // Google Calendar sync (screens-spec §11, owner rules 2026-07-16/17):
@@ -201,7 +202,21 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string, allEven
   }
   // only active shows open the gate — an archived/retired show's old alias
   // shouldn't start pulling in new recordings again
-  const showsForMatch: ShowForMatch[] = showRows
+  //
+  // E17-3: nor a show whose client is pending or rejected. Read as the
+  // NON-active ids (a handful, usually none) rather than joined, and through
+  // mustRows like every read above: a failure here must not quietly match.
+  const inactiveClientIds = new Set(
+    mustRows<{ id: string }>(
+      (await admin
+        // clients-status: reads the NON-active ids on purpose — their shows are dropped below
+        .from("clients")
+        .select("id")
+        .neq("status", ACTIVE_CLIENT)) as QueryResult<{ id: string }[]>,
+      "טעינת הלקוחות שאינם פעילים"
+    ).map((r) => r.id)
+  );
+  const showsForMatch: ShowForMatch[] = excludeShowsOfInactiveClients(showRows, inactiveClientIds)
     .filter((s) => s.active)
     .map((s) => ({ id: s.id, name: s.name, aliases: s.aliases ?? [] }));
   const showById = new Map(showRows.map((s) => [s.id, s]));

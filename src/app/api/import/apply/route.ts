@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseCsv, detectKind, buildPlan, norm, type ImportKind } from "@/lib/import/merge";
 import { loadDbRows, archiveIdSet, nextExternalId } from "@/lib/import/server";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 type Decision = "skip" | "restore" | "update" | "confirm_overwrite";
 
@@ -139,7 +140,7 @@ async function buildNameLookup(admin: ReturnType<typeof createAdminClient>, kind
     }
     return byName;
   }
-  const { data } = await admin.from("clients").select("id,name");
+  const { data } = await admin.from("clients").select("id,name").eq("status", ACTIVE_CLIENT);
   const byName = new Map<string, string>();
   for (const c of data ?? []) byName.set(norm(c.name), c.id);
   return byName;

@@ -7,6 +7,7 @@ import ShowsClient, { type EpisodeRow, type ShowRow, type ContractOption } from 
 import { mustRows, type QueryResult } from "@/lib/supabase/unwrap";
 import { countsAsEpisode } from "@/lib/productions/status";
 import { contractQuotas, type QuotaProduction } from "@/lib/contracts/quota";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 export const dynamic = "force-dynamic";
 
@@ -53,7 +54,7 @@ export default async function ShowsPage() {
       .select("id,show_id,record_date,status,guest,legacy,cancelled_at,merged_into")
       .order("record_date", { ascending: false }),
     canViewMoney
-      ? supabase.from("clients").select("id,name,morning_client_id").order("name")
+      ? supabase.from("clients").select("id,name,morning_client_id").eq("status", ACTIVE_CLIENT).order("name")
       : Promise.resolve({ data: [], error: null }),
   ]);
   // בלי קאסט, בכוונה: הקאסט מחק את SelectQueryError — הטיפוס שסופאבייס מחזיר

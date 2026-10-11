@@ -60,6 +60,7 @@ const base: Omit<Profile, "role"> = {
   can_edit_stages: true,
   can_manage_users: true,
   can_import: true,
+  studio_admin: false,
 };
 
 console.log("\n=== the gate: owner OR can_view_money, and nothing else ===");
@@ -177,10 +178,10 @@ console.log("\n=== the debt rule is /finance's, not a second spelling ===");
 const TODAY = "2026-10-07";
 
 const clients: ClientRow[] = [
-  { id: "c1", name: "גל אורן", normalized_name: "גל אורן", morning_client_id: "m1", merged_into: null },
-  { id: "c2", name: "ידיעות אחרונות", normalized_name: "ידיעות אחרונות", morning_client_id: null, merged_into: null },
-  { id: "c3", name: "זברה", normalized_name: "זברה", morning_client_id: null, merged_into: "c1" },
-  { id: "c4", name: "אפרת", normalized_name: "אפרת", morning_client_id: "m4", merged_into: null },
+  { id: "c1", name: "גל אורן", normalized_name: "גל אורן", morning_client_id: "m1", merged_into: null, status: "active" },
+  { id: "c2", name: "ידיעות אחרונות", normalized_name: "ידיעות אחרונות", morning_client_id: null, merged_into: null, status: "active" },
+  { id: "c3", name: "זברה", normalized_name: "זברה", morning_client_id: null, merged_into: "c1", status: "active" },
+  { id: "c4", name: "אפרת", normalized_name: "אפרת", morning_client_id: "m4", merged_into: null, status: "active" },
 ];
 const shows: ShowRow[] = [
   { id: "s1", name: "הפודקאסט של גל", client_id: "c1", active: true },

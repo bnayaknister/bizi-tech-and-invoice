@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { findClientMatch, normalizeClientName } from "@/lib/clients/match";
+import { ACTIVE_CLIENT, isActiveClient } from "@/lib/clients/status";
 
 // Smart client field backend (owner request 2026-07-17): search-and-create
 // for the client picker used everywhere a client is chosen (show card,
@@ -34,7 +35,7 @@ export async function POST(request: Request) {
   if (!name) return NextResponse.json({ error: "שם לקוח חסר" }, { status: 400 });
 
   const admin = createAdminClient();
-  const { data: existing, error: existingErr } = await admin.from("clients").select("id,name,normalized_name");
+  const { data: existing, error: existingErr } = await admin.from("clients").select("id,name,normalized_name").eq("status", ACTIVE_CLIENT);
   if (existingErr) return NextResponse.json({ error: existingErr.message }, { status: 400 });
 
   const match = findClientMatch(name, existing ?? []);
@@ -50,6 +51,7 @@ export async function POST(request: Request) {
   }
 
   const { data: created, error: insertErr } = await supabase
+    // clients-status: an insert — a new client is born active (0107 default)
     .from("clients")
     .insert({
       name,
@@ -65,11 +67,21 @@ export async function POST(request: Request) {
     // return that row instead of surfacing a raw DB conflict
     if (insertErr.code === "23505") {
       const { data: race } = await admin
+        // clients-status: by unique name — `status` is read and refused below
         .from("clients")
-        .select("id,name")
+        .select("id,name,status")
         .eq("normalized_name", normalizeClientName(name))
         .maybeSingle();
-      if (race) return NextResponse.json({ ok: true, client: race, created: false });
+      // E17-3: the name may belong to a pending (or rejected) registration,
+      // which the match above deliberately did not see. Never hand it back as
+      // "the existing client" — it cannot be picked, billed or produced for.
+      if (race && !isActiveClient(race.status as string | null)) {
+        return NextResponse.json(
+          { error: "השם הזה שמור להרשמה שממתינה לאישור (או שנדחתה) — יש לטפל בה במסך הלקוחות" },
+          { status: 409 }
+        );
+      }
+      if (race) return NextResponse.json({ ok: true, client: { id: race.id, name: race.name }, created: false });
     }
     return NextResponse.json({ error: insertErr.message }, { status: 400 });
   }

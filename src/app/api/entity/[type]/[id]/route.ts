@@ -18,6 +18,8 @@ import { deriveMilestoneState } from "@/lib/finance/milestone";
 import { must, SupabaseReadError, type QueryResult } from "@/lib/supabase/unwrap";
 import { getAppBaseUrl } from "@/lib/appUrl";
 import { quotaOf, type QuotaProduction } from "@/lib/contracts/quota";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
+import { canManageBookingContacts } from "@/lib/clients/access";
 
 // EntityDrawer backend. Everything flows through the user's own client so
 // RLS and the 0010 column-guard triggers are the real gates; the field
@@ -101,7 +103,7 @@ async function handleGet(
   const needsClients = fields.some((f) => f.options === "clients");
   const needsShows = fields.some((f) => f.options === "shows");
   const [clients, shows] = await Promise.all([
-    needsClients ? supabase.from("clients").select("id,name").order("name") : Promise.resolve({ data: null }),
+    needsClients ? supabase.from("clients").select("id,name").eq("status", ACTIVE_CLIENT).order("name") : Promise.resolve({ data: null }),
     needsShows ? supabase.from("shows").select("id,name").order("name") : Promise.resolve({ data: null }),
   ]);
 
@@ -512,6 +514,9 @@ async function handleGet(
     // creating a job is a money WRITE. The route that does it re-checks
     // can_edit_money itself — this only decides whether the button is drawn.
     canEditMoney: !!profile.can_edit_money,
+    // E17-3: "הרשאות הזמנת חדרים" is drawn for studio_admin only. The
+    // booking-contacts route asks the same predicate and refuses everyone else.
+    canManageBookingContacts: canManageBookingContacts(profile),
     // 0098 — set only when this episode is beyond its contract's quota.
     // null is the ordinary case and means "nothing to say".
     quotaOver,
@@ -667,6 +672,7 @@ export async function POST(
   let morningPartial: { error: string; morning_client_id: string } | null = null;
   if (type === "client" && ("name" in patch || hasMorningOnly)) {
     const { data: mc } = await admin
+      // clients-status: by id — the row being edited
       .from("clients")
       .select("morning_client_id,name")
       .eq("id", params.id)

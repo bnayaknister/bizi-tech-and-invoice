@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { deriveState } from "@/lib/finance/state";
 import { PAYMENT_TYPES } from "@/lib/morning/types";
 import { loadMorningIdsByClient } from "@/lib/clients/morningIds";
+import { ACTIVE_CLIENT } from "@/lib/clients/status";
 
 // The reconciliation engine — the systematic bridge between "what happened"
 // (documents that exist in Morning) and "what the system knows" (jobs and
@@ -352,7 +353,7 @@ async function loadData(admin: SupabaseClient) {
   const DOC_SELECT =
     "id,morning_doc_number,type,client_id,morning_client_id,morning_client_name,amount,document_date,job_id,production_id,source,bundle_job_ids";
   const [{ data: clients }, { data: jobs }, docs, morningIdsByClient] = await Promise.all([
-    admin.from("clients").select("id,name,morning_client_id"),
+    admin.from("clients").select("id,name,morning_client_id").eq("status", ACTIVE_CLIENT),
     // dismissed jobs (0041) are out of reconciliation — a hidden record must
     // not get auto-matched or suggested
     admin.from("jobs").select("id,client_id,amount,invoice_biz,invoice_tax,paid,date,due_date,legacy,campaign").eq("dismissed", false),
