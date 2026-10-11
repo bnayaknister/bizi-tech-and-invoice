@@ -12,7 +12,8 @@ import { israelDateOf } from "@/lib/calendar/availability";
 import { notifyBookingChange } from "../notify";
 import type { ContactShow } from "@/lib/booking/contacts";
 import type { InboundMessage } from "../webhook";
-import { NOTICE } from "./copy";
+import { copy, type Lang } from "./copy";
+import { isBilingualOn } from "../lang";
 import {
   afterCancel,
   afterForward,
@@ -105,13 +106,15 @@ export function eventFromMessage(message: InboundMessage): FlowEvent {
   return { type: "text", text: "" };
 }
 
-const showInfo = (show: ContactShow, multiShow: boolean, linkUrl: string | null) => ({
+const showInfo = (show: ContactShow, multiShow: boolean, linkUrl: string | null, lang: Lang) => ({
   showId: show.showId,
   showName: show.showName,
   defaultStudio: show.defaultStudio ?? null,
   multiShow,
   manageOn: isManageOn(),
   linkUrl,
+  lang,
+  bilingualOn: isBilingualOn(),
 });
 
 /** A booking row -> the option "ההקלטות שלי" offers. PURE. */
@@ -189,9 +192,18 @@ export async function runFlow(
     now: Date;
     /** the app's public base URL, for the link in the menu */
     baseUrl: string;
+    /** E19: the number's language, already resolved by the reply layer */
+    lang: Lang;
+    /**
+     * E19: an event the reply layer decided on instead of the message's own —
+     * `refresh` after a language switch, whose text ("English") must never
+     * reach a step that reads free text as a value (the guest's name).
+     */
+    eventOverride?: FlowEvent;
   }
 ): Promise<FlowOutcome> {
   const { waId, message, shows, now } = input;
+  const C = copy(input.lang);
   const multi = shows.length > 1;
 
   const loaded = await loadConversation(admin, waId);
@@ -212,7 +224,7 @@ export async function runFlow(
       ? row.state
       : null;
 
-  const event = eventFromMessage(message);
+  const event = input.eventOverride ?? eventFromMessage(message);
 
   /**
    * A new conversation. The link is resolved FIRST: a show that cannot get
@@ -224,7 +236,7 @@ export async function runFlow(
   const fresh = async (show: ContactShow, notice: string | null): Promise<Transition | null> => {
     const link = await ensureBookingLink(admin, show.showId, null);
     if (!link.ok) return null;
-    return start(showInfo(show, multi, `${input.baseUrl}/b/${link.token}`), notice);
+    return start(showInfo(show, multi, `${input.baseUrl}/b/${link.token}`, input.lang), notice);
   };
 
   let t: Transition;
@@ -235,14 +247,17 @@ export async function runFlow(
     if (!f) return { kind: "link", show };
     t = f;
   } else if (live) {
-    // the switch is read on every message: turning it off takes effect at once
-    t = reduce({ ...live, manageOn: isManageOn() }, event, { now });
+    // the switches are read on every message: turning one off takes effect at
+    // once — and so is the language (E19): the saved preference wins over the
+    // one the conversation started in, so a switch applies mid-conversation
+    t = reduce({ ...live, manageOn: isManageOn(), lang: input.lang, bilingualOn: isBilingualOn() }, event, { now });
   } else {
     // step 0 (owner, E9-3): several podcasts and no conversation -> the list
     if (multi) return { kind: "shows" };
     // a tap on a conversation that expired: say so once, then start over
     const tappedOld = parseFlowId(interactiveId(message)) !== null;
-    const f = await fresh(shows[0], tappedOld ? NOTICE.expired : null);
+    const notice = event.type === "refresh" ? C.LANG.switched : tappedOld ? C.NOTICE.expired : null;
+    const f = await fresh(shows[0], notice);
     if (!f) return { kind: "link", show: shows[0] };
     t = f;
   }
@@ -281,7 +296,7 @@ export async function runFlow(
         // stored state is still the step before, so the client's next tap on
         // the same message simply tries again.
         console.error("wa/flow: קריאת הזמינות נכשלה", e);
-        return { kind: "send", reply: { type: "text", body: NOTICE.feedFailed }, meta: { flow_error: "feed" } };
+        return { kind: "send", reply: { type: "text", body: C.NOTICE.feedFailed }, meta: { flow_error: "feed" } };
       }
       continue;
     }
@@ -294,7 +309,7 @@ export async function runFlow(
         now
       );
       if (recs === null) {
-        return { kind: "send", reply: { type: "text", body: NOTICE.manageFailed }, meta: { flow_error: "recordings" } };
+        return { kind: "send", reply: { type: "text", body: C.NOTICE.manageFailed }, meta: { flow_error: "recordings" } };
       }
       t = withRecordings(t.state, recs);
       continue;
@@ -356,7 +371,7 @@ export async function runFlow(
       if (saved.kind === "conflict") return { kind: "drop" };
       if (saved.kind === "error") {
         // could not claim the submission -> do not submit; the summary again
-        const back = render({ ...t.state, step: "summary", notice: NOTICE.submitFailed });
+        const back = render({ ...t.state, step: "summary", notice: C.NOTICE.submitFailed });
         return { kind: "send", reply: (back as Extract<Transition, { kind: "reply" }>).reply, meta: { flow_error: "claim" } };
       }
       currentVersion = saved.version;

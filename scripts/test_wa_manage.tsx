@@ -53,12 +53,15 @@ import {
   type RecordingOption,
   type Transition,
 } from "../src/lib/whatsapp/flow/machine";
-import * as C from "../src/lib/whatsapp/flow/copy";
+import { COPY as BOT_COPY } from "../src/lib/whatsapp/flow/copy";
 import { toRecordingOption } from "../src/lib/whatsapp/flow/run";
 import { splitQueue, type QueueRow } from "../src/lib/booking/queue";
 import BookingsBody, { COPY, calendarDeleteFailedText, cancelWarning, moveTagText } from "../src/app/bookings/BookingsBody";
 import { BUTTON_LIMITS, LIST_LIMITS } from "../src/lib/whatsapp/client";
 import type { PublicAvailability } from "../src/lib/booking/publicView";
+
+/** The Hebrew dictionary — the approved copy every assertion below is about. */
+const C = BOT_COPY.he;
 
 let passed = 0;
 let failed = 0;

@@ -45,9 +45,6 @@ import {
   unknownContactBody,
 } from "../src/lib/whatsapp/notify";
 import {
-  LIST_COPY,
-  NEUTRAL_REPLY,
-  linkReplyBody,
   listRowsFor,
   parseShowRowId,
   planReply,
@@ -58,6 +55,8 @@ import { parseStatusUpdates } from "../src/lib/whatsapp/webhook";
 import { calendarDayUrl, splitQueue, type QueueRow } from "../src/lib/booking/queue";
 import { israelInstant } from "../src/lib/calendar/availability";
 import type { ContactShow } from "../src/lib/booking/contacts";
+import { COPY } from "../src/lib/whatsapp/flow/copy";
+const HE = COPY.he;
 
 let passed = 0;
 let failed = 0;
@@ -185,9 +184,9 @@ console.log("\n=== 2. number -> podcasts (zero / one / several) ===");
   const rows = listRowsFor([contact(SHOW_A, long), contact(SHOW_B, "קצר")]);
   const payload = listPayload({
     to: "972501234567",
-    body: LIST_COPY.body,
-    button: LIST_COPY.button,
-    sectionTitle: LIST_COPY.section,
+    body: HE.REPLY.listBody,
+    button: HE.REPLY.listButton,
+    sectionTitle: HE.REPLY.listSection,
     rows,
   });
   const sections = (payload.interactive as { action: { sections: { rows: { id: string; title: string; description?: string }[] }[] } }).action.sections;
@@ -250,10 +249,10 @@ console.log("\n=== 3. the payloads Graph receives ===");
   check("🔴 link previews are off", (txt.text as { preview_url: boolean }).preview_url, false);
   check("the body travels verbatim", (txt.text as { body: string }).body, "היי");
 
-  const reply = linkReplyBody("דעה לא פופולרית", "https://x.test/b/tok");
+  const reply = HE.REPLY.link("דעה לא פופולרית", "https://x.test/b/tok");
   check("the link reply names the show", reply.includes("דעה לא פופולרית"), true);
   check("…and carries the url", reply.includes("https://x.test/b/tok"), true);
-  check("the neutral reply is the approved sentence", NEUTRAL_REPLY, "היי! קיבלנו את ההודעה, נחזור אליך בהקדם 🙂");
+  check("the neutral reply is the approved sentence", HE.REPLY.neutral, "היי! קיבלנו את ההודעה, נחזור אליך בהקדם 🙂");
 }
 
 console.log("\n=== 4. config and Graph errors ===");

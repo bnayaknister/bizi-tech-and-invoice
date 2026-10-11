@@ -8,12 +8,12 @@ import {
 } from "@/lib/booking/request";
 import { clickableDays, hoursFor } from "@/app/calendar/availability/booking";
 import type { PublicAvailability } from "@/lib/booking/publicView";
-import { approvedWhatsappText } from "@/lib/booking/title";
 import { bookableRoomForDefault } from "@/lib/calendar/rooms";
 import { STUDIOS } from "@/lib/calendar/studios";
 import type { SubmitResult } from "@/lib/booking/submit";
 import { selfServeAllowed } from "@/lib/booking/manage";
-import * as C from "./copy";
+import { COPY, copy, isLang, DEFAULT_LANG, type BotCopy, type Lang } from "./copy";
+import { langButtonId } from "../lang";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // The booking conversation, as a PURE state machine. E9-4.
@@ -138,6 +138,11 @@ export type FlowState = {
   recordings: RecordingOption[];
   /** the recording being cancelled or moved */
   target: RecordingOption | null;
+  // ── E19 ──
+  /** the language every message of this conversation is written in */
+  lang: Lang;
+  /** is the bilingual bot switched on (WHATSAPP_BILINGUAL)? decides the menu's language button */
+  bilingualOn: boolean;
 };
 
 export type FlowEvent =
@@ -164,7 +169,9 @@ export type FlowEvent =
   | { type: "recording"; id: string }
   | { type: "move" }
   | { type: "cancel-booking" }
-  | { type: "confirm-cancel" };
+  | { type: "confirm-cancel" }
+  // E19: the language changed — say so and re-send the current step in it
+  | { type: "refresh" };
 
 export type FlowRow = { id: string; title: string; description?: string };
 
@@ -271,9 +278,12 @@ export function parseFlowId(raw: unknown): FlowEvent | null {
 
 /** Typed text -> a navigation event when it is EXACTLY one of the nav words. */
 export function textEvent(text: string): FlowEvent {
-  const t = text.replace(/\s+/g, " ").trim();
-  if ((C.NAV_WORDS.restart as readonly string[]).includes(t)) return { type: "restart" };
-  if ((C.NAV_WORDS.back as readonly string[]).includes(t)) return { type: "back" };
+  // the nav words of EVERY language: a client who switched mid-conversation
+  // may still type the other one, and neither word is anything else
+  const t = text.replace(/\s+/g, " ").trim().toLowerCase();
+  const words = (k: "back" | "restart") => Object.values(COPY).flatMap((c) => c.NAV_WORDS[k]);
+  if (words("restart").includes(t)) return { type: "restart" };
+  if (words("back").includes(t)) return { type: "back" };
   return { type: "text", text };
 }
 
@@ -287,6 +297,9 @@ export type ShowInfo = {
   /** E9-5; absent = off */
   manageOn?: boolean;
   linkUrl?: string | null;
+  /** E19; absent = Hebrew, off */
+  lang?: Lang;
+  bilingualOn?: boolean;
 };
 
 export function initialState(show: ShowInfo): FlowState {
@@ -319,6 +332,8 @@ export function initialState(show: ShowInfo): FlowState {
     linkUrl: show.linkUrl ?? null,
     recordings: [],
     target: null,
+    lang: isLang(show.lang) ? show.lang : DEFAULT_LANG,
+    bilingualOn: show.bilingualOn ?? false,
   };
 }
 
@@ -331,6 +346,8 @@ const showOf = (s: FlowState): ShowInfo => ({
   multiShow: s.multiShow,
   manageOn: s.manageOn,
   linkUrl: s.linkUrl,
+  lang: s.lang,
+  bilingualOn: s.bilingualOn,
 });
 
 /** A fresh conversation: the menu, optionally under a one-line notice. */
@@ -341,7 +358,7 @@ export function start(show: ShowInfo, notice: string | null = null): Transition 
 
 // ─── rendering a step (PURE) ───────────────────────────────────────────────
 
-const navRows = (): FlowRow[] => [
+const navRows = (C: BotCopy): FlowRow[] => [
   { id: FLOW_ID.back, title: C.NAV.back },
   { id: FLOW_ID.restart, title: C.NAV.restart },
 ];
@@ -353,23 +370,33 @@ const withNotice = (s: FlowState, body: string) => (s.notice ? `${s.notice}\n\n$
  * the returned state no longer carries it, so it is said exactly once.
  */
 export function render(s: FlowState): Transition {
+  const C = copy(s.lang);
   const body = (b: string) => withNotice(s, b);
   const out = (reply: FlowReply): Transition => ({ kind: "reply", state: { ...s, notice: null }, reply });
 
   switch (s.step) {
-    case "menu":
+    case "menu": {
       // E9-5: with cancel/move on, "ההקלטות שלי" takes the link button's
       // place (Meta allows three) and the link moves into the body, where a
       // tap opens it just the same.
+      const buttons: { id: string; title: string }[] = [
+        { id: FLOW_ID.go, title: C.MENU.go },
+        s.manageOn ? { id: FLOW_ID.mine, title: C.MENU.mine } : { id: FLOW_ID.link, title: C.MENU.link },
+        ...(s.multiShow ? [{ id: FLOW_ID.switchShow, title: C.MENU.switchShow }] : []),
+      ];
+      // E19: the switch to the OTHER language — a button while there is room
+      // for one (Meta: three), and a line telling how to type it when there
+      // is not (a number with several podcasts already has three).
+      const other: Lang = s.lang === "en" ? "he" : "en";
+      const room = s.bilingualOn && buttons.length < 3;
+      if (room) buttons.push({ id: langButtonId(other), title: C.LANG.switchButton });
+      const hint = s.bilingualOn && !room ? C.LANG.switchHint : "";
       return out({
         type: "buttons",
-        body: body(s.manageOn ? C.MENU.bodyWithLink(s.showName, s.linkUrl) : C.MENU.body(s.showName)),
-        buttons: [
-          { id: FLOW_ID.go, title: C.MENU.go },
-          s.manageOn ? { id: FLOW_ID.mine, title: C.MENU.mine } : { id: FLOW_ID.link, title: C.MENU.link },
-          ...(s.multiShow ? [{ id: FLOW_ID.switchShow, title: C.MENU.switchShow }] : []),
-        ],
+        body: body((s.manageOn ? C.MENU.bodyWithLink(s.showName, s.linkUrl) : C.MENU.body(s.showName)) + hint),
+        buttons,
       });
+    }
 
     case "mine":
       return out({
@@ -385,7 +412,7 @@ export function render(s: FlowState): Transition {
               description: C.MINE.description(r.showName, r.studio),
             })),
           },
-          { title: C.NAV.sectionNav, rows: navRows() },
+          { title: C.NAV.sectionNav, rows: navRows(C) },
         ],
       });
 
@@ -428,7 +455,7 @@ export function render(s: FlowState): Transition {
               description: C.DURATION.description(d),
             })),
           },
-          { title: C.NAV.sectionNav, rows: navRows() },
+          { title: C.NAV.sectionNav, rows: navRows(C) },
         ],
       });
 
@@ -453,9 +480,9 @@ export function render(s: FlowState): Transition {
         sections: [
           {
             title: C.NAV.sectionChoices,
-            rows: BOOKABLE_ROOM_NAMES.map((r) => ({ id: FLOW_ID.studio(r), title: r })),
+            rows: BOOKABLE_ROOM_NAMES.map((r) => ({ id: FLOW_ID.studio(r), title: C.STUDIO.row(r) })),
           },
-          { title: C.NAV.sectionNav, rows: navRows() },
+          { title: C.NAV.sectionNav, rows: navRows(C) },
         ],
       });
 
@@ -474,7 +501,7 @@ export function render(s: FlowState): Transition {
               ...(more ? [{ id: FLOW_ID.moreDays, title: C.DAY.more }] : []),
             ],
           },
-          { title: C.NAV.sectionNav, rows: navRows() },
+          { title: C.NAV.sectionNav, rows: navRows(C) },
         ],
       });
     }
@@ -494,7 +521,7 @@ export function render(s: FlowState): Transition {
               ...(more ? [{ id: FLOW_ID.moreHours, title: C.HOUR.more }] : []),
             ],
           },
-          { title: C.NAV.sectionNav, rows: navRows() },
+          { title: C.NAV.sectionNav, rows: navRows(C) },
         ],
       });
     }
@@ -657,7 +684,17 @@ function back(s: FlowState): Transition {
  * on it. That one rule is what makes an old message's buttons harmless.
  */
 export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Transition {
+  const C = copy(s.lang);
   // ── always available ──
+  // E19: the language just changed (the driver already put the new one in
+  // `s.lang`). Say so once, in the new language, over the same step — except
+  // mid-submission, which only ever answers "בטיפול", and after a finished
+  // booking, where the step is a dead end and the menu is the useful answer.
+  if (e.type === "refresh") {
+    if (s.step === "submitting") return render(s);
+    if (s.step === "done") return start(showOf(s), C.LANG.switched);
+    return again(s, C.LANG.switched);
+  }
   if (e.type === "restart") {
     if (s.step === "submitting") return render(s);
     return start(showOf(s));
@@ -839,6 +876,7 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
  * hoursFor — and render.
  */
 export function withAvailability(s: FlowState, pub: PublicAvailability): Transition {
+  const C = copy(s.lang);
   if (s.step === "day") {
     const days = clickableDays(pub.free, s.studio, pub.fromIsrael, pub.toIsrael);
     if (days.length === 0) {
@@ -881,6 +919,7 @@ export function withAvailability(s: FlowState, pub: PublicAvailability): Transit
  * anything else returns to the summary so the client can simply try again.
  */
 export function afterSubmit(s: FlowState, r: SubmitResult): Transition {
+  const C = copy(s.lang);
   if (s.mode === "move") {
     const t = s.target as RecordingOption;
     if (r.ok) {
@@ -903,15 +942,11 @@ export function afterSubmit(s: FlowState, r: SubmitResult): Transition {
       return {
         kind: "reply",
         state: done,
-        // the EXISTING confirmation text (title.ts), from the STORED values
+        // in Hebrew, the EXISTING confirmation text (title.ts) — see copy.ts —
+        // from the STORED values
         reply: {
           type: "text",
-          body: approvedWhatsappText({
-            showName: s.showName,
-            dateIsrael: r.request.dateIsrael,
-            startIsrael: r.request.startIsrael,
-            studio: r.request.studio,
-          }),
+          body: C.OUTCOME.approved(s.showName, r.request.dateIsrael, r.request.startIsrael, r.request.studio),
         },
       };
     }
@@ -973,6 +1008,9 @@ export function parseFlowState(raw: unknown): FlowState | null {
     linkUrl: s.linkUrl ?? null,
     recordings: s.recordings ?? [],
     target: s.target ?? null,
+    // E19 fields, defaulted for a state saved before E19
+    lang: isLang(s.lang) ? s.lang : DEFAULT_LANG,
+    bilingualOn: s.bilingualOn ?? false,
   } as FlowState;
 }
 
@@ -980,6 +1018,7 @@ export function parseFlowState(raw: unknown): FlowState | null {
 
 /** The client's upcoming approved recordings arrived. None -> the menu, saying so. */
 export function withRecordings(s: FlowState, recordings: RecordingOption[]): Transition {
+  const C = copy(s.lang);
   if (recordings.length === 0) {
     return render({ ...s, step: "menu", recordings: [], target: null, notice: C.NOTICE.noRecordings });
   }
@@ -988,6 +1027,7 @@ export function withRecordings(s: FlowState, recordings: RecordingOption[]): Tra
 
 /** The bot's own cancellation answered. */
 export function afterCancel(s: FlowState, outcome: CancelOutcome): Transition {
+  const C = copy(s.lang);
   const t = s.target as RecordingOption;
   if (outcome === "cancelled") {
     return {
@@ -1004,6 +1044,7 @@ export function afterCancel(s: FlowState, outcome: CancelOutcome): Transition {
 
 /** Within 24 hours: the team was told; the client is told that it was. */
 export function afterForward(s: FlowState, change: "cancel-request" | "move-request"): Transition {
+  const C = copy(s.lang);
   return {
     kind: "reply",
     state: { ...s, step: "done", mode: "book", notice: null },

@@ -31,13 +31,16 @@ import {
   type FlowState,
   type Transition,
 } from "../src/lib/whatsapp/flow/machine";
-import * as C from "../src/lib/whatsapp/flow/copy";
+import { COPY } from "../src/lib/whatsapp/flow/copy";
 import { eventFromMessage, isFlowOn } from "../src/lib/whatsapp/flow/run";
 import { flowPayload } from "../src/lib/whatsapp/reply";
 import { BUTTON_LIMITS, LIST_LIMITS, SECTION_TITLE_MAX } from "../src/lib/whatsapp/client";
 import type { PublicAvailability } from "../src/lib/booking/publicView";
 import type { InboundMessage } from "../src/lib/whatsapp/webhook";
 import { approvedWhatsappText } from "../src/lib/booking/title";
+
+/** The Hebrew dictionary — the approved copy every assertion below is about. */
+const C = COPY.he;
 
 let passed = 0;
 let failed = 0;

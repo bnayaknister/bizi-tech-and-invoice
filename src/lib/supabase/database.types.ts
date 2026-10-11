@@ -1939,6 +1939,30 @@ export type Database = {
         }
         Relationships: []
       }
+      wa_contact_prefs: {
+        Row: {
+          created_at: string
+          lang: string | null
+          lang_set_at: string | null
+          updated_at: string
+          wa_id: string
+        }
+        Insert: {
+          created_at?: string
+          lang?: string | null
+          lang_set_at?: string | null
+          updated_at?: string
+          wa_id: string
+        }
+        Update: {
+          created_at?: string
+          lang?: string | null
+          lang_set_at?: string | null
+          updated_at?: string
+          wa_id?: string
+        }
+        Relationships: []
+      }
       wa_conversations: {
         Row: {
           created_at: string

@@ -145,8 +145,9 @@ export function fillTemplate(text: string, params: readonly string[]): string {
  * template for five situations, the situation itself being `{{1}}`: every one
  * of them means "go and look at /bookings", and five templates would be five
  * approvals from Meta for one sentence (the same reasoning as the pending
- * template's reason parameter). PROPOSED — not yet submitted to Meta; until it
- * is approved, a send fails, is logged, and fails nothing else.
+ * template's reason parameter). SUBMITTED to Meta on 11.10 and awaiting
+ * approval; until it is approved, a send fails (132001), is logged, and fails
+ * nothing else.
  */
 export const TEMPLATE_BOOKING_CHANGE = "bizi_booking_change";
 export const TEMPLATE_BOOKING_CHANGE_VARS = ["change", "showName", "whenLine", "studio", "details"] as const;
