@@ -16,7 +16,8 @@ import JoinForm, { JOIN_FORM_TITLE } from "../src/app/join/[token]/JoinForm";
 import { JOIN_DEAD, JOIN_THANKS_BODY, JOIN_THANKS_TITLE, JoinDeadLink, JoinThanks, BRAND } from "../src/app/join/[token]/JoinScreens";
 import JoinPage, { metadata } from "../src/app/join/[token]/page";
 import { POST as submitPOST } from "../src/app/api/join/submit/route";
-import ClientsScreen, { NEW_LINK_LABEL } from "../src/app/clients/ClientsScreen";
+import ClientsScreen, { NEW_LINK_LABEL, PENDING_CARD_HIDDEN } from "../src/app/clients/ClientsScreen";
+import { canCreateRegistrationLink } from "../src/lib/clients/access";
 import type { ClientsScreenData } from "../src/app/clients/data";
 import ModuleCard from "../src/components/ModuleCard";
 import RegistrationsPopup from "../src/components/RegistrationsPopup";
@@ -106,6 +107,18 @@ async function main() {
     const r = (d: ClientsScreenData) => renderToString(<AppRouterContext.Provider value={router}><ClientsScreen data={d} /></AppRouterContext.Provider>);
     check("not allowed (or switch off): the button is drawn ZERO times", countOf(r(data({})), NEW_LINK_LABEL), 0);
     check("studio_admin + switch on: once", countOf(r(data({ canCreateRegistrationLink: true })), NEW_LINK_LABEL), 1);
+    // owner 11.10: a PRIMARY button, not a small tag
+    const btn = /<button[^>]*data-testid="new-registration-link"[^>]*>/.exec(r(data({ canCreateRegistrationLink: true })))?.[0] ?? "";
+    check("…a primary button: filled violet, white, bold, full width", ["bg-[var(--violet)]", "text-white", "font-bold", "w-full", "text-sm"].map((c) => btn.includes(c)), [true, true, true, true, true]);
+    check("…not the old small pill", btn.includes("text-[11px]"), false);
+    const base = { approved: true } as const;
+    check("who sees it: studio_admin + switch on only", [
+      canCreateRegistrationLink({ ...base, studio_admin: true }, true),
+      canCreateRegistrationLink({ ...base, studio_admin: true }, false),
+      canCreateRegistrationLink({ ...base, studio_admin: false }, true),
+      canCreateRegistrationLink({ approved: false, studio_admin: true }, true),
+      canCreateRegistrationLink(null, true),
+    ], [true, false, false, false, false]);
   }
 
   console.log("\n── 5. E17-5: the approval section, the badge, the popup");
@@ -128,6 +141,17 @@ async function main() {
       renderToString(<AppRouterContext.Provider value={router}><ClientsScreen data={d} initialTab={tab ?? null} /></AppRouterContext.Provider>);
     check("pending card, studio_admin: 'אישור הרשמה' once", countOf(r(data({})), ">אישור הרשמה<"), 1);
     check("pending card without the pending tab right: ZERO times", countOf(r(data({ canSeePending: false })), ">אישור הרשמה<"), 0);
+    // owner 11.10: a pending card is the approval panel and NOTHING else
+    {
+      const html = r(data({}));
+      const hidden = [">סקירה<", ">תוכניות וחוזים<", ">כספים<", ">פעילות<", "מודל חיוב", "תנאי תשלום", "מחיר ברירת מחדל", 'data-block="booking-contacts"', "אין מסמכים", "אין הפקות"];
+      check("🔴 pending card: none of the regular card is drawn", hidden.map((h) => countOf(html, h)), hidden.map(() => 0));
+      check("…the card is marked pending", countOf(html, 'data-card="pending"'), 1);
+      const noRight = r(data({ canSeePending: false }));
+      check("pending card without the right: a one-line note, still no regular card", [countOf(noRight, PENDING_CARD_HIDDEN), countOf(noRight, ">סקירה<"), countOf(noRight, "מודל חיוב")], [1, 0, 0]);
+      const active = r(data({ card: { ...card, status: "active", registrationId: null } }));
+      check("an ACTIVE card: the regular card is back", [">סקירה<", ">תוכניות וחוזים<", ">כספים<", ">פעילות<", "מודל חיוב"].map((h) => countOf(active, h) > 0), [true, true, true, true, true]);
+    }
     check("an active card: ZERO times", countOf(r(data({ card: { ...card, status: "active", registrationId: null } })), ">אישור הרשמה<"), 0);
     const pendingRow = {
       id: "p1", name: "נרשם חדש", normalized_name: "pending:x", activeShows: [], debt: 0, overdueCount: 0,

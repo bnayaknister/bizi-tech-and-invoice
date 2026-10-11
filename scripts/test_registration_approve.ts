@@ -34,7 +34,8 @@ import {
 import { autoApproveNewRequest, autoApproveVerdict, lowerFirstBookingFlag } from "../src/lib/booking/decide";
 import { PENDING_REASON_LABEL, TEMPLATE_META_APPROVED } from "../src/lib/whatsapp/notify";
 import { TEMPLATE_EN_APPROVED } from "../src/lib/whatsapp/lang";
-import { popupTitle, shouldShowPopup } from "../src/components/RegistrationsPopup";
+import { POPUP_RECHECK_MS, nextPopupState, popupTitle, shouldRecheck } from "../src/components/RegistrationsPopup";
+import { RATE_REQUIRED_ERROR, perEpisodeRateError } from "../src/lib/registration/rate";
 import { registrationsBadge } from "../src/modules/clients";
 import { normalizeClientName } from "../src/lib/clients/match";
 
@@ -182,6 +183,25 @@ async function main() {
     check("at least one booking number", !noContacts.ok && !!noContacts.errors.contact1Phone, true);
     const same = validateApprovalInput({ ...GOOD, contacts: [{ name: "a", phone: "0501112222" }, { name: "b", phone: "050-111-2222" }] });
     check("two equal numbers refused", !same.ok && !!same.errors.contact2Phone, true);
+    // owner 11.10: per-episode billing needs a price above 0
+    const NOT_A_NUMBER = "התעריף צריך להיות מספר חיובי.";
+    for (const [rate, want] of [["", RATE_REQUIRED_ERROR], ["0", RATE_REQUIRED_ERROR], ["-5", NOT_A_NUMBER], ["abc", NOT_A_NUMBER]] as const) {
+      const v2 = validateApprovalInput({ ...GOOD, show: { ...GOOD.show, rate } });
+      check(`🔴 per_episode, price "${rate}" -> refused on the price field`, !v2.ok && v2.errors.rate, want);
+    }
+    check("per_episode, price 900 -> fine", validateApprovalInput(GOOD).ok, true);
+    check("per_episode priced per hour still needs the price", !validateApprovalInput({ ...GOOD, show: { ...GOOD.show, pricingModel: "per_hour", rate: "" } }).ok, true);
+    check("contract / none: no price needed", [
+      validateApprovalInput({ ...GOOD, show: { ...GOOD.show, billingMode: "contract", rate: "" } }).ok,
+      validateApprovalInput({ ...GOOD, show: { ...GOOD.show, billingMode: "none", rate: "" } }).ok,
+    ], [true, true]);
+    check("the form's own check (UI) says the same", [
+      perEpisodeRateError("per_episode", ""), perEpisodeRateError("per_episode", "0"), perEpisodeRateError("per_episode", "350"), perEpisodeRateError("contract", ""),
+    ], [RATE_REQUIRED_ERROR, RATE_REQUIRED_ERROR, null, null]);
+    const ui = readFileSync(join(__dirname, "..", "src/components/RegistrationReview.tsx"), "utf8");
+    check("UI: approve checks the price before the request", ui.includes("if (!form || busy || rateBlocked()) return;"), true);
+    check("UI: 'new podcast' checks it too", ui.includes('if (!form || busy || (mode === "new" && rateBlocked())) return;'), true);
+    check("UI: the error is drawn beside the price field", ui.includes("error={errors.pricingModel || errors.rate}"), true);
     check("E17 code parsed", [e17Code("ERROR: E17:name_taken"), e17Code("boom")], ["name_taken", null]);
     check("Morning field guessed", [morningFieldOf("taxId is invalid"), morningFieldOf("Invalid email"), morningFieldOf("???")], ["taxId", "emails", null]);
   }
@@ -365,6 +385,12 @@ async function main() {
     o = await attachRegistration(w.client, { registrationId: REG, actorId: "a", raw: { mode: "new", show: { ...GOOD.show, alias: "" }, contacts } });
     check("new podcast without an alias -> invalid, nothing called", [o.kind, w.calls.some((c) => c.op === "rpc")], ["invalid", false]);
     w = base();
+    o = await attachRegistration(w.client, { registrationId: REG, actorId: "a", raw: { mode: "new", show: { ...GOOD.show, rate: "" }, contacts } });
+    check("🔴 new podcast, per episode, no price -> invalid on the price, nothing called", [o.kind, o.kind === "invalid" && o.errors.rate, w.calls.some((c) => c.op === "rpc")], ["invalid", RATE_REQUIRED_ERROR, false]);
+    w = base();
+    o = await attachRegistration(w.client, { registrationId: REG, actorId: "a", raw: { mode: "existing", showId: "s-card", contacts } });
+    check("connecting to an EXISTING podcast asks no price", o.kind, "done");
+    w = base();
     o = await rejectRegistration(w.client, { registrationId: REG, actorId: "a", reason: "לא רלוונטי" });
     check("reject a matched one -> done, the card untouched", [o.kind, w.store.client_registrations[0].status, w.store.clients[0].status], ["done", "rejected", "active"]);
   }
@@ -447,7 +473,29 @@ async function main() {
     check("the cron is scheduled", vercel.crons.some((c) => c.path === "/api/cron/purge-registrations"), true);
     const header = readFileSync(join(__dirname, "..", "src/components/AppHeader.tsx"), "utf8");
     check("the popup is mounted for studio_admin only", header.includes("{isStudioAdmin(profile) && <RegistrationsPopup />}"), true);
-    check("popup: shows once — not when already asked this session", [shouldShowPopup(false, 2), shouldShowPopup(true, 2), shouldShowPopup(false, 0)], [true, false, false]);
+    // owner 11.10 (revised): first check of the session opens on > 0; after
+    // that ONLY when the count rose since the last check
+    check("popup: first check, 2 waiting -> opens", nextPopupState(null, 2), { show: true, seen: 2 });
+    check("popup: first check, none waiting -> closed", nextPopupState(null, 0), { show: false, seen: 0 });
+    check("popup: same count on the next screen -> NOT again", nextPopupState(2, 2), { show: false, seen: 2 });
+    check("popup: count fell (some approved) -> NOT again, remembers the lower", nextPopupState(3, 1), { show: false, seen: 1 });
+    check("🔴 popup: count rose 2 -> 3 mid-session -> opens again", nextPopupState(2, 3), { show: true, seen: 3 });
+    check("popup: 0 -> 1 mid-session -> opens", nextPopupState(0, 1), { show: true, seen: 1 });
+    {
+      // a session walked through: 2, 2, 2, 1 (approved one), 2 (a new one), 2
+      let seen: number | null = null;
+      const shown: boolean[] = [];
+      for (const n of [2, 2, 2, 1, 2, 2]) {
+        const r = nextPopupState(seen, n);
+        shown.push(r.show);
+        seen = r.seen;
+      }
+      check("popup: a session 2,2,2,1,2,2 opens on the first and on the new arrival only", shown, [true, false, false, false, true, false]);
+    }
+    check("popup: re-check at most once a minute", [POPUP_RECHECK_MS, shouldRecheck(null, 0), shouldRecheck(1_000, 30_000), shouldRecheck(1_000, 61_000)], [60_000, true, false, true]);
+    const popupSrc = readFileSync(join(__dirname, "..", "src/components/RegistrationsPopup.tsx"), "utf8");
+    check("popup: no polling timer (screen change + tab back in view only)", /setInterval|setTimeout/.test(popupSrc), false);
+    check("popup: re-checks on a screen change and on visibilitychange", [popupSrc.includes("}, [pathname]);"), popupSrc.includes('"visibilitychange"')], [true, true]);
     check("popup title", [popupTitle(1), popupTitle(3)], ["יש הרשמה אחת שממתינה לאישור", "יש 3 הרשמות שממתינות לאישור"]);
     check("badge", registrationsBadge(2), "2 ממתינות לאישור");
   }

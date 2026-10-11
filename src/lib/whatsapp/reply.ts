@@ -11,6 +11,7 @@ import {
 import { EXISTING_CLAIM_DETAILS, notifyClientRegistration, recordBookingNotification } from "./notify";
 import { isRegistrationEnabled } from "@/lib/registration/switch";
 import { ensureRegistrationLinkForWaId, registrationUrl } from "@/lib/registration/links";
+import { isRecentlyRejectedNumber } from "@/lib/registration/rejected";
 import { israelDateOf } from "@/lib/calendar/availability";
 import { bookingUrlForShow, showsForNumber, type ContactShow } from "@/lib/booking/contacts";
 import type { InboundMessage } from "./webhook";
@@ -482,6 +483,9 @@ export function planUnknownReply(tappedId: string | null): UnknownPlan {
  *                             once per number per day.
  * The language question (askLanguage) sends the same daily notice, so a
  * number that never picks a language is reported too.
+ *
+ * A verified number rejected in the last 30 days gets the neutral sentence
+ * instead of all of the above (registration/rejected.ts).
  */
 async function replyUnknownWithOffer(
   admin: SupabaseClient<Database>,
@@ -490,6 +494,22 @@ async function replyUnknownWithOffer(
   ctx: Ctx,
   request: Request
 ): Promise<ReplyOutcome> {
+  // Owner decision 11.10: a VERIFIED number whose registration was rejected
+  // in the last 30 days gets no buttons — whatever it typed or tapped — but
+  // the neutral sentence, and the owner the usual once-a-day notice.
+  if (await isRecentlyRejectedNumber(admin, waId, new Date())) {
+    await notifyUnknownDaily(admin, message, waId);
+    const N = copy(ctx.lang).REPLY.neutral;
+    return await recordAndSend(admin, {
+      inboundWamid: ctx.replyKey,
+      waId,
+      body: N,
+      payload: textPayload({ to: waId, body: N }),
+      kind: "neutral",
+      meta: { unknown_contact: true, join: "rejected-30d" },
+    });
+  }
+
   const C = copy(ctx.lang).JOIN;
   const plan = planUnknownReply(interactiveId(message));
 

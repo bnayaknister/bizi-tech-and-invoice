@@ -15,6 +15,7 @@ import { fakeDb, REGISTRATION_UNIQUES, type Row } from "./_fake_db";
 import { JOIN_EXISTING_ID, JOIN_NEW_ID, planUnknownReply, replyToInbound } from "../src/lib/whatsapp/reply";
 import { COPY } from "../src/lib/whatsapp/flow/copy";
 import { TEMPLATE_META_APPROVED } from "../src/lib/whatsapp/notify";
+import { REJECTED_BLOCK_DAYS, rejectedBlockCutoff } from "../src/lib/registration/rejected";
 import type { InboundMessage } from "../src/lib/whatsapp/webhook";
 
 process.env.WHATSAPP_DRY_RUN = "true";
@@ -207,6 +208,57 @@ async function main() {
     await replyToInbound(client, REQ, text("היי"));
     check("no offer to a known number", replies(store).some((m) => m.body === COPY.he.JOIN.offerBody), false);
     check("no link minted for a known number", store.registration_links.length, 0);
+  }
+
+  section("7. a rejected registration — 30 days without the buttons (owner decision 11.10)");
+  {
+    const DAY = 24 * 60 * 60 * 1000;
+    const rejected = (daysAgo: number, verified: boolean, status = "rejected"): Row => ({
+      id: `r-${daysAgo}-${verified}`, status, booking_wa_id_1: WA, booking_wa_id_1_verified: verified,
+      booking_wa_id_2: null, booking_wa_id_2_verified: false,
+      rejected_at: status === "rejected" ? new Date(Date.now() - daysAgo * DAY).toISOString() : null,
+    });
+    const withRegs = (regs: Row[], failOn?: Record<string, string[]>) => fakeDb(
+      { booking_contacts: [], wa_messages: [], wa_contact_prefs: [{ wa_id: WA, lang: "he" }], registration_links: [], events: [], client_registrations: regs },
+      { unique: REGISTRATION_UNIQUES, failOn }
+    );
+    check("the block is 30 days", REJECTED_BLOCK_DAYS, 30);
+    check("cutoff = now - 30 days", rejectedBlockCutoff(new Date("2026-10-31T12:00:00Z")), "2026-10-01T12:00:00.000Z");
+
+    {
+      const { client, store } = withRegs([rejected(3, true)]);
+      await replyToInbound(client, REQ, text("שוב אני"));
+      check("verified + rejected 3 days ago: the NEUTRAL sentence, no buttons", [replies(store)[0]?.body, replies(store)[0]?.type], [COPY.he.REPLY.neutral, "text"]);
+      check("…and the owner gets bizi_unknown_contact", notices(store).map((m) => [m.template_name, m.wa_id]), [["bizi_unknown_contact", OWNER]]);
+      await replyToInbound(client, REQ, tap(JOIN_NEW_ID, "x"));
+      check("…an old 'new client' button mints NO link", [store.registration_links.length, replies(store)[1]?.body], [0, COPY.he.REPLY.neutral]);
+      check("…and the owner is paged once a day, not per message", notices(store).length, 1);
+    }
+    {
+      const { client, store } = withRegs([rejected(29, true)]);
+      await replyToInbound(client, REQ, text("hi"));
+      check("verified + rejected 29 days ago: still blocked", replies(store)[0]?.body, COPY.he.REPLY.neutral);
+    }
+    {
+      const { client, store } = withRegs([rejected(3, false)]);
+      await replyToInbound(client, REQ, text("hi"));
+      check("🔴 number TYPED in a manual link, rejected: NOT blocked — the buttons", [replies(store)[0]?.body, replies(store)[0]?.type], [COPY.he.JOIN.offerBody, "interactive"]);
+    }
+    {
+      const { client, store } = withRegs([rejected(31, true)]);
+      await replyToInbound(client, REQ, text("hi"));
+      check("verified, rejected 31 days ago: an ordinary unknown number — the buttons again", replies(store)[0]?.body, COPY.he.JOIN.offerBody);
+    }
+    {
+      const { client, store } = withRegs([rejected(0, true, "pending")]);
+      await replyToInbound(client, REQ, text("hi"));
+      check("a PENDING registration is not a rejection: the buttons", replies(store)[0]?.body, COPY.he.JOIN.offerBody);
+    }
+    {
+      const { client, store } = withRegs([], { client_registrations: ["select"] });
+      await replyToInbound(client, REQ, text("hi"));
+      check("read failure: neutral + the owner is still told", [replies(store)[0]?.body, notices(store).length], [COPY.he.REPLY.neutral, 1]);
+    }
   }
 
   delete process.env.REGISTRATION_ENABLED;

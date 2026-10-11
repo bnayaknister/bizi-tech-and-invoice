@@ -12,6 +12,7 @@ import {
   registrationNoticeVariables,
 } from "@/lib/whatsapp/notify";
 import { loadLang, templateLanguageFor } from "@/lib/whatsapp/lang";
+import { perEpisodeRateError } from "./rate";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // E17-5 — approving a registration. The order of operations IS the design.
@@ -106,6 +107,10 @@ export function validateShowInput(raw: Record<string, unknown> | null | undefine
     const n = Number(r.rate);
     if (!Number.isFinite(n) || n < 0) errors.rate = "התעריף צריך להיות מספר חיובי.";
     else rate = n;
+  }
+  if (!errors.rate && billingMode) {
+    const required = perEpisodeRateError(billingMode, r.rate);
+    if (required) errors.rate = required;
   }
   const defaultStudio = text(r.defaultStudio) || null;
   if (!name || !alias || !billingMode || !pricingModel || errors.rate) return null;

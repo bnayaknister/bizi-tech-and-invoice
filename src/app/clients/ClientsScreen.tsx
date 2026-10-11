@@ -268,30 +268,41 @@ function ClientCardPanel({ data }: { data: ClientsScreenData }) {
   const row = data.rows.find((r) => r.id === card.id);
   // E17-3: a pending registration enters Morning only through its approval
   // (E17-5), so neither Morning block is offered on its card — the mapping
-  // route refuses it too, this only keeps the button from being drawn.
+  // route refuses it too.
   const pending = card.status === "pending";
+
+  // Owner decision 11.10: a PENDING client's card is the approval panel and
+  // nothing else — one place to edit. The regular card (overview, billing,
+  // booking contacts, shows, money, documents, activity) appears once the
+  // client is active. E17-5: studio_admin only (the card is only reachable
+  // from their tab; the routes refuse others).
+  if (pending) {
+    return (
+      <section className="rounded-2xl border border-[var(--rule)] p-4 space-y-4" data-card="pending">
+        <div className="flex items-center gap-2">
+          <h2 className="font-bold text-base flex-1 min-w-0 truncate">{card.name}</h2>
+          <span className="text-[10px] text-amber-400">{PENDING_BADGE}</span>
+        </div>
+        {card.registrationId && data.canSeePending ? (
+          <div className="space-y-2">
+            <SectionTitle>אישור הרשמה</SectionTitle>
+            <RegistrationReview registrationId={card.registrationId} onDone={() => router.refresh()} />
+          </div>
+        ) : (
+          <Empty>{PENDING_CARD_HIDDEN}</Empty>
+        )}
+      </section>
+    );
+  }
 
   return (
     <section className="rounded-2xl border border-[var(--rule)] p-4 space-y-4">
       <div className="flex items-center gap-2">
         <h2 className="font-bold text-base flex-1 min-w-0 truncate">{card.name}</h2>
-        {pending ? (
-          <span className="text-[10px] text-amber-400">{PENDING_BADGE}</span>
-        ) : (
-          row && !row.mapped && <span className="text-[10px] text-amber-400">{NOT_MAPPED}</span>
-        )}
+        {row && !row.mapped && <span className="text-[10px] text-amber-400">{NOT_MAPPED}</span>}
       </div>
 
       {error && <div className="text-xs text-red-400">{error}</div>}
-
-      {/* E17-5: a pending registration is decided here — studio_admin only
-          (the card is only reachable from their tab; the routes refuse others) */}
-      {pending && card.registrationId && data.canSeePending && (
-        <div className="space-y-2">
-          <SectionTitle>אישור הרשמה</SectionTitle>
-          <RegistrationReview registrationId={card.registrationId} onDone={() => router.refresh()} />
-        </div>
-      )}
 
       {/* ── סקירה ── the drawer's own rows, plus the drawer's own Morning card */}
       <div className="space-y-3">
@@ -307,22 +318,18 @@ function ClientCardPanel({ data }: { data: ClientsScreenData }) {
         {/* the Morning CARD this client bills on — beside the ח.פ and the
             contacts, because all three are Morning's facts about the same
             client and the owner asked for them in one place (7.10) */}
-        {!pending && (
-          <>
-            <MorningMappingCard
-              clientId={card.id}
-              clientName={card.name}
-              mapped={!!row?.mapped}
-              canEdit={data.canEditMoney}
-              onChanged={() => router.refresh()}
-            />
-            <ClientMorningCard
-              clientId={card.id}
-              clientName={card.name}
-              onChanged={() => router.refresh()}
-            />
-          </>
-        )}
+        <MorningMappingCard
+          clientId={card.id}
+          clientName={card.name}
+          mapped={!!row?.mapped}
+          canEdit={data.canEditMoney}
+          onChanged={() => router.refresh()}
+        />
+        <ClientMorningCard
+          clientId={card.id}
+          clientName={card.name}
+          onChanged={() => router.refresh()}
+        />
         {/* the same component the drawer renders — see its own header.
             studio_admin only (owner 11.10, E17-3): not drawn at all for anyone
             else, and the route refuses them too. */}
@@ -464,12 +471,15 @@ function Empty({ children }: { children: React.ReactNode }) {
 // ─── E17-4 ──────────────────────────────────────────────────────────────────
 
 export const NEW_LINK_LABEL = "קישור הרשמה חדש";
+/** a pending card the viewer cannot decide: the regular card stays hidden too */
+export const PENDING_CARD_HIDDEN = "הכרטיס ייפתח אחרי אישור ההרשמה.";
 export const MATCHED_TITLE = "הרשמות שהותאמו לכרטיס קיים";
 
 /**
  * "קישור הרשמה חדש" — a manual link with no number, valid 7 days, single use.
  * Drawn only for a studio_admin while REGISTRATION_ENABLED is on; the route
- * asks the same predicate.
+ * asks the same predicate. A PRIMARY, full-width button (owner decision 11.10:
+ * the screen's main action, not a small tag).
  */
 function RegistrationLinkButton() {
   const [url, setUrl] = useState<string | null>(null);
@@ -499,9 +509,10 @@ function RegistrationLinkButton() {
       <button
         onClick={() => void create()}
         disabled={busy}
-        className="text-[11px] rounded-full px-2.5 py-1 border border-[var(--violet-light)] disabled:opacity-60"
+        data-testid="new-registration-link"
+        className="w-full rounded-xl bg-[var(--violet)] px-5 py-2.5 text-sm font-bold text-white disabled:opacity-50"
       >
-        {busy ? "יוצר…" : NEW_LINK_LABEL}
+        {busy ? "יוצר…" : `+ ${NEW_LINK_LABEL}`}
       </button>
       {url && (
         <div className="flex items-center gap-2">

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { STUDIOS } from "@/lib/calendar/studios";
 import type { RegistrationReview as Review } from "@/lib/registration/review";
 import type { ApproveOutcome, SimpleOutcome } from "@/lib/registration/approve";
+import { perEpisodeRateError } from "@/lib/registration/rate";
 
 /**
  * E17-5 — the approval screen for one registration, inside the "ממתינים
@@ -175,15 +176,25 @@ export default function RegistrationReview({ registrationId, onDone }: { registr
     }
   }
 
+  /** the per-episode price, checked before the request (the server checks it too) */
+  function rateBlocked(): boolean {
+    const e = form ? perEpisodeRateError(form.show.billingMode, form.show.rate) : null;
+    if (e) {
+      setMsg(null);
+      setErrors({ rate: e });
+    }
+    return !!e;
+  }
+
   async function approve() {
-    if (!form || busy) return;
+    if (!form || busy || rateBlocked()) return;
     const match = review?.checks.morning.status === "ok" ? review.checks.morning.match : null;
     showOutcome(
       await post("approve", { ...form, linkMorningId: linkMorning && match ? match.id : null })
     );
   }
   async function attach() {
-    if (!form || busy) return;
+    if (!form || busy || (mode === "new" && rateBlocked())) return;
     showOutcome(await post("attach", { mode, showId: mode === "existing" ? showId : null, show: form.show, contacts: form.contacts }));
   }
   async function reject() {
@@ -304,7 +315,7 @@ export default function RegistrationReview({ registrationId, onDone }: { registr
               <option value="none">ללא חיוב</option>
             </select>
           </F>
-          <F label="תמחור" error={errors.pricingModel || errors.rate}>
+          <F label={form.show.billingMode === "per_episode" ? "תמחור ומחיר (חובה)" : "תמחור ומחיר"} error={errors.pricingModel || errors.rate}>
             <div className="flex gap-1">
               <select className={input} value={form.show.pricingModel} onChange={(e) => setShow({ pricingModel: e.target.value })}>
                 <option value="per_episode">לפרק</option>

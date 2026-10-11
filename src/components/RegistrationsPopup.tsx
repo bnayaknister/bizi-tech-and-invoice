@@ -2,50 +2,110 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 
 /**
- * E17-5 — "יש X הרשמות שממתינות לאישור", for a studio_admin, on every screen,
- * ONCE PER SESSION (owner 11.10): not on every navigation. AppHeader mounts it
- * only for a studio_admin; the count route refuses everyone else anyway.
+ * E17-5 — "יש X הרשמות שממתינות לאישור", for a studio_admin, on every screen.
+ * AppHeader mounts it only for a studio_admin; the count route refuses
+ * everyone else anyway.
  *
- * "Once" is sessionStorage — one browser tab session. It is marked when the
- * count is FETCHED, not when the window is closed, so moving between screens
- * never asks again, and a count of zero does not come back to ask later in
- * the same session either. A blocked storage simply means it may show again.
+ * WHEN IT OPENS (owner 11.10, revised):
+ *   · the first check of the session: when the count is above 0;
+ *   · after that: ONLY when the count ROSE since the last check. Same or
+ *     lower — it stays closed, so moving between screens never nags.
+ * "The last check" is the last count SEEN, not the last one shown: after
+ * three are approved and one arrives, 3 → 0 → 1 opens it, because 1 is new.
+ *
+ * WHEN IT CHECKS — no polling timer. A check happens on a screen change and
+ * when the tab comes back into view, at most once a minute
+ * (POPUP_RECHECK_MS). An idle tab asks nothing; a working admin is told
+ * within a minute of the next click. The count is one head-count query.
+ *
+ * Memory is sessionStorage (one browser-tab session), mirrored in a module
+ * variable so a blocked storage still remembers within the tab.
  */
 export const POPUP_KEY = "bizi:registrations-popup";
+export const POPUP_RECHECK_MS = 60_000;
 
 export function popupTitle(n: number): string {
   return n === 1 ? "יש הרשמה אחת שממתינה לאישור" : `יש ${n} הרשמות שממתינות לאישור`;
 }
 
-/** PURE: show the window? */
-export function shouldShowPopup(alreadyAsked: boolean, count: number | null): boolean {
-  return !alreadyAsked && (count ?? 0) > 0;
+/**
+ * PURE: given the count seen last time (null = never this session) and the
+ * count now — open the window? And what to remember.
+ */
+export function nextPopupState(lastSeen: number | null, count: number): { show: boolean; seen: number } {
+  if (lastSeen === null) return { show: count > 0, seen: count };
+  return { show: count > lastSeen, seen: count };
+}
+
+/** PURE: is it time to ask the server again? */
+export function shouldRecheck(lastAt: number | null, now: number): boolean {
+  return lastAt === null || now - lastAt >= POPUP_RECHECK_MS;
+}
+
+type Memory = { seen: number | null; at: number | null };
+let memory: Memory = { seen: null, at: null };
+
+function readMemory(): Memory {
+  try {
+    const raw = window.sessionStorage.getItem(POPUP_KEY);
+    if (raw) {
+      const m = JSON.parse(raw) as Partial<Memory>;
+      return { seen: typeof m.seen === "number" ? m.seen : null, at: typeof m.at === "number" ? m.at : null };
+    }
+  } catch {
+    /* storage blocked or an old value: the module copy */
+  }
+  return memory;
+}
+
+function writeMemory(m: Memory) {
+  memory = m;
+  try {
+    window.sessionStorage.setItem(POPUP_KEY, JSON.stringify(m));
+  } catch {
+    /* storage blocked: the module copy is enough within the tab */
+  }
 }
 
 export default function RegistrationsPopup() {
+  const pathname = usePathname();
   const [count, setCount] = useState<number | null>(null);
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
-    let asked = false;
-    try {
-      asked = window.sessionStorage.getItem(POPUP_KEY) === "1";
-      if (!asked) window.sessionStorage.setItem(POPUP_KEY, "1");
-    } catch {
-      /* storage blocked: ask anyway */
+    let cancelled = false;
+    function check() {
+      const m = readMemory();
+      const now = Date.now();
+      if (!shouldRecheck(m.at, now)) return;
+      // marked BEFORE the fetch, so two triggers in the same moment ask once
+      writeMemory({ ...m, at: now });
+      void fetch("/api/registrations/pending-count", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((b: { count?: number } | null) => {
+          if (cancelled || typeof b?.count !== "number") return;
+          const next = nextPopupState(readMemory().seen, b.count);
+          writeMemory({ seen: next.seen, at: now });
+          if (next.show) {
+            setCount(b.count);
+            setOpen(true);
+          }
+        })
+        .catch(() => {});
     }
-    if (asked) return;
-    void fetch("/api/registrations/pending-count", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((b: { count?: number } | null) => {
-        const n = b?.count ?? 0;
-        setCount(n);
-        setOpen(shouldShowPopup(false, n));
-      })
-      .catch(() => {});
-  }, []);
+    check();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") check();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [pathname]);
 
   if (!open || !count) return null;
   return (
