@@ -4,7 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { listClients, MorningError } from "@/lib/morning/client";
 import { normalizeClientName, levenshtein } from "@/lib/clients/match";
 import { backfillDocumentClients } from "@/lib/documents/backfill";
-import { ACTIVE_CLIENT, isActiveClient } from "@/lib/clients/status";
+import { ACTIVE_CLIENT, MERGED_CLIENT, isActiveClient } from "@/lib/clients/status";
 
 // Client mapping: "my client X = Morning client Y".
 //
@@ -25,9 +25,11 @@ export async function GET() {
   const { data: profile } = await supabase.from("profiles").select("can_edit_money").eq("id", user.id).single();
   if (!profile?.can_edit_money) return NextResponse.json({ error: "אין הרשאת עריכת כספים" }, { status: 403 });
 
+  // B24: merged rows (status 'merged' since 0109) are listed on purpose —
+  // locked, with the survivor's name (see below); never suggested or mapped
   const { data: ours } = await supabase
     .from("clients")
-    .select("id,name,normalized_name,morning_client_id,merged_into").eq("status", ACTIVE_CLIENT)
+    .select("id,name,normalized_name,morning_client_id,merged_into").in("status", [ACTIVE_CLIENT, MERGED_CLIENT])
     .order("name");
 
   let morning;
@@ -147,11 +149,6 @@ export async function POST(request: Request) {
       .select("merged_into,status")
       .eq("id", body.client_id)
       .maybeSingle();
-    // E17-3: a pending registration enters Morning only through its approval
-    // (E17-5), never by being mapped here first
-    if (target && !isActiveClient(target.status as string | null)) {
-      return NextResponse.json({ error: "הלקוח אינו פעיל (ממתין לאישור או נדחה) — אין למפות אותו למורנינג" }, { status: 409 });
-    }
     const mergedInto = (target?.merged_into as string | null) ?? null;
     if (mergedInto) {
       // a second plain lookup rather than an embedded resource: the join name
@@ -164,6 +161,11 @@ export async function POST(request: Request) {
         { error: `השורה מוזגה אל '${into}' ואינה בשימוש — אין למפות אותה. מפו את '${into}' במקומה.` },
         { status: 409 }
       );
+    }
+    // E17-3: a pending registration enters Morning only through its approval
+    // (E17-5), never by being mapped here first
+    if (target && !isActiveClient(target.status as string | null)) {
+      return NextResponse.json({ error: "הלקוח אינו פעיל (ממתין לאישור או נדחה) — אין למפות אותו למורנינג" }, { status: 409 });
     }
   }
 

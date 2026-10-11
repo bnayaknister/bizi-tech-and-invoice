@@ -24,12 +24,13 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import {
   ACTIVE_CLIENT,
+  MERGED_CLIENT,
   excludeShowsOfInactiveClients,
   findInactiveClients,
   inactiveClientMessage,
   isActiveClient,
 } from "../src/lib/clients/status";
-import { clientStatusesVisibleTo } from "../src/lib/clients/access";
+import { canSeePendingClients, clientStatusesVisibleTo } from "../src/lib/clients/access";
 import { buildClientList, filterClients, type ClientRow } from "../src/lib/clients/overview";
 import { loadMorningIdMap, loadMorningIdsByClient } from "../src/lib/clients/morningIds";
 import { checkEligibility } from "../src/lib/documents/enqueue";
@@ -114,6 +115,9 @@ const CLIENTS: Row[] = [
   // must not come back from a list.
   { id: "cP", name: "ממתין בע״מ", normalized_name: "ממתין בע״מ", morning_client_id: "mP", merged_into: null, status: "pending" },
   { id: "cR", name: "נדחה בע״מ", normalized_name: "נדחה בע״מ", morning_client_id: "mR", merged_into: null, status: "rejected" },
+  // B24 (0109): a row retired by a merge — status 'merged', merged_into set,
+  // no Morning id (0051's CHECK)
+  { id: "cM", name: "[מוזג] אקטיב", normalized_name: "merged:cM", morning_client_id: null, merged_into: "cA", status: "merged" },
 ];
 
 async function main() {
@@ -168,6 +172,15 @@ async function main() {
     check("zero unclassified client queries", unclassified, []);
     check("the scan found the lists (sanity: more than 25 filtered)", filtered.length > 25, true);
     check("the scan found the by-id reads (sanity: more than 15 annotated)", annotated.length > 15, true);
+
+    // B24: a merged row is listed ON PURPOSE in exactly two places. Any other
+    // file that names MERGED_CLIENT is a picker/match/sync about to see it.
+    const MERGED_ALLOWED = ["src/lib/clients/status.ts", "src/lib/clients/access.ts", "src/app/api/morning/clients/route.ts"];
+    const mergedUsers = files
+      .filter((f) => /MERGED_CLIENT|["']merged["']\s*[\],]/.test(readFileSync(f, "utf8").replace(/\/\/.*$/gm, "")))
+      .map((f) => relative(join(root, ".."), f))
+      .filter((f) => !MERGED_ALLOWED.includes(f) && !f.startsWith("src/lib/clients/overview.ts") && !f.startsWith("src/app/clients/"));
+    check("B24: MERGED_CLIENT appears only where merged rows are shown on purpose", mergedUsers, []);
   }
 
   // ═══ 2. the pure rules ═════════════════════════════════════════════════════
@@ -182,20 +195,23 @@ async function main() {
     can_view_money: true, can_edit_money: true, can_view_stages: true, can_edit_stages: true,
     can_manage_users: true, can_import: true, studio_admin: false,
   };
-  check("an owner with every money flag sees active only", clientStatusesVisibleTo(base), ["active"]);
-  check("a studio_admin sees active + pending", clientStatusesVisibleTo({ ...base, studio_admin: true }), ["active", "pending"]);
-  check("an UNAPPROVED studio_admin sees active only", clientStatusesVisibleTo({ ...base, studio_admin: true, approved: false }), ["active"]);
+  check("an owner with every money flag sees active + merged (the 'מוזגו' tab)", clientStatusesVisibleTo(base), ["active", "merged"]);
+  check("a studio_admin sees active + pending + merged", clientStatusesVisibleTo({ ...base, studio_admin: true }), ["active", "pending", "merged"]);
+  check("an UNAPPROVED studio_admin sees active + merged", clientStatusesVisibleTo({ ...base, studio_admin: true, approved: false }), ["active", "merged"]);
   check("rejected is in nobody's list", clientStatusesVisibleTo({ ...base, studio_admin: true }).includes("rejected"), false);
+  check("🔴 the pending tab is decided by 'pending', not by the list's length", [canSeePendingClients(base), canSeePendingClients({ ...base, studio_admin: true })], [false, true]);
+  check("merged is not active", [MERGED_CLIENT, isActiveClient(MERGED_CLIENT)], ["merged", false]);
 
   const rowsIn: ClientRow[] = [
     { id: "cA", name: "אקטיב", normalized_name: "אקטיב", morning_client_id: "mA", merged_into: null, status: "active" },
     { id: "cP", name: "ממתין", normalized_name: "ממתין", morning_client_id: null, merged_into: null, status: "pending" },
+    { id: "cM", name: "[מוזג] אקטיב", normalized_name: "merged:cM", morning_client_id: null, merged_into: "cA", status: "merged" },
   ];
   const list = buildClientList(rowsIn, [{ id: "s1", name: "פוד", client_id: "cP", active: true }, { id: "s2", name: "פוד2", client_id: "cA", active: true }], [], "2026-10-11");
-  check("buildClientList marks pending", list.map((r) => [r.id, r.pending]), [["cA", false], ["cP", true]]);
-  check("pending is NOT in 'פעילים'", filterClients(list, "active", "").map((r) => r.id), ["cA"]);
-  check("pending is NOT in 'הכול'", filterClients(list, "all", "").map((r) => r.id), ["cA"]);
-  check("pending is NOT in 'מוזגו'", filterClients(list, "merged", "").map((r) => r.id), []);
+  check("buildClientList marks pending and merged", list.map((r) => [r.id, r.pending, r.merged]), [["cA", false, false], ["cP", true, false], ["cM", false, true]]);
+  check("pending / merged are NOT in 'פעילים'", filterClients(list, "active", "").map((r) => r.id), ["cA"]);
+  check("pending / merged are NOT in 'הכול'", filterClients(list, "all", "").map((r) => r.id), ["cA"]);
+  check("B24: 'מוזגו' shows the merged row, and only it", filterClients(list, "merged", "").map((r) => r.id), ["cM"]);
   check("pending IS in its own tab, alone", filterClients(list, "pending", "").map((r) => r.id), ["cP"]);
   check("search inside the pending tab", filterClients(list, "pending", "ממת").map((r) => r.id), ["cP"]);
 
@@ -226,15 +242,19 @@ async function main() {
     const q = (statuses: string[]) =>
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (admin as any).from("clients").select("id").in("status", statuses).range(0, 999) as Promise<{ data: Row[] }>;
-    check("/clients for everyone: active only", (await q(clientStatusesVisibleTo(base))).data.map((r) => r.id), ["cA"]);
-    check("/clients for a studio_admin: active + pending, never rejected", (await q(clientStatusesVisibleTo({ ...base, studio_admin: true }))).data.map((r) => r.id), ["cA", "cP"]);
+    check("/clients for everyone: active + merged", (await q(clientStatusesVisibleTo(base))).data.map((r) => r.id), ["cA", "cM"]);
+    check("/clients for a studio_admin: active + pending + merged, never rejected", (await q(clientStatusesVisibleTo({ ...base, studio_admin: true }))).data.map((r) => r.id), ["cA", "cP", "cM"]);
+    // the mapping screen's own shape (api/morning/clients GET)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = (await (admin as any).from("clients").select("id").in("status", [ACTIVE_CLIENT, MERGED_CLIENT]).order("name")) as { data: Row[] };
+    check("mapping screen: active + the locked merged row, never pending/rejected", m.data.map((x) => x.id), ["cA", "cM"]);
   }
   {
     const { admin } = fakeDb({ clients: CLIENTS });
     // the picker/search/list shape every filtered page uses
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const r = (await (admin as any).from("clients").select("id,name").eq("status", ACTIVE_CLIENT).order("name")) as { data: Row[] };
-    check("a picker list: active only", r.data.map((x) => x.id), ["cA"]);
+    check("🔴 B24: a picker list: active only — the merged row is gone without touching the picker", r.data.map((x) => x.id), ["cA"]);
   }
 
   // ═══ 4. the issuance gate ══════════════════════════════════════════════════

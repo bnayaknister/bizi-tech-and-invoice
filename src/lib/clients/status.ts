@@ -13,6 +13,11 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  *                  studio_admin. Nowhere else.
  *   · `rejected` — visible nowhere, ever. Its registration row is purged 30
  *                  days after the rejection (E17-5).
+ *   · `merged`   — retired by a client merge (B24, 0109). `merged_into` names
+ *                  the survivor, and a CHECK ties the two together. Visible
+ *                  only where a merged row is shown ON PURPOSE: the "מוזגו"
+ *                  tab of /clients and the locked row of the Morning mapping
+ *                  screen. Never picked, matched, synced or billed.
  *
  * ═══ WHY AN EXPLICIT `.eq("status", ACTIVE_CLIENT)` ON EVERY LIST ═══
  * and not a view or an RLS policy: 0107 is applied and this ticket carries no
@@ -30,7 +35,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 export const ACTIVE_CLIENT = "active" as const;
 export const PENDING_CLIENT = "pending" as const;
 export const REJECTED_CLIENT = "rejected" as const;
-export type ClientStatus = typeof ACTIVE_CLIENT | typeof PENDING_CLIENT | typeof REJECTED_CLIENT;
+export const MERGED_CLIENT = "merged" as const;
+export type ClientStatus = typeof ACTIVE_CLIENT | typeof PENDING_CLIENT | typeof REJECTED_CLIENT | typeof MERGED_CLIENT;
 
 export function isActiveClient(status: string | null | undefined): boolean {
   return status === ACTIVE_CLIENT;

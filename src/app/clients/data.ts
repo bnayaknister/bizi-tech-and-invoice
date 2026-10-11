@@ -18,6 +18,7 @@ import {
   canCreateRegistrationLink,
   canManageBookingContacts,
   canSeeClients,
+  canSeePendingClients,
   clientStatusesVisibleTo,
   isStudioAdmin,
 } from "@/lib/clients/access";
@@ -256,7 +257,7 @@ export async function loadClientsScreen(selectedId: string | null): Promise<
       rows,
       card,
       canEditMoney: !!p.can_edit_money,
-      canSeePending: clientStatusesVisibleTo(p).length > 1,
+      canSeePending: canSeePendingClients(p),
       canManageBookingContacts: canManageBookingContacts(p),
       canCreateRegistrationLink: canCreateRegistrationLink(p, isRegistrationEnabled()),
       matchedRegistrations,

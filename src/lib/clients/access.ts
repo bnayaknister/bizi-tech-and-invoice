@@ -1,5 +1,5 @@
 import type { Profile } from "@/lib/profile";
-import { ACTIVE_CLIENT, PENDING_CLIENT } from "@/lib/clients/status";
+import { ACTIVE_CLIENT, MERGED_CLIENT, PENDING_CLIENT } from "@/lib/clients/status";
 
 /**
  * Who may see the clients screen — owner 7.10: "owner או can_view_money בלבד.
@@ -66,13 +66,22 @@ export function canManageBookingContacts(
 
 /**
  * Which client statuses the /clients list loads for this viewer (E17-3).
- * Everyone: `active`. A studio_admin also gets `pending`, shown in its own
- * "ממתינים לאישור" tab. `rejected` is in nobody's list — it is never read.
+ * Everyone: `active` and `merged` — the merged rows feed the "מוזגו" tab and
+ * nothing else (filterClients keeps them out of every other scope; B24). A
+ * studio_admin also gets `pending`, shown in its own "ממתינים לאישור" tab.
+ * `rejected` is in nobody's list — it is never read.
  */
 export function clientStatusesVisibleTo(
   profile: Pick<Profile, "approved" | "studio_admin"> | null | undefined
 ): string[] {
-  return isStudioAdmin(profile) ? [ACTIVE_CLIENT, PENDING_CLIENT] : [ACTIVE_CLIENT];
+  return isStudioAdmin(profile) ? [ACTIVE_CLIENT, PENDING_CLIENT, MERGED_CLIENT] : [ACTIVE_CLIENT, MERGED_CLIENT];
+}
+
+/** Does this viewer get the "ממתינים לאישור" tab? */
+export function canSeePendingClients(
+  profile: Pick<Profile, "approved" | "studio_admin"> | null | undefined
+): boolean {
+  return clientStatusesVisibleTo(profile).includes(PENDING_CLIENT);
 }
 
 /**
