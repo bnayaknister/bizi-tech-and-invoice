@@ -145,6 +145,7 @@ export type Database = {
           created_by: string | null
           id: string
           name: string
+          registration_id: string | null
           show_id: string
           wa_id: string
         }
@@ -153,6 +154,7 @@ export type Database = {
           created_by?: string | null
           id?: string
           name: string
+          registration_id?: string | null
           show_id: string
           wa_id: string
         }
@@ -161,6 +163,7 @@ export type Database = {
           created_by?: string | null
           id?: string
           name?: string
+          registration_id?: string | null
           show_id?: string
           wa_id?: string
         }
@@ -170,6 +173,13 @@ export type Database = {
             columns: ["created_by"]
             isOneToOne: false
             referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "booking_contacts_registration_id_fkey"
+            columns: ["registration_id"]
+            isOneToOne: false
+            referencedRelation: "client_registrations"
             referencedColumns: ["id"]
           },
           {
@@ -383,6 +393,125 @@ export type Database = {
           },
         ]
       }
+      client_registrations: {
+        Row: {
+          address: string | null
+          booking_name_1: string
+          booking_name_2: string | null
+          booking_wa_id_1: string
+          booking_wa_id_1_verified: boolean
+          booking_wa_id_2: string | null
+          booking_wa_id_2_verified: boolean
+          client_id: string | null
+          contact_name: string | null
+          created_at: string
+          decided_at: string | null
+          decided_by: string | null
+          duplicate_of_client_id: string | null
+          emails: string[]
+          id: string
+          legal_name: string
+          link_id: string | null
+          phone: string
+          podcast_name: string
+          privacy_accepted_at: string
+          privacy_version: string
+          reject_reason: string | null
+          rejected_at: string | null
+          source: string
+          status: string
+          tax_id: string
+          updated_at: string
+        }
+        Insert: {
+          address?: string | null
+          booking_name_1: string
+          booking_name_2?: string | null
+          booking_wa_id_1: string
+          booking_wa_id_1_verified?: boolean
+          booking_wa_id_2?: string | null
+          booking_wa_id_2_verified?: boolean
+          client_id?: string | null
+          contact_name?: string | null
+          created_at?: string
+          decided_at?: string | null
+          decided_by?: string | null
+          duplicate_of_client_id?: string | null
+          emails: string[]
+          id?: string
+          legal_name: string
+          link_id?: string | null
+          phone: string
+          podcast_name: string
+          privacy_accepted_at: string
+          privacy_version: string
+          reject_reason?: string | null
+          rejected_at?: string | null
+          source: string
+          status?: string
+          tax_id: string
+          updated_at?: string
+        }
+        Update: {
+          address?: string | null
+          booking_name_1?: string
+          booking_name_2?: string | null
+          booking_wa_id_1?: string
+          booking_wa_id_1_verified?: boolean
+          booking_wa_id_2?: string | null
+          booking_wa_id_2_verified?: boolean
+          client_id?: string | null
+          contact_name?: string | null
+          created_at?: string
+          decided_at?: string | null
+          decided_by?: string | null
+          duplicate_of_client_id?: string | null
+          emails?: string[]
+          id?: string
+          legal_name?: string
+          link_id?: string | null
+          phone?: string
+          podcast_name?: string
+          privacy_accepted_at?: string
+          privacy_version?: string
+          reject_reason?: string | null
+          rejected_at?: string | null
+          source?: string
+          status?: string
+          tax_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "client_registrations_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_registrations_decided_by_fkey"
+            columns: ["decided_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_registrations_duplicate_of_client_id_fkey"
+            columns: ["duplicate_of_client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_registrations_link_id_fkey"
+            columns: ["link_id"]
+            isOneToOne: false
+            referencedRelation: "registration_links"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       client_review_items: {
         Row: {
           approved: boolean
@@ -587,6 +716,8 @@ export type Database = {
           name: string
           normalized_name: string
           payment_terms: Database["public"]["Enums"]["payment_terms"]
+          status: string
+          tax_id: string | null
         }
         Insert: {
           billing_cadence?: Database["public"]["Enums"]["billing_cadence"]
@@ -601,6 +732,8 @@ export type Database = {
           name: string
           normalized_name: string
           payment_terms?: Database["public"]["Enums"]["payment_terms"]
+          status?: string
+          tax_id?: string | null
         }
         Update: {
           billing_cadence?: Database["public"]["Enums"]["billing_cadence"]
@@ -615,6 +748,8 @@ export type Database = {
           name?: string
           normalized_name?: string
           payment_terms?: Database["public"]["Enums"]["payment_terms"]
+          status?: string
+          tax_id?: string | null
         }
         Relationships: [
           {
@@ -1676,6 +1811,7 @@ export type Database = {
           id: string
           name: string
           role: string | null
+          studio_admin: boolean
         }
         Insert: {
           approved?: boolean
@@ -1690,6 +1826,7 @@ export type Database = {
           id: string
           name: string
           role?: string | null
+          studio_admin?: boolean
         }
         Update: {
           approved?: boolean
@@ -1704,8 +1841,50 @@ export type Database = {
           id?: string
           name?: string
           role?: string | null
+          studio_admin?: boolean
         }
         Relationships: []
+      }
+      registration_links: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          expires_at: string
+          id: string
+          revoked_at: string | null
+          token: string
+          used_at: string | null
+          wa_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          expires_at: string
+          id?: string
+          revoked_at?: string | null
+          token: string
+          used_at?: string | null
+          wa_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          expires_at?: string
+          id?: string
+          revoked_at?: string | null
+          token?: string
+          used_at?: string | null
+          wa_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "registration_links_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       schema_ledger: {
         Row: {
@@ -1740,6 +1919,7 @@ export type Database = {
           default_editor_id: string | null
           default_rate: number | null
           default_studio: string | null
+          first_booking_needs_approval: boolean
           has_episode: boolean
           hourly_rate: number | null
           id: string
@@ -1763,6 +1943,7 @@ export type Database = {
           default_editor_id?: string | null
           default_rate?: number | null
           default_studio?: string | null
+          first_booking_needs_approval?: boolean
           has_episode?: boolean
           hourly_rate?: number | null
           id?: string
@@ -1786,6 +1967,7 @@ export type Database = {
           default_editor_id?: string | null
           default_rate?: number | null
           default_studio?: string | null
+          first_booking_needs_approval?: boolean
           has_episode?: boolean
           hourly_rate?: number | null
           id?: string
@@ -2149,6 +2331,7 @@ export type Database = {
       insert_archive_job: { Args: { p_job: Json }; Returns: string }
       is_approved: { Args: never; Returns: boolean }
       is_owner: { Args: never; Returns: boolean }
+      is_studio_admin: { Args: never; Returns: boolean }
       move_jobs_to_archive: { Args: { job_ids: string[] }; Returns: number }
       move_productions_to_archive: {
         Args: { production_ids: string[] }
