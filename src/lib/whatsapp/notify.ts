@@ -219,21 +219,41 @@ export const NOT_GIVEN = "לא נמסר";
  * is listed `false`, is NOT SENT: `recordBookingNotification` refuses it before
  * recording anything, and the caller decides what to do instead.
  *
- * Default: not approved. Flip an entry only after Meta's approval e-mail, in
- * the same commit that says so.
+ * Default: not approved. Flip an entry only after Meta's approval, in the same
+ * commit that says so.
  *
- * ⚠️ `bizi_booking_change` is `true` although Meta has not approved it yet —
- * NOT a claim that it is approved, but E9-5's decision preserved: it sends,
- * and a 132001 failure is recorded on the row until approval. Switching it to
- * `false` here would silently change E9-5's behaviour, which is not this
- * stage's call.
+ *   · bizi_booking_change       — approved by Meta 11.10 (Active).
+ *   · bizi_client_registration  — approved by Meta 11.10 (Active).
+ *   · bizi_client_approved      — IN REVIEW. Re-submitted 11.10 with a new
+ *                                 wording after Meta classified the first as
+ *                                 marketing (see TEMPLATE_CLIENT_APPROVED_TEXT).
  */
 export const TEMPLATE_META_APPROVED: Record<string, boolean> = {
   bizi_booking_approved: true,
   bizi_booking_pending: true,
   bizi_unknown_contact: true,
   bizi_booking_change: true,
-  bizi_client_registration: false,
+  bizi_client_registration: true,
+  bizi_client_approved: false,
+};
+
+/**
+ * Utility — "your account is approved", to the CLIENT's first authorised
+ * number, outside the 24-hour window (E17-5). Hebrew + English under one name.
+ * Re-submitted 11.10 (the first wording was classified as marketing); no
+ * button; message validity in Meta: 6 hours. `{{1}}` = name, `{{2}}` = podcast.
+ */
+export const TEMPLATE_CLIENT_APPROVED = "bizi_client_approved";
+export const TEMPLATE_CLIENT_APPROVED_VARS = ["name", "podcast"] as const;
+export const TEMPLATE_CLIENT_APPROVED_TEXT: Record<"he" | "en", string> = {
+  he:
+    "שלום {{1}}, הכרטיס שלכם ב-Bizi Podclub אושר.\n" +
+    "הפודקאסט {{2}} חובר למספר הזה לצורך הזמנת הקלטות.\n" +
+    "ההזמנה הראשונה תאושר ידנית על ידי הצוות.",
+  en:
+    "Hi {{1}}, your account at Bizi Podclub has been approved.\n" +
+    "{{2}} has been linked to this number for booking recordings.\n" +
+    "Your first booking will be approved manually by the team.",
 };
 
 export function isTemplateApproved(name: string): boolean {

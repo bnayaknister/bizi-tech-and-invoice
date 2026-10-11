@@ -150,8 +150,8 @@ const HE = {
   },
 
   /**
-   * E17-4: an unassociated number, when REGISTRATION_ENABLED is on. DRAFT
-   * (owner approves the wording; the offer's first two lines are the plan's).
+   * E17-4: an unassociated number, when REGISTRATION_ENABLED is on. All six
+   * keys, Hebrew and English, approved as written (owner decision 11.10).
    */
   JOIN: {
     offerBody: "היי! 👋 הגעתם לבוט ההזמנות של Bizi Podclub.\nהמספר הזה עוד לא מחובר לאף פודקאסט אצלנו. מה תרצו לעשות?",

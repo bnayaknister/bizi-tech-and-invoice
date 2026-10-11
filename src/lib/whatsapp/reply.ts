@@ -421,8 +421,8 @@ async function replyUnknown(
   ctx: Ctx,
   request: Request
 ): Promise<ReplyOutcome> {
-  // E17-4: with registration on, the offer replaces BOTH halves of the old
-  // answer — see replyUnknownWithOffer for why the owner's notice moves too.
+  // E17-4: with registration on, the offer replaces the neutral sentence and
+  // the owner's notice becomes once-a-day — see replyUnknownWithOffer.
   if (isRegistrationEnabled() && waId !== "unknown") {
     return await replyUnknownWithOffer(admin, message, waId, ctx, request);
   }
@@ -470,22 +470,18 @@ export function planUnknownReply(tappedId: string | null): UnknownPlan {
 /**
  * The unassociated number, registration ON (E17-4).
  *
- * ═══ 🔴 ONE NOTICE PER EVENT, NEVER TWO AT ONCE ═══
- * Before E17-4 every message from an unknown number paged the owner
- * (`bizi_unknown_contact`, keyed per inbound message). With the offer, that
- * notice would be followed seconds later by the button's own notice — two
- * messages about one number in the same moment. So, while the switch is on,
- * the notice is carried by what the person DOES, not by their writing:
- *   · writes anything      -> the offer; NO notice (nothing has happened yet);
- *   · taps "פתיחת לקוח חדש" -> their link; NO notice — the registration form
- *                             notifies when it is SENT, with the details;
- *   · taps "אני כבר לקוח"   -> ONE notice, keyed per number per Israeli day,
- *                             so tapping again does not page anyone twice.
- * The language question (askLanguage) skips its notice too, for the same reason.
- *
- * ⚠️ THE PRICE, STATED: a stranger who writes once and never taps is not
- * reported. Their message is in `wa_messages`, and anyone who wants to reach
- * the studio has the two buttons in front of them.
+ * ═══ THE NOTICES (owner decision 11.10, E17-4 follow-up) ═══
+ * No message from an unknown number may get lost, buttons or no buttons:
+ *   · writes anything      -> the offer + `bizi_unknown_contact` to the owner,
+ *                             ONCE PER NUMBER PER ISRAELI DAY (not per message
+ *                             as with the switch off — the offer answers the
+ *                             rest of the day's messages);
+ *   · taps "פתיחת לקוח חדש" -> their link; no notice (the form notifies when
+ *                             it is SENT, with the details);
+ *   · taps "אני כבר לקוח"   -> its own notice (bizi_client_registration),
+ *                             once per number per day.
+ * The language question (askLanguage) sends the same daily notice, so a
+ * number that never picks a language is reported too.
  */
 async function replyUnknownWithOffer(
   admin: SupabaseClient<Database>,
@@ -544,6 +540,7 @@ async function replyUnknownWithOffer(
     });
   }
 
+  await notifyUnknownDaily(admin, message, waId);
   return await recordAndSend(admin, {
     inboundWamid: ctx.replyKey,
     waId,
@@ -559,6 +556,21 @@ async function replyUnknownWithOffer(
     kind: "join",
     type: "interactive",
     meta: { join: "offer", unknown_contact: true },
+  });
+}
+
+/**
+ * Registration on: the owner's notice about an unknown number, keyed on the
+ * NUMBER and the Israeli day — the first message of the day pages, the rest
+ * are answered by the offer and page nobody.
+ */
+async function notifyUnknownDaily(admin: SupabaseClient<Database>, message: InboundMessage, waId: string): Promise<void> {
+  await recordBookingNotification(admin, {
+    kind: "unknown-contact",
+    subjectId: `unknown-daily:${waId}:${israelDateOf(new Date())}`,
+    waId,
+    excerpt: message.body ?? "",
+    onlyOwner: true,
   });
 }
 
@@ -629,9 +641,12 @@ async function resolveLanguage(
  */
 async function askLanguage(admin: SupabaseClient<Database>, message: InboundMessage, waId: string): Promise<ReplyOutcome> {
   const shows = await showsForNumber(admin, waId);
-  // E17-4: with registration on, an unknown number's notice comes from its
-  // tap, not from its writing (see replyUnknownWithOffer)
-  if (shows.length === 0 && !isRegistrationEnabled()) await notifyUnknown(admin, message, waId);
+  // E17-4: with registration on, the notice is the once-a-day one (see
+  // replyUnknownWithOffer); off, it is per message, as it always was
+  if (shows.length === 0) {
+    if (isRegistrationEnabled()) await notifyUnknownDaily(admin, message, waId);
+    else await notifyUnknown(admin, message, waId);
+  }
 
   const reply: FlowReply = languageQuestion(message.wamid);
   return await recordAndSend(admin, {

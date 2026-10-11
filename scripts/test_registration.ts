@@ -34,6 +34,9 @@ import {
   TEMPLATE_CLIENT_REGISTRATION,
   TEMPLATE_CLIENT_REGISTRATION_TEXT,
   TEMPLATE_CLIENT_REGISTRATION_VARS,
+  TEMPLATE_CLIENT_APPROVED,
+  TEMPLATE_CLIENT_APPROVED_TEXT,
+  TEMPLATE_CLIENT_APPROVED_VARS,
   TEMPLATE_META_APPROVED,
   isTemplateApproved,
   notifyClientRegistration,
@@ -251,12 +254,12 @@ async function main() {
     check("registration: privacy version + time", [reg?.privacy_version, reg?.privacy_accepted_at], [PRIVACY_UPDATED_AT, NOW.toISOString()]);
     check("the token is burnt", link.used_at, NOW.toISOString());
     const ev = store.events.map((e) => e.event_type);
-    check("events: attempt, created, notice skipped (template not approved)", ev, [
-      "registration_submit_attempt",
-      "client_registration_created",
-      "notification_skipped_template_unapproved",
+    check("events: attempt, created", ev, ["registration_submit_attempt", "client_registration_created"]);
+    check("template approved (11.10) -> bizi_client_registration to BOTH", store.wa_messages.map((m) => m.template_name), [
+      "bizi_client_registration",
+      "bizi_client_registration",
     ]);
-    check("🔴 template not approved -> NO WhatsApp row at all", store.wa_messages.length, 0);
+    check("…event 'new'", (store.wa_messages[0]?.payload as { params?: string[] })?.params?.[0], REGISTRATION_EVENT_LABEL.new);
     const again = await submitRegistration(client, { token: TOK("A"), body: GOOD, ip: "1.1.1.1", now: NOW });
     check("the same link again -> dead", again, { kind: "dead" });
   }
@@ -265,6 +268,18 @@ async function main() {
     await submitRegistration(client, { token: TOK("A"), body: GOOD, ip: null, now: NOW });
     const reg = store.client_registrations[0];
     check("manual link: source web, number NOT verified", [reg?.source, reg?.booking_wa_id_1_verified], ["web", false]);
+  }
+  {
+    TEMPLATE_META_APPROVED.bizi_client_registration = false;
+    const { client, store } = world([linkRow()]);
+    await submitRegistration(client, { token: TOK("A"), body: GOOD, ip: null, now: NOW });
+    check("template NOT approved -> notice skipped, as an event", store.events.map((e) => e.event_type), [
+      "registration_submit_attempt",
+      "client_registration_created",
+      "notification_skipped_template_unapproved",
+    ]);
+    check("🔴 template not approved -> NO WhatsApp row at all", store.wa_messages.length, 0);
+    TEMPLATE_META_APPROVED.bizi_client_registration = true;
   }
 
   section("3c. 🔴 the name is taken — the registration still goes in");
@@ -289,8 +304,11 @@ async function main() {
     const reg = store.client_registrations[0];
     check("registration: duplicate -> the card", [reg?.status, reg?.duplicate_of_client_id, reg?.client_id], ["duplicate", "c-card", null]);
     check("the token is burnt", store.registration_links[0].used_at, NOW.toISOString());
-    const skipped = store.events.find((e) => e.event_type === "notification_skipped_template_unapproved");
-    check("the skipped notice names the duplicate event", (skipped?.payload as { event?: string })?.event, "duplicate");
+    const params = (store.wa_messages[0]?.payload as { params?: string[] })?.params;
+    check("the notice names the duplicate event and the card", [params?.[0], params?.[4]], [
+      REGISTRATION_EVENT_LABEL.duplicate,
+      "התאמה לכרטיס קיים: גל אורן (לפי ח.פ)",
+    ]);
   }
   {
     const pendingSame = { id: "c-p", name: "x", normalized_name: "pending:x", status: "pending", tax_id: "514000001" };
@@ -383,10 +401,23 @@ async function main() {
     "הרשמה חדשה הותאמה לכרטיס קיים",
     "מספר לא משויך כתב בבוט שהוא כבר לקוח",
   ]);
-  check("NOT approved by default", isTemplateApproved(TEMPLATE_CLIENT_REGISTRATION), false);
+  check("bizi_client_registration: approved (Meta, 11.10)", isTemplateApproved(TEMPLATE_CLIENT_REGISTRATION), true);
+  check("bizi_client_approved: NOT approved (in review)", isTemplateApproved(TEMPLATE_CLIENT_APPROVED), false);
+  for (const lang of ["he", "en"] as const) {
+    check(`bizi_client_approved ${lang}: {{1}} {{2}}, no variable at the edges`, [
+      templatePlaceholders(TEMPLATE_CLIENT_APPROVED_TEXT[lang]),
+      TEMPLATE_CLIENT_APPROVED_TEXT[lang].startsWith("{{") || TEMPLATE_CLIENT_APPROVED_TEXT[lang].endsWith("}}"),
+    ], [[1, 2], false]);
+  }
+  check("bizi_client_approved: two named variables", TEMPLATE_CLIENT_APPROVED_VARS, ["name", "podcast"]);
+  check("bizi_client_approved he: the re-submitted wording", TEMPLATE_CLIENT_APPROVED_TEXT.he,
+    "שלום {{1}}, הכרטיס שלכם ב-Bizi Podclub אושר.\nהפודקאסט {{2}} חובר למספר הזה לצורך הזמנת הקלטות.\nההזמנה הראשונה תאושר ידנית על ידי הצוות.");
+  check("bizi_client_approved en: the re-submitted wording", TEMPLATE_CLIENT_APPROVED_TEXT.en,
+    "Hi {{1}}, your account at Bizi Podclub has been approved.\n{{2}} has been linked to this number for booking recordings.\nYour first booking will be approved manually by the team.");
   check("an unlisted template is not approved", isTemplateApproved("bizi_anything_new"), false);
   check("the four live templates keep sending", ["bizi_booking_approved", "bizi_booking_pending", "bizi_unknown_contact", "bizi_booking_change"].map(isTemplateApproved), [true, true, true, true]);
   {
+    TEMPLATE_META_APPROVED.bizi_client_registration = false;
     const { client, store } = world([]);
     const r = await notifyClientRegistration(client, {
       event: "existing-claim", subjectId: "existing-claim:x:2026-10-11", registrationId: null, name: null, podcast: null, waId: BOT_WA, details: "d",
@@ -394,9 +425,9 @@ async function main() {
     check("existing-claim, unapproved -> falls back to bizi_unknown_contact", r.fallback, "unknown-contact");
     check("…ONE row, to the owner only", store.wa_messages.map((m) => [m.template_name, m.wa_id]), [["bizi_unknown_contact", "972500000001"]]);
     check("…saying what happened", (store.wa_messages[0]?.payload as { params?: string[] })?.params?.[1], EXISTING_CLAIM_EXCERPT);
+    TEMPLATE_META_APPROVED.bizi_client_registration = true;
   }
   {
-    TEMPLATE_META_APPROVED.bizi_client_registration = true;
     const { client, store } = world([]);
     const input = {
       event: "existing-claim" as const, subjectId: "existing-claim:x:2026-10-11", registrationId: null, name: null, podcast: null, waId: BOT_WA, details: "d",
@@ -407,7 +438,6 @@ async function main() {
     check("…a second call for the same subject sends nothing more", store.wa_messages.length, 2);
     const params = (store.wa_messages[0]?.payload as { params?: string[] })?.params;
     check("…empty name/podcast become 'לא נמסר', phone displayed", params?.slice(1, 4), [NOT_GIVEN, NOT_GIVEN, "050-123-4567"]);
-    TEMPLATE_META_APPROVED.bizi_client_registration = false;
   }
 
   console.log(`\n${failed === 0 ? "✅" : "❌"}  ${passed}/${passed + failed} assertions passed\n`);

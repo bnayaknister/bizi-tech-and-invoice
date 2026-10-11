@@ -115,52 +115,68 @@ async function main() {
     section(`2. switch ON — ${lang}`);
     const C = COPY[lang].JOIN;
     const { client, store } = world(lang);
+    const kinds = () => notices(store).map((m) => `${m.template_name}>${m.wa_id}`);
 
     await replyToInbound(client, REQ, text("hi"));
     const offer = replies(store)[0];
     check("writes -> the offer body", offer?.body, C.offerBody);
     check("…as an interactive message", offer?.type, "interactive");
-    check("🔴 …and NO notice yet", notices(store).length, 0);
+    check("🔴 …AND bizi_unknown_contact to the owner (nothing gets lost)", kinds(), [`bizi_unknown_contact>${OWNER}`]);
+
+    await replyToInbound(client, REQ, text("עוד הודעה"));
+    check("writes again the same day -> the offer again, NO second notice", [replies(store)[1]?.body, notices(store).length], [C.offerBody, 1]);
 
     await replyToInbound(client, REQ, tap(JOIN_NEW_ID, C.newClient));
-    const linkReply = replies(store)[1];
+    const linkReply = replies(store)[2];
     const url = /https:\/\/app\.example\/join\/([A-Za-z0-9_-]{43})/.exec(linkReply?.body ?? "");
     check("'new' -> the link reply, with a /join/<token> url", !!url && linkReply.body === C.link(url[0]), true);
     check("…one link row, bound to this number", store.registration_links.map((l) => l.wa_id), [WA]);
-    check("…still no notice (the form will notify)", notices(store).length, 0);
+    check("…no notice for 'new' (the form will notify)", notices(store).length, 1);
 
     await replyToInbound(client, REQ, tap(JOIN_NEW_ID, C.newClient));
-    const second = replies(store)[2];
-    check("'new' again -> THE SAME link", !!url && second?.body === C.link(url[0]), true);
+    check("'new' again -> THE SAME link", !!url && replies(store)[3]?.body === C.link(url[0]), true);
     check("…still one link row", store.registration_links.length, 1);
 
     await replyToInbound(client, REQ, tap(JOIN_EXISTING_ID, C.existingClient));
-    check("'existing' -> the neutral answer to the client", replies(store)[3]?.body, C.existingReply);
-    check("…ONE notice (fallback while the template is unapproved), owner only", notices(store).map((m) => [m.template_name, m.wa_id]), [["bizi_unknown_contact", OWNER]]);
+    check("'existing' -> the neutral answer to the client", replies(store)[4]?.body, C.existingReply);
+    check("…its OWN notice: bizi_client_registration to both", kinds().slice(1), [
+      "bizi_client_registration>972500000001",
+      "bizi_client_registration>972500000002",
+    ]);
 
     await replyToInbound(client, REQ, tap(JOIN_EXISTING_ID, C.existingClient));
-    check("'existing' tapped AGAIN the same day -> no second notice", notices(store).length, 1);
-    check("…but the client is answered again", replies(store).length, 5);
-
-    await replyToInbound(client, REQ, text("עוד שאלה"));
-    check("writes again -> the offer again, no notice", [replies(store)[5]?.body, notices(store).length], [C.offerBody, 1]);
+    check("'existing' tapped AGAIN the same day -> no further notice", notices(store).length, 3);
+    check("…but the client is answered again", replies(store).length, 6);
   }
 
-  section("3. switch ON, template APPROVED — the registration template, to both");
+  section("3. switch ON, registration template NOT approved — 'existing' falls back");
   {
-    TEMPLATE_META_APPROVED.bizi_client_registration = true;
+    TEMPLATE_META_APPROVED.bizi_client_registration = false;
     const { client, store } = world("he");
     await replyToInbound(client, REQ, tap(JOIN_EXISTING_ID, "x"));
-    check("existing -> bizi_client_registration to both numbers, nothing else", notices(store).map((m) => m.template_name), ["bizi_client_registration", "bizi_client_registration"]);
-    TEMPLATE_META_APPROVED.bizi_client_registration = false;
+    check("existing -> bizi_unknown_contact to the owner, nothing else", notices(store).map((m) => [m.template_name, m.wa_id]), [["bizi_unknown_contact", OWNER]]);
+    TEMPLATE_META_APPROVED.bizi_client_registration = true;
   }
 
-  section("4. switch ON, no language yet — the question, and still no notice");
+  section("4. switch ON, no language yet — the question carries the daily notice");
   {
     const { client, store } = world(null);
-    await replyToInbound(client, REQ, text("hello"));
-    check("the language question goes out", replies(store).length, 1);
-    check("🔴 no notice with it (the tap will carry one)", notices(store).length, 0);
+    const first = text("hello");
+    // the webhook route records every inbound message before replying; the
+    // language tap resumes it from there
+    store.wa_messages.push({ wamid: first.wamid, direction: "in", wa_id: WA, type: "text", body: "hello", payload: null });
+    await replyToInbound(client, REQ, first);
+    check("the language question goes out", replies(store).filter((m) => m.direction === "out").length, 1);
+    check("🔴 the owner is told now, once", notices(store).map((m) => m.template_name), ["bizi_unknown_contact"]);
+    n++;
+    const pick: InboundMessage = {
+      wamid: `wamid.L${n}`, waId: WA, rawFrom: WA, type: "interactive", body: "עברית",
+      raw: { type: "interactive", interactive: { type: "button_reply", button_reply: { id: `lang:he:${first.wamid}`, title: "עברית" } } } as never,
+    };
+    await replyToInbound(client, REQ, pick);
+    const out = replies(store).filter((m) => m.direction === "out");
+    check("after the pick: the held message is answered with the offer", out[1]?.body, COPY.he.JOIN.offerBody);
+    check("…and the owner is NOT told a second time", notices(store).length, 1);
   }
 
   section("5. a link that cannot be minted is not silence");
