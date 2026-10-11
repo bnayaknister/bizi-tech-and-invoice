@@ -1,22 +1,7 @@
 import { NextResponse } from "next/server";
 import { createTypedAdminClient } from "@/lib/supabase/admin";
 import { resolveBookingLink } from "@/lib/booking/links";
-import { loadAvailability } from "@/lib/booking/availabilityServer";
-import { PUBLIC_SLOT_STEP_MINUTES } from "@/lib/booking/publicView";
-import { validateDuration, durationTag } from "@/lib/booking/duration";
-import { autoApproveNewRequest } from "@/lib/booking/decide";
-import {
-  duplicateWrite,
-  findDuplicatePending,
-  linkRateLimitReached,
-  LINK_RATE_WINDOW_MS,
-  matchSlot,
-  normalizeGuest,
-  normalizeNote,
-  pendingLimitReached,
-  validateStudio,
-  type ExistingRequest,
-} from "@/lib/booking/request";
+import { submitBookingRequest, type SubmitResult } from "@/lib/booking/submit";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/book/[token]/request — PUBLIC. The token is the only credential.
@@ -74,204 +59,51 @@ export async function POST(request: Request, { params }: { params: { token: stri
     durationMinutes?: unknown;
   };
 
-  const studio = validateStudio(body.studio);
-  if (!studio) return fail(COPY.generic, 400);
-
-  // The chosen length (E9-2, rule ג). Absent = 90, which is what every
-  // request meant before the picker existed; a stated-but-invalid value is the
-  // generic refusal, because our own screen cannot produce one.
-  const duration = validateDuration(body.durationMinutes);
-  if (duration === null) return fail(COPY.generic, 400);
-
-  // The guest is the ONE field with its own sentence, because it is the one a
-  // client can get wrong by typing: everything else on this screen is chosen
-  // from a list. A generic failure there would leave them retrying a form that
-  // can never succeed.
-  const guest = normalizeGuest(body.guest);
-  if (!guest.ok) return fail(COPY.guestTooLong, 400);
-
-  const note = normalizeNote(body.note);
-  if (!note.ok) return fail(COPY.generic, 400);
-
-  let free;
-  try {
-    // 🔴 FOR THE CHOSEN LENGTH. `matchSlot` below takes the END from the slot
-    // it finds, so this single parameter is what makes a 240-minute request
-    // store a 240-minute range — and what makes a start that would run past
-    // 19:00 simply not be in `free` to match.
-    const loaded = await loadAvailability(admin, {
-      now: new Date(),
-      stepMinutes: PUBLIC_SLOT_STEP_MINUTES,
-      durationMinutes: duration,
-    });
-    free = loaded.result.free;
-  } catch (e) {
-    // Logged, never returned — the ICS URL is a secret. And NOT treated as "the
-    // slot is free": a feed we cannot read is a feed we cannot book against.
-    console.error("book/request: חישוב הזמינות נכשל", e);
-    return fail(COPY.generic, 502);
-  }
-
-  const match = matchSlot(free, { studio, startIsrael: body.startIsrael, endIsrael: body.endIsrael });
-  if (!match.ok) {
-    // "Taken in the meantime" covers every shape of no: a slot that really was
-    // just taken, a malformed time, a day outside the window, an end that
-    // disagrees. They are one thing from where the client sits — this moment is
-    // not bookable — and the screen's next action is identical for all of them.
-    return fail(COPY.taken, 409);
-  }
-  const slot = match.slot;
-
-  // ── the brakes, all read in ONE query per axis, before any write ───────────
-  const { data: showRows, error: showErr } = await admin
-    .from("booking_requests")
-    .select("id,studio,start_at,status,created_at")
-    .eq("show_id", link.link.show_id)
-    .eq("status", "pending");
-  if (showErr) {
-    console.error("book/request: קריאת הבקשות הממתינות נכשלה", showErr);
-    return fail(COPY.generic, 500);
-  }
-  const pendingForShow = (showRows ?? []) as ExistingRequest[];
-
-  // ⚠️ THE DUPLICATE CHECK COMES BEFORE THE LIMITS, and the order is deliberate.
-  // A double-tapped phone, or a client reopening the link on the request they
-  // already sent, is NOT a fourth request — it is the one they can already see.
-  // Checking the limit first would answer "you have too many requests" to
-  // somebody whose second tap created nothing, which is both false and
-  // unfixable from their side. Nothing is inserted on this path, so no limit is
-  // being bypassed: returning the existing row is the honest answer.
-  const duplicate = findDuplicatePending(pendingForShow, { studio, start: slot.start });
-  if (duplicate) {
-    // ⚠️ A RE-SEND IS AN EDIT (bug found by hand 24.9). Returning the existing
-    // row unchanged left the stored guest at "עידן" while the client's own
-    // confirmation and their WhatsApp message said "יובל EY" — the request and
-    // the message about it disagreeing, with nothing to reveal it until the
-    // recording. The latest intent wins; see duplicateWrite for why that is the
-    // only correction channel the client has.
-    const write = duplicateWrite(duplicate, { guest: guest.value, note: note.value });
-    const { error: updErr } = await admin
-      .from("booking_requests")
-      .update({ guest: write.guest, note: write.note })
-      .eq("id", write.id)
-      // re-asserted in the WHERE clause, not trusted from the row we read a
-      // moment ago: an owner who approved or declined it in between must not
-      // have their decision quietly overwritten by a client's retry.
-      .eq("status", "pending");
-    if (updErr) {
-      console.error("book/request: עדכון בקשה כפולה נכשל", updErr);
-      return fail(COPY.generic, 500);
-    }
-
-    return NextResponse.json(
-      {
-        ok: true,
-        duplicate: true,
-        request: {
-          id: duplicate.id,
-          studio,
-          dateIsrael: slot.dateIsrael,
-          startIsrael: slot.startIsrael,
-          endIsrael: slot.endIsrael,
-          // the value now IN the row — which is what makes the confirmation and
-          // the WhatsApp text agree with the database again
-          guest: write.guest,
-          status: "pending",
-        },
-      },
-      { headers: HEADERS }
-    );
-  }
-
-  if (pendingLimitReached(pendingForShow)) return fail(COPY.tooMany, 429);
-
-  const since = new Date(Date.now() - LINK_RATE_WINDOW_MS).toISOString();
-  const { data: linkRows, error: linkErr } = await admin
-    .from("booking_requests")
-    .select("id,studio,start_at,status,created_at")
-    .eq("link_id", link.link.id)
-    .gte("created_at", since);
-  if (linkErr) {
-    console.error("book/request: קריאת קצב הקישור נכשלה", linkErr);
-    return fail(COPY.generic, 500);
-  }
-  // The window is applied in SQL AND re-applied by the pure function. The same
-  // doubled guard as clickableDays, and for the same reason: the assertable
-  // copy is the one that decides, and a hand-built row set cannot slip past it.
-  if (linkRateLimitReached((linkRows ?? []) as ExistingRequest[], new Date())) {
-    return fail(COPY.tooMany, 429);
-  }
-
-  // ── the one write ─────────────────────────────────────────────────────────
-  const { data: inserted, error: insErr } = await admin
-    .from("booking_requests")
-    .insert({
-      show_id: link.link.show_id,
-      link_id: link.link.id,
-      studio,
-      start_at: slot.start.toISOString(),
-      // from the SLOT, never from the body
-      end_at: slot.end.toISOString(),
-      guest: guest.value,
-      note: note.value,
-      // `status` is the column DEFAULT ('pending'), and decided_at stays null —
-      // 0096's booking_requests_decided_chk enforces that pairing.
-    })
-    .select("id")
-    .single();
-
-  if (insErr || !inserted) {
-    console.error("book/request: ההכנסה נכשלה", insErr);
-    return fail(COPY.generic, 500);
-  }
-
-  // ═══ THE AUTOMATIC APPROVAL (E9-2, owner decision 8.10) ═══
-  //
-  // 🔴 EVERY DECISION IS IN @/lib/booking/decide, WHICH THE OWNER'S OWN
-  // APPROVE BUTTON NOW CALLS TOO. Not a second implementation that happens to
-  // agree — the same function, so a rule added to one is added to both.
-  //
-  // ⚠️ IT CANNOT THROW AND IT CANNOT FAIL THIS REQUEST. The row above
-  // already exists and the client is owed an answer; every refusal inside
-  // leaves the request `pending`, which is exactly the state it had before
-  // E9-2 existed and a perfectly good outcome. With BOOKING_AUTO_APPROVE unset
-  // it does nothing at all.
-  //
-  // ⚠️ AND IT RUNS *AFTER* THE BRAKES, not instead of them. The duplicate
-  // branch above returns early, so a double-tapped phone cannot trigger two
-  // approvals of two rows — there is only ever one row.
-  const auto = await autoApproveNewRequest(admin, {
-    bookingId: inserted.id,
+  // 🔴 EVERYTHING FROM HERE ON IS @/lib/booking/submit (E9-4). The body that
+  // used to live in this file moved there verbatim, because the WhatsApp bot's
+  // booking conversation must take exactly the same path (owner decision 11.10,
+  // rule 5). This route now authenticates the token, hands over the raw body,
+  // and maps each outcome to its approved sentence and status — nothing else.
+  const result = await submitBookingRequest(admin, {
     showId: link.link.show_id,
-    // from the RESOLVED LINK, which already read it (links.ts:63-78) — not a
-    // second join on the insert for a string we are holding.
+    linkId: link.link.id,
+    // from the RESOLVED LINK, which already read it — not a second join
     showName: link.show.name,
-    dateIsrael: slot.dateIsrael,
-    startIsrael: slot.startIsrael,
-    endIsrael: slot.endIsrael,
-    studio,
-    guest: guest.value,
-    durationTag: durationTag(slot.start.toISOString(), slot.end.toISOString()),
+    studio: body.studio,
+    startIsrael: body.startIsrael,
+    endIsrael: body.endIsrael,
+    guest: body.guest,
+    note: body.note,
+    durationMinutes: body.durationMinutes,
   });
 
+  if (!result.ok) return failFor(result.code);
+
   return NextResponse.json(
-    {
-      ok: true,
-      duplicate: false,
-      request: {
-        id: inserted.id,
-        studio,
-        dateIsrael: slot.dateIsrael,
-        startIsrael: slot.startIsrael,
-        endIsrael: slot.endIsrael,
-        guest: guest.value,
-        // 🔴 THE REAL STATUS, NOT THE LITERAL "pending" THIS LINE USED TO BE.
-        // The client's screen renders the label from this field; an approved
-        // booking that reports "pending" would tell the one person who needs to
-        // know the opposite of what the database says.
-        status: auto.approved ? "approved" : "pending",
-      },
-    },
+    { ok: true, duplicate: result.duplicate, request: result.request },
     { headers: HEADERS }
   );
+}
+
+/**
+ * Each refusal -> the sentence and status this route has always answered with.
+ * The generic sentence covers bad input, a feed failure and a database error
+ * alike, on purpose — see the header on why a link-holder must not be able to
+ * tell them apart.
+ */
+function failFor(code: Extract<SubmitResult, { ok: false }>["code"]) {
+  switch (code) {
+    case "bad-input":
+      return fail(COPY.generic, 400);
+    case "guest-too-long":
+      return fail(COPY.guestTooLong, 400);
+    case "feed-failed":
+      return fail(COPY.generic, 502);
+    case "taken":
+      return fail(COPY.taken, 409);
+    case "too-many":
+      return fail(COPY.tooMany, 429);
+    case "error":
+      return fail(COPY.generic, 500);
+  }
 }

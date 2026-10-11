@@ -79,7 +79,7 @@ export async function resolveBookingLink(
 }
 
 export type EnsureLinkResult =
-  | { ok: true; token: string; created: boolean }
+  | { ok: true; token: string; linkId: string; created: boolean }
   | { ok: false; reason: "no-clean-alias" | "show-not-found" | "failed" };
 
 /**
@@ -120,28 +120,31 @@ export async function ensureBookingLink(
 
   const existing = await admin
     .from("booking_links")
-    .select("token")
+    .select("id,token")
     .eq("show_id", showId)
     .is("revoked_at", null)
     .maybeSingle();
-  if (existing.data?.token) return { ok: true, token: existing.data.token, created: false };
+  if (existing.data?.token) return { ok: true, token: existing.data.token, linkId: existing.data.id, created: false };
 
   const token = generateBookingToken();
-  const { error: insErr } = await admin
+  const { data: inserted, error: insErr } = await admin
     .from("booking_links")
-    .insert({ show_id: showId, token, created_by: createdBy });
+    .insert({ show_id: showId, token, created_by: createdBy })
+    .select("id")
+    .single();
 
   if (insErr) {
     // Lost a race against another click: the index refused the second row, and
     // the first one is the answer. Re-read rather than report a failure.
     const retry = await admin
       .from("booking_links")
-      .select("token")
+      .select("id,token")
       .eq("show_id", showId)
       .is("revoked_at", null)
       .maybeSingle();
-    if (retry.data?.token) return { ok: true, token: retry.data.token, created: false };
+    if (retry.data?.token) return { ok: true, token: retry.data.token, linkId: retry.data.id, created: false };
     return { ok: false, reason: "failed" };
   }
-  return { ok: true, token, created: true };
+  if (!inserted) return { ok: false, reason: "failed" };
+  return { ok: true, token, linkId: inserted.id, created: true };
 }

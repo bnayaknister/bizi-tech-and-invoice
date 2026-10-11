@@ -21,6 +21,8 @@ export type ContactShow = {
   showName: string;
   /** the contact's own name on that show's row — several people may share a number */
   contactName: string;
+  /** `shows.default_studio`, raw — the booking conversation resolves it (E9-4) */
+  defaultStudio?: string | null;
 };
 
 /**
@@ -38,7 +40,7 @@ export type ContactShow = {
 export async function showsForNumber(admin: SupabaseClient<Database>, waId: string): Promise<ContactShow[]> {
   const { data, error } = await admin
     .from("booking_contacts")
-    .select("show_id,name,shows(id,name)")
+    .select("show_id,name,shows(id,name,default_studio)")
     .eq("wa_id", waId);
 
   if (error) {
@@ -54,7 +56,7 @@ export async function showsForNumber(admin: SupabaseClient<Database>, waId: stri
     // embed a to-one object, so a misspelt column here fails the build.
     const show = row.shows ?? null;
     if (!show) continue;
-    out.push({ showId: row.show_id, showName: show.name, contactName: row.name });
+    out.push({ showId: row.show_id, showName: show.name, contactName: row.name, defaultStudio: show.default_studio });
   }
   return out.sort((a, b) => a.showName.localeCompare(b.showName, "he"));
 }

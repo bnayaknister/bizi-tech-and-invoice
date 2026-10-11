@@ -218,6 +218,88 @@ export function listPayload(input: {
 }
 
 /**
+ * A list with SEVERAL sections — the booking conversation's day and hour
+ * pickers, where the choices and the navigation ("חזרה", "התחלה מחדש") sit in
+ * two titled groups (E9-4).
+ *
+ * 🔴 THE TEN-ROW CEILING IS ACROSS ALL SECTIONS, not per section — Meta
+ * rejects an eleventh row wherever it sits. So rows are cut in order until the
+ * total is ten, and a section left empty by the cut is dropped (Meta also
+ * rejects an empty section). The caller sizes its pages so nothing is ever cut;
+ * this is the guard behind that, not the plan.
+ *
+ * ⚠️ With more than one section every section MUST carry a title, and Meta's
+ * limit on it is 24 — tighter than the single-section header above.
+ */
+export const SECTION_TITLE_MAX = 24;
+
+export function sectionedListPayload(input: {
+  to: string;
+  body: string;
+  button: string;
+  sections: { title: string; rows: ListRow[] }[];
+}): Record<string, unknown> {
+  let room: number = LIST_LIMITS.rows;
+  const sections = [];
+  for (const s of input.sections) {
+    const rows = s.rows.slice(0, Math.max(0, room));
+    room -= rows.length;
+    if (rows.length === 0) continue;
+    sections.push({
+      title: truncate(s.title, SECTION_TITLE_MAX),
+      rows: rows.map((r) => ({
+        id: r.id,
+        title: truncate(r.title, LIST_LIMITS.rowTitle),
+        ...(r.description ? { description: truncate(r.description, LIST_LIMITS.rowDescription) } : {}),
+      })),
+    });
+  }
+  return {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to: input.to,
+    type: "interactive",
+    interactive: {
+      type: "list",
+      body: { text: truncate(input.body, LIST_LIMITS.body) },
+      action: { button: truncate(input.button, LIST_LIMITS.button), sections },
+    },
+  };
+}
+
+/** Meta's hard limits on reply buttons. Same rule: exceeding one rejects the send. */
+export const BUTTON_LIMITS = { buttons: 3, title: 20, body: 1024, id: 256 } as const;
+
+export type ReplyButton = { id: string; title: string };
+
+/**
+ * Up to three reply buttons under a body — the booking conversation's yes/no
+ * and skip steps (E9-4). Free-form, so legal only inside the 24-hour window,
+ * which every reply is (see reply.ts).
+ *
+ * A fourth button is DROPPED rather than sent: Meta refuses the whole message
+ * for it. Titles are cut by code point to 20, like every other field here.
+ */
+export function buttonsPayload(input: { to: string; body: string; buttons: ReplyButton[] }): Record<string, unknown> {
+  return {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to: input.to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: truncate(input.body, BUTTON_LIMITS.body) },
+      action: {
+        buttons: input.buttons.slice(0, BUTTON_LIMITS.buttons).map((b) => ({
+          type: "reply",
+          reply: { id: truncate(b.id, BUTTON_LIMITS.id), title: truncate(b.title, BUTTON_LIMITS.title) },
+        })),
+      },
+    },
+  };
+}
+
+/**
  * Meta's error object -> one readable line.
  *
  * The code is kept because it is the only part worth searching for in Meta's

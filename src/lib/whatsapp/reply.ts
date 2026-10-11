@@ -1,9 +1,18 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/supabase/database.types";
-import { isWhatsappDryRun, listPayload, sendWhatsapp, textPayload } from "./client";
+import {
+  buttonsPayload,
+  isWhatsappDryRun,
+  listPayload,
+  sectionedListPayload,
+  sendWhatsapp,
+  textPayload,
+} from "./client";
 import { recordBookingNotification } from "./notify";
 import { bookingUrlForShow, showsForNumber, type ContactShow } from "@/lib/booking/contacts";
 import type { InboundMessage } from "./webhook";
+import { isFlowOn, runFlow } from "./flow/run";
+import type { FlowReply } from "./flow/machine";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // What the bot says back. E9-3.
@@ -25,10 +34,11 @@ import type { InboundMessage } from "./webhook";
 // 131047 and the client never learns anything.
 //
 // ⛔ AND THE BOT DOES NOT UNDERSTAND TEXT. It does not read "I want Tuesday"
-// and it does not answer questions. Any message from a known number gets the
-// same answer — your link, or your list — because the owner's flow puts slot
-// selection on the visual screen. Natural-language understanding is E4 (the AI
-// agent), deliberately not here.
+// and it does not answer questions. E9-4 adds a booking CONVERSATION of
+// buttons and lists (./flow), behind WHATSAPP_BOOKING_FLOW; with the switch
+// off, any message from a known number gets the E9-3 answer — your link, or
+// your list. Free-language understanding is a later layer, designed to feed
+// the conversation's structured events (owner decision 11.10).
 //
 // ⛔ AND CANCELLATIONS ARE NOT HANDLED YET (owner: a later stage). A client who
 // writes "לבטל" gets the ordinary link reply. That is a known gap, stated
@@ -132,9 +142,18 @@ export function replyWamid(inboundWamid: string): string {
   return `local:reply:${inboundWamid}`;
 }
 
+type ReplyKind = ReplyPlan["kind"] | "flow";
+
 export type ReplyOutcome =
-  | { sent: true; kind: ReplyPlan["kind"] }
-  | { sent: false; reason: "duplicate" | "dry-run" | "no-url" | "send-failed" | "error"; kind: ReplyPlan["kind"] };
+  | { sent: true; kind: ReplyKind }
+  | { sent: false; reason: "duplicate" | "dry-run" | "no-url" | "send-failed" | "error"; kind: ReplyKind };
+
+/** A conversation reply -> the Graph payload. PURE. */
+export function flowPayload(to: string, reply: FlowReply): Record<string, unknown> {
+  if (reply.type === "text") return textPayload({ to, body: reply.body });
+  if (reply.type === "buttons") return buttonsPayload({ to, body: reply.body, buttons: reply.buttons });
+  return sectionedListPayload({ to, body: reply.body, button: reply.button, sections: reply.sections });
+}
 
 /**
  * Record the reply, then send it. Same order, and the same reason, as
@@ -152,7 +171,9 @@ async function recordAndSend(
     waId: string;
     body: string;
     payload: Record<string, unknown>;
-    kind: ReplyPlan["kind"];
+    kind: ReplyKind;
+    /** the Graph message type when it is not implied by `kind` */
+    type?: "text" | "interactive";
     meta: Record<string, unknown>;
   }
 ): Promise<ReplyOutcome> {
@@ -171,7 +192,7 @@ async function recordAndSend(
             // not a template: a free-text or interactive reply inside the
             // 24-hour window. `template_name` stays null, which 0101's pair
             // CHECK permits for an outbound row.
-            type: input.kind === "list" ? "interactive" : "text",
+            type: input.type ?? (input.kind === "list" ? "interactive" : "text"),
             body: input.body,
             template_name: null,
             status: dryRun ? "dry_run" : "queued",
@@ -246,66 +267,104 @@ export async function replyToInbound(
           )
         : null;
 
+    // ── E9-4: the booking conversation, when it is switched on ──────────
+    if (isFlowOn() && shows.length > 0) {
+      const flow = await runFlow(admin, { waId, message, shows, pickedShowId: picked, now: new Date() });
+      if (flow.kind === "drop") return { sent: false, reason: "duplicate", kind: "flow" };
+      if (flow.kind === "shows") return await sendShowList(admin, message, waId, shows);
+      if (flow.kind === "link") return await sendLink(admin, request, message, waId, flow.show);
+      if (flow.kind === "send") {
+        return await recordAndSend(admin, {
+          inboundWamid: message.wamid,
+          waId,
+          body: flow.reply.body,
+          payload: flowPayload(waId, flow.reply),
+          kind: "flow",
+          type: flow.reply.type === "text" ? "text" : "interactive",
+          meta: flow.meta,
+        });
+      }
+      // "fallback": the conversation store is unreachable (0104 not applied
+      // yet, or a database error) — answer exactly as E9-3 does, below.
+    }
+
     const plan = planReply(shows, picked);
 
     if (plan.kind === "neutral") return await replyUnknown(admin, message, waId);
-
-    if (plan.kind === "list") {
-      return await recordAndSend(admin, {
-        inboundWamid: message.wamid,
-        waId,
-        body: LIST_COPY.body,
-        payload: listPayload({
-          to: waId,
-          body: LIST_COPY.body,
-          button: LIST_COPY.button,
-          sectionTitle: LIST_COPY.section,
-          rows: listRowsFor(plan.shows),
-        }),
-        kind: "list",
-        meta: { show_ids: plan.shows.map((s) => s.showId) },
-      });
-    }
-
-    const url = await bookingUrlForShow(admin, request, plan.show.showId);
-    if (!url.ok) {
-      // 🔴 NO LINK, AND THE CLIENT IS NOT LEFT IN SILENCE. The alias gate is
-      // the realistic case (a show whose every name contains a room name), and
-      // it needs a human: the owner adds an alias. The client gets the neutral
-      // sentence, the owner gets told. Inventing a link is not an option —
-      // see bookingUrlForShow's note on why the gate exists.
-      console.error("wa/reply: אין קישור הזמנה לתוכנית", plan.show.showId, url.reason);
-      await recordBookingNotification(admin, {
-        kind: "unknown-contact",
-        subjectId: `no-link:${plan.show.showId}`,
-        waId,
-        excerpt: `אין קישור הזמנה לתוכנית ${plan.show.showName} (${url.reason}). הוסיפו לה שם חלופי.`,
-        onlyOwner: true,
-      });
-      const neutral = await recordAndSend(admin, {
-        inboundWamid: message.wamid,
-        waId,
-        body: NEUTRAL_REPLY,
-        payload: textPayload({ to: waId, body: NEUTRAL_REPLY }),
-        kind: "link",
-        meta: { no_link_for_show: plan.show.showId, reason: url.reason },
-      });
-      return neutral.sent ? { sent: false, reason: "no-url", kind: "link" } : neutral;
-    }
-
-    const body = linkReplyBody(plan.show.showName, url.url);
-    return await recordAndSend(admin, {
-      inboundWamid: message.wamid,
-      waId,
-      body,
-      payload: textPayload({ to: waId, body }),
-      kind: "link",
-      meta: { show_id: plan.show.showId },
-    });
+    if (plan.kind === "list") return await sendShowList(admin, message, waId, plan.shows);
+    return await sendLink(admin, request, message, waId, plan.show);
   } catch (e) {
     console.error("wa/reply: התשובה זרקה", e);
     return { sent: false, reason: "error", kind: "neutral" };
   }
+}
+
+/** The E9-3 podcast list (step 0 of the conversation too). */
+async function sendShowList(
+  admin: SupabaseClient<Database>,
+  message: InboundMessage,
+  waId: string,
+  shows: ContactShow[]
+): Promise<ReplyOutcome> {
+  return await recordAndSend(admin, {
+    inboundWamid: message.wamid,
+    waId,
+    body: LIST_COPY.body,
+    payload: listPayload({
+      to: waId,
+      body: LIST_COPY.body,
+      button: LIST_COPY.button,
+      sectionTitle: LIST_COPY.section,
+      rows: listRowsFor(shows),
+    }),
+    kind: "list",
+    meta: { show_ids: shows.map((s) => s.showId) },
+  });
+}
+
+/** The E9-3 link reply — and its no-link path, which tells the owner. */
+async function sendLink(
+  admin: SupabaseClient<Database>,
+  request: Request,
+  message: InboundMessage,
+  waId: string,
+  show: ContactShow
+): Promise<ReplyOutcome> {
+  const url = await bookingUrlForShow(admin, request, show.showId);
+  if (!url.ok) {
+    // 🔴 NO LINK, AND THE CLIENT IS NOT LEFT IN SILENCE. The alias gate is
+    // the realistic case (a show whose every name contains a room name), and
+    // it needs a human: the owner adds an alias. The client gets the neutral
+    // sentence, the owner gets told. Inventing a link is not an option —
+    // see bookingUrlForShow's note on why the gate exists.
+    console.error("wa/reply: אין קישור הזמנה לתוכנית", show.showId, url.reason);
+    await recordBookingNotification(admin, {
+      kind: "unknown-contact",
+      subjectId: `no-link:${show.showId}`,
+      waId,
+      excerpt: `אין קישור הזמנה לתוכנית ${show.showName} (${url.reason}). הוסיפו לה שם חלופי.`,
+      onlyOwner: true,
+    });
+    const neutral = await recordAndSend(admin, {
+      inboundWamid: message.wamid,
+      waId,
+      body: NEUTRAL_REPLY,
+      payload: textPayload({ to: waId, body: NEUTRAL_REPLY }),
+      kind: "link",
+      meta: { no_link_for_show: show.showId, reason: url.reason },
+    });
+    return neutral.sent ? { sent: false, reason: "no-url", kind: "link" } : neutral;
+  }
+
+  const body = linkReplyBody(show.showName, url.url);
+  return await recordAndSend(admin, {
+    inboundWamid: message.wamid,
+    waId,
+    body,
+    payload: textPayload({ to: waId, body }),
+    kind: "link",
+    meta: { show_id: show.showId },
+  });
 }
 
 /**
