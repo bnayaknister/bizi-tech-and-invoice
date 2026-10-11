@@ -37,6 +37,7 @@ export default function CreateMorningClientModal({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [gate1, setGate1] = useState<Gate1 | null>(null); // confirmation stage
+  const [dryRunNotice, setDryRunNotice] = useState(false); // B23: dry run mapped nothing
 
   async function post(confirm: boolean, mapToMorningId?: string) {
     setBusy(true);
@@ -65,6 +66,12 @@ export default function CreateMorningClientModal({
         setGate1({ duplicate: body.duplicate ?? null, existing_client: body.existing_client ?? null });
         return;
       }
+      // B23: a dry run created nothing in Morning and mapped nothing — say so
+      // here instead of reporting a mapping every caller would believe in
+      if (body.dry_run && !body.mapped) {
+        setDryRunNotice(true);
+        return;
+      }
       onResolved({ clientId: body.client_id, morningId: body.morning_client_id, name: name.trim() });
     } catch {
       setErr("שגיאת רשת");
@@ -78,7 +85,16 @@ export default function CreateMorningClientModal({
       <div className="glass-card w-full max-w-md p-5 rounded-2xl" onClick={(e) => e.stopPropagation()}>
         <h2 className="text-sm font-bold mb-3">צור לקוח חדש במורנינג</h2>
 
-        {gate1 ? (
+        {dryRunNotice ? (
+          <div className="text-xs space-y-3">
+            <div className="border border-[var(--warn)] rounded-xl px-3 py-2 text-[var(--warn)]">
+              מצב בדיקה (MORNING_DRY_RUN): לא נוצר לקוח במורנינג ולא נשמר מיפוי ללקוח.
+            </div>
+            <div className="flex items-center justify-end">
+              <button onClick={onClose} className="rounded-xl px-3 py-1.5 border border-[var(--rule)]">סגור</button>
+            </div>
+          </div>
+        ) : gate1 ? (
           <div className="text-xs space-y-3">
             {gate1.existing_client && (
               <div className="border border-[var(--warn)] rounded-xl px-3 py-2">

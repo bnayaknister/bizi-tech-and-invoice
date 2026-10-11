@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { listClients, createMorningClient, MorningError, morningEnv, isDryRun } from "@/lib/morning/client";
 import { normalizeClientName } from "@/lib/clients/match";
 import { backfillDocumentClients } from "@/lib/documents/backfill";
+import { persistMorningMapping } from "@/lib/morning/clientMapping";
 
 // Create a client in Morning and map it — the single shared "צור לקוח במורנינג"
 // action behind the ClientPicker (owner spec). Two modes, one route:
@@ -17,6 +18,11 @@ import { backfillDocumentClients } from "@/lib/documents/backfill";
 // Morning duplicate can be adopted with map_to_morning_id (no new Morning
 // record). createMorningClient honours DRY_RUN. can_edit_money; every step
 // evented.
+//
+// B23: in a dry run the synthetic Morning id is NOT mapped onto the client
+// (clientMapping.ts) — nothing is written to clients.morning_client_id, and
+// therefore nothing reaches client_morning_ids either. The response carries
+// dry_run: true and morning_client_id: null so the UI can say so.
 export async function POST(request: Request) {
   const supabase = createClient();
   const {
@@ -126,10 +132,10 @@ export async function POST(request: Request) {
     }
   }
 
-  const { error: mapErr } = await admin.from("clients").update({ morning_client_id: morningId }).eq("id", ourClientId);
-  if (mapErr) {
+  const mapped = await persistMorningMapping(admin, { clientId: ourClientId, morningId, dryRun });
+  if (!mapped.written && mapped.reason === "error") {
     return NextResponse.json(
-      { error: mapErr.code === "23505" ? "מזהה מורנינג זה כבר משויך ללקוח אחר" : mapErr.message },
+      { error: mapped.code === "23505" ? "מזהה מורנינג זה כבר משויך ללקוח אחר" : mapped.message },
       { status: 409 }
     );
   }
@@ -138,10 +144,27 @@ export async function POST(request: Request) {
     entity_type: "client", entity_id: ourClientId,
     event_type: body.map_to_morning_id ? "morning_client_mapped" : "morning_client_created",
     actor_id: user.id,
-    payload: { morning_client_id: morningId, name, tax_id: body.taxId ?? null, adopted: !!body.map_to_morning_id, dry_run: dryRun, env: morningEnv() },
+    payload: {
+      morning_client_id: morningId,
+      name,
+      tax_id: body.taxId ?? null,
+      adopted: !!body.map_to_morning_id,
+      dry_run: dryRun,
+      mapped: mapped.written,
+      env: morningEnv(),
+    },
   });
 
-  const { resolved } = await backfillDocumentClients(admin, { morningClientId: morningId });
+  // nothing was mapped in a dry run, so there is nothing to backfill from
+  const { resolved } = mapped.written ? await backfillDocumentClients(admin, { morningClientId: morningId }) : { resolved: 0 };
 
-  return NextResponse.json({ ok: true, client_id: ourClientId, morning_client_id: morningId, dryRun: dryRun || isDryRun(), backfilled: resolved });
+  return NextResponse.json({
+    ok: true,
+    client_id: ourClientId,
+    morning_client_id: mapped.written ? morningId : null,
+    mapped: mapped.written,
+    dry_run: dryRun,
+    dryRun: dryRun || isDryRun(),
+    backfilled: resolved,
+  });
 }
