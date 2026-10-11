@@ -149,6 +149,19 @@ const HE = {
     listSection: "הפודקאסטים שלכם",
   },
 
+  /**
+   * E17-4: an unassociated number, when REGISTRATION_ENABLED is on. DRAFT
+   * (owner approves the wording; the offer's first two lines are the plan's).
+   */
+  JOIN: {
+    offerBody: "היי! 👋 הגעתם לבוט ההזמנות של Bizi Podclub.\nהמספר הזה עוד לא מחובר לאף פודקאסט אצלנו. מה תרצו לעשות?",
+    newClient: "פתיחת לקוח חדש",
+    existingClient: "אני כבר לקוח",
+    link: (url: string) => `מעולה! 🎉 כאן ממלאים את הפרטים (בערך 2 דקות):\n${url}\nהקישור אישי ותקף ל-7 ימים.`,
+    existingReply: "תודה! העברנו לצוות שלנו, ונחזור אליכם כאן כדי לחבר את המספר לפודקאסט 🙂",
+    linkFailed: "אוי, לא הצלחתי ליצור קישור כרגע 😕 הצוות שלנו יחזור אליכם כאן בהקדם.",
+  },
+
   NAV: {
     back: "↩️ חזרה",
     restart: "🔁 התחלה מחדש",
@@ -361,6 +374,17 @@ const EN: BotCopy = {
     listBody: "Hi! Which podcast would you like to book a recording for?",
     listButton: "Choose podcast",
     listSection: "Your podcasts",
+  },
+
+  JOIN: {
+    offerBody:
+      "Hi! 👋 You've reached the Bizi Podclub booking bot.\nThis number isn't connected to any podcast with us yet. What would you like to do?",
+    newClient: "Open a new account",
+    existingClient: "I'm already a client",
+    link: (url: string) =>
+      `Great! 🎉 Fill in your details here${SCREEN_IS_HEBREW} — about 2 minutes:\n${url}\nThis link is personal and valid for 7 days.`,
+    existingReply: "Thanks! We've passed this on to our team, and we'll get back to you here to connect this number to your podcast 🙂",
+    linkFailed: "Oh no, I couldn't create a link right now 😕 Our team will get back to you here soon.",
   },
 
   NAV: {

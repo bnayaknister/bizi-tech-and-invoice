@@ -17,7 +17,7 @@ import {
   type ListScope,
   type ListSort,
 } from "@/lib/clients/overview";
-import type { ClientsScreenData } from "./data";
+import type { ClientsScreenData, MatchedRegistration } from "./data";
 
 /**
  * /clients — the owner's 7.10 screen. A list on the right, the open client's
@@ -123,6 +123,11 @@ export default function ClientsScreen({ data }: { data: ClientsScreenData }) {
             <span className="flex-1" />
             <span className="text-[11px] text-[var(--faint)] font-mono">{shown.length}</span>
           </div>
+
+          {data.canCreateRegistrationLink && <RegistrationLinkButton />}
+          {scope === "pending" && data.matchedRegistrations.length > 0 && (
+            <MatchedRegistrations rows={data.matchedRegistrations} />
+          )}
 
           {shown.length === 0 ? (
             <div className="py-12 text-center text-sm text-[var(--faint)]">{EMPTY_LIST}</div>
@@ -443,4 +448,86 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <div className="text-[11px] text-[var(--faint)]">{children}</div>;
+}
+
+// ─── E17-4 ──────────────────────────────────────────────────────────────────
+
+export const NEW_LINK_LABEL = "קישור הרשמה חדש";
+export const MATCHED_TITLE = "הרשמות שהותאמו לכרטיס קיים";
+
+/**
+ * "קישור הרשמה חדש" — a manual link with no number, valid 7 days, single use.
+ * Drawn only for a studio_admin while REGISTRATION_ENABLED is on; the route
+ * asks the same predicate.
+ */
+function RegistrationLinkButton() {
+  const [url, setUrl] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  async function create() {
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
+    setCopied(false);
+    try {
+      const res = await fetch("/api/clients/registration-links", { method: "POST" });
+      const body = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
+      if (!res.ok || !body.url) setErr(body.error ?? "לא הצלחתי ליצור קישור");
+      else setUrl(body.url);
+    } catch {
+      setErr("לא הצלחתי ליצור קישור");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mb-3 space-y-1.5">
+      <button
+        onClick={() => void create()}
+        disabled={busy}
+        className="text-[11px] rounded-full px-2.5 py-1 border border-[var(--violet-light)] disabled:opacity-60"
+      >
+        {busy ? "יוצר…" : NEW_LINK_LABEL}
+      </button>
+      {url && (
+        <div className="flex items-center gap-2">
+          <input readOnly value={url} dir="ltr" className="flex-1 min-w-0 bg-transparent border border-[var(--rule)] rounded-lg px-2 py-1 text-[11px] font-mono" onFocus={(e) => e.currentTarget.select()} />
+          <button
+            className="text-[11px] text-[var(--violet-light)] shrink-0"
+            onClick={() => {
+              void navigator.clipboard?.writeText(url).then(() => setCopied(true)).catch(() => {});
+            }}
+          >
+            {copied ? "הועתק ✓" : "העתקה"}
+          </button>
+        </div>
+      )}
+      {url && <div className="text-[10px] text-[var(--faint)]">תקף ל-7 ימים, לשימוש אחד.</div>}
+      {err && <div className="text-[11px] text-red-400">{err}</div>}
+    </div>
+  );
+}
+
+/** Registrations matched to an existing card — they created no client. */
+function MatchedRegistrations({ rows }: { rows: MatchedRegistration[] }) {
+  return (
+    <div className="mb-3 rounded-xl border border-[var(--rule)] p-2 space-y-1">
+      <div className="text-[11px] font-bold text-[var(--dim)]">{MATCHED_TITLE}</div>
+      {rows.map((r) => (
+        <div key={r.id} className="text-[11px] flex flex-wrap items-center gap-x-2">
+          <span className="font-bold">{r.legalName}</span>
+          <span className="text-[var(--faint)]">· {r.podcastName}</span>
+          <span className="text-[var(--faint)]">· {r.createdAt.slice(8, 10)}.{Number(r.createdAt.slice(5, 7))}</span>
+          {r.matchedClientId && (
+            <Link href={`/clients/${r.matchedClientId}`} className="text-[var(--violet-light)]">
+              → {r.matchedClientName ?? "הכרטיס הקיים"}
+            </Link>
+          )}
+        </div>
+      ))}
+    </div>
+  );
 }

@@ -14,7 +14,14 @@ import {
 } from "@/lib/clients/overview";
 import type { FieldMeta } from "@/components/EntityFieldRows";
 import type { Profile } from "@/lib/profile";
-import { canManageBookingContacts, canSeeClients, clientStatusesVisibleTo } from "@/lib/clients/access";
+import {
+  canCreateRegistrationLink,
+  canManageBookingContacts,
+  canSeeClients,
+  clientStatusesVisibleTo,
+  isStudioAdmin,
+} from "@/lib/clients/access";
+import { isRegistrationEnabled } from "@/lib/registration/switch";
 import { clientFieldMeta } from "@/lib/clients/fields";
 
 /**
@@ -151,8 +158,65 @@ export type ClientsScreenData = {
   canSeePending: boolean;
   /** studio_admin (E17-3): "הרשאות הזמנת חדרים" is drawn at all */
   canManageBookingContacts: boolean;
+  /** studio_admin + REGISTRATION_ENABLED (E17-4): "קישור הרשמה חדש" is drawn */
+  canCreateRegistrationLink: boolean;
+  /**
+   * studio_admin (E17-4): registrations matched to an existing card. They
+   * create no client, so the pending list cannot show them — this does, in the
+   * same tab. Empty for everyone else (never read for them).
+   */
+  matchedRegistrations: MatchedRegistration[];
   today: string;
 };
+
+export type MatchedRegistration = {
+  id: string;
+  legalName: string;
+  podcastName: string;
+  source: string;
+  createdAt: string;
+  matchedClientId: string | null;
+  matchedClientName: string | null;
+};
+
+/**
+ * The 50 most recent registrations matched to an existing card. Service role:
+ * `client_registrations` is closed to every session (0107). Called only for a
+ * studio_admin. A failed read is an empty list — the tab still renders.
+ */
+async function loadMatchedRegistrations(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  admin: any,
+  clients: ClientRow[]
+): Promise<MatchedRegistration[]> {
+  const { data, error } = await admin
+    .from("client_registrations")
+    .select("id,legal_name,podcast_name,source,created_at,duplicate_of_client_id")
+    .eq("status", "duplicate")
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (error) {
+    console.error("clients: קריאת ההרשמות שהותאמו נכשלה", error.message);
+    return [];
+  }
+  const nameOf = new Map(clients.map((c) => [c.id, c.name]));
+  return ((data ?? []) as {
+    id: string;
+    legal_name: string;
+    podcast_name: string;
+    source: string;
+    created_at: string;
+    duplicate_of_client_id: string | null;
+  }[]).map((r) => ({
+    id: r.id,
+    legalName: r.legal_name,
+    podcastName: r.podcast_name,
+    source: r.source,
+    createdAt: r.created_at,
+    matchedClientId: r.duplicate_of_client_id,
+    matchedClientName: r.duplicate_of_client_id ? nameOf.get(r.duplicate_of_client_id) ?? null : null,
+  }));
+}
 
 export async function loadClientsScreen(selectedId: string | null): Promise<
   { ok: false } | { ok: true; profile: Profile; data: ClientsScreenData }
@@ -175,6 +239,8 @@ export async function loadClientsScreen(selectedId: string | null): Promise<
 
   const rows = buildClientList(clients, shows, jobs, today);
 
+  const matchedRegistrations = isStudioAdmin(p) ? await loadMatchedRegistrations(admin, clients) : [];
+
   let card: ClientCard | null = null;
   if (selectedId) {
     const base = clients.find((c) => c.id === selectedId) ?? null;
@@ -190,6 +256,8 @@ export async function loadClientsScreen(selectedId: string | null): Promise<
       canEditMoney: !!p.can_edit_money,
       canSeePending: clientStatusesVisibleTo(p).length > 1,
       canManageBookingContacts: canManageBookingContacts(p),
+      canCreateRegistrationLink: canCreateRegistrationLink(p, isRegistrationEnabled()),
+      matchedRegistrations,
       today,
     },
   };

@@ -94,7 +94,7 @@ console.log("\n── 2. /clients, rendered");
     shows: [], contracts: [], debt: 0, debtJobs: [], documents: [], productions: [],
   };
   const data = (over: Partial<ClientsScreenData>): ClientsScreenData => ({
-    rows, card, canEditMoney: true, canSeePending: false, canManageBookingContacts: false, today: "2026-10-11", ...over,
+    rows, card, canEditMoney: true, canSeePending: false, canManageBookingContacts: false, canCreateRegistrationLink: false, matchedRegistrations: [], today: "2026-10-11", ...over,
   });
   const TAB = 'data-block="booking-contacts"';
 

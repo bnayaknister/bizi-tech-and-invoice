@@ -175,6 +175,12 @@ const KIND: Record<string, Kind> = {
   "NOTICE.feedFailed": "body",
   "NOTICE.noRecordings": "body",
   "NOTICE.manageFailed": "body",
+  "JOIN.offerBody": "body",
+  "JOIN.newClient": "button",
+  "JOIN.existingClient": "button",
+  "JOIN.link": "body",
+  "JOIN.existingReply": "body",
+  "JOIN.linkFailed": "body",
 };
 
 // ── worst-case arguments ──
@@ -200,6 +206,7 @@ const SAMPLES: Record<string, unknown[][]> = {
   "fmt.studio": ROOMS.map((r) => [r]),
   "fmt.durationShort": DURS.map((d) => [d]),
   "REPLY.link": [[LONG_SHOW, URL]],
+  "JOIN.link": [["https://bizi-app.vercel.app/join/" + "A".repeat(43)]],
   "MENU.body": [[LONG_SHOW]],
   "MENU.bodyWithLink": [[LONG_SHOW, URL], [LONG_SHOW, null]],
   "MINE.title": DATES.map((d) => [d, "23:30"]),

@@ -55,6 +55,11 @@ export async function updateSession(request: NextRequest) {
       // must not be bounced to /pending off a link a client sent them
       path.startsWith("/b/") ||
       path.startsWith("/api/book/") ||
+      // public REGISTRATION links (E17-4) — same family as /b: account-less,
+      // the token is the only credential. Both answer 404 while
+      // REGISTRATION_ENABLED is off.
+      path.startsWith("/join/") ||
+      path.startsWith("/api/join/") ||
       // the WhatsApp webhook (E9-1). Meta sends no cookies, so `user` is null
       // and this wall never fires for a real delivery — it is listed anyway
       // because the one person who WILL arrive here with a session is whoever

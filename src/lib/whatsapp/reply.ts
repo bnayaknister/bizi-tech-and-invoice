@@ -8,7 +8,10 @@ import {
   sendWhatsapp,
   textPayload,
 } from "./client";
-import { recordBookingNotification } from "./notify";
+import { EXISTING_CLAIM_DETAILS, notifyClientRegistration, recordBookingNotification } from "./notify";
+import { isRegistrationEnabled } from "@/lib/registration/switch";
+import { ensureRegistrationLinkForWaId, registrationUrl } from "@/lib/registration/links";
+import { israelDateOf } from "@/lib/calendar/availability";
 import { bookingUrlForShow, showsForNumber, type ContactShow } from "@/lib/booking/contacts";
 import type { InboundMessage } from "./webhook";
 import { interactiveId, isFlowOn, runFlow } from "./flow/run";
@@ -140,7 +143,7 @@ export function replyWamid(inboundWamid: string): string {
   return `local:reply:${inboundWamid}`;
 }
 
-type ReplyKind = ReplyPlan["kind"] | "flow" | "lang";
+type ReplyKind = ReplyPlan["kind"] | "flow" | "lang" | "join";
 
 export type ReplyOutcome =
   | { sent: true; kind: ReplyKind }
@@ -260,7 +263,7 @@ export async function replyToInbound(
       // `booking_contacts` (whose `wa_id` is canonical by CHECK), so it is
       // treated as unknown — which is the honest answer, not a failure. Its
       // language cannot be stored either: Hebrew.
-      return await replyUnknown(admin, message, "unknown", { lang: DEFAULT_LANG, replyKey });
+      return await replyUnknown(admin, message, "unknown", { lang: DEFAULT_LANG, replyKey }, request);
     }
 
     // ── E19: the language, BEFORE anything else ─────────────────────────
@@ -317,7 +320,7 @@ export async function replyToInbound(
 
     const plan = planReply(shows, picked);
 
-    if (plan.kind === "neutral") return await replyUnknown(admin, message, waId, ctx);
+    if (plan.kind === "neutral") return await replyUnknown(admin, message, waId, ctx, request);
     if (plan.kind === "list") return await sendShowList(admin, waId, plan.shows, ctx);
     return await sendLink(admin, request, waId, plan.show, ctx);
   } catch (e) {
@@ -415,8 +418,15 @@ async function replyUnknown(
   admin: SupabaseClient<Database>,
   message: InboundMessage,
   waId: string,
-  ctx: Ctx
+  ctx: Ctx,
+  request: Request
 ): Promise<ReplyOutcome> {
+  // E17-4: with registration on, the offer replaces BOTH halves of the old
+  // answer — see replyUnknownWithOffer for why the owner's notice moves too.
+  if (isRegistrationEnabled() && waId !== "unknown") {
+    return await replyUnknownWithOffer(admin, message, waId, ctx, request);
+  }
+
   // the owner's notice first: if the reply fails, the owner should still hear
   // about the message. Its own deterministic wamid is keyed on the INBOUND
   // message, so one notice per message and no storm from a re-delivery.
@@ -439,6 +449,116 @@ async function replyUnknown(
     payload: textPayload({ to: waId, body: C.REPLY.neutral }),
     kind: "neutral",
     meta: { unknown_contact: true },
+  });
+}
+
+// ─── E17-4: the registration offer ──────────────────────────────────────────
+
+/** The two buttons' ids. Prefixed like `lang:` and `f:`, and never parsed further. */
+export const JOIN_NEW_ID = "join:new";
+export const JOIN_EXISTING_ID = "join:existing";
+
+export type UnknownPlan = "offer" | "link" | "existing";
+
+/** What an unassociated number gets, given what it tapped. PURE. */
+export function planUnknownReply(tappedId: string | null): UnknownPlan {
+  if (tappedId === JOIN_NEW_ID) return "link";
+  if (tappedId === JOIN_EXISTING_ID) return "existing";
+  return "offer";
+}
+
+/**
+ * The unassociated number, registration ON (E17-4).
+ *
+ * ═══ 🔴 ONE NOTICE PER EVENT, NEVER TWO AT ONCE ═══
+ * Before E17-4 every message from an unknown number paged the owner
+ * (`bizi_unknown_contact`, keyed per inbound message). With the offer, that
+ * notice would be followed seconds later by the button's own notice — two
+ * messages about one number in the same moment. So, while the switch is on,
+ * the notice is carried by what the person DOES, not by their writing:
+ *   · writes anything      -> the offer; NO notice (nothing has happened yet);
+ *   · taps "פתיחת לקוח חדש" -> their link; NO notice — the registration form
+ *                             notifies when it is SENT, with the details;
+ *   · taps "אני כבר לקוח"   -> ONE notice, keyed per number per Israeli day,
+ *                             so tapping again does not page anyone twice.
+ * The language question (askLanguage) skips its notice too, for the same reason.
+ *
+ * ⚠️ THE PRICE, STATED: a stranger who writes once and never taps is not
+ * reported. Their message is in `wa_messages`, and anyone who wants to reach
+ * the studio has the two buttons in front of them.
+ */
+async function replyUnknownWithOffer(
+  admin: SupabaseClient<Database>,
+  message: InboundMessage,
+  waId: string,
+  ctx: Ctx,
+  request: Request
+): Promise<ReplyOutcome> {
+  const C = copy(ctx.lang).JOIN;
+  const plan = planUnknownReply(interactiveId(message));
+
+  if (plan === "link") {
+    const link = await ensureRegistrationLinkForWaId(admin, waId, new Date());
+    if (!link.ok) {
+      // no link and no silence: the owner hears about this one
+      await notifyUnknown(admin, message, waId);
+      return await recordAndSend(admin, {
+        inboundWamid: ctx.replyKey,
+        waId,
+        body: C.linkFailed,
+        payload: textPayload({ to: waId, body: C.linkFailed }),
+        kind: "join",
+        meta: { join: "link-failed" },
+      });
+    }
+    const body = C.link(registrationUrl(getAppBaseUrl(request), link.token));
+    return await recordAndSend(admin, {
+      inboundWamid: ctx.replyKey,
+      waId,
+      body,
+      payload: textPayload({ to: waId, body }),
+      kind: "join",
+      // the token is in `body` already (it is what the client receives); the
+      // meta carries only whether it was minted now
+      meta: { join: "link", link_created: link.created },
+    });
+  }
+
+  if (plan === "existing") {
+    await notifyClientRegistration(admin, {
+      event: "existing-claim",
+      subjectId: `existing-claim:${waId}:${israelDateOf(new Date())}`,
+      registrationId: null,
+      name: null,
+      podcast: null,
+      waId,
+      details: EXISTING_CLAIM_DETAILS,
+    });
+    return await recordAndSend(admin, {
+      inboundWamid: ctx.replyKey,
+      waId,
+      body: C.existingReply,
+      payload: textPayload({ to: waId, body: C.existingReply }),
+      kind: "join",
+      meta: { join: "existing" },
+    });
+  }
+
+  return await recordAndSend(admin, {
+    inboundWamid: ctx.replyKey,
+    waId,
+    body: C.offerBody,
+    payload: buttonsPayload({
+      to: waId,
+      body: C.offerBody,
+      buttons: [
+        { id: JOIN_NEW_ID, title: C.newClient },
+        { id: JOIN_EXISTING_ID, title: C.existingClient },
+      ],
+    }),
+    kind: "join",
+    type: "interactive",
+    meta: { join: "offer", unknown_contact: true },
   });
 }
 
@@ -509,7 +629,9 @@ async function resolveLanguage(
  */
 async function askLanguage(admin: SupabaseClient<Database>, message: InboundMessage, waId: string): Promise<ReplyOutcome> {
   const shows = await showsForNumber(admin, waId);
-  if (shows.length === 0) await notifyUnknown(admin, message, waId);
+  // E17-4: with registration on, an unknown number's notice comes from its
+  // tap, not from its writing (see replyUnknownWithOffer)
+  if (shows.length === 0 && !isRegistrationEnabled()) await notifyUnknown(admin, message, waId);
 
   const reply: FlowReply = languageQuestion(message.wamid);
   return await recordAndSend(admin, {

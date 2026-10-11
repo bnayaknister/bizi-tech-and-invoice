@@ -74,3 +74,14 @@ export function clientStatusesVisibleTo(
 ): string[] {
   return isStudioAdmin(profile) ? [ACTIVE_CLIENT, PENDING_CLIENT] : [ACTIVE_CLIENT];
 }
+
+/**
+ * "קישור הרשמה חדש" (E17-4): a studio_admin, and only while registration is
+ * open — the switch is passed in so this stays pure.
+ */
+export function canCreateRegistrationLink(
+  profile: Pick<Profile, "approved" | "studio_admin"> | null | undefined,
+  registrationEnabled: boolean
+): boolean {
+  return registrationEnabled && isStudioAdmin(profile);
+}

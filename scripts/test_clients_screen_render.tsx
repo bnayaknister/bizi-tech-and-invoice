@@ -473,7 +473,7 @@ console.log("\n=== the screen actually renders (not just returns 200) ===");
 
   // 1. an EMPTY list renders the approved sentence, exactly once
   const empty = render(
-    <ClientsScreen data={{ rows: [], card: null, canEditMoney: true, canSeePending: false, canManageBookingContacts: false, today: "2026-10-07" }} />
+    <ClientsScreen data={{ rows: [], card: null, canEditMoney: true, canSeePending: false, canManageBookingContacts: false, canCreateRegistrationLink: false, matchedRegistrations: [], today: "2026-10-07" }} />
   );
   check("empty: the approved sentence appears once", countOf(empty, EMPTY_LIST), 1);
   check("empty: the heading is the approved wording", countOf(empty, ">לקוחות<"), 1);
@@ -481,7 +481,7 @@ console.log("\n=== the screen actually renders (not just returns 200) ===");
 
   // 2. the list, with no card open
   const listOnly = render(
-    <ClientsScreen data={{ rows, card: null, canEditMoney: true, canSeePending: false, canManageBookingContacts: false, today: "2026-10-07" }} />
+    <ClientsScreen data={{ rows, card: null, canEditMoney: true, canSeePending: false, canManageBookingContacts: false, canCreateRegistrationLink: false, matchedRegistrations: [], today: "2026-10-07" }} />
   );
   // default scope is "פעילים", so only c1 (it has an active show) is shown —
   // the count the operator reads must be the count of what is rendered
@@ -516,7 +516,7 @@ console.log("\n=== the screen actually renders (not just returns 200) ===");
     productions: [{ id: "p1", podcast_name: "פרק 12", record_date: "2026-09-01", status: "נמסר" }],
   };
   const withCard = render(
-    <ClientsScreen data={{ rows, card, canEditMoney: true, canSeePending: false, canManageBookingContacts: false, today: "2026-10-07" }} />
+    <ClientsScreen data={{ rows, card, canEditMoney: true, canSeePending: false, canManageBookingContacts: false, canCreateRegistrationLink: false, matchedRegistrations: [], today: "2026-10-07" }} />
   );
   for (const section of ["סקירה", "תוכניות וחוזים", "כספים", "פעילות"]) {
     check(`card: the "${section}" section renders once`, countOf(withCard, `>${section}<`), 1);
@@ -535,7 +535,7 @@ console.log("\n=== the screen actually renders (not just returns 200) ===");
   // 4. a client with NO debt gets the approved sentence rather than ₪0
   const noDebtCard = { ...card, debt: 0, debtJobs: [] };
   const zero = render(
-    <ClientsScreen data={{ rows, card: noDebtCard, canEditMoney: true, canSeePending: false, canManageBookingContacts: false, today: "2026-10-07" }} />
+    <ClientsScreen data={{ rows, card: noDebtCard, canEditMoney: true, canSeePending: false, canManageBookingContacts: false, canCreateRegistrationLink: false, matchedRegistrations: [], today: "2026-10-07" }} />
   );
   // once in the card, once on the row of the client that has no debt — but the
   // active scope shows only c1, which HAS debt, so the card is the only one
@@ -551,7 +551,7 @@ console.log("\n=== the screen actually renders (not just returns 200) ===");
   );
   const unmapped = render(
     <ClientsScreen
-      data={{ rows: unmappedRows, card: { ...card, id: "c2", name: "ידיעות אחרונות" }, canEditMoney: true, canSeePending: false, canManageBookingContacts: false, today: "2026-10-07" }}
+      data={{ rows: unmappedRows, card: { ...card, id: "c2", name: "ידיעות אחרונות" }, canEditMoney: true, canSeePending: false, canManageBookingContacts: false, canCreateRegistrationLink: false, matchedRegistrations: [], today: "2026-10-07" }}
     />
   );
   check("unmapped: the approved label appears", countOf(unmapped, NOT_MAPPED) >= 1, true);
@@ -565,7 +565,7 @@ console.log("\n=== the screen actually renders (not just returns 200) ===");
   let threw = false;
   try {
     const sparse = render(
-      <ClientsScreen data={{ rows, card: sparseCard, canEditMoney: true, canSeePending: false, canManageBookingContacts: false, today: "2026-10-07" }} />
+      <ClientsScreen data={{ rows, card: sparseCard, canEditMoney: true, canSeePending: false, canManageBookingContacts: false, canCreateRegistrationLink: false, matchedRegistrations: [], today: "2026-10-07" }} />
     );
     check("sparse card: still renders the six rows", countOf(sparse, "<label"), 6);
     check("sparse card: says there are no shows", countOf(sparse, ">אין תוכניות<"), 1);
@@ -582,7 +582,7 @@ console.log("\n=== the screen actually renders (not just returns 200) ===");
   let threw2 = false;
   try {
     render(
-      <ClientsScreen data={{ rows: [], card: { ...card, id: "gone" }, canEditMoney: true, canSeePending: false, canManageBookingContacts: false, today: "2026-10-07" }} />
+      <ClientsScreen data={{ rows: [], card: { ...card, id: "gone" }, canEditMoney: true, canSeePending: false, canManageBookingContacts: false, canCreateRegistrationLink: false, matchedRegistrations: [], today: "2026-10-07" }} />
     );
   } catch (e) {
     threw2 = true;

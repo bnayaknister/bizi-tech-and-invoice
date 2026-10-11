@@ -177,7 +177,92 @@ export const PENDING_REASON_LABEL: Record<PendingReason, string> = {
   "slot-taken": "המשבצת נתפסה ביומן",
 };
 
-export type NotificationKind = "booking-approved" | "booking-pending" | "unknown-contact" | "booking-change";
+export type NotificationKind =
+  | "booking-approved"
+  | "booking-pending"
+  | "unknown-contact"
+  | "booking-change"
+  | "client-registration";
+
+// ─── E17-4: the registration notice, and which templates Meta approved ──────
+
+/**
+ * Utility — a client registration event, to Bnaya and Eli (E17-4). ONE
+ * template for three events, the event itself being `{{1}}` — the pattern Meta
+ * already accepted in `bizi_booking_change`. Text: docs/plans/E17 "תבניות
+ * להגשה". NOT YET APPROVED by Meta — see TEMPLATE_META_APPROVED.
+ */
+export const TEMPLATE_CLIENT_REGISTRATION = "bizi_client_registration";
+export const TEMPLATE_CLIENT_REGISTRATION_VARS = ["event", "name", "podcast", "phone", "details"] as const;
+export const TEMPLATE_CLIENT_REGISTRATION_TEXT =
+  "עדכון על לקוח במערכת ביזי: {{1}}.\n" +
+  "שם העסק: {{2}}\n" +
+  "פודקאסט: {{3}}\n" +
+  "מספר הוואטסאפ: {{4}}\n" +
+  "פרטים: {{5}}\n" +
+  "את ההמשך מטפלים במסך הלקוחות במערכת.";
+
+export type RegistrationEvent = "new" | "duplicate" | "existing-claim";
+
+/** `{{1}}`, word for word as submitted (docs/plans/E17, "תבניות להגשה"). */
+export const REGISTRATION_EVENT_LABEL: Record<RegistrationEvent, string> = {
+  new: "נרשם לקוח חדש והוא ממתין לאישור",
+  duplicate: "הרשמה חדשה הותאמה לכרטיס קיים",
+  "existing-claim": "מספר לא משויך כתב בבוט שהוא כבר לקוח",
+};
+
+/** A `{{2}}`/`{{3}}` the event has no value for — Graph refuses an empty parameter. */
+export const NOT_GIVEN = "לא נמסר";
+
+/**
+ * Which templates Meta has APPROVED (E17-4). A template that is not listed, or
+ * is listed `false`, is NOT SENT: `recordBookingNotification` refuses it before
+ * recording anything, and the caller decides what to do instead.
+ *
+ * Default: not approved. Flip an entry only after Meta's approval e-mail, in
+ * the same commit that says so.
+ *
+ * ⚠️ `bizi_booking_change` is `true` although Meta has not approved it yet —
+ * NOT a claim that it is approved, but E9-5's decision preserved: it sends,
+ * and a 132001 failure is recorded on the row until approval. Switching it to
+ * `false` here would silently change E9-5's behaviour, which is not this
+ * stage's call.
+ */
+export const TEMPLATE_META_APPROVED: Record<string, boolean> = {
+  bizi_booking_approved: true,
+  bizi_booking_pending: true,
+  bizi_unknown_contact: true,
+  bizi_booking_change: true,
+  bizi_client_registration: false,
+};
+
+export function isTemplateApproved(name: string): boolean {
+  return TEMPLATE_META_APPROVED[name] === true;
+}
+
+/** The registration template's named variables — never an empty value. */
+export function registrationNoticeVariables(input: {
+  event: RegistrationEvent;
+  name: string | null;
+  podcast: string | null;
+  waId: string;
+  details: string;
+}) {
+  const v = (s: string | null) => (s && s.trim() !== "" ? excerptParam(s) : NOT_GIVEN);
+  return {
+    event: REGISTRATION_EVENT_LABEL[input.event],
+    name: v(input.name),
+    podcast: v(input.podcast),
+    phone: displayWaIdForNotice(input.waId),
+    details: excerptParam(input.details),
+  } satisfies Record<(typeof TEMPLATE_CLIENT_REGISTRATION_VARS)[number], string>;
+}
+
+/** 972501234567 -> 050-123-4567 (Israeli mobiles); anything else as given. */
+function displayWaIdForNotice(waId: string): string {
+  const m = /^972(5\d)(\d{3})(\d{4})$/.exec(waId);
+  return m ? `0${m[1]}-${m[2]}-${m[3]}` : waId;
+}
 
 /** How much of an unknown sender's message travels into the notification. */
 export const EXCERPT_MAX_CHARS = 120;
@@ -425,13 +510,24 @@ export type RecordResult = {
   sent: number;
   failed: number;
   dryRun: boolean;
+  /** E17-4: the template is not approved by Meta — nothing was recorded or sent */
+  unapproved?: boolean;
 };
 
 type NotifyInput =
   | { kind: "booking-approved"; subjectId: string; facts: BookingFacts }
   | { kind: "booking-pending"; subjectId: string; facts: BookingFacts; reason: PendingReason }
   | { kind: "unknown-contact"; subjectId: string; waId: string; excerpt: string }
-  | { kind: "booking-change"; subjectId: string; change: BookingChange; facts: BookingFacts; details: string };
+  | { kind: "booking-change"; subjectId: string; change: BookingChange; facts: BookingFacts; details: string }
+  | {
+      kind: "client-registration";
+      subjectId: string;
+      event: RegistrationEvent;
+      name: string | null;
+      podcast: string | null;
+      waId: string;
+      details: string;
+    };
 
 /** The template name, the positional params, the named variables and the body. */
 function renderNotification(input: NotifyInput): {
@@ -448,6 +544,17 @@ function renderNotification(input: NotifyInput): {
       params: [input.waId, excerpt],
       variables: { waId: input.waId, excerpt },
       body: unknownContactBody(input.waId, excerpt),
+    };
+  }
+
+  if (input.kind === "client-registration") {
+    const variables = registrationNoticeVariables(input);
+    const params = TEMPLATE_CLIENT_REGISTRATION_VARS.map((k) => variables[k]);
+    return {
+      templateName: TEMPLATE_CLIENT_REGISTRATION,
+      params,
+      variables,
+      body: fillTemplate(TEMPLATE_CLIENT_REGISTRATION_TEXT, params),
     };
   }
 
@@ -523,6 +630,14 @@ export async function recordBookingNotification(
   }
 
   const r = renderNotification(input);
+
+  // E17-4: a template Meta has not approved is not sent and not recorded as a
+  // message — a `queued`/`failed` row would claim a message existed. The
+  // caller is told, and decides what replaces it.
+  if (!isTemplateApproved(r.templateName)) {
+    return { recipients: recipients.length, recorded: 0, sent: 0, failed: 0, dryRun, unapproved: true };
+  }
+
   const rows = buildNotificationRows({
     kind: input.kind,
     subjectId: input.subjectId,
@@ -656,3 +771,73 @@ export async function notifyBookingChange(
     onlyOwner: input.change === "calendar-delete-failed",
   });
 }
+
+/**
+ * A registration notice to Bnaya and Eli (E17-4), once per subject.
+ *
+ * While `bizi_client_registration` is not approved:
+ *   · a NEW or DUPLICATE registration is not sent; an event is written on the
+ *     registration row, and the registration itself is what the owner sees —
+ *     the "ממתינים לאישור" tab of /clients lists both kinds;
+ *   · an EXISTING-CLAIM ("אני כבר לקוח") has no row on any screen, so it falls
+ *     back to `bizi_unknown_contact` — approved, owner only, and its own
+ *     wording already says "associate the number on the client card". One
+ *     message either way, never both.
+ */
+export async function notifyClientRegistration(
+  admin: SupabaseClient<Database>,
+  input: {
+    event: RegistrationEvent;
+    subjectId: string;
+    /** the registration row, when there is one — where a skipped notice is recorded */
+    registrationId: string | null;
+    name: string | null;
+    podcast: string | null;
+    waId: string;
+    details: string;
+  }
+): Promise<RecordResult & { fallback?: "unknown-contact" | "event" }> {
+  try {
+    const res = await recordBookingNotification(admin, {
+      kind: "client-registration",
+      subjectId: input.subjectId,
+      event: input.event,
+      name: input.name,
+      podcast: input.podcast,
+      waId: input.waId,
+      details: input.details,
+    });
+    if (!res.unapproved) return res;
+
+    if (input.event === "existing-claim") {
+      const fb = await recordBookingNotification(admin, {
+        kind: "unknown-contact",
+        subjectId: input.subjectId,
+        waId: input.waId,
+        excerpt: EXISTING_CLAIM_EXCERPT,
+        onlyOwner: true,
+      });
+      return { ...fb, fallback: "unknown-contact" };
+    }
+
+    if (input.registrationId) {
+      const variables = registrationNoticeVariables(input);
+      await admin.from("events").insert({
+        entity_type: "client_registration",
+        entity_id: input.registrationId,
+        event_type: "notification_skipped_template_unapproved",
+        payload: { template: TEMPLATE_CLIENT_REGISTRATION, event: input.event, variables } as Json,
+      });
+    }
+    return { ...res, fallback: "event" };
+  } catch (e) {
+    console.error("wa/notify: התראת ההרשמה זרקה", e);
+    return { recipients: 0, recorded: 0, sent: 0, failed: 0, dryRun: isWhatsappDryRun() };
+  }
+}
+
+/** The `{{2}}` of the fallback notice — what the number did, in the owner's words. */
+export const EXISTING_CLAIM_EXCERPT = "לחץ/ה בבוט על \"אני כבר לקוח\"";
+
+/** The `{{5}}` of an existing-claim notice (docs/plans/E17, "תבניות להגשה"). */
+export const EXISTING_CLAIM_DETAILS = "יש לשייך את המספר ידנית בכרטיס הלקוח";
