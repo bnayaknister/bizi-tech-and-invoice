@@ -32,7 +32,7 @@ import {
   TEMPLATE_BOOKING_APPROVED_VARS,
   TEMPLATE_BOOKING_PENDING,
   TEMPLATE_BOOKING_PENDING_VARS,
-  TEMPLATE_LANGUAGE,
+  templateSendLanguage,
   TEMPLATE_UNKNOWN_CONTACT,
   TEMPLATE_UNKNOWN_CONTACT_VARS,
   TEMPLATE_BOOKING_APPROVED_TEXT,
@@ -211,7 +211,7 @@ console.log("\n=== 3. the payloads Graph receives ===");
   const t = templatePayload({
     to: "972501234567",
     name: TEMPLATE_BOOKING_APPROVED,
-    language: TEMPLATE_LANGUAGE,
+    language: templateSendLanguage(TEMPLATE_BOOKING_APPROVED)!,
     params: ["דעה לא פופולרית", "יום א׳ 27.9, 09:00–10:30", "גבעון", "שעה וחצי", "דנה לוי"],
   });
   check("messaging_product", t.messaging_product, "whatsapp");

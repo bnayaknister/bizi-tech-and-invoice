@@ -459,9 +459,9 @@ Your first booking will be approved manually by the team.
 
 ---
 
-## טיוטת סעיף לדף הפרטיות (לאישור בעלים — /privacy לא שונה)
+## סעיף לדף הפרטיות — ✅ אושר 11.10 כמו שהוא ונכנס ל-[privacy.ts](../../src/lib/legal/privacy.ts)
 
-נכתב 11.10. נכנס ל-[privacy.ts](../../src/lib/legal/privacy.ts) רק אחרי אישור, יחד עם העלאת `PRIVACY_UPDATED_AT`. בלעדיו לא מדליקים את `REGISTRATION_ENABLED`: הטופס שומר את גרסת המדיניות שהלקוח אישר.
+נכתב 11.10, אושר בידי הבעלים 11.10 בלי שינוי, `PRIVACY_UPDATED_AT` = 11.10.2026. בלעדיו לא מדליקים את `REGISTRATION_ENABLED`: הטופס שומר את גרסת המדיניות שהלקוח אישר.
 
 **סעיף חדש — `id: "registration"`, כותרת: "טופס פתיחת לקוח"**
 

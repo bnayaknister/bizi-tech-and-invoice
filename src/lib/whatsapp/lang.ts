@@ -136,10 +136,10 @@ export function languageQuestion(heldWamid: string): {
 /**
  * Which language to send a CLIENT template in.
  *
- * ⚠️ TODAY NO TEMPLATE GOES TO A CLIENT: all four (`bizi_booking_approved`,
- * `_pending`, `_change`, `bizi_unknown_contact`) go to the owner and Eli, and
- * those stay Hebrew (owner decision 11.10). This is the seam for the first
- * client template (E17's `bizi_client_approved`).
+ * ⚠️ ONLY `bizi_client_approved` GOES TO A CLIENT. The owner/Eli templates are
+ * sent in the language they are REGISTERED under in Meta — per template, in
+ * notify.ts `TEMPLATE_REGISTERED_LANGUAGE` (B25: `bizi_unknown_contact` is
+ * registered English), never through this function.
  *
  * 🔴 AN ENGLISH VERSION IS USED ONLY ONCE IT IS MARKED APPROVED HERE. Sending a
  * template in a language Meta has not approved fails the whole send (132001),

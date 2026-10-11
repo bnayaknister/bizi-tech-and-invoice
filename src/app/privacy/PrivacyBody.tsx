@@ -41,6 +41,11 @@ export default function PrivacyBody() {
               ))}
             </ul>
           )}
+          {s.after?.map((p) => (
+            <p key={p} className="text-sm text-[var(--dim)] leading-relaxed">
+              {p}
+            </p>
+          ))}
         </section>
       ))}
 

@@ -20,6 +20,7 @@ import { readFileSync } from "node:fs";
 import PrivacyPage from "../src/app/privacy/page";
 import {
   PRIVACY_CONTACT_EMAIL,
+  PRIVACY_INTRO,
   PRIVACY_SECTIONS,
   PRIVACY_TITLE,
   PRIVACY_UPDATED_AT,
@@ -65,6 +66,21 @@ check("deletion names the email", deletion.paragraphs.join(" ").split(PRIVACY_CO
 check("deletion names the 30 days", deletion.paragraphs.join(" ").split("30 יום").length - 1, 1);
 check("company name once", countOf(html, "BIZI STUDIO LTD"), 1);
 check("mailto link once", countOf(html, `href="mailto:${PRIVACY_CONTACT_EMAIL}"`), 1);
+
+console.log("\n— E17: the registration form (owner approval 11.10) —");
+check("updated-at is 11.10.2026", PRIVACY_UPDATED_AT, "11.10.2026");
+check("intro names the registration form once", PRIVACY_INTRO.split("טופס פתיחת הלקוח").length - 1, 1);
+const reg = PRIVACY_SECTIONS.find((s) => s.id === "registration");
+check("registration section exists, titled", reg?.title, "טופס פתיחת לקוח");
+check("…sits before retention", PRIVACY_SECTIONS.findIndex((s) => s.id === "registration") < PRIVACY_SECTIONS.findIndex((s) => s.id === "retention"), true);
+check("…eight bullets", reg?.bullets?.length, 8);
+for (const b of reg?.bullets ?? []) check(`bullet rendered once: ${b.slice(0, 24)}`, countOf(html, b), 1);
+check("…two paragraphs after the list", reg?.after?.map((p) => p.split(":")[0]), ["למה", "כמה זמן"]);
+for (const p of reg?.after ?? []) check(`after-paragraph rendered once: ${p.slice(0, 20)}`, countOf(html, p), 1);
+check("…the list renders BEFORE the why", seen(html).indexOf(reg!.bullets![7]) < seen(html).indexOf(reg!.after![0]), true);
+check("…30-day purge of a rejected registration", reg!.after!.join(" ").split("30 יום").length - 1, 1);
+const use = PRIVACY_SECTIONS.find((s) => s.id === "use")!;
+check("use: Morning among the service providers", use.paragraphs.join(" ").split("Morning (חשבונית ירוקה)").length - 1, 1);
 
 console.log("\n— no session, no database, by construction —");
 const FORBIDDEN = /supabase|getSessionAndProfile|next\/headers|cookies\(/;

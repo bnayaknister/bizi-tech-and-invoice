@@ -436,6 +436,7 @@ console.log("\n=== 7. the notification rows (dry run records, never sends) ===")
     variables: { showName: "x" },
     body: approved,
     status: "dry_run",
+    language: "he",
   });
   check("one row per recipient", rows.length, 2);
   check("direction is out", rows.map((r) => r.direction), ["out", "out"]);
@@ -454,7 +455,7 @@ console.log("\n=== 7. the notification rows (dry run records, never sends) ===")
   check("a non-dry-run row says queued, and its payload says so too", (() => {
     const q = buildNotificationRows({
       kind: "booking-pending", subjectId: "b-1", recipients: ["972501234567"],
-      templateName: "t", params: [], variables: {}, body: "x", status: "queued",
+      templateName: "t", params: [], variables: {}, body: "x", status: "queued", language: "he",
     })[0];
     return [q.status, (q.payload as { dry_run: boolean }).dry_run];
   })(), ["queued", false]);

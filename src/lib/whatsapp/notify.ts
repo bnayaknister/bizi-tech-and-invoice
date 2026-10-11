@@ -57,8 +57,38 @@ import { dayMonth, dowHebrew } from "@/app/calendar/availability/booking";
 // the owner reads as fact — so each list is the single source of the order,
 // the body builders read the same fields, and the suite asserts they agree.
 
-/** Every template is registered in Hebrew. */
-export const TEMPLATE_LANGUAGE = "he";
+/**
+ * The language each template is REGISTERED under in Meta — per template, not
+ * one value for all.
+ *
+ * 🔴 THIS MAP MUST MATCH WhatsApp Manager, entry for entry. Graph looks a
+ * template up by (name, language code); a code the template was not
+ * registered under fails the send with (#132001) "Template name does not
+ * exist in the translation". The language a template is registered under is
+ * NOT the language of its text: `bizi_unknown_contact` has a Hebrew body but
+ * is registered as English — it failed with 132001 on every send since it was
+ * built, until this map (B25, wa_messages 11.10 21:37 + 21:39).
+ *
+ * "client" = registered in both languages; sent in the client's (E17-5,
+ * `templateLanguageFor`). A template NOT in this map is NOT SENT — see
+ * `templateSendLanguage`. Never fall back to a guess.
+ */
+export const TEMPLATE_REGISTERED_LANGUAGE: Record<string, "he" | "en" | "client"> = {
+  bizi_booking_approved: "he",
+  bizi_booking_pending: "he",
+  bizi_booking_change: "he",
+  bizi_client_registration: "he",
+  bizi_unknown_contact: "en",
+  bizi_client_approved: "client",
+};
+
+/** The language code to send `name` in, or null when the map does not know it. */
+export function templateSendLanguage(name: string, clientLang?: "he" | "en"): string | null {
+  const registered = TEMPLATE_REGISTERED_LANGUAGE[name];
+  if (!registered) return null;
+  if (registered === "client") return clientLang ?? null;
+  return registered;
+}
 
 /** Utility — one recording was approved automatically. */
 export const TEMPLATE_BOOKING_APPROVED = "bizi_booking_approved";
@@ -477,8 +507,8 @@ export function buildNotificationRows(input: {
   variables: Record<string, string>;
   body: string;
   status: OutboundStatus;
-  /** the template language; Hebrew unless said otherwise (E17-5: the client's) */
-  language?: string;
+  /** the template language — `templateSendLanguage`, never a default */
+  language: string;
 }): WaOutboundRow[] {
   return input.recipients.map((waId) => ({
     wamid: notificationWamid(input.kind, input.subjectId, waId),
@@ -495,7 +525,7 @@ export function buildNotificationRows(input: {
       kind: input.kind,
       subject_id: input.subjectId,
       template: input.templateName,
-      language: input.language ?? TEMPLATE_LANGUAGE,
+      language: input.language,
       params: input.params,
       variables: input.variables,
       dry_run: input.status === "dry_run",
@@ -538,6 +568,8 @@ export type RecordResult = {
   dryRun: boolean;
   /** E17-4: the template is not approved by Meta — nothing was recorded or sent */
   unapproved?: boolean;
+  /** B25: the template is not in TEMPLATE_REGISTERED_LANGUAGE — nothing was recorded or sent */
+  unmappedLanguage?: boolean;
 };
 
 type NotifyInput =
@@ -663,7 +695,6 @@ export async function recordBookingNotification(
   const rejected = rejectedNotifyNumbers(raw);
   // E17-5: the approval notice goes to the CLIENT, never to the notify list
   const recipients = input.kind === "client-approved" ? [input.to] : input.onlyOwner ? all.slice(0, 1) : all;
-  const language = input.kind === "client-approved" ? input.lang : TEMPLATE_LANGUAGE;
 
   if (rejected.length > 0) {
     // Counted, not printed: a malformed entry is still somebody's number. The
@@ -684,6 +715,25 @@ export async function recordBookingNotification(
   // caller is told, and decides what replaces it.
   if (!isTemplateApproved(r.templateName)) {
     return { recipients: recipients.length, recorded: 0, sent: 0, failed: 0, dryRun, unapproved: true };
+  }
+
+  // B25: the language comes from the map, per template. A template the map
+  // does not know is not sent — a guessed code is what failed 132001 — and
+  // the skip is written as an event, not only a log line.
+  const language = templateSendLanguage(r.templateName, input.kind === "client-approved" ? input.lang : undefined);
+  if (!language) {
+    console.error("wa/notify: לתבנית אין שפה במפה TEMPLATE_REGISTERED_LANGUAGE — לא נשלחה", r.templateName);
+    try {
+      await admin.from("events").insert({
+        entity_type: "wa_template",
+        entity_id: crypto.randomUUID(),
+        event_type: "notification_skipped_template_language_unmapped",
+        payload: { template: r.templateName, kind: input.kind, subject_id: input.subjectId } as Json,
+      });
+    } catch (e) {
+      console.error("wa/notify: רישום האירוע זרק", e);
+    }
+    return { recipients: recipients.length, recorded: 0, sent: 0, failed: 0, dryRun, unmappedLanguage: true };
   }
 
   const rows = buildNotificationRows({
