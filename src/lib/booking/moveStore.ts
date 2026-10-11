@@ -5,49 +5,35 @@ import type { Database } from "@/lib/supabase/database.types";
 // Every read and write of 0105's columns and functions — in ONE file (E9-5).
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// ⚠️ THE UNTYPED CLIENT, DELIBERATELY. 0105 is applied by hand and
-// `database.types.ts` is regenerated only afterwards; a types entry for a
-// column that does not exist yet would fail the drift check on the dangerous
-// "-" side. Same window, same choice, as every table before it (0101, 0103,
-// 0104). This file goes typed in the commit that follows the apply.
-//
-// 🔴 AND IT IS TOLERANT OF THAT WINDOW, because unlike 0104 these columns sit
-// on `booking_requests` — the table every approval and every cancellation
-// touches. The push deploys before the apply, so:
-//   · `readReplaces` failing = "replaces nothing" = a plain approval, exactly
-//     as before E9-5. No move request can exist before the apply anyway (the
-//     bot's move path is behind WHATSAPP_BOOKING_MANAGE, and `setReplaces`
-//     below fails without the column, which refuses the move).
-//   · `recordDeleteOutcome` failing is LOGGED: the deletion itself still
-//     happened (or not), and the cancel response still reports it; only the
-//     persisted "failed — retry" state is missing until the apply.
-//   · the two RPCs are only ever called for a row that replaces another,
-//     which, by the two lines above, cannot exist before the apply.
+// The TYPED client. 0105 was applied on 2026-10-11 and `database.types.ts`
+// regenerated against it, so the three columns and the two functions below are
+// vouched for by the drift check. This file shipped on the untyped client for
+// exactly one commit — the window between writing the migration and the owner
+// applying it — and was written to tolerate that window (a failed read meant
+// "replaces nothing"). The same failure handling stays: a read that fails is
+// still a plain approval, never a guessed move.
 
-/** Either factory's client — this file reads through the untyped view anyway. */
-type AnyClient = SupabaseClient<Database> | SupabaseClient;
-const untyped = (admin: AnyClient) => admin as unknown as SupabaseClient;
+type Admin = SupabaseClient<Database>;
 
-/** The request this one replaces, or null — null also when 0105 is not applied. */
-export async function readReplaces(admin: AnyClient, id: string): Promise<string | null> {
+/** The request this one replaces, or null. */
+export async function readReplaces(admin: Admin, id: string): Promise<string | null> {
   try {
-    const { data, error } = await untyped(admin)
+    const { data, error } = await admin
       .from("booking_requests")
       .select("replaces_request_id")
       .eq("id", id)
       .maybeSingle();
     if (error || !data) return null;
-    const v = (data as { replaces_request_id: string | null }).replaces_request_id;
-    return typeof v === "string" ? v : null;
+    return data.replaces_request_id;
   } catch {
     return null;
   }
 }
 
 /** Link a freshly inserted move request to the recording it replaces. */
-export async function setReplaces(admin: AnyClient, id: string, replacesId: string): Promise<boolean> {
+export async function setReplaces(admin: Admin, id: string, replacesId: string): Promise<boolean> {
   try {
-    const { error } = await untyped(admin)
+    const { error } = await admin
       .from("booking_requests")
       .update({ replaces_request_id: replacesId })
       .eq("id", id)
@@ -63,16 +49,23 @@ export async function setReplaces(admin: AnyClient, id: string, replacesId: stri
   }
 }
 
-export type DeleteStatus = "deleted" | "failed" | "not_ours" | "dry_run";
+/** 0105's CHECK on `calendar_delete_status`, as a closed list. */
+export const DELETE_STATUSES = ["deleted", "failed", "not_ours", "dry_run"] as const;
+export type DeleteStatus = (typeof DELETE_STATUSES)[number];
+
+/** The column is plain text to the generated types; this narrows it to the CHECK's four. */
+export function asDeleteStatus(v: string | null): DeleteStatus | null {
+  return (DELETE_STATUSES as readonly string[]).includes(v ?? "") ? (v as DeleteStatus) : null;
+}
 
 export async function recordDeleteOutcome(
-  admin: AnyClient,
+  admin: Admin,
   id: string,
   status: DeleteStatus,
   error: string | null
 ): Promise<void> {
   try {
-    const { error: e } = await untyped(admin)
+    const { error: e } = await admin
       .from("booking_requests")
       .update({ calendar_delete_status: status, calendar_delete_error: error })
       .eq("id", id);
@@ -88,30 +81,25 @@ export type MoveFacts = {
   calendarDeleteError: string | null;
 };
 
-/** For the /bookings screen: 0105's three columns per row, or an empty map. */
-export async function readMoveFacts(admin: AnyClient, ids: string[]): Promise<Map<string, MoveFacts>> {
+/** For the /bookings screen: 0105's three columns per row, or an empty map on a failed read. */
+export async function readMoveFacts(admin: Admin, ids: string[]): Promise<Map<string, MoveFacts>> {
   const out = new Map<string, MoveFacts>();
   if (ids.length === 0) return out;
   try {
-    const { data, error } = await untyped(admin)
+    const { data, error } = await admin
       .from("booking_requests")
       .select("id,replaces_request_id,calendar_delete_status,calendar_delete_error")
       .in("id", ids);
     if (error) return out;
-    for (const r of (data ?? []) as {
-      id: string;
-      replaces_request_id: string | null;
-      calendar_delete_status: DeleteStatus | null;
-      calendar_delete_error: string | null;
-    }[]) {
+    for (const r of data ?? []) {
       out.set(r.id, {
         replacesId: r.replaces_request_id,
-        calendarDeleteStatus: r.calendar_delete_status,
+        calendarDeleteStatus: asDeleteStatus(r.calendar_delete_status),
         calendarDeleteError: r.calendar_delete_error,
       });
     }
   } catch {
-    // the screen renders without them, exactly as before 0105
+    // the screen renders without them
   }
   return out;
 }
@@ -123,25 +111,28 @@ export async function readMoveFacts(admin: AnyClient, ids: string[]): Promise<Ma
  * longer pending) are the two the caller maps.
  */
 export async function approveReplacing(
-  admin: AnyClient,
+  admin: Admin,
   input: { newId: string; oldId: string; now: Date; actorId: string | null }
 ): Promise<{ ok: true; result: "swapped" | "approved-only" } | { ok: false; code: string | null; message: string }> {
-  const { data, error } = await untyped(admin).rpc("booking_approve_replacing", {
+  const { data, error } = await admin.rpc("booking_approve_replacing", {
     p_new: input.newId,
     p_old: input.oldId,
     p_now: input.now.toISOString(),
-    p_actor: input.actorId,
+    // ⚠️ the one cast: the generated types make every function argument
+    // non-null, but p_actor is a plain uuid parameter that takes NULL — and
+    // NULL is the record of an automatic approval (decided_by, see decide.ts).
+    p_actor: input.actorId as string,
   });
-  if (error) return { ok: false, code: (error as { code?: string }).code ?? null, message: error.message };
+  if (error) return { ok: false, code: error.code ?? null, message: error.message };
   return { ok: true, result: data === "swapped" ? "swapped" : "approved-only" };
 }
 
 /** 0105's atomic revert: the new one back to pending, the old one back to approved. */
 export async function revertReplacing(
-  admin: AnyClient,
+  admin: Admin,
   input: { newId: string; oldId: string }
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  const { error } = await untyped(admin).rpc("booking_revert_replacing", { p_new: input.newId, p_old: input.oldId });
+  const { error } = await admin.rpc("booking_revert_replacing", { p_new: input.newId, p_old: input.oldId });
   if (error) return { ok: false, message: error.message };
   return { ok: true };
 }

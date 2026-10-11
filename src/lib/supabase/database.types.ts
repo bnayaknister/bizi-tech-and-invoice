@@ -235,6 +235,8 @@ export type Database = {
       }
       booking_requests: {
         Row: {
+          calendar_delete_error: string | null
+          calendar_delete_status: string | null
           calendar_event_id: string | null
           calendar_event_uid: string | null
           calendar_write_error: string | null
@@ -248,12 +250,15 @@ export type Database = {
           link_id: string
           note: string | null
           production_id: string | null
+          replaces_request_id: string | null
           show_id: string
           start_at: string
           status: string
           studio: string
         }
         Insert: {
+          calendar_delete_error?: string | null
+          calendar_delete_status?: string | null
           calendar_event_id?: string | null
           calendar_event_uid?: string | null
           calendar_write_error?: string | null
@@ -267,12 +272,15 @@ export type Database = {
           link_id: string
           note?: string | null
           production_id?: string | null
+          replaces_request_id?: string | null
           show_id: string
           start_at: string
           status?: string
           studio: string
         }
         Update: {
+          calendar_delete_error?: string | null
+          calendar_delete_status?: string | null
           calendar_event_id?: string | null
           calendar_event_uid?: string | null
           calendar_write_error?: string | null
@@ -286,6 +294,7 @@ export type Database = {
           link_id?: string
           note?: string | null
           production_id?: string | null
+          replaces_request_id?: string | null
           show_id?: string
           start_at?: string
           status?: string
@@ -311,6 +320,13 @@ export type Database = {
             columns: ["production_id"]
             isOneToOne: false
             referencedRelation: "productions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "booking_requests_replaces_request_id_fkey"
+            columns: ["replaces_request_id"]
+            isOneToOne: false
+            referencedRelation: "booking_requests"
             referencedColumns: ["id"]
           },
           {
@@ -2074,6 +2090,14 @@ export type Database = {
       backfill_archive_job_external_id: {
         Args: { p_external_id: string; p_id: string }
         Returns: undefined
+      }
+      booking_approve_replacing: {
+        Args: { p_actor: string; p_new: string; p_now: string; p_old: string }
+        Returns: string
+      }
+      booking_revert_replacing: {
+        Args: { p_new: string; p_old: string }
+        Returns: string
       }
       can_edit_money: { Args: never; Returns: boolean }
       can_edit_stages: { Args: never; Returns: boolean }
