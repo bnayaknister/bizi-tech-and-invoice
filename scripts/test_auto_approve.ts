@@ -404,6 +404,28 @@ console.log("\n=== 7. the notification rows (dry run records, never sends) ===")
   check("and a guestless one says 'בלי אורח'", plain.includes("בלי אורח"), true);
   check("no empty parameter slot survives into the body", plain.includes(", ."), false);
 
+  // 🔴 WORD FOR WORD the text Meta approved (owner, 11.10), newlines included.
+  // The recorded body must be the message the owner actually reads.
+  check("🔴 the approved body, exactly as registered", approved, [
+    "שלום! התקבלה הזמנה חדשה להקלטה באולפן ביזי, והיא אושרה אוטומטית במערכת.",
+    "פודקאסט: דעה לא פופולרית",
+    "מועד: יום א׳ 27.9, 09:00–13:00",
+    `אולפן: ${GIVON}`,
+    "משך ההקלטה: 4 שעות",
+    "אורח/ת: דנה לוי",
+    "פרטי ההזמנה המלאים זמינים במסך הבקשות במערכת.",
+  ].join("\n"));
+  check("🔴 the pending body, exactly as registered", pending, [
+    "שלום! התקבלה בקשת הקלטה חדשה שממתינה לאישור ידני במערכת ביזי.",
+    "פודקאסט: דעה לא פופולרית",
+    "מועד: יום א׳ 27.9, 09:00–13:00",
+    `אולפן: ${GIVON}`,
+    "משך ההקלטה: 4 שעות",
+    "הסיבה לאישור ידני: הזמנה שנייה באותו יום",
+    "אפשר לאשר או לדחות את הבקשה במסך הבקשות במערכת.",
+  ].join("\n"));
+  check("no placeholder survives into either body", /\{\{/.test(approved + pending + plain), false);
+
   // the rows
   const rows = buildNotificationRows({
     kind: "booking-approved",

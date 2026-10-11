@@ -84,6 +84,54 @@ export const TEMPLATE_BOOKING_PENDING_VARS = [
 export const TEMPLATE_UNKNOWN_CONTACT = "bizi_unknown_contact";
 export const TEMPLATE_UNKNOWN_CONTACT_VARS = ["waId", "excerpt"] as const;
 
+// ─── the registered texts ───────────────────────────────────────────────────
+//
+// 🔴 WORD FOR WORD WHAT META APPROVED (owner, 11.10), newlines included. Meta
+// refused the first, shorter wording ("too many variables for its length"), so
+// the owner submitted these. Graph only ever receives the PARAMETER VALUES, so
+// this text is never sent — it exists so the `body` recorded in `wa_messages`
+// is the message the recipient actually reads, filled from the very same
+// positional array (see fillTemplate). Edit one of these only together with a
+// re-submission to Meta.
+
+export const TEMPLATE_BOOKING_APPROVED_TEXT =
+  "שלום! התקבלה הזמנה חדשה להקלטה באולפן ביזי, והיא אושרה אוטומטית במערכת.\n" +
+  "פודקאסט: {{1}}\n" +
+  "מועד: {{2}}\n" +
+  "אולפן: {{3}}\n" +
+  "משך ההקלטה: {{4}}\n" +
+  "אורח/ת: {{5}}\n" +
+  "פרטי ההזמנה המלאים זמינים במסך הבקשות במערכת.";
+
+export const TEMPLATE_BOOKING_PENDING_TEXT =
+  "שלום! התקבלה בקשת הקלטה חדשה שממתינה לאישור ידני במערכת ביזי.\n" +
+  "פודקאסט: {{1}}\n" +
+  "מועד: {{2}}\n" +
+  "אולפן: {{3}}\n" +
+  "משך ההקלטה: {{4}}\n" +
+  "הסיבה לאישור ידני: {{5}}\n" +
+  "אפשר לאשר או לדחות את הבקשה במסך הבקשות במערכת.";
+
+export const TEMPLATE_UNKNOWN_CONTACT_TEXT =
+  "שלום! מספר שאינו משויך לאף פודקאסט פנה לבוט ההזמנות של ביזי.\n" +
+  "המספר: {{1}}\n" +
+  "תוכן ההודעה: {{2}}\n" +
+  "כדי לאפשר לו להזמין, יש לשייך אותו בכרטיס הלקוח, בכרטיסיית הרשאות הזמנת חדרים.";
+
+/** The `{{n}}` numbers in a template text, in the order they appear. */
+export function templatePlaceholders(text: string): number[] {
+  return Array.from(text.matchAll(/\{\{(\d+)\}\}/g), (m) => Number(m[1]));
+}
+
+/**
+ * Fill `{{n}}` with `params[n-1]` — what Graph does on its side. A placeholder
+ * with no parameter is left visible rather than blanked, so a mismatch shows
+ * up in the recorded body instead of hiding in it.
+ */
+export function fillTemplate(text: string, params: readonly string[]): string {
+  return text.replace(/\{\{(\d+)\}\}/g, (whole, n: string) => params[Number(n) - 1] ?? whole);
+}
+
 /** Why a request stayed pending. Each one is a different sentence to the owner. */
 export type PendingReason = "second-same-day" | "calendar-failed" | "slot-taken";
 
@@ -166,39 +214,51 @@ export function excerptParam(body: string | null | undefined): string {
   return Array.from(collapsed).slice(0, EXCERPT_MAX_CHARS).join("");
 }
 
+/** The approved template's named variables — the ONE place they are built. */
+export function approvedNoticeVariables(f: BookingFacts) {
+  return {
+    showName: f.showName,
+    whenLine: whenPhrase(f),
+    studio: f.studio,
+    duration: durationParam(f),
+    guest: guestParam(f),
+  } satisfies Record<(typeof TEMPLATE_BOOKING_APPROVED_VARS)[number], string>;
+}
+
+/** The pending template's named variables. */
+export function pendingNoticeVariables(f: BookingFacts, reason: PendingReason) {
+  return {
+    showName: f.showName,
+    whenLine: whenPhrase(f),
+    studio: f.studio,
+    duration: durationParam(f),
+    reason: PENDING_REASON_LABEL[reason],
+  } satisfies Record<(typeof TEMPLATE_BOOKING_PENDING_VARS)[number], string>;
+}
+
 /**
- * APPROVED copy (owner, 9.10).
- *
- * The word "אוטומטית" is in it on purpose: the owner needs to know from the
- * first three words that nobody pressed anything, because that is exactly
- * what changed about his day.
+ * The approved notice as the owner reads it (registered text, owner 11.10).
+ * "אוטומטית" is in its first line on purpose: the owner needs to know at once
+ * that nobody pressed anything.
  */
 export function approvedNoticeBody(f: BookingFacts): string {
-  return (
-    `הקלטה אושרה אוטומטית: ${f.showName}, ${whenPhrase(f)}, אולפן ${f.studio}, ` +
-    `${durationParam(f)}. אורח/ת: ${guestParam(f)}.`
-  );
+  const v = approvedNoticeVariables(f);
+  return fillTemplate(TEMPLATE_BOOKING_APPROVED_TEXT, TEMPLATE_BOOKING_APPROVED_VARS.map((k) => v[k]));
 }
 
 /**
- * APPROVED copy (owner, 9.10). The reason is a PARAMETER rather than three
- * separate templates: all three mean the same thing to the owner — go and look
- * at /bookings — and three templates is three approvals from Meta for one
- * sentence.
+ * The pending notice (registered text, owner 11.10). The reason is a PARAMETER
+ * rather than three templates: all three mean "go and look at /bookings", and
+ * three templates is three approvals from Meta for one sentence.
  */
 export function pendingNoticeBody(f: BookingFacts, reason: PendingReason): string {
-  return (
-    `בקשת הקלטה ממתינה לאישור: ${f.showName}, ${whenPhrase(f)}, אולפן ${f.studio}, ` +
-    `${durationParam(f)}. הסיבה: ${PENDING_REASON_LABEL[reason]}. אפשר לאשר במסך הבקשות.`
-  );
+  const v = pendingNoticeVariables(f, reason);
+  return fillTemplate(TEMPLATE_BOOKING_PENDING_TEXT, TEMPLATE_BOOKING_PENDING_VARS.map((k) => v[k]));
 }
 
-/** PROPOSED copy (E9-3), pending the owner's approval — see the report. */
+/** The unknown-contact notice (registered text, owner 11.10). Owner only. */
 export function unknownContactBody(waId: string, excerpt: string): string {
-  return (
-    `מספר לא מוכר פנה לבוט: ${waId}. ההודעה: ${excerpt}. ` +
-    `אפשר לשייך אותו בכרטיס הלקוח, בכרטיסיית הרשאות הזמנת חדרים.`
-  );
+  return fillTemplate(TEMPLATE_UNKNOWN_CONTACT_TEXT, [waId, excerpt]);
 }
 
 // ─── the rows ───────────────────────────────────────────────────────────────
@@ -339,15 +399,9 @@ function renderNotification(input: NotifyInput): {
   }
 
   const f = input.facts;
-  const common = {
-    showName: f.showName,
-    whenLine: whenPhrase(f),
-    studio: f.studio,
-    duration: durationParam(f),
-  };
 
   if (input.kind === "booking-approved") {
-    const variables = { ...common, guest: guestParam(f) };
+    const variables = approvedNoticeVariables(f);
     return {
       templateName: TEMPLATE_BOOKING_APPROVED,
       // ⚠️ BUILT FROM THE *_VARS LIST, not hand-ordered. The list is the single
@@ -359,7 +413,7 @@ function renderNotification(input: NotifyInput): {
     };
   }
 
-  const variables = { ...common, reason: PENDING_REASON_LABEL[input.reason] };
+  const variables = pendingNoticeVariables(f, input.reason);
   return {
     templateName: TEMPLATE_BOOKING_PENDING,
     params: TEMPLATE_BOOKING_PENDING_VARS.map((k) => variables[k]),

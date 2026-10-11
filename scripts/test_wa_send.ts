@@ -35,7 +35,12 @@ import {
   TEMPLATE_LANGUAGE,
   TEMPLATE_UNKNOWN_CONTACT,
   TEMPLATE_UNKNOWN_CONTACT_VARS,
+  TEMPLATE_BOOKING_APPROVED_TEXT,
+  TEMPLATE_BOOKING_PENDING_TEXT,
+  TEMPLATE_UNKNOWN_CONTACT_TEXT,
   excerptParam,
+  fillTemplate,
+  templatePlaceholders,
   shouldApplyStatus,
   unknownContactBody,
 } from "../src/lib/whatsapp/notify";
@@ -372,6 +377,22 @@ console.log("\n=== 6. the unknown-contact notice ===");
   check("the notice carries the number", body.includes("972501234567"), true);
   check("…and the excerpt", body.includes("רוצה לקבוע הקלטה"), true);
   check("…and points at the new card", body.includes("הרשאות הזמנת חדרים"), true);
+  check("🔴 the unknown-contact body, exactly as registered (owner 11.10)", body, [
+    "שלום! מספר שאינו משויך לאף פודקאסט פנה לבוט ההזמנות של ביזי.",
+    "המספר: 972501234567",
+    "תוכן ההודעה: רוצה לקבוע הקלטה",
+    "כדי לאפשר לו להזמין, יש לשייך אותו בכרטיס הלקוח, בכרטיסיית הרשאות הזמנת חדרים.",
+  ].join("\n"));
+
+  // 🔴 THE CONTRACT WITH META: each registered text numbers its placeholders
+  // 1..n in order, and n is exactly the length of the *_VARS list that builds
+  // the positional array Graph fills them from.
+  const seq = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+  check("approved: {{1}}..{{5}} in order = APPROVED_VARS", templatePlaceholders(TEMPLATE_BOOKING_APPROVED_TEXT), seq(TEMPLATE_BOOKING_APPROVED_VARS.length));
+  check("pending: {{1}}..{{5}} in order = PENDING_VARS", templatePlaceholders(TEMPLATE_BOOKING_PENDING_TEXT), seq(TEMPLATE_BOOKING_PENDING_VARS.length));
+  check("unknown: {{1}}..{{2}} in order = UNKNOWN_VARS", templatePlaceholders(TEMPLATE_UNKNOWN_CONTACT_TEXT), seq(TEMPLATE_UNKNOWN_CONTACT_VARS.length));
+  check("fillTemplate is positional", fillTemplate("{{2}}-{{1}}", ["a", "b"]), "b-a");
+  check("a missing parameter stays visible, not blanked", fillTemplate("x {{3}}", ["a"]), "x {{3}}");
 
   // the reply de-dup key is derived from the INBOUND message
   check("the reply wamid is derived from the inbound id", replyWamid("wamid.ABC"), "local:reply:wamid.ABC");
