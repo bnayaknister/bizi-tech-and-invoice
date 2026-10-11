@@ -6,18 +6,14 @@ import { expiresAtFor, parseFlowState, type FlowState } from "./machine";
 // The conversation row — `wa_conversations` (0104). One row per phone number.
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// ⚠️ THE UNTYPED CLIENT, DELIBERATELY. 0104 is applied by hand and
-// `database.types.ts` is regenerated only afterwards (supabase/migrations/
-// README.md, step 3); a types entry for a table that does not exist yet would
-// fail scripts/check-schema-drift.mjs on the dangerous "-" side. The same
-// window, and the same choice, as the webhook route before 0101 and
-// lib/booking/contacts.ts before 0103. This file goes typed in the commit that
-// follows the apply.
+// The TYPED client. 0104 was applied on 2026-10-11 and `database.types.ts`
+// regenerated against it, so every column below is vouched for by the drift
+// check. Until then this file ran on the untyped one — the same window as the
+// webhook route before 0101 and lib/booking/contacts.ts before 0103.
 //
-// 🔴 AND UNTIL 0104 IS APPLIED, EVERY CALL HERE FAILS — and that is handled,
-// not hoped away: a failed read returns `{ ok: false }`, and the driver falls
-// back to the E9-3 reply (the booking link). The bot never goes silent because
-// this table is missing.
+// 🔴 A FAILED READ IS STILL HANDLED, not hoped away: it returns `{ ok: false }`
+// and the driver falls back to the E9-3 reply (the booking link), so a
+// database error never silences the bot.
 //
 // ═══ 🔴 THE VERSION LOCK ═══
 // Every write is conditional on the version the caller read. Two deliveries
@@ -27,7 +23,7 @@ import { expiresAtFor, parseFlowState, type FlowState } from "./machine";
 // This is what keeps one tap = one submission even before the duplicate guard
 // inside submitBookingRequest gets its turn.
 
-const TABLE = "wa_conversations";
+const TABLE = "wa_conversations" as const;
 
 export type ConversationRow = {
   state: FlowState | null;
@@ -35,14 +31,12 @@ export type ConversationRow = {
   expiresAt: string;
 };
 
-const untyped = (admin: SupabaseClient<Database>) => admin as unknown as SupabaseClient;
-
 export async function loadConversation(
   admin: SupabaseClient<Database>,
   waId: string
 ): Promise<{ ok: true; row: ConversationRow | null } | { ok: false }> {
   try {
-    const { data, error } = await untyped(admin)
+    const { data, error } = await admin
       .from(TABLE)
       .select("state,version,expires_at")
       .eq("wa_id", waId)
@@ -52,8 +46,7 @@ export async function loadConversation(
       return { ok: false };
     }
     if (!data) return { ok: true, row: null };
-    const r = data as { state: unknown; version: number; expires_at: string };
-    return { ok: true, row: { state: parseFlowState(r.state), version: r.version, expiresAt: r.expires_at } };
+    return { ok: true, row: { state: parseFlowState(data.state), version: data.version, expiresAt: data.expires_at } };
   } catch (e) {
     console.error("wa/flow: קריאת השיחה זרקה", e);
     return { ok: false };
@@ -80,13 +73,16 @@ export async function saveConversation(
   const fields = {
     show_id: state.showId,
     step: state.step,
+    // ⚠️ the one cast, and it is sound: FlowState is plain strings, numbers,
+    // nulls and arrays of them (it round-trips through JSON — see the suite),
+    // but a type without an index signature is not assignable to `Json`.
     state: state as unknown as Json,
     updated_at: now.toISOString(),
     expires_at: expiresAtFor(now),
   };
   try {
     if (expectedVersion === null) {
-      const { data, error } = await untyped(admin)
+      const { data, error } = await admin
         .from(TABLE)
         .upsert([{ wa_id: waId, version: 1, ...fields }], { onConflict: "wa_id", ignoreDuplicates: true })
         .select("version");
@@ -94,11 +90,14 @@ export async function saveConversation(
         console.error("wa/flow: יצירת השיחה נכשלה", error.message);
         return { kind: "error" };
       }
-      return (data ?? []).length === 1 ? { kind: "saved", version: 1 } : { kind: "conflict" };
+      // the version is READ BACK from the row, not assumed — which is also what
+      // makes a wrong column in the select above fail the build (admin.ts)
+      const created = (data ?? [])[0];
+      return created ? { kind: "saved", version: created.version } : { kind: "conflict" };
     }
 
     const next = expectedVersion + 1;
-    const { data, error } = await untyped(admin)
+    const { data, error } = await admin
       .from(TABLE)
       .update({ version: next, ...fields })
       .eq("wa_id", waId)
@@ -108,7 +107,8 @@ export async function saveConversation(
       console.error("wa/flow: עדכון השיחה נכשל", error.message);
       return { kind: "error" };
     }
-    return (data ?? []).length === 1 ? { kind: "saved", version: next } : { kind: "conflict" };
+    const updated = (data ?? [])[0];
+    return updated ? { kind: "saved", version: updated.version } : { kind: "conflict" };
   } catch (e) {
     console.error("wa/flow: שמירת השיחה זרקה", e);
     return { kind: "error" };

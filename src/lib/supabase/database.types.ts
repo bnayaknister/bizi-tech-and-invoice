@@ -1923,6 +1923,47 @@ export type Database = {
         }
         Relationships: []
       }
+      wa_conversations: {
+        Row: {
+          created_at: string
+          expires_at: string
+          show_id: string
+          state: Json
+          step: string
+          updated_at: string
+          version: number
+          wa_id: string
+        }
+        Insert: {
+          created_at?: string
+          expires_at: string
+          show_id: string
+          state: Json
+          step: string
+          updated_at?: string
+          version?: number
+          wa_id: string
+        }
+        Update: {
+          created_at?: string
+          expires_at?: string
+          show_id?: string
+          state?: Json
+          step?: string
+          updated_at?: string
+          version?: number
+          wa_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "wa_conversations_show_id_fkey"
+            columns: ["show_id"]
+            isOneToOne: false
+            referencedRelation: "shows"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       wa_messages: {
         Row: {
           body: string | null
