@@ -17,7 +17,7 @@
 export const PRIVACY_CONTACT_EMAIL = "bn@bi-zi.co.il";
 
 /** shown as "עודכן לאחרונה"; bump on every change to the wording below */
-export const PRIVACY_UPDATED_AT = "10.10.2026";
+export const PRIVACY_UPDATED_AT = "11.10.2026";
 
 export const PRIVACY_TITLE = "מדיניות פרטיות";
 
