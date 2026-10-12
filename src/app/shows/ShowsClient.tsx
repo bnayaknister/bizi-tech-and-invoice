@@ -17,6 +17,7 @@ import RecordPastBody, {
   type BillingMode,
 } from "./RecordPastBody";
 import type { BilledCandidate, BilledResult } from "@/app/contracts/RecordBilledBody";
+import ShowBookersCard from "@/components/ShowBookersCard";
 
 export type ShowRow = {
   id: string;
@@ -97,6 +98,7 @@ export default function ShowsClient({
   canEditMoney,
   canEditStages,
   canManageUsers,
+  canManageBookers = false,
   pendingShowIds,
   staff,
   contracts: initialContracts,
@@ -109,6 +111,8 @@ export default function ShowsClient({
   canEditMoney: boolean;
   canEditStages: boolean;
   canManageUsers: boolean;
+  /** E22: studio_admin — "מורשים לקבוע הקלטות" on the show card */
+  canManageBookers?: boolean;
   pendingShowIds: string[];
   staff: { id: string; name: string }[];
   contracts: ContractOption[];
@@ -387,6 +391,7 @@ export default function ShowsClient({
           onClose={() => setOpenId(null)}
           onClientCreated={(c) => setClients((cs) => [...cs, c].sort((a, b) => a.name.localeCompare(b.name, "he")))}
           canManageUsers={canManageUsers}
+          canManageBookers={canManageBookers}
           isPending={pendingIds.has(open.id)}
           contracts={contracts}
           contractsError={contractsError}
@@ -553,6 +558,7 @@ function ShowCard({
   onClose,
   onClientCreated,
   canManageUsers,
+  canManageBookers = false,
   isPending,
   contracts,
   contractsError,
@@ -569,6 +575,7 @@ function ShowCard({
   onClose: () => void;
   onClientCreated: (client: Client) => void;
   canManageUsers: boolean;
+  canManageBookers?: boolean;
   isPending: boolean;
   contracts: ContractOption[];
   contractsError: string | null;
@@ -638,6 +645,14 @@ function ShowCard({
         <div className="mb-5">
           <AliasEditor show={show} canEdit={canEdit} onSave={onSave} />
         </div>
+
+        {/* E22: who may book this show through the bot — every show, with a
+            client or without; studio_admin only (the route refuses others) */}
+        {canManageBookers && (
+          <div className="mb-5">
+            <ShowBookersCard showId={show.id} />
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-3 mb-5">
           {canViewMoney && (

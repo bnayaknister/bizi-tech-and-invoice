@@ -129,7 +129,7 @@ async function main() {
     seen = [];
     morningCalls = 0;
     const r = await inviteClientsToBookingEvent(client, BOOKING, deps({ ok: true, emails: ["mali@example.com", " Office@Example.com", "mali@example.com"] }));
-    check("sent, 2 addresses, from Morning", r, { outcome: "sent", emails: 2, source: "morning", dryRun: false });
+    check("sent, 2 addresses, from Morning", r, { outcome: "sent", emails: 2, fromClient: 2, fromBookers: 0, clientSource: "morning", dryRun: false });
     const p = patches()[0];
     check("ONE PATCH, to this booking's own event, with sendUpdates=all", [patches().length, p?.url.endsWith(`/events/${EVENT_ID}?sendUpdates=all`)], [1, true]);
     check("…attendees + guest permissions off", JSON.parse(p.body), {
@@ -151,7 +151,7 @@ async function main() {
     const { client } = world({ regs: [{ id: "r1", client_id: "c1", status: "approved", emails: ["new@client.co"], decided_at: "2026-10-12" }] });
     seen = [];
     const r = await inviteClientsToBookingEvent(client, BOOKING, deps({ ok: true, emails: [] }));
-    check("/join: none in Morning yet -> the approved registration's emails", r, { outcome: "sent", emails: 1, source: "registration", dryRun: false });
+    check("/join: none in Morning yet -> the approved registration's emails", r, { outcome: "sent", emails: 1, fromClient: 1, fromBookers: 0, clientSource: "registration", dryRun: false });
   }
 
   section("4. Morning does not answer");

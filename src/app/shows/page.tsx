@@ -8,6 +8,7 @@ import { mustRows, type QueryResult } from "@/lib/supabase/unwrap";
 import { countsAsEpisode } from "@/lib/productions/status";
 import { contractQuotas, type QuotaProduction } from "@/lib/contracts/quota";
 import { ACTIVE_CLIENT } from "@/lib/clients/status";
+import { canManageBookingContacts } from "@/lib/clients/access";
 
 export const dynamic = "force-dynamic";
 
@@ -282,6 +283,7 @@ export default async function ShowsPage() {
           canEditMoney={profile.can_edit_money}
           canEditStages={profile.can_edit_stages}
           canManageUsers={profile.can_manage_users}
+          canManageBookers={canManageBookingContacts(profile)}
           pendingShowIds={pendingShowIds}
           staff={staff}
           contracts={contracts}
