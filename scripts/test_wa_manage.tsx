@@ -181,7 +181,8 @@ async function run() {
       }, async (calls) => {
         const r = await deleteSystemCalendarEvent({ bookingId: BOOKING, calendarEventId: OUR_ID, calendarWriteStatus: "created" });
         check(`Google ${status} -> ${status === 204 ? "deleted" : "already gone = success"}`, r, want);
-        check(`…the DELETE targets OUR derived id (${status})`, calls[1]?.url.endsWith(`/events/${OUR_ID}`), true);
+        // B26: and tells any invited client (sendUpdates=all)
+        check(`…the DELETE targets OUR derived id, with sendUpdates=all (${status})`, calls[1]?.url.endsWith(`/events/${OUR_ID}?sendUpdates=all`), true);
       });
     });
   }

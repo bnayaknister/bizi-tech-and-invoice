@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createCalendarEvent } from "@/lib/calendar/write";
+import { scheduleBookingInvite } from "./invite";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Everything AFTER the deterministic eventId is already saved: the calendar
@@ -145,6 +146,12 @@ export async function writeBookingCalendarEvent(
     actor_id: input.actorId,
     payload: { event_id: input.eventId, i_cal_uid: result.iCalUID, dry_run: false },
   });
+
+  // B26: the client's invitation — a separate background step AFTER the event
+  // exists. It cannot fail this write: it is not awaited, and it never throws.
+  // Here, not in each caller, so the approval, a move's new event and
+  // retry-calendar all pass through it.
+  scheduleBookingInvite(admin, input.bookingId);
 
   return { status: "created", error: null, htmlLink: result.htmlLink, dryRun: false };
 }

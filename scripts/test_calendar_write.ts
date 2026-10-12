@@ -279,7 +279,7 @@ async function run() {
   // 🔴 ENFORCEMENT — read the files' own text. See the header note on why a
   // mocked-fetch test cannot be the thing that guarantees this.
   // ═══════════════════════════════════════════════════════════════════════
-  console.log("\n=== 9. 🔴 enforcement: ONE guarded DELETE in the whole codebase, and no PATCH (owner decision 11.10) ===");
+  console.log("\n=== 9. 🔴 enforcement: ONE guarded DELETE and ONE guarded PATCH in the whole codebase (owner decisions 11.10, 12.10) ===");
   {
     // The rule changed on 11.10: the system may delete events IT created —
     // through ONE function, with the guard inside it. So this no longer bans
@@ -306,7 +306,18 @@ async function run() {
     const w = strip(readFileSync(join(process.cwd(), "src/lib/calendar/write.ts"), "utf8"));
     const deletes = Array.from(w.matchAll(/method:\s*["']DELETE["']/gi));
     check("write.ts: exactly ONE DELETE", deletes.length, 1);
-    check("write.ts: zero PATCH", /method:\s*["']PATCH["']/i.test(w), false);
+    // B26 (12.10): ONE PATCH — the invite — inside its own function, after
+    // the same guard the delete uses
+    const patches = Array.from(w.matchAll(/method:\s*["']PATCH["']/gi));
+    check("write.ts: exactly ONE PATCH", patches.length, 1);
+    const pStart = w.indexOf("export async function inviteAttendeesToSystemEvent(");
+    const pGuard = w.indexOf("calendarDeletionAllowed(input)", pStart);
+    const patchAt = patches[0]?.index ?? -1;
+    check("…inside inviteAttendeesToSystemEvent, AFTER the guard", pStart >= 0 && pGuard > pStart && patchAt > pGuard, true);
+    const pBodyFn = w.slice(w.indexOf("export function inviteAttendeesBody("), pStart);
+    check("…and its body never carries summary/description (the title is the sync's contract)", /summary|description/.test(pBodyFn), false);
+    const pCallers = files.filter((f) => f !== "src/lib/calendar/write.ts" && /inviteAttendeesToSystemEvent\b/.test(strip(readFileSync(join(process.cwd(), f), "utf8"))));
+    check("inviteAttendeesToSystemEvent is used from ONE place: lib/booking/invite.ts", pCallers, ["src/lib/booking/invite.ts"]);
     // the one DELETE sits inside deleteSystemCalendarEvent, after its guard
     const fnStart = w.indexOf("export async function deleteSystemCalendarEvent(");
     const guardAt = w.indexOf("calendarDeletionAllowed(input)", fnStart);

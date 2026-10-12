@@ -33,7 +33,19 @@ import { createSign } from "node:crypto";
 //     booking's `calendar_write_status` is 'created' AND the stored id equals
 //     `calendarEventIdFor(booking id)` — the deterministic id only this code
 //     ever mints. Any other id is refused before a token is even fetched.
-//   · events.patch still does not exist here.
+//   · ONE function calls PATCH — `inviteAttendeesToSystemEvent`, below (B26,
+//     owner decision 12.10): it adds the client's emails as attendees to an
+//     event THIS CODE created, behind the SAME guard as the delete. It sends
+//     `attendees` and the three guest permissions, nothing else — the title
+//     and the description (the sync's contract) are never in its body.
+//
+// ═══ IMPERSONATION (B26) ═══
+// A service account cannot invite attendees ("Service accounts cannot invite
+// attendees without Domain-Wide Delegation of Authority", 403). Domain-Wide
+// Delegation is set up in the bi-zi.co.il Workspace for the service account,
+// and GOOGLE_CALENDAR_IMPERSONATE names the user it acts as (the JWT's `sub`).
+// Empty = no `sub`, exactly the behaviour before B26. The user MUST have write
+// access to GOOGLE_CALENDAR_ID, or every write — not only the invite — fails.
 //
 // scripts/test_calendar_write.ts reads this codebase's own text and fails if a
 // second DELETE (or any PATCH) to Google Calendar appears anywhere in src/.
@@ -46,6 +58,12 @@ import { createSign } from "node:crypto";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const CALENDAR_API = "https://www.googleapis.com/calendar/v3";
 const SCOPE = "https://www.googleapis.com/auth/calendar.events";
+
+/** The user the service account acts as (B26) — null = no impersonation. PURE over env. */
+export function calendarImpersonationSubject(): string | null {
+  const v = (process.env.GOOGLE_CALENDAR_IMPERSONATE ?? "").trim();
+  return v === "" ? null : v;
+}
 const TIMEOUT_MS = 15_000;
 
 export function isCalendarDryRun(): boolean {
@@ -109,8 +127,12 @@ async function getAccessToken(): Promise<string> {
   const sa = loadServiceAccount();
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "RS256", typ: "JWT" };
+  const sub = calendarImpersonationSubject();
   const claims = {
     iss: sa.client_email,
+    // B26: Domain-Wide Delegation — act as this Workspace user. Absent when
+    // the variable is empty, so nothing changes until it is set.
+    ...(sub ? { sub } : {}),
     scope: SCOPE,
     aud: TOKEN_URL,
     iat: now,
@@ -324,7 +346,9 @@ export async function deleteSystemCalendarEvent(input: CalendarDeletionInput): P
 
   try {
     const token = await getAccessToken();
-    const url = `${CALENDAR_API}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(verdict.eventId)}`;
+    // B26: sendUpdates=all — a client invited to the event is told it was
+    // cancelled. With no attendees Google sends nothing, so it is safe always.
+    const url = `${CALENDAR_API}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(verdict.eventId)}?sendUpdates=all`;
     const res = await fetchWithTimeout(url, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
     if (res.status === 410 || res.status === 404) return { ok: true, dryRun: false, alreadyGone: true };
     if (!res.ok) {
@@ -332,6 +356,66 @@ export async function deleteSystemCalendarEvent(input: CalendarDeletionInput): P
       return { ok: false, refused: false, error: `המחיקה מהיומן נכשלה: ${res.status} ${body.slice(0, 300)}`, status: res.status };
     }
     return { ok: true, dryRun: false, alreadyGone: false };
+  } catch (e) {
+    if (e instanceof CalendarWriteError) return { ok: false, refused: false, error: e.message, status: e.status };
+    return { ok: false, refused: false, error: e instanceof Error ? e.message : "שגיאת רשת לא ידועה", status: 500 };
+  }
+}
+
+// ═══ the invite — the ONE PATCH, guarded like the delete (B26, 12.10) ═══
+
+export type InviteAttendeesInput = CalendarDeletionInput & {
+  /** already cleaned (lib/booking/invite.ts) — at least one */
+  emails: string[];
+};
+
+export type InviteAttendeesResult =
+  | { ok: true; dryRun: boolean }
+  | { ok: false; refused: true; reason: Extract<DeletionVerdict, { ok: false }>["reason"] | "no-emails" }
+  | { ok: false; refused: false; error: string; status: number };
+
+/** The PATCH body. PURE — attendees and the three guest permissions, nothing else. */
+export function inviteAttendeesBody(emails: string[]) {
+  return {
+    attendees: emails.map((email) => ({ email })),
+    guestsCanModify: false,
+    guestsCanInviteOthers: false,
+    guestsCanSeeOtherGuests: false,
+  };
+}
+
+/**
+ * Add the client's emails as attendees to ONE event this system created, and
+ * let Google send the invitation (sendUpdates=all). THE ONLY PATCH IN THE
+ * CODEBASE.
+ *
+ * Order, the same as the delete: the guard, the dry-run switch, the network.
+ * The body never carries `summary` or `description` — the title is the sync's
+ * contract (title.ts) and stays exactly as the insert wrote it.
+ */
+export async function inviteAttendeesToSystemEvent(input: InviteAttendeesInput): Promise<InviteAttendeesResult> {
+  const verdict = calendarDeletionAllowed(input);
+  if (!verdict.ok) return { ok: false, refused: true, reason: verdict.reason };
+  if (input.emails.length === 0) return { ok: false, refused: true, reason: "no-emails" };
+
+  if (isCalendarDryRun()) return { ok: true, dryRun: true };
+
+  const calendarId = process.env.GOOGLE_CALENDAR_ID;
+  if (!calendarId) return { ok: false, refused: false, error: "GOOGLE_CALENDAR_ID לא מוגדר", status: 500 };
+
+  try {
+    const token = await getAccessToken();
+    const url = `${CALENDAR_API}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(verdict.eventId)}?sendUpdates=all`;
+    const res = await fetchWithTimeout(url, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(inviteAttendeesBody(input.emails)),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return { ok: false, refused: false, error: `הזימון ביומן נכשל: ${res.status} ${body.slice(0, 300)}`, status: res.status };
+    }
+    return { ok: true, dryRun: false };
   } catch (e) {
     if (e instanceof CalendarWriteError) return { ok: false, refused: false, error: e.message, status: e.status };
     return { ok: false, refused: false, error: e instanceof Error ? e.message : "שגיאת רשת לא ידועה", status: 500 };
