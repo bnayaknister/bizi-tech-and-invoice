@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createTypedAdminClient } from "@/lib/supabase/admin";
 import { displayWaId } from "@/lib/whatsapp/phone";
 import { BOOKING_CONTACTS_FORBIDDEN, canManageBookingContacts } from "@/lib/clients/access";
 import { BOOKER_ERROR, validateBooker } from "@/lib/booking/bookers";
@@ -13,9 +13,8 @@ import { BOOKER_ERROR, validateBooker } from "@/lib/booking/bookers";
 // production) can have bookers too. studio_admin only, to read as well as to
 // edit: the same predicate as the client card's tab (owner, 11.10, E17).
 //
-// ⚠️ UNTYPED ADMIN CLIENT, ON PURPOSE AND TEMPORARILY: `email` is 0111's, and
-// database.types.ts learns it only after the owner's gen types. Switch to
-// createTypedAdminClient then — the casts below are what that removes.
+// The TYPED admin client: `email` is 0111's (applied 12.10, types regenerated),
+// so a misspelt column here fails the build instead of a request.
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const dynamic = "force-dynamic";
@@ -43,7 +42,7 @@ const view = (r: BookerRow) => ({ id: r.id, name: r.name, waId: r.wa_id, display
 export async function GET(_request: Request, { params }: { params: { id: string } }) {
   const g = await gate();
   if (!g.ok) return g.res;
-  const admin = createAdminClient();
+  const admin = createTypedAdminClient();
   const { data, error } = await admin
     .from("booking_contacts")
     .select("id,show_id,name,wa_id,email")
@@ -53,7 +52,7 @@ export async function GET(_request: Request, { params }: { params: { id: string 
     console.error("show-bookers: הקריאה נכשלה", error);
     return NextResponse.json({ error: "לא הצלחתי לקרוא את המורשים" }, { status: 500, headers: NO_STORE });
   }
-  return NextResponse.json({ bookers: ((data ?? []) as BookerRow[]).map(view) }, { headers: NO_STORE });
+  return NextResponse.json({ bookers: (data ?? []).map(view) }, { headers: NO_STORE });
 }
 
 export async function POST(request: Request, { params }: { params: { id: string } }) {
@@ -63,7 +62,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const v = validateBooker(body);
   if (!v.ok) return NextResponse.json({ error: v.error, field: v.field }, { status: 400, headers: NO_STORE });
 
-  const admin = createAdminClient();
+  const admin = createTypedAdminClient();
   const { data: show } = await admin.from("shows").select("id").eq("id", params.id).maybeSingle();
   if (!show) return NextResponse.json({ error: "התוכנית לא נמצאה" }, { status: 404, headers: NO_STORE });
 
@@ -79,7 +78,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     console.error("show-bookers: ההוספה נכשלה", error);
     return NextResponse.json({ error: "לא הצלחתי להוסיף את המורשה" }, { status: 500, headers: NO_STORE });
   }
-  const row = data as BookerRow;
+  const row = data;
   await admin.from("events").insert({
     entity_type: "show",
     entity_id: params.id,
@@ -99,13 +98,13 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   const v = validateBooker(body);
   if (!v.ok) return NextResponse.json({ error: v.error, field: v.field }, { status: 400, headers: NO_STORE });
 
-  const admin = createAdminClient();
+  const admin = createTypedAdminClient();
   const { data: before } = await admin
     .from("booking_contacts")
     .select("id,show_id,name,wa_id,email")
     .eq("id", bookerId)
     .maybeSingle();
-  if (!before || (before as BookerRow).show_id !== params.id) {
+  if (!before || before.show_id !== params.id) {
     return NextResponse.json({ error: "המורשה לא נמצא בתוכנית הזו" }, { status: 404, headers: NO_STORE });
   }
   const { data, error } = await admin
@@ -121,8 +120,8 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     console.error("show-bookers: העדכון נכשל", error);
     return NextResponse.json({ error: "לא הצלחתי לעדכן את המורשה" }, { status: 500, headers: NO_STORE });
   }
-  const row = data as BookerRow;
-  const b = before as BookerRow;
+  const row = data;
+  const b = before;
   await admin.from("events").insert({
     entity_type: "show",
     entity_id: params.id,
@@ -144,9 +143,9 @@ export async function DELETE(request: Request, { params }: { params: { id: strin
   const bookerId = new URL(request.url).searchParams.get("bookerId")?.trim() ?? "";
   if (!bookerId) return NextResponse.json({ error: "חסר מזהה מורשה" }, { status: 400, headers: NO_STORE });
 
-  const admin = createAdminClient();
+  const admin = createTypedAdminClient();
   const { data: row } = await admin.from("booking_contacts").select("id,show_id,name,wa_id").eq("id", bookerId).maybeSingle();
-  if (!row || (row as BookerRow).show_id !== params.id) {
+  if (!row || row.show_id !== params.id) {
     return NextResponse.json({ error: "המורשה לא נמצא בתוכנית הזו" }, { status: 404, headers: NO_STORE });
   }
   const { error } = await admin.from("booking_contacts").delete().eq("id", bookerId);
@@ -154,7 +153,7 @@ export async function DELETE(request: Request, { params }: { params: { id: strin
     console.error("show-bookers: המחיקה נכשלה", error);
     return NextResponse.json({ error: "לא הצלחתי למחוק את המורשה" }, { status: 500, headers: NO_STORE });
   }
-  const r = row as BookerRow;
+  const r = row;
   await admin.from("events").insert({
     entity_type: "show",
     entity_id: params.id,

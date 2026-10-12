@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "@/lib/supabase/database.types";
 import { inviteAttendeesToSystemEvent, isCalendarDryRun } from "@/lib/calendar/write";
 import { getClientEmails } from "@/lib/morning/client";
 import { ACTIVE_CLIENT } from "@/lib/clients/status";
@@ -109,10 +110,16 @@ async function clientEmailsForShow(
   return { emails: fromReg, source: fromReg.length ? "registration" : "none" };
 }
 
-/** E22: the emails of the show's "מורשים לקבוע הקלטות" (0111's column). */
+/**
+ * E22: the emails of the show's "מורשים לקבוע הקלטות" (0111's column).
+ * Read through the TYPED schema: the caller's client is untyped only because
+ * writeCalendarEvent.ts accepts either factory — the same service-role client
+ * either way — so the column is checked at build time here.
+ */
 async function bookerEmailsForShow(admin: SupabaseClient, showId: string): Promise<string[]> {
-  const { data } = await admin.from("booking_contacts").select("email").eq("show_id", showId);
-  return cleanInviteEmails(((data ?? []) as { email: string | null }[]).map((r) => r.email));
+  const typed = admin as unknown as SupabaseClient<Database>;
+  const { data } = await typed.from("booking_contacts").select("email").eq("show_id", showId);
+  return cleanInviteEmails((data ?? []).map((r) => r.email));
 }
 
 /**
@@ -126,9 +133,7 @@ async function bookerEmailsForShow(admin: SupabaseClient, showId: string): Promi
  * when there is nobody else to invite is it a failure.
  */
 export async function inviteClientsToBookingEvent(
-  // untyped on purpose: writeCalendarEvent.ts passes either client factory,
-  // and `booking_contacts.email` reaches database.types.ts only after 0111's
-  // gen types
+  // untyped on purpose: writeCalendarEvent.ts passes either client factory
   admin: SupabaseClient,
   bookingId: string,
   deps: InviteDeps = DEFAULT_DEPS
