@@ -183,17 +183,17 @@ async function main() {
   const now = new Date("2026-10-13T12:00:00Z");
   {
     const { client, calls } = world();
-    const r = await handleBoardArchive({ userId: null, profile: null, body: { action: "archive", ids: ["p-closed"] } }, { admin: client as never, untyped: client as never, now });
+    const r = await handleBoardArchive({ userId: null, profile: null, body: { action: "archive", ids: ["p-closed"] } }, { admin: client as never, now });
     check("no session -> 401", r.status, 401);
-    const r2 = await handleBoardArchive({ userId: "u-tech", profile: { approved: true, studio_admin: false }, body: { action: "archive", ids: ["p-closed"] } }, { admin: client as never, untyped: client as never, now });
+    const r2 = await handleBoardArchive({ userId: "u-tech", profile: { approved: true, studio_admin: false }, body: { action: "archive", ids: ["p-closed"] } }, { admin: client as never, now });
     check("approved but not studio_admin -> 403 with the sentence", [r2.status, r2.json.error], [403, BOARD_ARCHIVE_FORBIDDEN]);
-    const r3 = await handleBoardArchive({ userId: "u-x", profile: { approved: false, studio_admin: true }, body: { action: "restore", ids: ["p-closed"] } }, { admin: client as never, untyped: client as never, now });
+    const r3 = await handleBoardArchive({ userId: "u-x", profile: { approved: false, studio_admin: true }, body: { action: "restore", ids: ["p-closed"] } }, { admin: client as never, now });
     check("studio_admin flag on an unapproved account -> 403", r3.status, 403);
     check("…and nothing was read or written for any of them", calls.length, 0);
   }
   {
     const { client, store } = world();
-    const r = await handleBoardArchive({ userId: "u-bnaya", profile: ADMIN, body: { action: "archive", ids: ["p-closed"] } }, { admin: client as never, untyped: client as never, now });
+    const r = await handleBoardArchive({ userId: "u-bnaya", profile: ADMIN, body: { action: "archive", ids: ["p-closed"] } }, { admin: client as never, now });
     const row = store.productions.find((p) => p.id === "p-closed")!;
     check("studio_admin archives an eligible production", [r.status, r.json.archived], [200, ["p-closed"]]);
     check("…writes who and when, and NOTHING else on the row", [row.board_archived_at, row.board_archived_by, row.status], [now.toISOString(), "u-bnaya", HOFATZ]);
@@ -201,20 +201,20 @@ async function main() {
     check("…one event, with actor and bulk=false", ev.map((e) => [e.entity_id, e.actor_id, (e.payload as Row).bulk]), [["p-closed", "u-bnaya", false]]);
     check("…and jobs / documents were not touched", store.jobs.find((j) => j.id === "j-closed"), { id: "j-closed", paid: "כן", invoice_biz: "40001", invoice_tax: "50001", dismissed: false });
 
-    const again = await handleBoardArchive({ userId: "u-bnaya", profile: ADMIN, body: { action: "archive", ids: ["p-closed"] } }, { admin: client as never, untyped: client as never, now });
+    const again = await handleBoardArchive({ userId: "u-bnaya", profile: ADMIN, body: { action: "archive", ids: ["p-closed"] } }, { admin: client as never, now });
     check("archiving twice is a skip, not a second write", [again.json.archived, (again.json.skipped as Row[]).length], [[], 1]);
 
-    const tech = await handleBoardArchive({ userId: "u-tech", profile: { approved: true, studio_admin: false }, body: { action: "restore", ids: ["p-closed"] } }, { admin: client as never, untyped: client as never, now });
+    const tech = await handleBoardArchive({ userId: "u-tech", profile: { approved: true, studio_admin: false }, body: { action: "restore", ids: ["p-closed"] } }, { admin: client as never, now });
     check("a non-admin cannot restore", [tech.status, row.board_archived_at], [403, now.toISOString()]);
 
-    const back = await handleBoardArchive({ userId: "u-eli", profile: ADMIN, body: { action: "restore", ids: ["p-closed"] } }, { admin: client as never, untyped: client as never, now });
+    const back = await handleBoardArchive({ userId: "u-eli", profile: ADMIN, body: { action: "restore", ids: ["p-closed"] } }, { admin: client as never, now });
     check("studio_admin restores -> back on the column", [back.json.restored, row.board_archived_at, row.board_archived_by], [["p-closed"], null, null]);
     const rev = store.events.filter((e) => e.event_type === "production_board_restored");
     check("…an event with who, and what the archive was", rev.map((e) => [e.actor_id, (e.payload as Row).archived_by]), [["u-eli", "u-bnaya"]]);
   }
   {
     const { client, store } = world();
-    const r = await handleBoardArchive({ userId: "u-bnaya", profile: ADMIN, body: { action: "archive", ids: ["p-open"] } }, { admin: client as never, untyped: client as never, now });
+    const r = await handleBoardArchive({ userId: "u-bnaya", profile: ADMIN, body: { action: "archive", ids: ["p-open"] } }, { admin: client as never, now });
     check("an ineligible production is refused with its reason", [r.json.archived, (r.json.skipped as { reason: string }[])[0]?.reason], [[], "הכסף טרם נסגר: חשבון עסקה הופק והתשלום טרם התקבל."]);
     check("…and stays on the board", store.productions.find((p) => p.id === "p-open")!.board_archived_at, null);
   }
@@ -232,7 +232,7 @@ async function main() {
     store.productions.find((p) => p.id === "p-internal")!.status = "בעריכה";
     const r = await handleBoardArchive(
       { userId: "u-bnaya", profile: ADMIN, body: { action: "archive_bulk", ids: ["p-closed", "p-late", "p-internal"] } },
-      { admin: client as never, untyped: client as never, now }
+      { admin: client as never, now }
     );
     check("only the still-eligible one is archived", r.json.archived, ["p-closed"]);
     check("the two that changed are skipped, each with its reason", (r.json.skipped as { id: string; reason: string }[]).map((s) => [s.id, s.reason]), [

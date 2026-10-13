@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createAdminClient, createTypedAdminClient } from "@/lib/supabase/admin";
+import { createTypedAdminClient } from "@/lib/supabase/admin";
 import { handleBoardArchive } from "@/lib/productions/boardArchive";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -26,7 +26,7 @@ export async function POST(request: Request) {
   try {
     const r = await handleBoardArchive(
       { userId: user?.id ?? null, profile: profile ?? null, body },
-      { admin: createTypedAdminClient(), untyped: createAdminClient() }
+      { admin: createTypedAdminClient() }
     );
     return NextResponse.json(r.json, { status: r.status, headers: NO_STORE });
   } catch (e) {

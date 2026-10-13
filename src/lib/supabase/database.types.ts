@@ -1596,6 +1596,8 @@ export type Database = {
       productions: {
         Row: {
           billing_block_reason: string | null
+          board_archived_at: string | null
+          board_archived_by: string | null
           calendar_changed: boolean
           calendar_dup_ack: boolean
           calendar_removed: boolean
@@ -1645,6 +1647,8 @@ export type Database = {
         }
         Insert: {
           billing_block_reason?: string | null
+          board_archived_at?: string | null
+          board_archived_by?: string | null
           calendar_changed?: boolean
           calendar_dup_ack?: boolean
           calendar_removed?: boolean
@@ -1694,6 +1698,8 @@ export type Database = {
         }
         Update: {
           billing_block_reason?: string | null
+          board_archived_at?: string | null
+          board_archived_by?: string | null
           calendar_changed?: boolean
           calendar_dup_ack?: boolean
           calendar_removed?: boolean
@@ -1742,6 +1748,13 @@ export type Database = {
           studio_hours?: number | null
         }
         Relationships: [
+          {
+            foreignKeyName: "productions_board_archived_by_fkey"
+            columns: ["board_archived_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "productions_cancelled_by_fkey"
             columns: ["cancelled_by"]

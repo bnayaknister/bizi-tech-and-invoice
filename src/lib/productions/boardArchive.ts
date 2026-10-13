@@ -22,8 +22,9 @@ import { loadArchiveFacts } from "./archiveFacts";
 // Every archive and restore is an event with who and when (decision 8); a
 // bulk run shares one batch_id so the batch can be read back as one act.
 //
-// ⚠️ UNTYPED CLIENT for the two new columns until gen types runs after 0112.
-// The facts loader stays typed (it reads nothing new).
+// TYPED CLIENT throughout: 0112 was applied on 2026-10-13 and
+// database.types.ts regenerated against it, so a misspelt board_archived_*
+// column fails the build instead of a 42703 at runtime.
 
 export const BOARD_ARCHIVE_MAX = 500;
 
@@ -34,8 +35,6 @@ export type ArchiveOutcome = {
 
 export type RestoreOutcome = { restored: string[]; skipped: { id: string; reason: string }[] };
 
-type BoardRow = { id: string; status: string; board_archived_at: string | null; board_archived_by: string | null };
-
 function clean(ids: unknown): string[] {
   if (!Array.isArray(ids)) return [];
   return Array.from(new Set(ids.filter((x): x is string => typeof x === "string" && x.length > 0))).slice(0, BOARD_ARCHIVE_MAX);
@@ -43,7 +42,6 @@ function clean(ids: unknown): string[] {
 
 export async function archiveOnBoard(
   admin: SupabaseClient<Database>,
-  untyped: SupabaseClient,
   actorId: string,
   rawIds: unknown,
   opts: { bulk: boolean; now?: Date }
@@ -52,12 +50,12 @@ export async function archiveOnBoard(
   const out: ArchiveOutcome = { archived: [], skipped: [] };
   if (ids.length === 0) return out;
 
-  const { data: current, error: readErr } = await untyped
+  const { data: current, error: readErr } = await admin
     .from("productions")
     .select("id,status,board_archived_at,board_archived_by")
     .in("id", ids);
   if (readErr) throw readErr;
-  const rowById = new Map(((current ?? []) as BoardRow[]).map((r) => [r.id, r]));
+  const rowById = new Map((current ?? []).map((r) => [r.id, r]));
 
   const facts = await loadArchiveFacts(admin, ids);
   const toWrite: string[] = [];
@@ -82,7 +80,7 @@ export async function archiveOnBoard(
   if (toWrite.length === 0) return out;
 
   const at = (opts.now ?? new Date()).toISOString();
-  const { data: written, error: writeErr } = await untyped
+  const { data: written, error: writeErr } = await admin
     .from("productions")
     .update({ board_archived_at: at, board_archived_by: actorId })
     .in("id", toWrite)
@@ -90,7 +88,7 @@ export async function archiveOnBoard(
     .is("board_archived_at", null)
     .select("id");
   if (writeErr) throw writeErr;
-  const done = new Set(((written ?? []) as { id: string }[]).map((r) => r.id));
+  const done = new Set((written ?? []).map((r) => r.id));
   for (const id of toWrite) {
     if (done.has(id)) out.archived.push(id);
     else out.skipped.push({ id, reason: "ההפקה השתנתה בזמן הארכוב — רעננו את המסך." });
@@ -120,7 +118,6 @@ export async function archiveOnBoard(
 
 export async function restoreOnBoard(
   admin: SupabaseClient<Database>,
-  untyped: SupabaseClient,
   actorId: string,
   rawIds: unknown
 ): Promise<RestoreOutcome> {
@@ -128,12 +125,12 @@ export async function restoreOnBoard(
   const out: RestoreOutcome = { restored: [], skipped: [] };
   if (ids.length === 0) return out;
 
-  const { data: current, error: readErr } = await untyped
+  const { data: current, error: readErr } = await admin
     .from("productions")
     .select("id,status,board_archived_at,board_archived_by")
     .in("id", ids);
   if (readErr) throw readErr;
-  const rows = (current ?? []) as BoardRow[];
+  const rows = current ?? [];
   // a COPY of what the archive was, taken before the write — the event records it
   const archived = rows.filter((r) => r.board_archived_at).map((r) => ({ ...r }));
   const known = new Set(rows.map((r) => r.id));
@@ -143,14 +140,14 @@ export async function restoreOnBoard(
   }
   if (archived.length === 0) return out;
 
-  const { data: written, error: writeErr } = await untyped
+  const { data: written, error: writeErr } = await admin
     .from("productions")
     .update({ board_archived_at: null, board_archived_by: null })
     .in("id", archived.map((r) => r.id))
     .not("board_archived_at", "is", null)
     .select("id");
   if (writeErr) throw writeErr;
-  const done = new Set(((written ?? []) as { id: string }[]).map((r) => r.id));
+  const done = new Set((written ?? []).map((r) => r.id));
   out.restored = archived.map((r) => r.id).filter((id) => done.has(id));
 
   if (out.restored.length) {
@@ -182,7 +179,7 @@ export type BoardArchiveRequest = {
 
 export async function handleBoardArchive(
   req: BoardArchiveRequest,
-  deps: { admin: SupabaseClient<Database>; untyped: SupabaseClient; now?: Date }
+  deps: { admin: SupabaseClient<Database>; now?: Date }
 ): Promise<{ status: number; json: Record<string, unknown> }> {
   if (!req.userId) return { status: 401, json: { error: "לא מחובר" } };
   // owner decision 5: studio_admin only, on the server (isStudioAdmin's rule)
@@ -191,14 +188,14 @@ export async function handleBoardArchive(
   }
   const body = (req.body ?? {}) as { action?: unknown; ids?: unknown };
   if (body.action === "archive" || body.action === "archive_bulk") {
-    const r = await archiveOnBoard(deps.admin, deps.untyped, req.userId, body.ids, {
+    const r = await archiveOnBoard(deps.admin, req.userId, body.ids, {
       bulk: body.action === "archive_bulk",
       now: deps.now,
     });
     return { status: 200, json: r };
   }
   if (body.action === "restore") {
-    const r = await restoreOnBoard(deps.admin, deps.untyped, req.userId, body.ids);
+    const r = await restoreOnBoard(deps.admin, req.userId, body.ids);
     return { status: 200, json: r };
   }
   return { status: 400, json: { error: "פעולה לא מוכרת" } };
