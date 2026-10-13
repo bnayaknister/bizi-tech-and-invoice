@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Israeli phone numbers -> the one format WhatsApp uses. PURE. E9-3.
+// Phone numbers -> the one format WhatsApp uses. PURE. E9-3, B27.
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // WhatsApp's `wa_id` is E.164 WITHOUT the plus: `972501234567`. Nobody in this
@@ -36,10 +36,24 @@ const IL = "972";
  */
 const SEPARATORS = /[\s   \-‐‑‒–—―.()/]/g;
 
-/** Strip the separators and any international prefix, leaving digits. */
-function digitsOf(raw: string): string {
-  return raw.replace(SEPARATORS, "").replace(/^\+/, "").replace(/^00/, "");
+/**
+ * Strip the separators, then split off an international prefix (`+` or `00`).
+ *
+ * ⚠️ THE PREFIX IS RETURNED, NOT JUST DROPPED (B27). A number written with `+`
+ * or `00` has ALREADY told us its country, so the leading-zero-means-Israel
+ * rule below must not touch it: `+0…` / `000…` is not an Israeli number with a
+ * stray prefix, it is a malformed international one, and E.164 country codes
+ * never start with 0.
+ */
+function splitPrefix(raw: string): { intl: boolean; d: string } {
+  const s = raw.replace(SEPARATORS, "");
+  const m = /^(\+|00)/.exec(s);
+  return m ? { intl: true, d: s.slice(m[0].length) } : { intl: false, d: s };
 }
+
+/** E.164's own bounds once the country code is in place: 8..15 digits. */
+const E164_MIN = 8;
+const E164_MAX = 15;
 
 export type PhoneResult =
   | { ok: true; waId: string }
@@ -51,7 +65,7 @@ export const PHONE_ERROR: Record<Exclude<PhoneResult, { ok: true }>["reason"], s
   "not-digits": "המספר מכיל תווים שאינם ספרות.",
   "too-short": "המספר קצר מדי.",
   "too-long": "המספר ארוך מדי.",
-  "not-a-number": "המספר אינו תקין. אפשר להקליד 05X-XXXXXXX או 9725XXXXXXXX.",
+  "not-a-number": "המספר אינו תקין. אפשר להקליד 05X-XXXXXXX, או מספר בינלאומי עם + וקידומת מדינה.",
 };
 
 /**
@@ -65,6 +79,9 @@ export const PHONE_ERROR: Record<Exclude<PhoneResult, { ok: true }>["reason"], s
  *   `00972501234567`  the other international form-> 972501234567
  *   `972501234567`    already a wa_id             -> unchanged
  *   `447911123456`    a foreign number            -> unchanged
+ *   `+1 904-240-6207` a foreign number with +     -> 19042406207
+ *   `001-904-240-6207` the same with 00           -> 19042406207
+ *   `+972 (0)50-123-4567` trunk zero kept         -> 972501234567
  *
  * ⚠️ A LEADING ZERO MEANS ISRAEL, and nothing else can. E.164 numbers never
  * start with 0, so a leading zero is unambiguously a national trunk prefix —
@@ -73,9 +90,13 @@ export const PHONE_ERROR: Record<Exclude<PhoneResult, { ok: true }>["reason"], s
  * guess. A number that starts with any other digit is taken AS GIVEN, which is
  * what lets a guest from abroad be stored at all.
  *
- * ⚠️ 7..15 DIGITS is E.164's own limit (15) with a floor loose enough for a
- * short national number. The point of the range is to catch a half-typed
- * number, not to validate a dialling plan we do not own: refusing a real
+ * ⚠️ `+` OR `00` MEANS THE COUNTRY IS ALREADY THERE (B27): the digits after it
+ * are taken as they are, never prefixed with 972 — and a 0 right after the
+ * prefix is refused, not read as Israeli.
+ *
+ * ⚠️ 8..15 DIGITS (B27, owner rule; was 7..15) is E.164's own limit (15) with
+ * a floor loose enough for a short national number. The point of the range is
+ * to catch a half-typed number, not to validate a dialling plan we do not own: refusing a real
  * foreign number because its shape is unfamiliar would be worse than storing
  * it, and the owner can see what they typed.
  */
@@ -84,9 +105,21 @@ export function toWaId(raw: unknown): PhoneResult {
   const trimmed = raw.trim();
   if (trimmed === "") return { ok: false, reason: "empty" };
 
-  const d = digitsOf(trimmed);
-  if (d === "") return { ok: false, reason: "not-a-number" };
-  if (!/^\d+$/.test(d)) return { ok: false, reason: "not-digits" };
+  const { intl, d: digits } = splitPrefix(trimmed);
+  if (digits === "") return { ok: false, reason: "not-a-number" };
+  if (!/^\d+$/.test(digits)) return { ok: false, reason: "not-digits" };
+
+  // `+972 (0)50-…` — the trunk zero a contact card keeps after the country
+  // code. No Israeli number continues 9720, so dropping it is a conversion,
+  // not a guess; storing it would be a wa_id Meta never sends.
+  const d = /^9720\d/.test(digits) ? `${IL}${digits.slice(IL.length + 1)}` : digits;
+
+  if (intl) {
+    // the country is already written: never prefix 972, never read the 0 as a
+    // trunk prefix (see splitPrefix)
+    if (d.startsWith("0")) return { ok: false, reason: "not-a-number" };
+    return e164(d);
+  }
 
   if (d.startsWith("0")) {
     // national form. 0 + 9 more (mobile, 10 total) or 0 + 8 more (landline).
@@ -96,8 +129,12 @@ export function toWaId(raw: unknown): PhoneResult {
     return { ok: true, waId: `${IL}${national}` };
   }
 
-  if (d.length < 7) return { ok: false, reason: "too-short" };
-  if (d.length > 15) return { ok: false, reason: "too-long" };
+  return e164(d);
+}
+
+function e164(d: string): PhoneResult {
+  if (d.length < E164_MIN) return { ok: false, reason: "too-short" };
+  if (d.length > E164_MAX) return { ok: false, reason: "too-long" };
   return { ok: true, waId: d };
 }
 
@@ -130,5 +167,19 @@ export function displayWaId(waId: string): string {
  * than a value worth fixing silently.
  */
 export function isWaId(v: unknown): v is string {
-  return typeof v === "string" && /^\d{7,15}$/.test(v);
+  // digits only, 8..15, and never a leading 0 — E.164 has no country code 0
+  return typeof v === "string" && /^[1-9]\d{7,14}$/.test(v);
+}
+
+/**
+ * A `wa_id` as Meta SENDS it -> the canonical form, or null. Not a conversion:
+ * Meta's value is already E.164 without a plus, so this only trims, tolerates
+ * a `+`, and applies `isWaId`. B27: the one gate the webhook and every other
+ * reader share, so "what the bot matches on" and "what the editors store" are
+ * defined in this file and nowhere else.
+ */
+export function waIdFromProvider(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const v = raw.trim().replace(/^\+/, "");
+  return isWaId(v) ? v : null;
 }

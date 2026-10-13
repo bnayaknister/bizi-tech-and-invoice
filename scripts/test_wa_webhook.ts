@@ -225,7 +225,9 @@ console.log("\n=== 3. wa_id normalization ===");
   check("a leading + is tolerated on the way in", normalizeWaId("+972501234567"), "972501234567");
   check("whitespace is trimmed", normalizeWaId("  972501234567 "), "972501234567");
   check("dashes are refused", normalizeWaId("972-50-1234567"), null);
-  check("a local Israeli format with a leading zero is still digits, and kept as-is", normalizeWaId("0501234567"), "0501234567");
+  // B27: the gate is phone.ts's isWaId — E.164 never starts with 0, so a
+  // local form is not a wa_id (the raw value is still logged, see toWaMessageRows)
+  check("a local Israeli format with a leading zero is not a wa_id", normalizeWaId("0501234567"), null);
   check("letters are refused", normalizeWaId("972abc"), null);
   check("too short", normalizeWaId("12345"), null);
   check("too long", normalizeWaId("9".repeat(21)), null);

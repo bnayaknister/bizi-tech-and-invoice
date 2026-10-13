@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { Json } from "@/lib/supabase/database.types";
+import { waIdFromProvider } from "./phone";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Everything the WhatsApp webhook DECIDES. PURE — no fetch, no client, no
@@ -136,12 +137,12 @@ export function verifyWebhookSignature(
 
 // ─── the payload ────────────────────────────────────────────────────────────
 
-/** Digits only, `+` tolerated on the way in. Meta sends `wa_id` without one. */
-export function normalizeWaId(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
-  const v = raw.trim().replace(/^\+/, "");
-  return /^\d{6,20}$/.test(v) ? v : null;
-}
+/**
+ * Digits only, `+` tolerated on the way in. Meta sends `wa_id` without one.
+ * B27: the rule itself lives in phone.ts (`waIdFromProvider`), shared with the
+ * editors' `toWaId`, so the bot and the editors cannot drift apart again.
+ */
+export const normalizeWaId = waIdFromProvider;
 
 export type InboundMessage = {
   /** Meta's own message id. THE de-dup key — see the route and 0101. */
