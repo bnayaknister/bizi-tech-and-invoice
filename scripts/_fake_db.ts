@@ -3,7 +3,7 @@
  * Not a test itself (no `test_` prefix).
  *
  * It FILTERS and ENFORCES like the real thing where the suites depend on it:
- *   · eq / neq / in / is / gt / gte / lt / lte, including `payload->>key`
+ *   · eq / neq / in / is / gt / gte / lt / lte / overlaps, including `payload->>key`
  *   · count: "exact" + head
  *   · unique indexes (declared per table) -> error code 23505, row not written
  *   · upsert with ignoreDuplicates -> returns only the rows actually inserted
@@ -83,6 +83,10 @@ export function fakeDb(
     b.neq = (c: string, v: unknown) => (filters.push((r) => get(r, c) !== v), b);
     b.in = (c: string, vs: unknown[]) => (filters.push((r) => vs.includes(get(r, c))), b);
     b.is = (c: string, v: unknown) => (filters.push((r) => (get(r, c) ?? null) === v), b);
+    // array && array (Q10: bundle_job_ids)
+    b.overlaps = (c: string, vs: unknown[]) => (
+      filters.push((r) => Array.isArray(r[c]) && (r[c] as unknown[]).some((x) => vs.includes(x))), b
+    );
     b.gt = (c: string, v: string) => (filters.push((r) => String(get(r, c)) > v), b);
     b.gte = (c: string, v: string) => (filters.push((r) => String(get(r, c)) >= v), b);
     b.lt = (c: string, v: string) => (filters.push((r) => String(get(r, c)) < v), b);

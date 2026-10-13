@@ -48,7 +48,20 @@ export type BoardProduction = {
   // the drawer uses (lib/productions/hours.ts) — the board and the drawer can
   // never disagree about which episodes are waiting.
   hours_missing: boolean;
+  /** Q10 (0112): hidden from the "הופץ" column. View only — see archiveEligibility. */
+  board_archived_at: string | null;
+  /** Q10: computed on the server for studio_admin only, "הופץ" rows only; null otherwise */
+  archive: { eligible: boolean; reason: string | null } | null;
 };
+
+/** Q10 — the board's archive controls; undefined unless studio_admin. */
+type ArchiveCtl = {
+  onArchive: (p: BoardProduction) => void;
+  onRestore: (p: BoardProduction) => void;
+  onBulkAsk: (items: BoardProduction[]) => void;
+};
+
+const ARCHIVE_COLUMN = "הופץ";
 
 const STEP_LABEL: Record<string, string> = { record: "הקלטה", edit: "עריכה", deliver: "מסירה" };
 const TRACK_LABEL: Record<string, string> = { episode: "פרק", reels: "רילז" };
@@ -68,11 +81,14 @@ export default function ProductionsClient({
   isTech,
   canEditStages,
   canEditMoney,
+  canBoardArchive,
   shows,
 }: {
   board: BoardProduction[];
   isTech: boolean;
   canEditStages: boolean;
+  /** Q10: archive / restore on the "הופץ" column — studio_admin only (owner 13.10) */
+  canBoardArchive: boolean;
   /** Undoing a merge is money-tier, always (owner 2026-09-16). Nothing else on
    *  this screen reads it — it gates exactly one button. */
   canEditMoney: boolean;
@@ -85,6 +101,9 @@ export default function ProductionsClient({
   const [onlyMine, setOnlyMine] = useState(isTech); // default on for technicians
   const [activeOnly, setActiveOnly] = useState(true); // scope the kanban to live shows
   const [includeLegacy, setIncludeLegacy] = useState(false); // hide imported history by default (owner 2026-07-21)
+  const [showArchived, setShowArchived] = useState(false); // Q10: archived "הופץ" cards stay hidden by default (owner 13.10)
+  const [bulkFor, setBulkFor] = useState<BoardProduction[] | null>(null);
+  const [archiveNote, setArchiveNote] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
@@ -268,8 +287,52 @@ export default function ProductionsClient({
     return { ok: true };
   }
 
+  // 0112's trigger clears the archive on ANY status change — mirror it locally
   const moveStatus = (id: string, status: string) =>
-    act(id, { status }, (p) => ({ ...p, status }));
+    act(id, { status }, (p) => ({ ...p, status, board_archived_at: null }));
+
+  // Q10 — archive / restore. router.refresh(): it changes the SET of visible
+  // cards, and the server re-checks eligibility, so the answer may differ from
+  // what the board showed.
+  async function boardArchive(action: "archive" | "archive_bulk" | "restore", ids: string[]) {
+    setError(null);
+    setArchiveNote(null);
+    const res = await fetch("/api/productions/board-archive", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ids }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setError(d.error ?? "הארכוב נכשל");
+      return;
+    }
+    const skipped = (d.skipped ?? []) as { id: string; reason: string }[];
+    const done = (action === "restore" ? d.restored : d.archived) as string[] | undefined;
+    const verb = action === "restore" ? "הוחזרו לטור" : "אורכבו";
+    let note = `${verb}: ${done?.length ?? 0}`;
+    if (skipped.length) {
+      const name = (id: string) => rows.find((r) => r.id === id)?.show_name ?? id.slice(0, 8);
+      note += ` · דולגו ${skipped.length}: ` + skipped.slice(0, 5).map((x) => `${name(x.id)} — ${x.reason}`).join(" · ");
+      if (skipped.length > 5) note += ` · ועוד ${skipped.length - 5}`;
+    }
+    setArchiveNote(note);
+    router.refresh();
+  }
+
+  const archiveCtl: ArchiveCtl | undefined = canBoardArchive
+    ? {
+        onArchive: (p) => {
+          if (p.archive && !p.archive.eligible) {
+            setArchiveNote(`${p.show_name}: ${p.archive.reason}`);
+            return;
+          }
+          boardArchive("archive", [p.id]);
+        },
+        onRestore: (p) => boardArchive("restore", [p.id]),
+        onBulkAsk: (items) => setBulkFor(items),
+      }
+    : undefined;
 
   const setHold = (id: string, on: boolean, reason?: string) =>
     act(id, { hold: { on, reason } }, (p) => ({
@@ -288,6 +351,14 @@ export default function ProductionsClient({
     const base = rows.filter(matches).filter((p) => includeLegacy || !p.legacy);
     return query.trim() ? base : base.filter((p) => p.status !== "בוטל");
   }, [rows, matches, query, includeLegacy]);
+
+  // Q10: the ONLY place an archived production is filtered (owner 13.10 —
+  // never the sync, search, radar or any status / money consumer). A search
+  // term reveals them, the same way it reveals cancelled productions.
+  const onBoard = useMemo(
+    () => (showArchived || query.trim() ? filtered : filtered.filter((p) => !p.board_archived_at)),
+    [filtered, showArchived, query]
+  );
 
   return (
     <div className="max-w-[1400px] mx-auto p-6">
@@ -332,6 +403,12 @@ export default function ProductionsClient({
           <input type="checkbox" checked={includeLegacy} onChange={(e) => setIncludeLegacy(e.target.checked)} />
           כולל היסטוריה
         </label>
+        {tab === "kanban" && (
+          <label className="flex items-center gap-1.5 text-xs text-[var(--dim)] cursor-pointer">
+            <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
+            הצג מאורכבים
+          </label>
+        )}
 
         <input
           value={query}
@@ -364,6 +441,12 @@ export default function ProductionsClient({
       {error && (
         <div className="mb-3 text-xs text-[var(--peak)] border border-[var(--peak)] rounded-xl px-3 py-2">{error}</div>
       )}
+      {archiveNote && (
+        <div className="mb-3 text-xs text-[var(--dim)] border border-[var(--rule)] rounded-xl px-3 py-2 flex items-start gap-2">
+          <span className="flex-1">{archiveNote}</span>
+          <button onClick={() => setArchiveNote(null)} className="text-[var(--faint)] hover:text-[var(--dim)]">✕</button>
+        </div>
+      )}
       {syncResult && (
         <div className="mb-3 text-xs text-[var(--dim)] border border-[var(--rule)] rounded-xl px-3 py-2 font-mono">{syncResult}</div>
       )}
@@ -385,8 +468,9 @@ export default function ProductionsClient({
         />
       ) : (
         <Kanban
-          rows={activeOnly ? filtered.filter((p) => p.show_active) : filtered}
+          rows={activeOnly ? onBoard.filter((p) => p.show_active) : onBoard}
           canEditStages={canEditStages}
+          archiveCtl={archiveCtl}
           dragId={dragId}
           dragOver={dragOver}
           setDragId={setDragId}
@@ -421,6 +505,18 @@ export default function ProductionsClient({
           production={cancelFor}
           onClose={() => setCancelFor(null)}
           onCancel={cancelProduction}
+        />
+      )}
+
+      {bulkFor && (
+        <BulkArchiveModal
+          items={bulkFor}
+          onClose={() => setBulkFor(null)}
+          onConfirm={() => {
+            const ids = bulkFor.map((p) => p.id);
+            setBulkFor(null);
+            boardArchive("archive_bulk", ids);
+          }}
         />
       )}
 
@@ -494,8 +590,10 @@ function ProductionCard({
   onUndoSplit,
   onDupAction,
   onUnmerge,
+  archiveCtl,
 }: {
   p: BoardProduction;
+  archiveCtl?: ArchiveCtl;
   onOpen: (id: string) => void;
   onFreezeAsk: (p: BoardProduction) => void;
   onUnfreeze?: (id: string) => void;
@@ -536,6 +634,11 @@ function ProductionCard({
         {p.needs_attention && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: "var(--red)" }} title="דורש טיפול" />}
         <span className="font-bold text-sm truncate flex-1">{p.show_name}</span>
         {p.on_hold && <span className="text-[10px] text-[var(--amber)] shrink-0">⏸ מוקפא</span>}
+        {p.board_archived_at && (
+          <span className="text-[10px] text-[var(--faint)] border border-[var(--rule)] rounded px-1 shrink-0" title="מאורכב — מוסתר מהטור">
+            🗄 מאורכב
+          </span>
+        )}
         {/* F6 — visible from the board so a missing number does not need the
             drawer to be opened to be noticed. The card already opens the drawer
             on click, and the drawer's flag has the button, so this stays a
@@ -723,6 +826,35 @@ function ProductionCard({
             💬 הערות הלקוח
           </button>
         )}
+        {/* Q10 — studio_admin only. An ineligible card keeps the button,
+            greyed: tapping it says why (a disabled button cannot explain
+            itself on a phone). */}
+        {archiveCtl && p.board_archived_at && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              archiveCtl.onRestore(p);
+            }}
+            className="text-[10px] text-[var(--violet-light)] border border-[var(--rule)] rounded px-2 py-0.5 hover:bg-[rgba(139,92,246,0.1)]"
+          >
+            החזר לטור
+          </button>
+        )}
+        {archiveCtl && !p.board_archived_at && p.status === ARCHIVE_COLUMN && p.archive && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              archiveCtl.onArchive(p);
+            }}
+            aria-disabled={!p.archive.eligible}
+            title={p.archive.eligible ? "הסתר מהטור (אפשר להחזיר)" : p.archive.reason ?? ""}
+            className={`text-[10px] border border-[var(--rule)] rounded px-2 py-0.5 ${
+              p.archive.eligible ? "text-[var(--dim)] hover:bg-[var(--panel3)]" : "text-[var(--faint)] opacity-50 cursor-help"
+            }`}
+          >
+            🗄 ארכב
+          </button>
+        )}
       </div>
     </div>
   );
@@ -818,6 +950,7 @@ const COLUMN_CAP = 60;
 function Kanban({
   rows,
   canEditStages,
+  archiveCtl,
   dragId,
   dragOver,
   setDragId,
@@ -836,6 +969,7 @@ function Kanban({
 }: {
   rows: BoardProduction[];
   canEditStages: boolean;
+  archiveCtl?: ArchiveCtl;
   dragId: string | null;
   dragOver: string | null;
   setDragId: (id: string | null) => void;
@@ -895,6 +1029,7 @@ function Kanban({
                 <span className="text-[11px] font-bold uppercase tracking-wide text-[var(--dim)]">{STATUS_LABEL[status]}</span>
                 <span className="text-[11px] text-[var(--faint)] font-mono">{items.length}</span>
               </div>
+              {status === ARCHIVE_COLUMN && <BulkArchiveButton items={items} archiveCtl={archiveCtl} />}
               <div className="flex flex-col gap-2">
                 {items.slice(0, COLUMN_CAP).map((p) => (
                   <ProductionCard
@@ -914,6 +1049,7 @@ function Kanban({
                     onUndoSplit={onUndoSplit}
                     onDupAction={onDupAction}
                     onUnmerge={onUnmerge}
+                    archiveCtl={archiveCtl}
                   />
                 ))}
                 {items.length > COLUMN_CAP && (
@@ -943,6 +1079,7 @@ function Kanban({
                 <span className="text-[11px] font-bold uppercase tracking-wide text-[var(--dim)]">{STATUS_LABEL[status]}</span>
                 <span className="text-[11px] text-[var(--faint)] font-mono">{items.length}</span>
               </div>
+              {status === ARCHIVE_COLUMN && <BulkArchiveButton items={items} archiveCtl={archiveCtl} />}
               <div className="flex flex-col gap-2">
                 {items.slice(0, COLUMN_CAP).map((p) => (
                   <ProductionCard
@@ -960,6 +1097,7 @@ function Kanban({
                     onUndoSplit={onUndoSplit}
                     onDupAction={onDupAction}
                     onUnmerge={onUnmerge}
+                    archiveCtl={archiveCtl}
                   />
                 ))}
                 {items.length > COLUMN_CAP && (
@@ -973,6 +1111,75 @@ function Kanban({
         })}
       </div>
     </>
+  );
+}
+
+/** Q10 — "ארכב את כל הזכאים" at the head of the "הופץ" column. */
+function BulkArchiveButton({ items, archiveCtl }: { items: BoardProduction[]; archiveCtl?: ArchiveCtl }) {
+  if (!archiveCtl) return null;
+  const eligible = items.filter((p) => !p.board_archived_at && p.archive?.eligible);
+  if (eligible.length === 0) return null;
+  return (
+    <button
+      onClick={() => archiveCtl.onBulkAsk(eligible)}
+      className="w-full mb-2 text-[11px] text-[var(--dim)] border border-[var(--rule)] rounded-lg px-2 py-1 hover:bg-[var(--panel3)]"
+    >
+      🗄 ארכב את כל הזכאים ({eligible.length})
+    </button>
+  );
+}
+
+const BULK_PREVIEW = 8;
+
+function BulkArchiveModal({
+  items,
+  onClose,
+  onConfirm,
+}: {
+  items: BoardProduction[];
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 flex items-center justify-center p-4 z-50"
+      style={{ background: "rgba(3,2,10,0.66)", backdropFilter: "blur(6px)" }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl"
+        style={{ background: "rgba(15,13,28,0.92)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}
+      >
+        <h3 className="font-bold mb-1">ארכוב {items.length} הפקות מטור &quot;הופץ&quot;</h3>
+        <p className="text-[11px] text-[var(--faint)] mb-3">
+          ההפקות יוסתרו מהטור בלבד — סטטוס, כסף ומסמכים לא משתנים, ואפשר להחזיר כל אחת. הזכאות נבדקת שוב בשרת, והפקה שכבר אינה
+          זכאית תדולג.
+        </p>
+        <ul className="text-xs text-[var(--dim)] mb-4 space-y-0.5">
+          {items.slice(0, BULK_PREVIEW).map((p) => (
+            <li key={p.id} className="truncate">
+              · {p.show_name}
+              {p.guest ? ` — ${p.guest}` : ""}
+              {p.record_date ? ` · ${displayDate(p.record_date)}` : ""}
+            </li>
+          ))}
+          {items.length > BULK_PREVIEW && <li className="text-[var(--faint)]">ועוד {items.length - BULK_PREVIEW}</li>}
+        </ul>
+        <div className="flex gap-2">
+          <button
+            onClick={onConfirm}
+            className="text-white font-bold rounded-xl px-4 py-2 text-sm"
+            style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))", boxShadow: "0 4px 14px rgba(139,92,246,0.3)" }}
+          >
+            ארכב {items.length}
+          </button>
+          <button onClick={onClose} className="text-sm text-[var(--dim)] border border-[var(--rule)] rounded-xl px-4 py-2">
+            ביטול
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

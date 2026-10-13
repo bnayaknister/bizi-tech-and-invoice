@@ -6,6 +6,10 @@ import AppHeader from "@/components/AppHeader";
 import ProductionsClient, { type BoardProduction } from "./ProductionsClient";
 import { hoursMissing } from "@/lib/productions/hours";
 import { ACTIVE_CLIENT } from "@/lib/clients/status";
+import { isStudioAdmin } from "@/lib/clients/access";
+import { createTypedAdminClient } from "@/lib/supabase/admin";
+import { loadArchiveFacts } from "@/lib/productions/archiveFacts";
+import { archiveEligibility, BOARD_ARCHIVE_STATUS, type ArchiveEligibility } from "@/lib/productions/archiveEligibility";
 
 export const dynamic = "force-dynamic";
 
@@ -40,6 +44,8 @@ type ProdRow = {
   // F6 — stage-tier and granted to `authenticated` by 0067, so it rides on the
   // common column list rather than the money one. The RATE never comes here.
   studio_hours: number | null;
+  // Q10 (0112) — granted to `authenticated` column by column, like the rest
+  board_archived_at: string | null;
 };
 
 // Per-production stage rollup, read from the production_stage_rollup view
@@ -145,7 +151,7 @@ export default async function ProductionsPage() {
   // money columns (client) are only ever selected with the permission —
   // the board never carries money for a stages-only viewer
   const commonCols =
-    "id,status,record_date,record_time,guest,studio,on_hold,on_hold_reason,on_hold_since,needs_attention,show_id,calendar_uid,split_index,split_count,calendar_dup_ack,merged_into,legacy,studio_hours";
+    "id,status,record_date,record_time,guest,studio,on_hold,on_hold_reason,on_hold_since,needs_attention,show_id,calendar_uid,split_index,split_count,calendar_dup_ack,merged_into,legacy,studio_hours,board_archived_at";
   const prodSelect = canViewMoney ? `${commonCols},client_id` : commonCols;
 
   // ONE network wave, not two. Every read below is independent — none of them
@@ -230,6 +236,18 @@ export default async function ProductionsPage() {
     });
   }
 
+  // Q10: the archive buttons are studio_admin only (owner 13.10 #5), and their
+  // eligibility reads money (jobs, documents) — so it is computed only for
+  // that viewer, only for the "הופץ" column, and on the service role. Nobody
+  // else's board carries it.
+  const canBoardArchive = isStudioAdmin(profile);
+  const archiveById = new Map<string, ArchiveEligibility>();
+  if (canBoardArchive) {
+    const ids = prods.filter((p) => p.status === BOARD_ARCHIVE_STATUS).map((p) => p.id);
+    const facts = await loadArchiveFacts(createTypedAdminClient(), ids);
+    for (const [id, f] of Array.from(facts)) archiveById.set(id, archiveEligibility(f));
+  }
+
   const nameById = new Map((profilesRows ?? []).map((p) => [p.id, p.name || p.email || "—"]));
   const clientById = new Map((clientsRes.data ?? []).map((c) => [c.id, c.name]));
 
@@ -268,6 +286,8 @@ export default async function ProductionsPage() {
       dup_group: dupInfoByProdId.get(p.id) ?? null,
       absorbed: absorbedBySurvivor.get(p.id) ?? [],
       legacy: p.legacy,
+      board_archived_at: p.board_archived_at ?? null,
+      archive: archiveById.get(p.id) ?? null,
       log_count: logCounts.get(p.id) ?? 0,
       hours_missing: hoursMissing({
         pricing_model: show?.pricing_model,
@@ -286,6 +306,7 @@ export default async function ProductionsPage() {
           isTech={profile.role === "tech"}
           canEditStages={profile.can_edit_stages}
           canEditMoney={profile.can_edit_money}
+          canBoardArchive={canBoardArchive}
           shows={(shows ?? [])
             .filter((s) => s.active)
             .map((s) => ({ id: s.id, name: s.name }))
