@@ -138,7 +138,8 @@ console.log("\n── 3. the route, the drawer and its response");
   check("route: the refusal is the shared sentence", route.includes("BOOKING_CONTACTS_FORBIDDEN"), true);
   check("the refusal sentence", BOOKING_CONTACTS_FORBIDDEN, "הרשאות הזמנת חדרים — לבניה ולאלי בלבד");
 
-  const entity = code("app/api/entity/[type]/[id]/route.ts");
+  // T34: the entity GET's body moved to lib/drawer/entityGet.ts
+  const entity = code("lib/drawer/entityGet.ts");
   check("entity GET: sends the flag from the same predicate", entity.includes("canManageBookingContacts: canManageBookingContacts(profile)"), true);
 
   const drawer = code("components/EntityDrawer.tsx");

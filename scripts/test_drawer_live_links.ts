@@ -127,10 +127,12 @@ async function main() {
 
   section("4. the route and the drawer use it");
   const root = join(__dirname, "..");
-  const route = readFileSync(join(root, "src/app/api/entity/[type]/[id]/route.ts"), "utf8");
-  check("the route calls loadDrawerLiveLinks", /await loadDrawerLiveLinks\(/.test(route), true);
-  check("the route returns reviewLinksIncomplete", /\n\s+reviewLinksIncomplete,\n/.test(route), true);
-  check("no un-timed client_review_links read is left in the route", /from\("client_review_links"\)/.test(route), false);
+  // T34: the entity GET's body lives in lib/drawer/entityGet.ts; the route only authenticates
+  const route = readFileSync(join(root, "src/lib/drawer/entityGet.ts"), "utf8");
+  const routeFile = readFileSync(join(root, "src/app/api/entity/[type]/[id]/route.ts"), "utf8");
+  check("the entity GET calls loadDrawerLiveLinks", /loadDrawerLiveLinks\(\{/.test(route), true);
+  check("the entity GET returns reviewLinksIncomplete", /reviewLinksIncomplete: live\.incomplete/.test(route), true);
+  check("no un-timed client_review_links read is left in the entity GET or its route", /from\("client_review_links"\)/.test(route + routeFile), false);
   const drawer = readFileSync(join(root, "src/components/EntityDrawer.tsx"), "utf8");
   check("the drawer shows a notice instead of the block", /data\.reviewLinksIncomplete && \(/.test(drawer) && /!data\.reviewLinksIncomplete && <LiveLinksBox/.test(drawer), true);
 

@@ -31,6 +31,8 @@ export function fakeDb(
   opts: {
     unique?: Unique[];
     failOn?: Record<string, string[]>;
+    /** T34: reads of these tables never answer until their abortSignal fires (a stuck connection) */
+    hang?: string[];
     now?: () => Date;
     /** stand-ins for SQL functions: (args, store) -> what PostgREST would return */
     rpc?: Record<string, (args: Record<string, unknown>, store: Record<string, Row[]>) => { data?: unknown; error?: { message: string; code?: string } | null }>;
@@ -64,6 +66,7 @@ export function fakeDb(
     let returning = false;
     const filters: ((r: Row) => boolean)[] = [];
     let limitN: number | null = null;
+    let signal: AbortSignal | null = null;
 
     const b: Record<string, unknown> = {};
     const chain = (fn: () => void) => () => (fn(), b);
@@ -96,6 +99,7 @@ export function fakeDb(
       return b;
     };
     b.order = () => b;
+    b.abortSignal = (s: AbortSignal) => ((signal = s), b);
     b.range = () => b;
     b.limit = (n: number) => ((limitN = n), b);
     b.maybeSingle = chain(() => (one = "maybe"));
@@ -103,6 +107,14 @@ export function fakeDb(
 
     b.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => {
       calls.push({ table, op, payload });
+      if (op === "select" && opts.hang?.includes(table)) {
+        // postgrest-js turns the aborted fetch into { error: { message: "<name>: <message>" } }
+        return new Promise((resolve) => {
+          const done = () => resolve({ data: null, error: { message: "TimeoutError: The operation was aborted due to timeout", code: "" }, count: null });
+          if (signal?.aborted) done();
+          else signal?.addEventListener("abort", done);
+        }).then(res, rej);
+      }
       const fail = opts.failOn?.[table];
       if (fail && fail.includes(op)) {
         return Promise.resolve({ data: null, error: { message: "boom", code: "XX000" }, count: null }).then(res, rej);
