@@ -36,6 +36,7 @@ import { displayDate, displayDateTime, displayLogTime } from "@/lib/dates";
 import { HOURS_STEP, MAX_HOURS, hoursError as validateHours, hoursMissing } from "@/lib/productions/hours";
 import { CreateJobButton, CreateJobModalBody } from "@/components/CreateJobBody";
 import { quotaOverNotice } from "@/lib/contracts/quota";
+import { isPerfClientOn, perfEndAfterPaint, perfNote, perfStart } from "@/lib/perf/client";
 
 // entity type -> line icon + tile accent (no emoji, DESIGN.md §12)
 const ENTITY_ICON: Record<string, string> = {
@@ -953,6 +954,8 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     setCreateJobAmount("");
     setCreateJobSuggested(null);
     mediaInitFor.current = null;
+    // T35 (NEXT_PUBLIC_PERF_TIMING): click → drawer content painted
+    if (next?.type === "production") perfStart("production_drawer");
     setRef(next);
   }, []);
 
@@ -967,7 +970,15 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
 
   const load = useCallback(async (r: EntityRef, quiet = false) => {
     if (!quiet) setLoading(true);
+    const fetchStart = typeof performance !== "undefined" ? performance.now() : 0;
     const res = await fetch(`/api/entity/${r.type}/${r.id}`);
+    if (!quiet && r.type === "production" && isPerfClientOn()) {
+      perfNote("production_drawer", {
+        fetch_ms: Math.round((performance.now() - fetchStart) * 10) / 10,
+        server_timing: res.headers.get("server-timing"),
+        production_id: r.id,
+      });
+    }
     setLoading(false);
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -981,6 +992,10 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (ref) void load(ref);
   }, [ref, load]);
+
+  useEffect(() => {
+    if (data?.type === "production") perfEndAfterPaint("production_drawer");
+  }, [data]);
 
   // fill the media fields from the saved items ONCE per opened production —
   // quiet reloads after actions must not clobber links mid-typing

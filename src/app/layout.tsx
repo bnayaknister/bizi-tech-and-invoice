@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Heebo, Space_Grotesk } from "next/font/google";
 import { DrawerProvider } from "@/components/EntityDrawer";
 import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
+import PerfClickProbe from "@/components/PerfClickProbe";
 import "./globals.css";
 
 const heebo = Heebo({
@@ -51,6 +52,7 @@ export default function RootLayout({
       <body className={`${heebo.variable} ${spaceGrotesk.variable} antialiased`}>
         <DrawerProvider>{children}</DrawerProvider>
         <ServiceWorkerRegister />
+        <PerfClickProbe />
       </body>
     </html>
   );

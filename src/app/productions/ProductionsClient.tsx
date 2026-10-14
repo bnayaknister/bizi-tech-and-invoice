@@ -7,6 +7,7 @@ import ClientNotesModal from "@/components/ClientNotesModal";
 import IconTile from "@/components/IconTile";
 import { STATUS_ORDER, STATUS_LABEL, IN_PROGRESS_STATES, TERMINAL_STATES } from "@/lib/productions/status";
 import { displayDate } from "@/lib/dates";
+import { perfEndAfterPaint, perfStart } from "@/lib/perf/client";
 
 /** An episode the calendar already produced for this show+day, as the create
  *  modal shows it back: enough to decide without leaving the screen. */
@@ -104,6 +105,15 @@ export default function ProductionsClient({
   const [showArchived, setShowArchived] = useState(false); // Q10: archived "הופץ" cards stay hidden by default (owner 13.10)
   const [bulkFor, setBulkFor] = useState<BoardProduction[] | null>(null);
   const [archiveNote, setArchiveNote] = useState<string | null>(null);
+
+  // T35 (NEXT_PUBLIC_PERF_TIMING): click → screen painted, and tab click →
+  // tab painted. No-ops when the flag is off.
+  useEffect(() => {
+    perfEndAfterPaint("productions_screen", { fromNavigationStart: true });
+  }, []);
+  useEffect(() => {
+    perfEndAfterPaint(`productions_tab_${tab}`);
+  }, [tab]);
   const [query, setQuery] = useState("");
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
@@ -376,7 +386,10 @@ export default function ProductionsClient({
           ).map(([key, label]) => (
             <button
               key={key}
-              onClick={() => setTab(key)}
+              onClick={() => {
+                if (key !== tab) perfStart(`productions_tab_${key}`);
+                setTab(key);
+              }}
               className={`text-xs px-4 py-1.5 transition-colors ${
                 tab === key
                   ? "text-white font-bold"

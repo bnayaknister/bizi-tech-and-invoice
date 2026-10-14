@@ -1,9 +1,18 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { noStoreFetch } from "./no-store-fetch";
+import { PERF_OFF, perfTimer } from "@/lib/perf/timing";
+
+// T35: only the two screens being measured are timed here — the middleware
+// runs on every request, and a log line per asset would bury the ones we want.
+const PERF_PATHS = /^\/(productions(\/|$)|api\/entity\/production\/)/;
 
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
+  const perfPath = request.nextUrl.pathname;
+  const perf = PERF_PATHS.test(perfPath)
+    ? perfTimer(`middleware ${perfPath.startsWith("/api/") ? "/api/entity/production/[id]" : "/productions"}`, { totalName: "mw_total" })
+    : PERF_OFF;
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -29,6 +38,7 @@ export async function updateSession(request: NextRequest) {
   const {
     data: { user },
   } = await supabase.auth.getUser();
+  perf.lap("mw_getUser");
 
   // Hard wall for un-approved accounts (owner rule 2026-07-18): a signed-up
   // but not-yet-approved user may reach ONLY the waiting screen + auth. Every
@@ -73,6 +83,7 @@ export async function updateSession(request: NextRequest) {
       path === "/privacy";
     if (!open) {
       const { data: prof } = await supabase.from("profiles").select("approved").eq("id", user.id).maybeSingle();
+      perf.lap("mw_profile");
       if (!prof?.approved) {
         if (path.startsWith("/api/")) {
           return NextResponse.json({ error: "החשבון ממתין לאישור" }, { status: 403 });
@@ -84,5 +95,11 @@ export async function updateSession(request: NextRequest) {
     }
   }
 
+  if (perf.on) {
+    // one Server-Timing header per hop: the route handler adds its own, and
+    // the browser shows both (the names here carry the mw_ prefix)
+    const pid = /^\/api\/entity\/production\/([0-9a-f-]{36})/.exec(perfPath)?.[1] ?? null;
+    response.headers.append("Server-Timing", perf.done({ production_id: pid }));
+  }
   return response;
 }

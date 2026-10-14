@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { PERF_OFF, perfTimer } from "@/lib/perf/timing";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getSessionAndProfile } from "@/lib/profile";
@@ -74,7 +75,10 @@ async function handleGet(
 ) {
   const type = parseType(params.type);
   if (!type) return NextResponse.json({ error: "סוג ישות לא מוכר" }, { status: 400 });
-  const { user, profile } = await getSessionAndProfile();
+  // T35: only the production drawer is timed (PERF_TIMING=true); every other
+  // entity type gets the no-op timer
+  const perf = type === "production" ? perfTimer("/api/entity/production/[id]") : PERF_OFF;
+  const { user, profile } = await getSessionAndProfile(perf);
   if (!user || !profile?.approved) return NextResponse.json({ error: "לא מחובר" }, { status: 401 });
 
   const supabase = createClient();
@@ -88,6 +92,7 @@ async function handleGet(
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
   if (!entity) return NextResponse.json({ error: "לא נמצא או שאין הרשאה" }, { status: 404 });
 
+  perf.lap("entity");
   // field metadata the drawer renders from — only fields this viewer may see
   const fields = config.fields
     .filter((f) => canViewField(profile, f.view))
@@ -107,6 +112,7 @@ async function handleGet(
     needsShows ? supabase.from("shows").select("id,name").order("name") : Promise.resolve({ data: null }),
   ]);
 
+  perf.lap("options_clients_shows");
   // type-specific extras
   let stages: unknown[] | null = null;
   let linked: unknown[] | null = null;
@@ -180,6 +186,7 @@ async function handleGet(
     // the hourly pair. Through the user's own client: both columns are granted
     // to `authenticated` by 0067, so a viewer who may not see them simply reads
     // nothing — the same gate as every other select on this route.
+    perf.lap("stages_reels");
     const { data: hoursRow } = await supabase
       .from("productions")
       .select("studio_hours,show_id")
@@ -204,6 +211,7 @@ async function handleGet(
     // no user policies, and can_view_stages above is the real gate. Empty for
     // a production the items model hasn't reached yet (seeded at link mint).
     const itemsAdmin = createAdminClient();
+    perf.lap("hours");
     const { data: itemRows } = await itemsAdmin
       .from("client_review_items")
       .select("id,kind,reel_index,media_link,approved,last_note")
@@ -226,6 +234,7 @@ async function handleGet(
     // can_view_stages(), the same gate this block already sits behind.
     // Supersession is scope-aware since the B1 fix, so an episode link and a
     // reels link can BOTH be live — this is a list, not a single row.
+    perf.lap("review_items");
     const { data: linkRows } = await supabase
       .from("client_review_links")
       .select("id,token,scope,created_at,expires_at,superseded,responded_at,audio_link,audio_carried_from")
@@ -321,6 +330,7 @@ async function handleGet(
   // names aren't sensitive, and the log rows themselves were already permitted.
   let log: unknown[] | null = null;
   let diskOptions: string[] | null = null;
+  perf.lap("review_links_transcripts");
   if (type === "production" && (profile.can_view_stages || profile.can_view_money)) {
     const [{ data: logRows }, { data: diskRows }] = await Promise.all([
       supabase
@@ -351,6 +361,7 @@ async function handleGet(
       new Set((diskRows ?? []).map((d) => (d.storage_disk as string)).filter(Boolean))
     ).sort();
   }
+  perf.lap("log_disk_authors");
   if (type === "production" && profile.can_view_money) {
     const { data: links } = await supabase
       .from("job_productions")
@@ -382,6 +393,7 @@ async function handleGet(
   // are skipped entirely for every per-episode production, which is almost all
   // of them.
   let quotaOver: { included: number; contract_name: string | null } | null = null;
+  perf.lap("linked_jobs");
   if (type === "production" && profile.can_view_money) {
     const admin = createAdminClient();
     const { data: prodRow } = await admin
@@ -414,6 +426,7 @@ async function handleGet(
     }
   }
 
+  perf.lap("contract_quota");
   if (type === "job" && profile.can_view_money) {
     const { data: links } = await supabase
       .from("job_productions")
@@ -468,6 +481,7 @@ async function handleGet(
     });
   }
 
+  perf.lap("other_types");
   // change history — events RLS is owner-only; mirror that here
   let history: unknown[] | null = null;
   if (profile.role === "owner") {
@@ -494,7 +508,8 @@ async function handleGet(
     }));
   }
 
-  return NextResponse.json({
+  perf.lap("history");
+  const res = NextResponse.json({
     type,
     icon: config.icon,
     label: config.label,
@@ -528,6 +543,9 @@ async function handleGet(
     log,
     diskOptions,
   });
+  perf.lap("build_response");
+  if (perf.on) res.headers.set("Server-Timing", perf.done({ production_id: params.id }));
+  return res;
 }
 
 export async function POST(

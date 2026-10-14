@@ -6,6 +6,7 @@ import AppHeader from "@/components/AppHeader";
 import ProductionsClient, { type BoardProduction } from "./ProductionsClient";
 import { hoursMissing } from "@/lib/productions/hours";
 import { ACTIVE_CLIENT } from "@/lib/clients/status";
+import { perfTimer } from "@/lib/perf/timing";
 import { isStudioAdmin } from "@/lib/clients/access";
 import { createTypedAdminClient } from "@/lib/supabase/admin";
 import { loadArchiveFacts } from "@/lib/productions/archiveFacts";
@@ -140,7 +141,10 @@ async function fetchLogCounts(supabase: ReturnType<typeof createClient>) {
 }
 
 export default async function ProductionsPage() {
-  const { user, profile } = await getSessionAndProfile();
+  // T35: PERF_TIMING=true writes one JSON line per render (a server component
+  // cannot set a Server-Timing header — the middleware's covers the hop before)
+  const perf = perfTimer("/productions");
+  const { user, profile } = await getSessionAndProfile(perf);
   if (!user) redirect("/login");
   if (!profile?.approved) redirect("/pending");
   if (!profile.can_view_stages) redirect("/");
@@ -175,19 +179,20 @@ export default async function ProductionsPage() {
   const admin = createAdminClient();
   const [allProds, { data: shows }, stageRollup, logCounts, { data: profilesRows }, clientsRes] =
     await Promise.all([
-      fetchProductions(supabase, prodSelect),
+      perf.time("q_productions", fetchProductions(supabase, prodSelect)),
       // pricing_model rides along for the missing-hours flag (F6). It is a
       // classification, granted to `authenticated` by 0067 precisely so a
       // stages-only viewer can be told the show is hourly; hourly_rate is not
       // granted and is not read anywhere on this screen.
-      supabase.from("shows").select("id,name,color,active,pricing_model"),
-      fetchStageRollup(supabase),
-      fetchLogCounts(supabase),
-      admin.from("profiles").select("id,name,email"),
+      perf.time("q_shows", supabase.from("shows").select("id,name,color,active,pricing_model")),
+      perf.time("q_stage_rollup", fetchStageRollup(supabase)),
+      perf.time("q_log_counts", fetchLogCounts(supabase)),
+      perf.time("q_profiles", admin.from("profiles").select("id,name,email")),
       canViewMoney
-        ? supabase.from("clients").select("id,name").eq("status", ACTIVE_CLIENT)
+        ? perf.time("q_clients", supabase.from("clients").select("id,name").eq("status", ACTIVE_CLIENT))
         : Promise.resolve({ data: [] as { id: string; name: string }[] }),
     ]);
+  perf.lap("wave_main");
   const prods = allProds.filter((p) => !p.merged_into);
 
   // productions absorbed into a survivor (calendar-duplicate merge, or an
@@ -246,6 +251,7 @@ export default async function ProductionsPage() {
     const ids = prods.filter((p) => p.status === BOARD_ARCHIVE_STATUS).map((p) => p.id);
     const facts = await loadArchiveFacts(createTypedAdminClient(), ids);
     for (const [id, f] of Array.from(facts)) archiveById.set(id, archiveEligibility(f));
+    perf.lap("archive_eligibility");
   }
 
   const nameById = new Map((profilesRows ?? []).map((p) => [p.id, p.name || p.email || "—"]));
@@ -296,6 +302,9 @@ export default async function ProductionsPage() {
       }),
     };
   });
+
+  perf.lap("build_board");
+  perf.done();
 
   return (
     <div className="min-h-screen">

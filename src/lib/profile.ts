@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { PERF_OFF, type PerfTimer } from "@/lib/perf/timing";
 
 export type Profile = {
   id: string;
@@ -16,11 +17,13 @@ export type Profile = {
   studio_admin: boolean;
 };
 
-export async function getSessionAndProfile() {
+/** `perf` (T35): optional — laps getUser and the profile read when timing is on. */
+export async function getSessionAndProfile(perf: PerfTimer = PERF_OFF) {
   const supabase = createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
+  perf.lap("getUser");
 
   if (!user) return { user: null, profile: null };
 
@@ -31,6 +34,7 @@ export async function getSessionAndProfile() {
     )
     .eq("id", user.id)
     .single();
+  perf.lap("profile");
 
   return { user, profile: profile as Profile | null };
 }
