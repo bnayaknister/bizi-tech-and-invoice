@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import { DOC_TYPE_LABEL } from "@/lib/documents/forProduction";
 import type { ArchiveFacts, ArchiveJob, ArchiveTarget } from "./archiveEligibility";
+import { PERF_OFF, type PerfTimer } from "@/lib/perf/timing";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Q10 — load the facts archiveEligibility needs, for a set of productions.
@@ -46,7 +47,9 @@ type JobRow = { id: string; paid: string | null; invoice_biz: string | null; inv
 
 export async function loadArchiveFacts(
   admin: SupabaseClient<Database>,
-  productionIds: string[]
+  productionIds: string[],
+  /** T37: one lap per sequential wave below (af_1 … af_5) when timing is on */
+  perf: PerfTimer = PERF_OFF
 ): Promise<Map<string, ArchiveFacts>> {
   const out = new Map<string, ArchiveFacts>();
   if (productionIds.length === 0) return out;
@@ -54,6 +57,7 @@ export async function loadArchiveFacts(
   const prods = await inChunks(productionIds, (part) =>
     admin.from("productions").select("id,status,kind,show_id").in("id", part)
   );
+  perf.lap("af_1_productions");
   const showIds = prods.map((p) => p.show_id).filter((x): x is string => !!x);
   const [shows, links, queueRows] = await Promise.all([
     inChunks(showIds, (part) => admin.from("shows").select("id,client_id,billing_mode").in("id", part)),
@@ -63,6 +67,7 @@ export async function loadArchiveFacts(
     ),
   ]);
 
+  perf.lap("af_2_shows_links_queue");
   const jobIdsOf = new Map<string, string[]>();
   for (const l of links) jobIdsOf.set(l.production_id, [...(jobIdsOf.get(l.production_id) ?? []), l.job_id]);
   const ownJobIds = links.map((l) => l.job_id);
@@ -91,6 +96,7 @@ export async function loadArchiveFacts(
     ),
   ]);
 
+  perf.lap("af_3_targets_bundles");
   // sibling productions folded into the same target contribute their jobs
   const siblingProds = children.map((c) => c.production_id).filter((x): x is string => !!x && !jobIdsOf.has(x));
   const siblingLinks = await inChunks(siblingProds, (part) =>
@@ -98,6 +104,7 @@ export async function loadArchiveFacts(
   );
   for (const l of siblingLinks) jobIdsOf.set(l.production_id, [...(jobIdsOf.get(l.production_id) ?? []), l.job_id]);
 
+  perf.lap("af_4_sibling_links");
   const targetJobIds = new Map<string, Set<string>>();
   const liveTargets = new Map(targetRows.filter((t) => !DEAD_QUEUE.has(t.status)).map((t) => [t.id, t]));
   for (const t of Array.from(liveTargets.values())) targetJobIds.set(t.id, new Set(t.bundle_job_ids ?? []));
@@ -123,6 +130,7 @@ export async function loadArchiveFacts(
   const jobRows = await inChunks(Array.from(allJobIds), (part) =>
     admin.from("jobs").select("id,paid,invoice_biz,invoice_tax,dismissed").in("id", part)
   );
+  perf.lap("af_5_jobs");
   const jobById = new Map<string, ArchiveJob>((jobRows as JobRow[]).map((j) => [j.id, j]));
   const jobsFor = (ids: Iterable<string>) => Array.from(ids).map((id) => jobById.get(id)).filter((j): j is ArchiveJob => !!j);
 

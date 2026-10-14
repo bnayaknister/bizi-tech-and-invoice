@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
-import { archiveEligibility, BOARD_ARCHIVE_STATUS } from "./archiveEligibility";
+import { archiveEligibility, BOARD_ARCHIVE_STATUS, type ArchiveEligibility } from "./archiveEligibility";
+import { PERF_OFF, type PerfTimer } from "@/lib/perf/timing";
 import { loadArchiveFacts } from "./archiveFacts";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -199,4 +200,49 @@ export async function handleBoardArchive(
     return { status: 200, json: r };
   }
   return { status: 400, json: { error: "פעולה לא מוכרת" } };
+}
+
+// ─── T37: the board's eligibility, off the kanban's critical path ──────────
+//
+// Measured 14.10 (T35): the kanban page spent 660–670ms in
+// archive_eligibility AFTER its main wave — five sequential waves inside
+// loadArchiveFacts, ~100–170ms each on the service-role hop. That is the
+// whole of the page's tail for studio_admin. The page no longer computes it:
+// the board renders at once and asks this, separately, when the kanban tab is
+// on screen; the archive buttons appear when it answers.
+//
+// SAME RULE, SAME FACTS: archiveEligibility over loadArchiveFacts, for the
+// same population the page used (status הופץ, not merged away). And the
+// archive itself still re-checks at the moment of execution (archiveOnBoard).
+
+export async function boardEligibility(
+  admin: SupabaseClient<Database>,
+  perf: PerfTimer = PERF_OFF
+): Promise<Record<string, ArchiveEligibility>> {
+  const { data, error } = await admin
+    .from("productions")
+    .select("id")
+    .eq("status", BOARD_ARCHIVE_STATUS)
+    .is("merged_into", null);
+  if (error) throw error;
+  perf.lap("hofatz_ids");
+  const ids = (data ?? []).map((r) => r.id);
+  const facts = await loadArchiveFacts(admin, ids, perf);
+  const out: Record<string, ArchiveEligibility> = {};
+  for (const [id, f] of Array.from(facts)) out[id] = archiveEligibility(f);
+  perf.lap("eligibility");
+  return out;
+}
+
+export async function handleBoardEligibility(
+  req: Pick<BoardArchiveRequest, "userId" | "profile">,
+  deps: { admin: SupabaseClient<Database>; perf?: PerfTimer }
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  if (!req.userId) return { status: 401, json: { error: "לא מחובר" } };
+  // studio_admin only, like the buttons it feeds — and it reads money (jobs,
+  // documents), so nobody else's browser receives it
+  if (!req.profile?.approved || !req.profile.studio_admin) {
+    return { status: 403, json: { error: BOARD_ARCHIVE_FORBIDDEN } };
+  }
+  return { status: 200, json: { eligibility: await boardEligibility(deps.admin, deps.perf) } };
 }

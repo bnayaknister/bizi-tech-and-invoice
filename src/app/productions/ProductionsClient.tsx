@@ -105,6 +105,33 @@ export default function ProductionsClient({
   const [showArchived, setShowArchived] = useState(false); // Q10: archived "הופץ" cards stay hidden by default (owner 13.10)
   const [bulkFor, setBulkFor] = useState<BoardProduction[] | null>(null);
   const [archiveNote, setArchiveNote] = useState<string | null>(null);
+  // T37: Q10 eligibility arrives AFTER the board renders (it used to hold the
+  // whole page for 660ms). null = not loaded yet: the archive buttons are
+  // simply absent until it lands. Refetched whenever the set of "הופץ" cards
+  // changes (a drag in or out, an archive, a router.refresh()).
+  const [eligibility, setEligibility] = useState<Record<string, { eligible: boolean; reason: string | null }> | null>(null);
+  const hofatzKey = useMemo(
+    () =>
+      rows
+        .filter((p) => p.status === "הופץ")
+        .map((p) => p.id)
+        .sort()
+        .join(","),
+    [rows]
+  );
+  useEffect(() => {
+    if (!canBoardArchive || tab !== "kanban") return;
+    let alive = true;
+    fetch("/api/productions/board-archive/eligibility")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (alive && d?.eligibility) setEligibility(d.eligibility);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [canBoardArchive, tab, hofatzKey]);
 
   // T35 (NEXT_PUBLIC_PERF_TIMING): click → screen painted, and tab click →
   // tab painted. No-ops when the flag is off.
@@ -365,10 +392,10 @@ export default function ProductionsClient({
   // Q10: the ONLY place an archived production is filtered (owner 13.10 —
   // never the sync, search, radar or any status / money consumer). A search
   // term reveals them, the same way it reveals cancelled productions.
-  const onBoard = useMemo(
-    () => (showArchived || query.trim() ? filtered : filtered.filter((p) => !p.board_archived_at)),
-    [filtered, showArchived, query]
-  );
+  const onBoard = useMemo(() => {
+    const visible = showArchived || query.trim() ? filtered : filtered.filter((p) => !p.board_archived_at);
+    return eligibility ? visible.map((p) => ({ ...p, archive: eligibility[p.id] ?? null })) : visible;
+  }, [filtered, showArchived, query, eligibility]);
 
   return (
     <div className="max-w-[1400px] mx-auto p-6">

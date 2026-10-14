@@ -20,7 +20,8 @@ import {
   type ArchiveJob,
 } from "../src/lib/productions/archiveEligibility";
 import { loadArchiveFacts } from "../src/lib/productions/archiveFacts";
-import { handleBoardArchive, BOARD_ARCHIVE_FORBIDDEN } from "../src/lib/productions/boardArchive";
+import { handleBoardArchive, handleBoardEligibility, boardEligibility, BOARD_ARCHIVE_FORBIDDEN } from "../src/lib/productions/boardArchive";
+import { perfTimer } from "../src/lib/perf/timing";
 
 global.fetch = (async (url: string) => {
   throw new Error("F19: this suite must not perform any fetch: " + url);
@@ -245,6 +246,41 @@ async function main() {
       return [p.bulk, typeof p.batch_id, p.batch_size, p.skipped_in_batch];
     }), [[true, "string", 1, 2]]);
   }
+
+  section("7b. T37 — eligibility off the critical path: the same answers, through the new route");
+  {
+    const { client, store } = world();
+    // a merged-away הופץ row: the page never showed it, and neither does this
+    store.productions.push({ id: "p-merged", status: HOFATZ, kind: "client", show_id: "s1", merged_into: "p-closed", board_archived_at: null, board_archived_by: null });
+    const hofatz = store.productions.filter((p) => p.status === HOFATZ && !p.merged_into).map((p) => p.id as string);
+    const direct = await loadArchiveFacts(client as never, hofatz);
+    const want = Object.fromEntries(hofatz.map((id) => [id, archiveEligibility(direct.get(id)!)]));
+    const got = await boardEligibility(client as never);
+    check("every הופץ production: identical eligibility + reason to the direct Q10 computation", got, want);
+    check("…covering all the Q10 cases in the world (closed, open, bundle, consolidated, internal, no job, contract)", Object.keys(got).sort(), [
+      "p-bundle", "p-bundle-sib", "p-closed", "p-cons", "p-cons-sib", "p-contract", "p-internal", "p-nojob", "p-open",
+    ]);
+    check("the merged-away row is not in it", "p-merged" in got, false);
+    check("a production not in הופץ is not in it", "p-edit" in got, false);
+
+    const r0 = await handleBoardEligibility({ userId: null, profile: null }, { admin: client as never });
+    const r1 = await handleBoardEligibility({ userId: "u-tech", profile: { approved: true, studio_admin: false } }, { admin: client as never });
+    const r2 = await handleBoardEligibility({ userId: "u-bnaya", profile: ADMIN }, { admin: client as never });
+    check("route: 401 / 403 / 200", [r0.status, r1.status, r2.status], [401, 403, 200]);
+    check("route: the 403 carries the same sentence as the archive route", r1.json.error, BOARD_ARCHIVE_FORBIDDEN);
+    check("route: studio_admin gets exactly boardEligibility", r2.json.eligibility, want);
+
+    // T37 ג — the waves inside loadArchiveFacts are timed
+    const lines: string[] = [];
+    const perf = perfTimer("t", { force: true, log: (l) => lines.push(l) });
+    await boardEligibility(client as never, perf);
+    perf.done();
+    check("timing: one lap per wave inside loadArchiveFacts", JSON.parse(lines[0]).steps.map((s: { name: string }) => s.name), [
+      "hofatz_ids", "af_1_productions", "af_2_shows_links_queue", "af_3_targets_bundles", "af_4_sibling_links", "af_5_jobs", "eligibility",
+    ]);
+  }
+  const page = readFileSync(join(__dirname, "../src/app/productions/page.tsx"), "utf8");
+  check("the kanban page no longer computes eligibility (no loadArchiveFacts on the critical path)", /loadArchiveFacts|archiveEligibility\(/.test(page), false);
 
   section("8. boundaries — nothing outside the board filters an archived production");
   const root = join(__dirname, "..");

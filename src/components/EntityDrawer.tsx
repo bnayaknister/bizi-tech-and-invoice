@@ -125,6 +125,8 @@ type DrawerData = {
   // reels), so pressing send may burn one, both, or none.
   // audio_link + transcript METADATA ride along (0076); the transcript's text
   // never does — it is fetched by "הצג" from the route that owns it
+  /** T36: the live-links block timed out or failed on the server */
+  reviewLinksIncomplete?: boolean;
   reviewLinks:
     | {
         id: string;
@@ -1996,7 +1998,12 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           scope='all' link in every block. The per-scope
                           overwrite warning stays on each button, where it is
                           genuinely different per track. */}
-                      {data.canEditStages && <LiveLinksBox links={allLive} />}
+                      {data.canEditStages && data.reviewLinksIncomplete && (
+                        <div className="text-[11px] text-[var(--amber)] border border-[var(--rule)] rounded-lg px-3 py-1.5">
+                          ⚠ הקישורים הפעילים לא נטענו (השרת לא ענה בזמן). רעננו את המגירה כדי לראות אותם.
+                        </div>
+                      )}
+                      {data.canEditStages && !data.reviewLinksIncomplete && <LiveLinksBox links={allLive} />}
                       {/* the round the client already answered — its notes, and
                           the "קיבלתי, מטפל" step that closes the loop. Above the
                           track blocks: what the client said comes before what is
