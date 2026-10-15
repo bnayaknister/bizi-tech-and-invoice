@@ -48,8 +48,7 @@ import { Upload } from "tus-js-client";
 import { createVideo, getVideo, tusUploadAuthorization, uploadVideo, type TusAuthorization } from "../src/lib/bunny/client";
 import {
   CDN_CHECKS,
-  RETRIES,
-  isRetryable,
+  stepFailure,
   loadEnvFile,
   removeVideo,
   runCdnChecks,
@@ -297,7 +296,8 @@ async function runOne(label: string, path: string, flags: Flags): Promise<void> 
     await runCdnChecks(label, guid, record);
   } catch (e) {
     // no answer even after the retries → no verdict on this step
-    record(label, step, isRetryable(e) ? "לא נבדק" : "נכשל", `${isRetryable(e) ? `אין תשובה אחרי ${RETRIES} ניסיונות חוזרים: ` : ""}${describeError(e)}`);
+    const f = stepFailure(e);
+    record(label, step, f.result, f.detail);
     stoppedAt = step;
   } finally {
     // every planned check that never ran is "not checked" — never "failed"

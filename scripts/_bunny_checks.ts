@@ -50,12 +50,34 @@ const backoffMs = (attempt: number) => backoffBaseMs() * 2 ** attempt; // 2s, 4s
 export const isRetryable = (e: unknown) =>
   e instanceof BunnyNetworkError || (e instanceof BunnyError && e.status >= 500);
 
+/**
+ * Thrown by withRetry ONLY when it really retried RETRIES times and still got
+ * no answer. A failure that was never retried (a 4xx, or a call that must not
+ * be retried, like Fetch Video) surfaces as itself — so a report can never say
+ * "after 5 retries" about a request that was sent once (owner 15.10).
+ */
+export class RetriesExhausted extends Error {
+  constructor(what: string, readonly attempts: number, readonly last: unknown) {
+    super(`${what}: אין תשובה אחרי ${attempts - 1} ניסיונות חוזרים`, { cause: last });
+    this.name = "RetriesExhausted";
+  }
+}
+
+/** How a step that threw is reported: no answer after real retries → "לא נבדק"; anything else → "נכשל". */
+export function stepFailure(e: unknown): { result: Result; detail: string } {
+  if (e instanceof RetriesExhausted) {
+    return { result: "לא נבדק", detail: `אין תשובה אחרי ${e.attempts - 1} ניסיונות חוזרים: ${describeError(e.last)}` };
+  }
+  return { result: "נכשל", detail: describeError(e) };
+}
+
 export async function withRetry<T>(what: string, fn: () => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await fn();
     } catch (e) {
-      if (!isRetryable(e) || attempt >= RETRIES) throw e;
+      if (!isRetryable(e)) throw e;
+      if (attempt >= RETRIES) throw new RetriesExhausted(what, attempt + 1, e);
       const wait = backoffMs(attempt);
       console.log(`     🔁 ${what}: ניסיון חוזר ${attempt + 1}/${RETRIES} בעוד ${wait}ms — ${describeError(e)}`);
       await new Promise((r) => setTimeout(r, wait));

@@ -40,7 +40,7 @@ const section = (t: string) => console.log(`\n── ${t}`);
 // ── the fetch recorder ─────────────────────────────────────────────────────
 type Rec = { method: string; url: string; headers: Record<string, string>; body: unknown };
 let calls: Rec[] = [];
-let answers: Array<{ status: number; body?: unknown }> = [];
+let answers: Array<{ status: number; body?: unknown; headers?: Record<string, string> }> = [];
 global.fetch = (async (url: string, init: RequestInit = {}) => {
   calls.push({
     method: init.method ?? "GET",
@@ -50,7 +50,7 @@ global.fetch = (async (url: string, init: RequestInit = {}) => {
   });
   const a = answers.shift();
   if (!a) throw new Error(`F19: unexpected fetch ${init.method} ${url}`);
-  return new Response(a.body === undefined ? "" : JSON.stringify(a.body), { status: a.status });
+  return new Response(a.body === undefined ? "" : JSON.stringify(a.body), { status: a.status, headers: a.headers });
 }) as unknown as typeof fetch;
 
 // capture console.log to see the dry-run lines
@@ -394,6 +394,24 @@ async function main() {
       check(`fetch ${st} (${body.message}): BunnyError carrying Bunny's message`, [e instanceof BunnyError, (e as Error).message.includes(body.message)], [true, true]);
     }
   }
+  calls = [];
+  answers = [
+    { status: 503, body: { success: false, message: "Service Unavailable", statusCode: 503 }, headers: { "x-request-id": "r-1", server: "BunnyCDN", "x-secret-token": "LEAK", "content-type": "application/json" } },
+    { status: 200, body: { success: true } },
+  ];
+  try {
+    await fetchVideoFromUrl("https://example.test/v.mp4", {}, "t");
+    check("fetch 503 throws", "no throw", "throw");
+  } catch (e) {
+    check("fetch 503: ONE request, never retried (the 2nd answer is left unused)", [calls.length, answers.length], [1, 1]);
+    const be = e as BunnyError;
+    check("BunnyError keeps diagnostic headers only", be.headers, { "content-type": "application/json", server: "BunnyCDN", "x-request-id": "r-1" });
+    const d = describeError(e);
+    ok("describeError prints status, the whole body and the safe headers — never the secret-like one",
+      d.includes("status=503") && d.includes('"message":"Service Unavailable"') && d.includes("x-request-id") && !d.includes("LEAK"));
+  }
+  answers = [];
+
   calls = [];
   answers = [{ status: 200, body: { totalItems: 1, items: [{ guid: GUID, title: "E13 drive-fetch abc — x", status: 1 }] } }];
   const found = await findVideosByTitle("abc def");

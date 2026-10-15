@@ -38,12 +38,28 @@ const TIMEOUT_MS = 15_000;
 export class BunnyError extends Error {
   status: number;
   body: unknown;
-  constructor(message: string, status: number, body: unknown) {
+  /** The response headers that help diagnose a failure — never anything key-like (safeHeaders). */
+  headers: Record<string, string>;
+  constructor(message: string, status: number, body: unknown, headers: Record<string, string> = {}) {
     super(message);
     this.name = "BunnyError";
     this.status = status;
     this.body = body;
+    this.headers = headers;
   }
+}
+
+// Diagnostic response headers only (owner 15.10: "print the body and the
+// relevant headers, without keys"). An allow-list, so a new header can never
+// slip a secret into a log; and a deny pattern on top of it, belt and braces.
+const DIAG_HEADERS = /^(content-type|content-length|date|server|via|retry-after|cf-ray|x-request-id|x-correlation-id|x-cache|cdn-[a-z-]+|x-bunny-[a-z-]+|stream-server)$/i;
+const SECRET_LIKE = /key|auth|token|cookie|secret|signature/i;
+export function safeHeaders(res: Response): Record<string, string> {
+  const out: Record<string, string> = {};
+  res.headers.forEach((v, k) => {
+    if (DIAG_HEADERS.test(k) && !SECRET_LIKE.test(k)) out[k] = v;
+  });
+  return out;
 }
 
 /**
@@ -113,9 +129,9 @@ export async function createVideo(title: string): Promise<DryRun | { dryRun: fal
   const res = await write("POST", videoUrl(libraryId), { json: { title: t }, bodySummary: JSON.stringify({ title: t }) }, apiKey);
   if ("dryRun" in res) return res;
   const body = await parse(res);
-  if (!res.ok) throw new BunnyError(`Bunny create נכשל (${res.status})`, res.status, body);
+  if (!res.ok) throw new BunnyError(`Bunny create נכשל (${res.status})`, res.status, body, safeHeaders(res));
   const video = body as BunnyVideo;
-  if (!video || typeof video.guid !== "string") throw new BunnyError("Bunny create: אין guid בתשובה", res.status, body);
+  if (!video || typeof video.guid !== "string") throw new BunnyError("Bunny create: אין guid בתשובה", res.status, body, safeHeaders(res));
   return { dryRun: false, video };
 }
 
@@ -140,7 +156,7 @@ export async function uploadVideo(
   );
   if ("dryRun" in res) return res;
   const body = await parse(res);
-  if (!res.ok) throw new BunnyError(`Bunny upload נכשל (${res.status})`, res.status, body);
+  if (!res.ok) throw new BunnyError(`Bunny upload נכשל (${res.status})`, res.status, body, safeHeaders(res));
   return { dryRun: false };
 }
 
@@ -154,7 +170,7 @@ export async function getVideo(videoId: string): Promise<BunnyVideo | null> {
   });
   if (res.status === 404) return null;
   const body = await parse(res);
-  if (!res.ok) throw new BunnyError(`Bunny get נכשל (${res.status})`, res.status, body);
+  if (!res.ok) throw new BunnyError(`Bunny get נכשל (${res.status})`, res.status, body, safeHeaders(res));
   return body as BunnyVideo;
 }
 
@@ -169,7 +185,7 @@ export async function deleteVideo(videoId: string): Promise<DryRun | { dryRun: f
   if ("dryRun" in res) return res;
   if (res.status === 404) return { dryRun: false, alreadyGone: true };
   const body = await parse(res);
-  if (!res.ok) throw new BunnyError(`Bunny delete נכשל (${res.status})`, res.status, body);
+  if (!res.ok) throw new BunnyError(`Bunny delete נכשל (${res.status})`, res.status, body, safeHeaders(res));
   return { dryRun: false, alreadyGone: false };
 }
 
@@ -183,6 +199,11 @@ export async function deleteVideo(videoId: string): Promise<DryRun | { dryRun: f
  *
  * A write → goes through write() and BUNNY_DRY_RUN. The dry-run log lists the
  * header NAMES only — their values (a bearer token) never reach a log line.
+ *
+ * 🔴 ONE ATTEMPT, NEVER RETRIED (owner 15.10, after a live 503): the call is
+ * not idempotent — every POST may create a video, even one that answers 5xx.
+ * A caller that needs to know what a failed call left behind searches the
+ * library by the title it sent (findVideosByTitle).
  */
 export async function fetchVideoFromUrl(
   sourceUrl: string,
@@ -203,7 +224,7 @@ export async function fetchVideoFromUrl(
   const body = await parse(res);
   const b = body && typeof body === "object" ? (body as { success?: unknown; message?: unknown }) : {};
   if (!res.ok || b.success === false) {
-    throw new BunnyError(`Bunny fetch נכשל (${res.status})${typeof b.message === "string" ? `: ${b.message}` : ""}`, res.status, body);
+    throw new BunnyError(`Bunny fetch נכשל (${res.status})${typeof b.message === "string" ? `: ${b.message}` : ""}`, res.status, body, safeHeaders(res));
   }
   return { dryRun: false, message: typeof b.message === "string" ? b.message : null };
 }
@@ -218,7 +239,7 @@ export async function findVideosByTitle(search: string): Promise<BunnyVideo[]> {
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
   const body = await parse(res);
-  if (!res.ok) throw new BunnyError(`Bunny list נכשל (${res.status})`, res.status, body);
+  if (!res.ok) throw new BunnyError(`Bunny list נכשל (${res.status})`, res.status, body, safeHeaders(res));
   const items = body && typeof body === "object" ? (body as { items?: unknown }).items : null;
   return Array.isArray(items) ? (items as BunnyVideo[]) : [];
 }

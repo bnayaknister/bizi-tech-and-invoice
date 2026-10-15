@@ -48,6 +48,7 @@ process.env.E13_DRIVE_FETCH_POLL_MS = "1";
 process.env.E13_DRIVE_FETCH_PRINT_MS = "0";
 process.env.E13_DRIVE_FETCH_FIND_MAX_MS = "200";
 process.env.E13_BACKOFF_MS = "1";
+process.env.E13_DRIVE_FETCH_SWEEP_MS = "30";
 
 // ── the fakes ───────────────────────────────────────────────────────────────
 type Scenario = {
@@ -55,6 +56,7 @@ type Scenario = {
   statuses: number[]; // successive status reads of the fetched video; the last one repeats
   originalHash: string | null;
   flakyStatusReads: number; // the first N status reads die with a connect timeout
+  fetchMode: "ok" | "503-creates" | "503-nothing";
 };
 let sc: Scenario;
 let calls: string[] = [];
@@ -94,8 +96,16 @@ global.fetch = (async (input: string, init: RequestInit = {}) => {
   if (m) {
     if (m[1] === "/fetch" && method === "POST") {
       fetchBody = JSON.parse(String(init.body));
-      const g = `00000000-0000-4000-8000-${String(++seq).padStart(12, "0")}`;
-      videos.set(g, { title: fetchBody!.title!, reads: 0 });
+      if (sc.fetchMode !== "503-nothing") {
+        const g = `00000000-0000-4000-8000-${String(++seq).padStart(12, "0")}`;
+        videos.set(g, { title: fetchBody!.title!, reads: 0 });
+      }
+      if (sc.fetchMode !== "ok") {
+        return new Response(JSON.stringify({ success: false, message: "Service temporarily unavailable", statusCode: 503 }), {
+          status: 503,
+          headers: { "content-type": "application/json", "x-request-id": "req-503-abc", server: "BunnyCDN-DE1-123", "x-api-key-echo": "LEAKED-KEY-VALUE", "retry-after": "30" },
+        });
+      }
       return json(200, { success: true, message: null, statusCode: 200 });
     }
     if (!m[1] && method === "GET") {
@@ -127,6 +137,9 @@ global.fetch = (async (input: string, init: RequestInit = {}) => {
       });
     }
   }
+  if (url === PUBLIC_URL && method === "HEAD") {
+    return new Response(null, { status: 200, headers: { "content-type": "video/mp4", "content-length": "4372373" } });
+  }
   const cdn = /^https:\/\/vz-fake\.b-cdn\.net\/(.*)$/.exec(url);
   if (cdn) {
     const rest = cdn[1];
@@ -153,7 +166,7 @@ async function capture<T>(fn: () => Promise<T>): Promise<{ value: T; out: string
 }
 
 const reset = (s: Partial<Scenario> = {}) => {
-  sc = { drive: "ok", statuses: [0, 0, 1, 2, 3, 4], originalHash: SHA_B64, flakyStatusReads: 0, ...s };
+  sc = { drive: "ok", statuses: [0, 0, 1, 2, 3, 4], originalHash: SHA_B64, flakyStatusReads: 0, fetchMode: "ok", ...s };
   calls = [];
   jwtClaims = null;
   jwtValid = false;
@@ -163,6 +176,7 @@ const reset = (s: Partial<Scenario> = {}) => {
 };
 const bunnyCalls = () => calls.filter((c) => c.includes("bunnycdn.com") || c.includes("mediadelivery.net"));
 const URL_ARG = `https://drive.google.com/file/d/${FILE_ID}/view?usp=drive_link`;
+const PUBLIC_URL = "https://media.w3.org/2010/05/sintel/trailer.mp4";
 
 async function main() {
   const { main: run } = await import("./e13_drive_fetch_test");
@@ -277,6 +291,68 @@ async function main() {
   const keep = await capture(() => run(["--drive-file-id", FILE_ID, "--live", "--keep"]));
   check("zero DELETE", calls.filter((c) => c.startsWith("DELETE")).length, 0);
   ok("delete row = דילוג with the guid", row(keep.value.rows, "מחיקה")?.result === "דילוג" && !!keep.value.metrics.guid && keep.out.includes(keep.value.metrics.guid));
+
+
+  section("503 from Fetch Video: ONE POST, full body + safe headers, the video it left behind found and deleted");
+  reset({ fetchMode: "503-creates" });
+  process.env.BUNNY_DRY_RUN = "false";
+  const f503 = await capture(() => run(["--drive-url", URL_ARG, "--live"]));
+  const fr = row(f503.value.rows, "בקשת משיכה ל-Bunny");
+  check("exactly one POST to /videos/fetch", calls.filter((c) => c === "POST https://video.bunnycdn.com/library/111/videos/fetch").length, 1);
+  check("fetch row = נכשל", fr?.result, "נכשל");
+  ok("detail: one attempt, status, Bunny's whole body, diagnostic headers", !!fr &&
+    fr.detail.includes("ניסיון אחד בלבד") && fr.detail.includes("status=503") &&
+    fr.detail.includes("Service temporarily unavailable") && fr.detail.includes("req-503-abc") && fr.detail.includes("retry-after"));
+  ok("a key-like response header is never printed", !f503.out.includes("LEAKED-KEY-VALUE") && !f503.out.includes("x-api-key-echo"));
+  ok("no false \"after 5 retries\" anywhere", !/אחרי \d+ ניסיונות חוזרים/.test(f503.out));
+  const sweep = row(f503.value.rows, "וידאו שנוצרו בניסיון");
+  check("sweep found the 1 video the failed attempt created", [sweep?.result, sweep?.detail.startsWith("1 נמצאו")], ["עבר", true]);
+  check("…and deleted it", deleted.size, 1);
+  ok("the token appears nowhere in the output", !f503.out.includes(TOKEN));
+  ok("summary printed", f503.out.includes("═══ סיכום ═══"));
+
+  section("503 that created nothing → sweep reports 0, nothing deleted");
+  reset({ fetchMode: "503-nothing" });
+  const n503 = await capture(() => run(["--drive-url", URL_ARG, "--live"]));
+  check("one POST, sweep 0, no DELETE", [calls.filter((c) => c.endsWith("/videos/fetch")).length, row(n503.value.rows, "וידאו שנוצרו בניסיון")?.detail.startsWith("0"), calls.filter((c) => c.startsWith("DELETE")).length], [1, true, 0]);
+
+  section("503 + --keep → reported, not deleted");
+  reset({ fetchMode: "503-creates" });
+  const k503 = await capture(() => run(["--drive-url", URL_ARG, "--live", "--keep"]));
+  check("sweep row = דילוג with the guid, zero DELETE", [row(k503.value.rows, "וידאו שנוצרו בניסיון")?.result, calls.filter((c) => c.startsWith("DELETE")).length], ["דילוג", 0]);
+
+  section("--fetch-public-url: no Google, no headers, HEAD for size, hash skipped");
+  writeFileSync(envPath, KEYS.replace(/GOOGLE_SERVICE_ACCOUNT_JSON=.*\n/, "") + "BUNNY_DRY_RUN=false\n");
+  const savedSa = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  delete process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  reset();
+  const pub = await capture(() => run(["--fetch-public-url", PUBLIC_URL, "--live"]));
+  check("no failed / not-checked row", pub.value.rows.filter((r) => r.result === "נכשל" || r.result === "לא נבדק").map((r) => `${r.check}: ${r.detail}`), []);
+  check("zero Google requests", calls.filter((c) => c.includes("googleapis.com")).length, 0);
+  check("Bunny fetched the public URL with NO headers", [fetchBody?.url, fetchBody?.headers], [PUBLIC_URL, {}]);
+  ok("title marks url-fetch", !!fetchBody?.title && /^E13 url-fetch [0-9a-f]{8} — trailer\.mp4$/.test(fetchBody.title));
+  check("Google rows + hash = דילוג", ["טוקן Google", "files.get (Drive)", "hash מול Drive"].map((c) => row(pub.value.rows, c)?.result), ["דילוג", "דילוג", "דילוג"]);
+  ok("size from HEAD used for Mbps", pub.value.metrics.sizeBytes === 4372373 && typeof pub.value.metrics.serverMbps === "number");
+  check("deleted at the end", deleted.size, 1);
+
+  section("public dry run: HEAD only, zero Bunny requests");
+  reset();
+  delete process.env.BUNNY_DRY_RUN;
+  const pubDry = await capture(() => run(["--fetch-public-url", PUBLIC_URL]));
+  check("zero Bunny requests; HEAD done", [bunnyCalls().length, calls.includes(`HEAD ${PUBLIC_URL}`)], [0, true]);
+  ok("dry log shows the empty headers", pubDry.out.includes("/videos/fetch") && pubDry.out.includes("trailer.mp4"));
+  process.env.GOOGLE_SERVICE_ACCOUNT_JSON = savedSa;
+  writeFileSync(envPath, KEYS + "BUNNY_DRY_RUN=false\n");
+
+  section("two sources at once → refused");
+  reset();
+  let both = "";
+  try {
+    await capture(() => run(["--fetch-public-url", PUBLIC_URL, "--drive-file-id", FILE_ID]));
+  } catch (e) {
+    both = (e as Error).message;
+  }
+  check("refused, zero requests", [both.includes("מקור אחד"), calls.length], [true, 0]);
 
   rmSync(dir, { recursive: true, force: true });
   console.log(`\n${passed} passed, ${failed} failed`);

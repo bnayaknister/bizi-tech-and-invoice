@@ -19,6 +19,9 @@ type Errish = {
   port?: unknown;
   cause?: unknown;
   causingError?: unknown;
+  status?: unknown;
+  body?: unknown;
+  headers?: unknown;
   originalRequest?: { getMethod?: () => string; getURL?: () => string } | null;
   originalResponse?: { getStatus?: () => number; getBody?: () => string } | null;
 };
@@ -33,6 +36,16 @@ function one(e: Errish): string {
   for (const k of ["code", "errno", "syscall", "address", "port"] as const) {
     const v = e[k];
     if (v !== undefined && v !== null && v !== "") extra.push(`${k}=${String(v)}`);
+  }
+  // BunnyError: the HTTP status, the WHOLE response body and the diagnostic
+  // headers (lib/bunny/client.ts safeHeaders — never key-like ones).
+  if (typeof e.status === "number") extra.push(`status=${e.status}`);
+  if (e.body !== undefined && e.body !== null && e.body !== "") {
+    const b = typeof e.body === "string" ? e.body : JSON.stringify(e.body);
+    extra.push(`body=${b.length > 2000 ? `${b.slice(0, 2000)}…` : b}`);
+  }
+  if (e.headers && typeof e.headers === "object" && Object.keys(e.headers).length) {
+    extra.push(`headers=${JSON.stringify(e.headers)}`);
   }
   const req = e.originalRequest;
   if (req && typeof req.getMethod === "function" && typeof req.getURL === "function") {

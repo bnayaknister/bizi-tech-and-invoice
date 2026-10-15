@@ -11,6 +11,16 @@
  *   … --live --no-wait-encode   stop as soon as Bunny has the whole file
  *   … --live --keep             do not delete at the end; prints the guid
  *   --drive-file-id <id> instead of --drive-url.
+ *   --fetch-public-url <url> instead of a Drive file: Bunny fetches a PUBLIC
+ *     URL with NO headers — does Fetch Video work at all, Drive aside?
+ *     e.g. https://media.w3.org/2010/05/sintel/trailer.mp4 (W3C test media, 4.4MB)
+ *
+ * 🔴 FETCH VIDEO IS SENT ONCE (owner 15.10, after a live 503): the POST is not
+ * idempotent — any attempt may create a video. It is never retried. After a
+ * failure the library is searched for the run id (up to 60s, Bunny may create
+ * it late); what is found is reported and deleted unless --keep.
+ * Every Bunny failure prints Bunny's whole response body and its diagnostic
+ * headers (never key-like ones).
  *
  * ═══ WHAT IT TOUCHES ═══
  *   · Google: one token for the service account ITSELF (no `sub`, scope
@@ -41,12 +51,11 @@ import { describeError } from "../src/lib/bunny/errors";
 import type { BunnyVideo } from "../src/lib/bunny/status";
 import {
   CDN_CHECKS,
-  RETRIES,
   compareHashes,
-  isRetryable,
   loadEnvFile,
   removeVideo,
   runCdnChecks,
+  stepFailure,
   withRetry,
   type Result,
   type Row,
@@ -62,6 +71,7 @@ const T = {
   printEveryMs: () => Number(process.env.E13_DRIVE_FETCH_PRINT_MS ?? 30_000),
   findMaxMs: () => Number(process.env.E13_DRIVE_FETCH_FIND_MAX_MS ?? 5 * 60_000),
   waitMaxMs: () => Number(process.env.E13_DRIVE_FETCH_WAIT_MAX_MS ?? 6 * 60 * 60_000),
+  sweepMs: () => Number(process.env.E13_DRIVE_FETCH_SWEEP_MS ?? 60_000),
 };
 
 const LABEL = "Drive→Bunny";
@@ -119,6 +129,37 @@ async function pollVideo(
   }
 }
 
+/** HEAD on a public URL for its size (best effort; a read, safe in dry run). */
+async function headInfo(url: string): Promise<{ status: number; length: number | null; type: string | null; error?: string }> {
+  try {
+    const res = await fetch(url, { method: "HEAD", redirect: "follow", signal: AbortSignal.timeout(20_000) });
+    const len = Number(res.headers.get("content-length"));
+    return { status: res.status, length: Number.isFinite(len) && len > 0 ? len : null, type: res.headers.get("content-type") };
+  } catch (e) {
+    return { status: -1, length: null, type: null, error: describeError(e) };
+  }
+}
+
+/**
+ * After a FAILED Fetch Video: did the attempt still leave a video behind?
+ * Bunny may create it asynchronously, so the library is searched for the
+ * run id for up to sweepMs. One POST creates at most one video, so the search
+ * stops at the first hit. Returns the guids found (empty = nothing left).
+ */
+async function sweepAfterFailedFetch(runId: string): Promise<{ guids: string[]; error?: string; waitedS: number }> {
+  const start = Date.now();
+  for (;;) {
+    try {
+      const found = (await withRetry("חיפוש וידאו אחרי כשל", () => findVideosByTitle(runId))).filter((v) => v.title?.includes(runId));
+      if (found.length) return { guids: found.map((v) => v.guid), waitedS: Math.round((Date.now() - start) / 1000) };
+    } catch (e) {
+      return { guids: [], error: describeError(e), waitedS: Math.round((Date.now() - start) / 1000) };
+    }
+    if (Date.now() - start >= T.sweepMs()) return { guids: [], waitedS: Math.round((Date.now() - start) / 1000) };
+    await sleep(T.pollMs());
+  }
+}
+
 /** Returns rows + metrics; throws Refused before any request when a guard says no. */
 export async function main(args: string[]): Promise<{ rows: Row[]; metrics: Metrics }> {
   rows = [];
@@ -132,10 +173,19 @@ export async function main(args: string[]): Promise<{ rows: Row[]; metrics: Metr
   const NO_WAIT_ENCODE = args.includes("--no-wait-encode");
   const envFile = loadEnvFile(T.envFile());
 
+  // ── the source: a Drive file, or (--fetch-public-url) any public URL ──────
+  const publicUrl = arg("--fetch-public-url");
   const raw = arg("--drive-file-id") ?? arg("--drive-url");
-  if (!raw) fail("חסר --drive-url <קישור שיתוף> או --drive-file-id <מזהה>");
-  const fileId = extractDriveFileId(raw);
-  if (!fileId) fail(`לא הצלחתי לחלץ מזהה קובץ מ: ${raw}`);
+  if (publicUrl && raw) fail("בחר מקור אחד: --fetch-public-url, או --drive-url / --drive-file-id");
+  if (!publicUrl && !raw) fail("חסר מקור: --drive-url <קישור שיתוף>, --drive-file-id <מזהה>, או --fetch-public-url <כתובת>");
+  let fileId: string | null = null;
+  if (publicUrl) {
+    if (!/^https?:\/\/\S+$/i.test(publicUrl)) fail(`--fetch-public-url חייב להיות כתובת http(s): ${publicUrl}`);
+  } else {
+    fileId = extractDriveFileId(raw!);
+    if (!fileId) fail(`לא הצלחתי לחלץ מזהה קובץ מ: ${raw}`);
+  }
+  const label = publicUrl ? "URL→Bunny" : LABEL;
 
   if (LIVE) {
     if (envFile.BUNNY_DRY_RUN !== "false") fail("--live נדחה: ב-.env.local חייב להופיע BUNNY_DRY_RUN=false");
@@ -143,120 +193,156 @@ export async function main(args: string[]): Promise<{ rows: Row[]; metrics: Metr
   } else {
     process.env.BUNNY_DRY_RUN = "true"; // dry run no matter what the file or shell says
   }
-  const need = ["BUNNY_STREAM_LIBRARY_ID", "BUNNY_STREAM_API_KEY", "BUNNY_STREAM_CDN_HOSTNAME", "BUNNY_CDN_TOKEN_KEY", "GOOGLE_SERVICE_ACCOUNT_JSON"];
+  const need = ["BUNNY_STREAM_LIBRARY_ID", "BUNNY_STREAM_API_KEY", "BUNNY_STREAM_CDN_HOSTNAME", "BUNNY_CDN_TOKEN_KEY", ...(publicUrl ? [] : ["GOOGLE_SERVICE_ACCOUNT_JSON"])];
   const missing = need.filter((k) => !(process.env[k] ?? "").trim());
   if (missing.length) fail(`חסרים ב-.env.local: ${missing.join(", ")}`);
 
-  console.log(LIVE ? "🔴 ריצה אמיתית: Bunny ימשוך את הקובץ מ-Drive" : "🟢 dry-run — קריאה מ-Drive בלבד, שום בקשה כותבת לא יוצאת ל-Bunny");
-  console.log(`   קובץ Drive: ${fileId}`);
+  console.log(LIVE ? `🔴 ריצה אמיתית: Bunny ימשוך את הקובץ ${publicUrl ? "מכתובת ציבורית, בלי כותרות" : "מ-Drive"}` : `🟢 dry-run — ${publicUrl ? "HEAD לכתובת בלבד" : "קריאה מ-Drive בלבד"}, שום בקשה כותבת לא יוצאת ל-Bunny`);
+  console.log(publicUrl ? `   כתובת: ${publicUrl}` : `   קובץ Drive: ${fileId}`);
 
   let guid: string | null = null;
-  let fetchTitle: string | null = null;
-  let step = "טוקן Google";
+  let runId: string | null = null;
+  let fetchSent = false;
+  let extraGuids: string[] = [];
+  let step = publicUrl ? "גודל הקובץ (HEAD)" : "טוקן Google";
   let stoppedAt: string | null = null;
   try {
-    // ── 1. token for the service account itself ────────────────────────────
-    const { token, expiresAt } = await serviceAccountToken(DRIVE_READONLY);
-    record(LABEL, "טוקן Google", "עבר", `${serviceAccountEmail()}, drive.readonly, תקף עד ${new Date(expiresAt * 1000).toLocaleTimeString("he-IL")}`);
+    let sourceUrl: string;
+    let headers: Record<string, string> = {};
+    let sha256: string | null = null;
+    let sizeBytes: number | null;
+    let name: string;
 
-    // ── 2. metadata — stop on 403/404 ──────────────────────────────────────
-    step = "files.get (Drive)";
-    let meta;
-    try {
-      meta = await driveFileMeta(fileId, token);
-    } catch (e) {
-      const hint = e instanceof DriveError && (e.status === 404 || e.status === 403)
-        ? ` — ודא שהקובץ נמצא בתיקייה ששותפה עם ${serviceAccountEmail()}`
-        : "";
-      record(LABEL, "files.get (Drive)", "נכשל", `${describeError(e)}${hint}`);
-      stoppedAt = "files.get נכשל";
-      return { rows, metrics };
-    }
-    metrics.fileName = meta.name;
-    metrics.sizeBytes = meta.size;
-    const metaDetail = `"${meta.name}", ${fmtSize(meta.size)}, ${meta.mimeType}, sha256 ${meta.sha256Checksum ? `${meta.sha256Checksum.slice(0, 16)}…` : "—"}, md5 ${meta.md5Checksum ?? "—"}`;
-    if (meta.size === null) {
-      record(LABEL, "files.get (Drive)", "נכשל", `${metaDetail} — אין size: זה לא קובץ בינארי (מסמך Google?)`);
-      stoppedAt = "קובץ לא בינארי";
-      return { rows, metrics };
-    }
-    if (meta.canDownload === false) {
-      record(LABEL, "files.get (Drive)", "נכשל", `${metaDetail} — canDownload=false: הורדה חסומה לקובץ`);
-      stoppedAt = "הורדה חסומה";
-      return { rows, metrics };
-    }
-    record(LABEL, "files.get (Drive)", "עבר", metaDetail);
+    if (publicUrl) {
+      // ── 1–2 (public): no Google at all; HEAD only for the size ───────────
+      record(label, "טוקן Google", "דילוג", "--fetch-public-url");
+      const h = await headInfo(publicUrl);
+      record(label, "files.get (Drive)", "דילוג",
+        `--fetch-public-url · HEAD: ${h.status === -1 ? `שגיאת רשת: ${h.error}` : `HTTP ${h.status}`}, ${fmtSize(h.length)}, ${h.type ?? "?"}`);
+      sourceUrl = publicUrl;
+      sizeBytes = h.length;
+      name = decodeURIComponent(new URL(publicUrl).pathname.split("/").pop() || "public.mp4");
+    } else {
+      // ── 1. token for the service account itself ──────────────────────────
+      const { token, expiresAt } = await serviceAccountToken(DRIVE_READONLY);
+      record(label, "טוקן Google", "עבר", `${serviceAccountEmail()}, drive.readonly, תקף עד ${new Date(expiresAt * 1000).toLocaleTimeString("he-IL")}`);
 
-    // ── 3. Bunny fetch ─────────────────────────────────────────────────────
+      // ── 2. metadata — stop on 403/404 ────────────────────────────────────
+      step = "files.get (Drive)";
+      let meta;
+      try {
+        meta = await driveFileMeta(fileId!, token);
+      } catch (e) {
+        const hint = e instanceof DriveError && (e.status === 404 || e.status === 403)
+          ? ` — ודא שהקובץ נמצא בתיקייה ששותפה עם ${serviceAccountEmail()}`
+          : "";
+        record(label, "files.get (Drive)", "נכשל", `${describeError(e)}${hint}`);
+        stoppedAt = "files.get נכשל";
+        return { rows, metrics };
+      }
+      const metaDetail = `"${meta.name}", ${fmtSize(meta.size)}, ${meta.mimeType}, sha256 ${meta.sha256Checksum ? `${meta.sha256Checksum.slice(0, 16)}…` : "—"}, md5 ${meta.md5Checksum ?? "—"}`;
+      if (meta.size === null) {
+        record(label, "files.get (Drive)", "נכשל", `${metaDetail} — אין size: זה לא קובץ בינארי (מסמך Google?)`);
+        stoppedAt = "קובץ לא בינארי";
+        return { rows, metrics };
+      }
+      if (meta.canDownload === false) {
+        record(label, "files.get (Drive)", "נכשל", `${metaDetail} — canDownload=false: הורדה חסומה לקובץ`);
+        stoppedAt = "הורדה חסומה";
+        return { rows, metrics };
+      }
+      record(label, "files.get (Drive)", "עבר", metaDetail);
+      sourceUrl = driveMediaUrl(fileId!);
+      headers = { Authorization: `Bearer ${token}` };
+      sha256 = meta.sha256Checksum;
+      sizeBytes = meta.size;
+      name = meta.name;
+    }
+    metrics.fileName = name;
+    metrics.sizeBytes = sizeBytes;
+
+    // ── 3. Bunny fetch — ONE attempt, never retried (not idempotent) ───────
     step = "בקשת משיכה ל-Bunny";
-    const runId = randomBytes(4).toString("hex");
-    fetchTitle = `E13 drive-fetch ${runId} — ${meta.name}`;
+    runId = randomBytes(4).toString("hex");
+    const fetchTitle = `E13 ${publicUrl ? "url-fetch" : "drive-fetch"} ${runId} — ${name}`;
     const t0 = Date.now();
-    const res = await fetchVideoFromUrl(driveMediaUrl(fileId), { Authorization: `Bearer ${token}` }, fetchTitle);
-    if ("dryRun" in res && res.dryRun) {
-      record(LABEL, "בקשת משיכה ל-Bunny", "דילוג", "dry-run: נרשם בלוג (בלי ערך הטוקן), לא נשלח");
-      for (const c of PLANNED.slice(3)) record(LABEL, c, "דילוג", "dry-run");
-      record(LABEL, "מחיקה", "דילוג", "dry-run");
+    let res;
+    try {
+      fetchSent = LIVE;
+      res = await fetchVideoFromUrl(sourceUrl, headers, fetchTitle);
+    } catch (e) {
+      record(label, "בקשת משיכה ל-Bunny", "נכשל",
+        `ניסיון אחד בלבד, ללא חזרה (POST לא אידמפוטנטי), אחרי ${((Date.now() - t0) / 1000).toFixed(1)}s — ${describeError(e)}`);
+      stoppedAt = "בקשת המשיכה נכשלה";
       return { rows, metrics };
     }
-    record(LABEL, "בקשת משיכה ל-Bunny", "עבר", `Bunny ענה תוך ${((Date.now() - t0) / 1000).toFixed(1)}s${res.message ? `: ${res.message}` : ""}`);
+    if ("dryRun" in res && res.dryRun) {
+      record(label, "בקשת משיכה ל-Bunny", "דילוג", `dry-run: נרשם בלוג (${publicUrl ? "בלי כותרות" : "בלי ערך הטוקן"}), לא נשלח`);
+      for (const c of PLANNED.slice(3)) record(label, c, "דילוג", "dry-run");
+      record(label, "מחיקה", "דילוג", "dry-run");
+      return { rows, metrics };
+    }
+    record(label, "בקשת משיכה ל-Bunny", "עבר", `Bunny ענה תוך ${((Date.now() - t0) / 1000).toFixed(1)}s${res.message ? `: ${res.message}` : ""}`);
 
     // ── 4. find the video Bunny created ────────────────────────────────────
     step = "איתור הווידאו ב-Bunny";
     const findDeadline = Date.now() + T.findMaxMs();
+    let hits: BunnyVideo[] = [];
     for (;;) {
-      const found = await withRetry("חיפוש הווידאו", () => findVideosByTitle(runId));
-      const hit = found.find((v) => v.title?.includes(runId));
-      if (hit) {
-        guid = hit.guid;
-        metrics.guid = guid;
-        break;
-      }
-      if (Date.now() >= findDeadline) break;
+      hits = (await withRetry("חיפוש הווידאו", () => findVideosByTitle(runId!))).filter((v) => v.title?.includes(runId!));
+      if (hits.length || Date.now() >= findDeadline) break;
       await sleep(T.pollMs());
     }
-    if (!guid) {
-      record(LABEL, "איתור הווידאו ב-Bunny", "נכשל", `לא נמצא וידאו בכותרת "${fetchTitle}" תוך ${Math.round(T.findMaxMs() / 1000)}s — בדוק בדשבורד`);
+    if (!hits.length) {
+      record(label, "איתור הווידאו ב-Bunny", "נכשל", `לא נמצא וידאו בכותרת "${fetchTitle}" תוך ${Math.round(T.findMaxMs() / 1000)}s — בדוק בדשבורד`);
       stoppedAt = "הווידאו לא נמצא";
       return { rows, metrics };
     }
-    record(LABEL, "איתור הווידאו ב-Bunny", "עבר", `guid ${guid}`);
+    guid = hits[0].guid;
+    metrics.guid = guid;
+    record(label, "איתור הווידאו ב-Bunny", "עבר", `guid ${guid}${hits.length > 1 ? ` (⚠️ נמצאו ${hits.length} — האחרים יימחקו בסוף)` : ""}`);
+    extraGuids = hits.slice(1).map((v) => v.guid);
 
     // ── 5. until the whole file is in (status ≥ 1) ─────────────────────────
     step = "הקובץ התקבל ב-Bunny";
     const deadline = t0 + T.waitMaxMs();
     const got = await pollVideo(guid, t0, deadline, (v) => v.status >= 1);
     if (!got.video) {
-      record(LABEL, "הקובץ התקבל ב-Bunny", "נכשל", "הווידאו נעלם מהספרייה");
+      record(label, "הקובץ התקבל ב-Bunny", "נכשל", "הווידאו נעלם מהספרייה");
       stoppedAt = "הווידאו נעלם";
       return { rows, metrics };
     }
     if (got.video.status === 5 || got.video.status === 6) {
-      record(LABEL, "הקובץ התקבל ב-Bunny", "נכשל", `Bunny סימן כשל (status ${got.video.status}) — סביר שהמשיכה מ-Drive נכשלה (טוקן, הרשאה או ניתוק)`);
+      record(label, "הקובץ התקבל ב-Bunny", "נכשל", `Bunny סימן כשל (status ${got.video.status}) — סביר שהמשיכה מהמקור נכשלה (טוקן, הרשאה או ניתוק)`);
       stoppedAt = "המשיכה נכשלה";
       return { rows, metrics };
     }
     if (got.timedOut) {
-      record(LABEL, "הקובץ התקבל ב-Bunny", "לא נבדק", `עדיין status ${got.video.status} אחרי ${fmtDur(Math.round((got.at - t0) / 1000))}`);
+      record(label, "הקובץ התקבל ב-Bunny", "לא נבדק", `עדיין status ${got.video.status} אחרי ${fmtDur(Math.round((got.at - t0) / 1000))}`);
       stoppedAt = "המשיכה לא הסתיימה בזמן";
       return { rows, metrics };
     }
     metrics.fetchSeconds = Math.max(1, Math.round((got.at - t0) / 1000));
-    metrics.serverMbps = Number((((meta.size ?? 0) * 8) / 1e6 / metrics.fetchSeconds).toFixed(1));
-    record(LABEL, "הקובץ התקבל ב-Bunny", "עבר",
-      `${fmtSize(meta.size)} ב-${fmtDur(metrics.fetchSeconds)} (~${metrics.serverMbps}Mbps בין השרתים, דיוק ±${Math.round(T.pollMs() / 1000)}s)`);
+    const bytesIn = sizeBytes ?? got.video.storageSize ?? null;
+    metrics.serverMbps = bytesIn ? Number(((bytesIn * 8) / 1e6 / metrics.fetchSeconds).toFixed(1)) : null;
+    record(label, "הקובץ התקבל ב-Bunny", "עבר",
+      `${fmtSize(bytesIn)} ב-${fmtDur(metrics.fetchSeconds)} (~${metrics.serverMbps ?? "?"}Mbps בין השרתים, דיוק ±${Math.round(T.pollMs() / 1000)}s)`);
 
     const hashRow = (v: BunnyVideo) => {
-      const h = compareHashes(meta.sha256Checksum, v.originalHash);
+      if (publicUrl) {
+        record(label, "hash מול Drive", "דילוג", "--fetch-public-url: אין hash מקור להשוואה");
+        return;
+      }
+      const h = compareHashes(sha256, v.originalHash);
       metrics.hash = h.verdict;
-      record(LABEL, "hash מול Drive", h.verdict === "זהה" ? "עבר" : h.verdict === "לא זהה" ? "נכשל" : "לא נבדק", `${h.verdict}: ${h.detail}`);
+      record(label, "hash מול Drive", h.verdict === "זהה" ? "עבר" : h.verdict === "לא זהה" ? "נכשל" : "לא נבדק", `${h.verdict}: ${h.detail}`);
     };
 
     if (NO_WAIT_ENCODE) {
-      record(LABEL, "status 4", "דילוג", "--no-wait-encode");
-      record(LABEL, "hasOriginal", got.video.hasOriginal ? "עבר" : "לא נבדק", `hasOriginal=${got.video.hasOriginal} (לפני סוף הקידוד)`);
+      record(label, "status 4", "דילוג", "--no-wait-encode");
+      record(label, "hasOriginal", got.video.hasOriginal ? "עבר" : "לא נבדק", `hasOriginal=${got.video.hasOriginal} (לפני סוף הקידוד)`);
       hashRow(got.video);
-      for (const c of CDN_CHECKS) record(LABEL, c, "דילוג", "--no-wait-encode");
+      for (const c of CDN_CHECKS) record(label, c, "דילוג", "--no-wait-encode");
       return { rows, metrics };
     }
 
@@ -265,37 +351,51 @@ export async function main(args: string[]): Promise<{ rows: Row[]; metrics: Metr
     const enc = await pollVideo(guid, t0, deadline, (v) => v.status === 4 || v.status === 5 || v.status === 6);
     const v = enc.video;
     if (!v) {
-      record(LABEL, "status 4", "נכשל", "הווידאו נעלם מהספרייה");
+      record(label, "status 4", "נכשל", "הווידאו נעלם מהספרייה");
       stoppedAt = "הווידאו נעלם";
       return { rows, metrics };
     }
     if (v.status !== 4) {
       const failedEnc = v.status === 5 || v.status === 6;
-      record(LABEL, "status 4", failedEnc ? "נכשל" : "לא נבדק",
+      record(label, "status 4", failedEnc ? "נכשל" : "לא נבדק",
         failedEnc ? `Bunny סימן כשל קידוד (status ${v.status})` : `עדיין status ${v.status} (${v.encodeProgress ?? "?"}%) אחרי ${fmtDur(Math.round((enc.at - t0) / 1000))} — תור Free Encoding; הרץ עם --keep ובדוק בדשבורד`);
       stoppedAt = failedEnc ? "הקידוד נכשל" : "הקידוד לא הסתיים בזמן";
       return { rows, metrics };
     }
     metrics.encodeSeconds = Math.round((enc.at - got.at) / 1000);
-    record(LABEL, "status 4", "עבר", `הקידוד לקח ${fmtDur(metrics.encodeSeconds)} · length ${v.length ?? "?"}s, ${v.width ?? 0}x${v.height ?? 0}`);
-    record(LABEL, "hasOriginal", v.hasOriginal === true ? "עבר" : "נכשל", `hasOriginal=${v.hasOriginal}`);
+    record(label, "status 4", "עבר", `הקידוד לקח ${fmtDur(metrics.encodeSeconds)} · length ${v.length ?? "?"}s, ${v.width ?? 0}x${v.height ?? 0}`);
+    record(label, "hasOriginal", v.hasOriginal === true ? "עבר" : "נכשל", `hasOriginal=${v.hasOriginal}`);
     hashRow(v);
 
     // ── 7. access checks (shared with e13_first_upload) ───────────────────
     step = "בדיקות CDN";
-    await runCdnChecks(LABEL, guid, record);
+    await runCdnChecks(label, guid, record);
   } catch (e) {
-    record(LABEL, step, isRetryable(e) ? "לא נבדק" : "נכשל", `${isRetryable(e) ? `אין תשובה אחרי ${RETRIES} ניסיונות חוזרים: ` : ""}${describeError(e)}`);
+    const f = stepFailure(e);
+    record(label, step, f.result, f.detail);
     stoppedAt = step;
   } finally {
     for (const c of PLANNED) {
-      if (!rows.some((r) => r.check === c)) record(LABEL, c, "לא נבדק", `לא הגיע לרוץ${stoppedAt ? `: ${stoppedAt}` : ""}`);
+      if (!rows.some((r) => r.check === c)) record(label, c, "לא נבדק", `לא הגיע לרוץ${stoppedAt ? `: ${stoppedAt}` : ""}`);
     }
     if (guid) {
-      if (KEEP) record(LABEL, "מחיקה", "דילוג", `--keep: הווידאו נשאר בספרייה — guid ${guid}`);
-      else await removeVideo(LABEL, guid, record);
-    } else if (fetchTitle && LIVE && !rows.some((r) => r.check === "מחיקה")) {
-      record(LABEL, "מחיקה", "לא נבדק", `לא ידוע guid — אם נוצר וידאו, חפש בדשבורד את "${fetchTitle}" ומחק ידנית`);
+      if (KEEP) record(label, "מחיקה", "דילוג", `--keep: הווידאו נשאר בספרייה — guid ${guid}`);
+      else await removeVideo(label, guid, record);
+      for (const g of extraGuids) {
+        if (KEEP) record(label, `מחיקה ${g.slice(0, 8)}`, "דילוג", `--keep: וידאו נוסף באותה כותרת — guid ${g}`);
+        else await removeVideo(label, g, record, `מחיקה ${g.slice(0, 8)}`);
+      }
+    } else if (fetchSent && runId) {
+      // the fetch was SENT but no video was tracked: report what it left behind
+      const sw = await sweepAfterFailedFetch(runId);
+      if (sw.error) {
+        record(label, "וידאו שנוצרו בניסיון", "לא נבדק", `החיפוש בספרייה נכשל: ${sw.error} — חפש בדשבורד "${runId}"`);
+      } else if (!sw.guids.length) {
+        record(label, "וידאו שנוצרו בניסיון", "עבר", `0 — לא נמצא וידאו עם "${runId}" בכותרת (חיפוש במשך ${sw.waitedS}s)`);
+      } else {
+        record(label, "וידאו שנוצרו בניסיון", KEEP ? "דילוג" : "עבר", `${sw.guids.length} נמצאו: ${sw.guids.join(", ")}${KEEP ? " — --keep: לא נמחקו" : " — נמחקים"}`);
+        if (!KEEP) for (const g of sw.guids) await removeVideo(label, g, record, `מחיקה ${g.slice(0, 8)}`);
+      }
     }
     printSummary(metrics);
   }
