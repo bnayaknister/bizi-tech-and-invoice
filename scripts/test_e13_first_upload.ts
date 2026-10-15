@@ -150,9 +150,17 @@ const KEYS = "BUNNY_STREAM_LIBRARY_ID=111\nBUNNY_STREAM_API_KEY=k\nBUNNY_STREAM_
 process.env.E13_FIRST_UPLOAD_ENV_FILE = envPath;
 process.env.E13_FIRST_UPLOAD_POLL_MS = "1";
 process.env.E13_FIRST_UPLOAD_RESUME_PAUSE_MS = "50";
+process.env.E13_FIRST_UPLOAD_BACKOFF_MS = "1";
 
 // ── the fake Bunny API / CDN / player (fetch) ───────────────────────────────
 let calls: string[] = [];
+// fault injection: the next `times` requests matching `match` die with a
+// connect timeout (what the first live run hit on a status read)
+type Fault = { match: RegExp; method?: string; times: number };
+let faults: Fault[] = [];
+let audioStatus: number | null = null; // e.g. 2 = stuck "Processing"
+const connectTimeout = () =>
+  new TypeError("fetch failed", { cause: Object.assign(new Error("Connect Timeout Error (attempted address: video.bunnycdn.com:443, timeout: 10000ms)"), { code: "UND_ERR_CONNECT_TIMEOUT" }) });
 let created: string[] = [];
 const deleted = new Set<string>();
 const kindOf = new Map<string, "video" | "audio">();
@@ -161,6 +169,11 @@ global.fetch = (async (input: string, init: RequestInit = {}) => {
   const url = String(input);
   const method = init.method ?? "GET";
   calls.push(`${method} ${url}`);
+  const fault = faults.find((f) => f.times > 0 && f.match.test(url) && (!f.method || f.method === method));
+  if (fault) {
+    fault.times--;
+    throw connectTimeout();
+  }
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
   const m = /^https:\/\/video\.bunnycdn\.com\/library\/111\/videos(?:\/([0-9a-f-]+))?$/.exec(url);
   if (m) {
@@ -177,6 +190,7 @@ global.fetch = (async (input: string, init: RequestInit = {}) => {
     }
     if (guid && method === "GET") {
       if (deleted.has(guid)) return json(404, {});
+      if (audioStatus !== null && kindOf.get(guid) === "audio") return json(200, { guid, status: audioStatus, encodeProgress: 0 });
       return json(200, { guid, status: 4, length: 12, hasOriginal: true, originalHash: "abc", availableResolutions: "240p" });
     }
   }
@@ -313,6 +327,86 @@ async function main() {
   ok("table printed after the failure", bad.out.includes("═══ סיכום ═══") && bad.out.includes("| וידאו | העלאת TUS | נכשל |"));
   check("both videos deleted (the failed one too)", [created.length, deleted.size], [2, 2]);
   await tus.close();
+
+
+  // ══════════════════════════════════════════════════════════════════════
+  // the live runs below reuse one local TUS server
+  const fresh = async () => {
+    const t = await startTus();
+    process.env.E13_FIRST_UPLOAD_TUS_ENDPOINT = t.url;
+    process.env.BUNNY_DRY_RUN = "false";
+    created = [];
+    deleted.clear();
+    faults = [];
+    audioStatus = null;
+    calls = [];
+    return t;
+  };
+
+  section("retries: a connect timeout on a status read / a CDN probe / the delete is retried, then passes");
+  tus = await fresh();
+  faults = [
+    { match: /videos\/[0-9a-f-]+$/, method: "GET", times: 3 }, // status reads
+    { match: /b-cdn\.net\/[0-9a-f-]+\/original$/, times: 2 }, // unsigned /original
+    { match: /videos\/[0-9a-f-]+$/, method: "DELETE", times: 1 }, // delete
+  ];
+  const flaky = await capture(() => run(["--video", video, "--live", "--video-only"]));
+  check("no failed / not-checked row", flaky.value.filter((r) => r.result === "נכשל" || r.result === "לא נבדק").map((r) => `${r.check}: ${r.detail}`), []);
+  check("status 4 passed after retries", res(flaky.value, "וידאו", "status 4")?.result, "עבר");
+  ok("/original 403 passed, detail says after 3 attempts", res(flaky.value, "וידאו", "/original בלי טוקן → 403")?.detail.includes("אחרי 3 ניסיונות") === true);
+  check("deleted after a failed first DELETE", [res(flaky.value, "וידאו", "מחיקה")?.result, deleted.size], ["עבר", 1]);
+  ok("each retry was logged with the cause code", (flaky.out.match(/ניסיון חוזר \d\/5/g) ?? []).length >= 6 && flaky.out.includes("UND_ERR_CONNECT_TIMEOUT"));
+  ok("Q5 passed", flaky.out.includes("Q5 (/original מכוסה בטוקן): עבר"));
+  ok("--video-only: Q1 not checked", flaky.out.includes("Q1 (אודיו טהור ב-Bunny): לא נבדק — --video-only"));
+  check("--video-only: no audio rows", flaky.value.filter((r) => r.file === "אודיו").length, 0);
+  await tus.close();
+
+  section("a status read that never answers (6 attempts) → \"לא נבדק\", not \"נכשל\"; the rest not checked; Q5 not checked");
+  tus = await fresh();
+  faults = [{ match: /videos\/[0-9a-f-]+$/, method: "GET", times: 6 }];
+  const dead = await capture(() => run(["--video", video, "--live", "--video-only"]));
+  const st = res(dead.value, "וידאו", "status 4");
+  check("status 4 = לא נבדק with the full cause", [st?.result, st?.detail.includes("UND_ERR_CONNECT_TIMEOUT"), st?.detail.includes("אחרי 5 ניסיונות")], ["לא נבדק", true, true]);
+  check("every later check = לא נבדק", ["hasOriginal + originalHash", "/original בלי טוקן → 403", "playlist חתום → 200", "Embed בלי טוקן חסום"].map((c) => res(dead.value, "וידאו", c)?.result), ["לא נבדק", "לא נבדק", "לא נבדק", "לא נבדק"]);
+  check("no row says נכשל", dead.value.filter((r) => r.result === "נכשל").map((r) => r.check), []);
+  ok("Q5 = לא נבדק (not נכשל)", dead.out.includes("Q5 (/original מכוסה בטוקן): לא נבדק"));
+  check("the video was still deleted", deleted.size, 1);
+  await tus.close();
+
+  section("a CDN probe with no answer at all → that row לא נבדק, Q5 לא נבדק");
+  tus = await fresh();
+  faults = [{ match: /b-cdn\.net\/[0-9a-f-]+\/original$/, times: 99 }];
+  const noCdn = await capture(() => run(["--video", video, "--live", "--video-only"]));
+  check("/original unsigned = לא נבדק", res(noCdn.value, "וידאו", "/original בלי טוקן → 403")?.result, "לא נבדק");
+  check("the other probes still ran and passed", res(noCdn.value, "וידאו", "playlist בלי טוקן → 403")?.result, "עבר");
+  ok("Q5 = לא נבדק", noCdn.out.includes("Q5 (/original מכוסה בטוקן): לא נבדק"));
+  await tus.close();
+
+  section("audio stuck in encoding past the wait → status 4 לא נבדק (Free Encoding queue), Q1 לא נבדק");
+  tus = await fresh();
+  audioStatus = 2;
+  process.env.E13_FIRST_UPLOAD_WAIT_MAX_MS = "30";
+  const stuck = await capture(() => run(["--video", video, "--audio", audio, "--live"]));
+  delete process.env.E13_FIRST_UPLOAD_WAIT_MAX_MS;
+  const ast = res(stuck.value, "אודיו", "status 4");
+  check("audio status 4 = לא נבדק, says Free Encoding", [ast?.result, ast?.detail.includes("Free Encoding")], ["לא נבדק", true]);
+  check("video unaffected", res(stuck.value, "וידאו", "playlist חתום → 200")?.result, "עבר");
+  ok("Q1 = לא נבדק", stuck.out.includes("Q1 (אודיו טהור ב-Bunny): לא נבדק"));
+  ok("Q5 = לא נבדק (audio's /original never ran)", stuck.out.includes("Q5 (/original מכוסה בטוקן): לא נבדק"));
+  await tus.close();
+
+  section("--keep: nothing deleted, guids printed");
+  tus = await fresh();
+  const keep = await capture(() => run(["--video", video, "--audio", audio, "--live", "--keep"]));
+  check("zero DELETE requests", calls.filter((c) => c.startsWith("DELETE")).length, 0);
+  check("delete rows = דילוג with the guid", ["וידאו", "אודיו"].map((f) => [res(keep.value, f, "מחיקה")?.result, res(keep.value, f, "מחיקה")?.detail.includes(created[f === "וידאו" ? 0 : 1])]), [["דילוג", true], ["דילוג", true]]);
+  ok("guids listed at the end", keep.out.includes("--keep — נשארו בספרייה") && created.every((g) => keep.out.includes(g)));
+  await tus.close();
+
+  section("verdict(): three states");
+  const { verdict } = await import("./e13_first_upload");
+  check("pass / fail / not-checked", [verdict(["עבר", "עבר"]), verdict(["עבר", "נכשל"]), verdict(["עבר", "לא נבדק"]), verdict([undefined]), verdict([]), verdict(["לא נבדק", "נכשל"])],
+    ["עבר", "נכשל", "לא נבדק", "לא נבדק", "לא נבדק", "נכשל"]);
 
   rmSync(dir, { recursive: true, force: true });
   console.log(`\n${passed} passed, ${failed} failed`);
