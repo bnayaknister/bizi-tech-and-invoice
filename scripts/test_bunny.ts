@@ -16,7 +16,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createVideo, uploadVideo, getVideo, deleteVideo, tusUploadAuthorization, BunnyError } from "../src/lib/bunny/client";
 import { isBunnyDryRun, BunnyConfigError } from "../src/lib/bunny/config";
-import { cdnToken, signedPlaybackUrl, signedOriginalUrl, tusSignature } from "../src/lib/bunny/sign";
+import { cdnToken, signedPlaybackUrl, signedOriginalUrl, tusSignature, PLAYBACK_TTL_SECONDS } from "../src/lib/bunny/sign";
 import { deriveVersionFromVideo } from "../src/lib/bunny/status";
 
 let passed = 0;
@@ -258,6 +258,13 @@ async function main() {
   const play = signedPlaybackUrl(GUID, 4 * 3600, { nowMs, hostname: HOST, tokenKey: TK });
   const pExp = Math.floor(nowMs / 1000) + 4 * 3600;
   check("playback expires = now + ttl", play.expires, pExp);
+  check("Q4: default playback TTL is 4 hours", [PLAYBACK_TTL_SECONDS, signedPlaybackUrl(GUID, undefined, { nowMs, hostname: HOST, tokenKey: TK }).expires], [14400, pExp]);
+  try {
+    signedPlaybackUrl(GUID, 86401, { nowMs, hostname: HOST, tokenKey: TK });
+    check("24h cap still enforced on playback", "accepted", "refused");
+  } catch {
+    check("24h cap still enforced on playback", "refused", "refused");
+  }
   const pTok = cdnToken(TK, `/${GUID}/playlist.m3u8`, pExp, { token_path: `/${GUID}/` });
   check("playback URL: Bunny's directory shape (token in the path, token_path, expires, then the file)", play.url,
     `https://${HOST}/bcdn_token=${pTok}&token_path=%2F${GUID}%2F&expires=${pExp}/${GUID}/playlist.m3u8`);

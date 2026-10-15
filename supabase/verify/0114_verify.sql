@@ -4,6 +4,8 @@
 -- קריאה בלבד. שורה אחת; כל העמודות הבוליאניות חייבות להיות true.
 -- n_versions / n_comments / n_approvals הן עמודות מידע (0 מיד אחרי ההחלה,
 -- ועד שה-backfill ירוץ).
+-- ⚠️ אחרי 0115 העמודה versions_24_cols תחזיר false (0115 הוסיפה ready_at → 25).
+-- זה צפוי; את 0115 בודקים ב-0115_verify.sql.
 -- ============================================================================
 select
   exists (select 1 from public.schema_ledger where version = '0114')                               as ledger_row_present,

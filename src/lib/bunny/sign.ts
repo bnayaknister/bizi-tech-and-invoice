@@ -28,7 +28,9 @@ import { bunnyCdnConfig } from "./config";
 //
 // The key never leaves this module; it is not part of any URL.
 
-const MAX_TTL_SECONDS = 24 * 60 * 60; // a sanity cap, not the policy (plan Q4 is open)
+const MAX_TTL_SECONDS = 24 * 60 * 60; // hard cap (owner 15.10)
+/** Q4 (owner 15.10): a viewing token lives 4 hours by default; the player re-signs on 403. */
+export const PLAYBACK_TTL_SECONDS = 4 * 60 * 60;
 
 function base64url(buf: Buffer): string {
   return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -81,7 +83,7 @@ export type SignedUrl = { url: string; expires: number };
  */
 export function signedPlaybackUrl(
   videoId: string,
-  ttlSeconds: number,
+  ttlSeconds: number = PLAYBACK_TTL_SECONDS,
   opts: { nowMs?: number; hostname?: string; tokenKey?: string } = {}
 ): SignedUrl {
   assertGuid(videoId);
