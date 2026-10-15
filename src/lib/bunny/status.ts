@@ -16,6 +16,7 @@
 
 export type BunnyVideo = {
   guid: string;
+  title?: string | null;
   videoLibraryId?: number;
   status: number;
   length?: number | null; // seconds

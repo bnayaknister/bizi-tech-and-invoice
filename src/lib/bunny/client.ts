@@ -173,6 +173,56 @@ export async function deleteVideo(videoId: string): Promise<DryRun | { dryRun: f
   return { dryRun: false, alreadyGone: false };
 }
 
+/**
+ * Fetch Video (E13 route A, research 15.10): Bunny pulls the file itself,
+ * server to server — `POST /library/{id}/videos/fetch` with `{url, headers, title}`.
+ * Bunny CREATES the video; the response carries no guid (OpenAPI: StatusModel
+ * only), so the caller finds it by its title (findVideosByTitle).
+ * Bunny's docs: headers such as `Authorization: Bearer` are supported; signed or
+ * expiring URLs are not, because the fetch is one server-side request.
+ *
+ * A write → goes through write() and BUNNY_DRY_RUN. The dry-run log lists the
+ * header NAMES only — their values (a bearer token) never reach a log line.
+ */
+export async function fetchVideoFromUrl(
+  sourceUrl: string,
+  headers: Record<string, string>,
+  title: string
+): Promise<DryRun | { dryRun: false; message: string | null }> {
+  const t = title.trim();
+  if (!t) throw new Error("Bunny: כותרת וידאו ריקה");
+  const { libraryId, apiKey } = bunnyApiConfig();
+  const redacted = Object.fromEntries(Object.keys(headers).map((k) => [k, "<redacted>"]));
+  const res = await write(
+    "POST",
+    `${videoUrl(libraryId)}/fetch`,
+    { json: { url: sourceUrl, headers, title: t }, bodySummary: JSON.stringify({ url: sourceUrl, headers: redacted, title: t }) },
+    apiKey
+  );
+  if ("dryRun" in res) return res;
+  const body = await parse(res);
+  const b = body && typeof body === "object" ? (body as { success?: unknown; message?: unknown }) : {};
+  if (!res.ok || b.success === false) {
+    throw new BunnyError(`Bunny fetch נכשל (${res.status})${typeof b.message === "string" ? `: ${b.message}` : ""}`, res.status, body);
+  }
+  return { dryRun: false, message: typeof b.message === "string" ? b.message : null };
+}
+
+/** List Videos filtered by title substring (read-only; runs in dry run too). */
+export async function findVideosByTitle(search: string): Promise<BunnyVideo[]> {
+  const { libraryId, apiKey } = bunnyApiConfig();
+  const url = `${videoUrl(libraryId)}?search=${encodeURIComponent(search)}&itemsPerPage=100&orderBy=date`;
+  const res = await send("GET videos", url, {
+    method: "GET",
+    headers: { AccessKey: apiKey, accept: "application/json" },
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  const body = await parse(res);
+  if (!res.ok) throw new BunnyError(`Bunny list נכשל (${res.status})`, res.status, body);
+  const items = body && typeof body === "object" ? (body as { items?: unknown }).items : null;
+  return Array.isArray(items) ? (items as BunnyVideo[]) : [];
+}
+
 export type TusAuthorization = {
   endpoint: string;
   headers: { AuthorizationSignature: string; AuthorizationExpire: string; LibraryId: string; VideoId: string };

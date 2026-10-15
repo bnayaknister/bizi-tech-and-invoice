@@ -45,18 +45,19 @@
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { Upload } from "tus-js-client";
+import { createVideo, getVideo, tusUploadAuthorization, uploadVideo, type TusAuthorization } from "../src/lib/bunny/client";
 import {
-  BunnyError,
-  BunnyNetworkError,
-  createVideo,
-  deleteVideo,
-  getVideo,
-  tusUploadAuthorization,
-  uploadVideo,
-  type TusAuthorization,
-} from "../src/lib/bunny/client";
+  CDN_CHECKS,
+  RETRIES,
+  isRetryable,
+  loadEnvFile,
+  removeVideo,
+  runCdnChecks,
+  withRetry,
+  type Result,
+  type Row,
+} from "./_bunny_checks";
 import { describeError } from "../src/lib/bunny/errors";
-import { signedOriginalUrl, signedPlaybackUrl } from "../src/lib/bunny/sign";
 import type { BunnyVideo } from "../src/lib/bunny/status";
 import { bunnyTusOptions, shouldRetryTusStatus, TUS_CHUNK_SIZE, TUS_RETRY_DELAYS } from "../src/lib/bunny/tus";
 
@@ -67,33 +68,15 @@ const T = {
   pollMs: () => Number(process.env.E13_FIRST_UPLOAD_POLL_MS ?? 10_000),
   tusEndpoint: () => process.env.E13_FIRST_UPLOAD_TUS_ENDPOINT,
   resumePauseMs: () => Number(process.env.E13_FIRST_UPLOAD_RESUME_PAUSE_MS ?? 5_000),
-  backoffBaseMs: () => Number(process.env.E13_FIRST_UPLOAD_BACKOFF_MS ?? 2_000),
   waitMaxMs: () => Number(process.env.E13_FIRST_UPLOAD_WAIT_MAX_MS ?? 30 * 60_000),
   tusRetryDelays: (): number[] | undefined =>
     process.env.E13_FIRST_UPLOAD_TUS_RETRY_DELAYS ? JSON.parse(process.env.E13_FIRST_UPLOAD_TUS_RETRY_DELAYS) : undefined,
 };
 
-function loadEnvFile(): Record<string, string> {
-  const envFile: Record<string, string> = {};
-  for (const line of readFileSync(T.envFile(), "utf-8").split("\n")) {
-    const t = line.trim();
-    if (!t || t.startsWith("#") || !t.includes("=")) continue;
-    const i = t.indexOf("=");
-    const k = t.slice(0, i).trim();
-    const v = t.slice(i + 1).trim().replace(/^["']|["']$/g, "");
-    envFile[k] = v;
-    if (process.env[k] === undefined) process.env[k] = v;
-  }
-  return envFile;
-}
-
-const REFERER = "https://bizi-tech-and-invoice.vercel.app/";
-const HTTP_TIMEOUT_MS = 20_000;
 const RESUME_AT = 0.3;
 const MB = 1024 * 1024;
 
-type Result = "עבר" | "נכשל" | "דילוג" | "לא נבדק";
-export type Row = { file: string; check: string; result: Result; detail: string };
+export type { Row };
 let rows: Row[] = [];
 const record = (file: string, check: string, result: Result, detail = "") => {
   rows.push({ file, check, result, detail });
@@ -214,65 +197,6 @@ export function runTusUpload(
   });
 }
 
-// ── retries for the checks AROUND the upload (owner 15.10: the first live run
-//    lost a whole video to one ConnectTimeoutError on a status read). A network
-//    failure — or a 5xx — is retried RETRIES times with exponential backoff
-//    before it counts. A clean HTTP answer (403, 404, 401…) is a result, never
-//    retried. TUS has its own retries (lib/bunny/tus.ts). ──────────────────────
-const RETRIES = 5;
-const backoffMs = (attempt: number) => T.backoffBaseMs() * 2 ** attempt; // 2s, 4s, 8s, 16s, 32s
-
-const isRetryable = (e: unknown) =>
-  e instanceof BunnyNetworkError || (e instanceof BunnyError && e.status >= 500);
-
-async function withRetry<T>(what: string, fn: () => Promise<T>): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await fn();
-    } catch (e) {
-      if (!isRetryable(e) || attempt >= RETRIES) throw e;
-      const wait = backoffMs(attempt);
-      console.log(`     🔁 ${what}: ניסיון חוזר ${attempt + 1}/${RETRIES} בעוד ${wait}ms — ${describeError(e)}`);
-      await new Promise((r) => setTimeout(r, wait));
-    }
-  }
-}
-
-// ── HTTP probes (never throw: a network error is a result, after retries) ────
-type Probe = { status: number; head: string; error?: string; attempts: number };
-async function probeOnce(url: string, opts: { range?: boolean }): Promise<Omit<Probe, "attempts">> {
-  try {
-    const res = await fetch(url, {
-      method: "GET",
-      redirect: "manual",
-      headers: { Referer: REFERER, ...(opts.range ? { Range: "bytes=0-0" } : {}) },
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-    });
-    let head = "";
-    if (res.ok && !opts.range) head = (await res.text()).slice(0, 4000);
-    else await res.body?.cancel();
-    return { status: res.status, head };
-  } catch (e) {
-    return { status: -1, head: "", error: describeError(e) };
-  }
-}
-async function probe(url: string, opts: { range?: boolean } = {}): Promise<Probe> {
-  for (let attempt = 0; ; attempt++) {
-    const p = await probeOnce(url, opts);
-    if ((p.status !== -1 && p.status < 500) || attempt >= RETRIES) return { ...p, attempts: attempt + 1 };
-    const wait = backoffMs(attempt);
-    console.log(`     🔁 ${pathOnly(url)}: ניסיון חוזר ${attempt + 1}/${RETRIES} בעוד ${wait}ms — ${p.status === -1 ? p.error : `HTTP ${p.status}`}`);
-    await new Promise((r) => setTimeout(r, wait));
-  }
-}
-/** A probe that never got an HTTP answer is "not checked", not a verdict. */
-const probeResult = (p: Probe, pass: boolean): Result => (p.status === -1 ? "לא נבדק" : pass ? "עבר" : "נכשל");
-const statusText = (p: Probe) =>
-  (p.status === -1 ? `שגיאת רשת אחרי ${p.attempts} ניסיונות: ${p.error}` : `HTTP ${p.status}`) +
-  (p.status !== -1 && p.attempts > 1 ? ` (אחרי ${p.attempts} ניסיונות)` : "");
-
-const pathOnly = (u: string) => new URL(u).pathname.replace(/bcdn_token=[^/]*/, "bcdn_token=…");
-
 /** Bunny status until a terminal state or WAIT_MAX_MS. Each read is retried. */
 async function waitFinished(guid: string): Promise<{ video: BunnyVideo | null; timedOut: boolean }> {
   const start = Date.now();
@@ -291,11 +215,7 @@ async function waitFinished(guid: string): Promise<{ video: BunnyVideo | null; t
   return { video: v, timedOut: true };
 }
 
-const CHECKS_AFTER_UPLOAD = [
-  "status 4", "hasOriginal + originalHash", "/original בלי טוקן → 403", "/original חתום → 200",
-  "playlist בלי טוקן → 403", "playlist חתום → 200", "תת-playlist דרך טוקן התיקייה → 200",
-  "Direct Play חסום", "Embed בלי טוקן חסום",
-];
+const CHECKS_AFTER_UPLOAD = ["status 4", "hasOriginal + originalHash", ...CDN_CHECKS];
 
 type Flags = { resumeTest: boolean; keep: boolean };
 const kept: { label: string; guid: string }[] = [];
@@ -374,39 +294,7 @@ async function runOne(label: string, path: string, flags: Flags): Promise<void> 
     record(label, "hasOriginal + originalHash", hasOrig ? "עבר" : "נכשל", `hasOriginal=${v.hasOriginal}, originalHash=${v.originalHash ? "קיים" : "חסר"}`);
 
     step = "בדיקות CDN";
-    const host = (process.env.BUNNY_STREAM_CDN_HOSTNAME ?? "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
-    const lib = process.env.BUNNY_STREAM_LIBRARY_ID;
-
-    const o0 = await probe(`https://${host}/${guid}/original`, { range: true });
-    record(label, "/original בלי טוקן → 403", probeResult(o0, o0.status === 403), statusText(o0));
-
-    const os = signedOriginalUrl(guid, 600);
-    const o1 = await probe(os.url, { range: true });
-    record(label, "/original חתום → 200", probeResult(o1, o1.status === 200 || o1.status === 206), `${statusText(o1)} ${pathOnly(os.url)}`);
-
-    const p0 = await probe(`https://${host}/${guid}/playlist.m3u8`);
-    record(label, "playlist בלי טוקן → 403", probeResult(p0, p0.status === 403), statusText(p0));
-
-    const ps = signedPlaybackUrl(guid);
-    const p1 = await probe(ps.url);
-    const isHls = p1.head.startsWith("#EXTM3U");
-    record(label, "playlist חתום → 200", probeResult(p1, p1.status === 200 && isHls), `${statusText(p1)}${p1.status === 200 && !isHls ? ", לא playlist" : ""}`);
-
-    const sub = p1.head.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#"));
-    if (!sub) {
-      if (p1.status === 200) record(label, "תת-playlist דרך טוקן התיקייה → 200", "נכשל", "אין שורת variant ב-playlist");
-    } else {
-      const s1 = await probe(ps.url.replace(/playlist\.m3u8$/, sub));
-      record(label, "תת-playlist דרך טוקן התיקייה → 200", probeResult(s1, s1.status === 200), `${statusText(s1)} …/${sub}`);
-    }
-
-    const dp = await probe(`https://player.mediadelivery.net/play/${lib}/${guid}`);
-    record(label, "Direct Play חסום", probeResult(dp, dp.status !== 200),
-      dp.status === 200 ? "HTTP 200 — פתח בדפדפן ובדוק אם הנגן מנגן" : statusText(dp));
-
-    const em = await probe(`https://player.mediadelivery.net/embed/${lib}/${guid}`);
-    record(label, "Embed בלי טוקן חסום", probeResult(em, em.status !== 200),
-      em.status === 200 ? "HTTP 200 — פתח בדפדפן ובדוק אם הנגן מנגן" : statusText(em));
+    await runCdnChecks(label, guid, record);
   } catch (e) {
     // no answer even after the retries → no verdict on this step
     record(label, step, isRetryable(e) ? "לא נבדק" : "נכשל", `${isRetryable(e) ? `אין תשובה אחרי ${RETRIES} ניסיונות חוזרים: ` : ""}${describeError(e)}`);
@@ -422,19 +310,8 @@ async function runOne(label: string, path: string, flags: Flags): Promise<void> 
       if (flags.keep) {
         kept.push({ label, guid });
         record(label, "מחיקה", "דילוג", `--keep: הווידאו נשאר בספרייה — guid ${guid}`);
-      } else await removeVideo(label, guid);
+      } else await removeVideo(label, guid, record);
     }
-  }
-}
-
-async function removeVideo(label: string, guid: string, check = "מחיקה") {
-  try {
-    const d = await withRetry("מחיקה", () => deleteVideo(guid));
-    const gone = (await withRetry("בדיקת מחיקה", () => getVideo(guid))) === null;
-    record(label, check, gone ? "עבר" : "נכשל", `${"alreadyGone" in d && d.alreadyGone ? "כבר לא היה" : "נמחק"}${gone ? "" : " — אבל עדיין נקרא"}`);
-    if (!gone) console.log(`  ⚠️ מחק ידנית בדשבורד: ${guid}`);
-  } catch (e) {
-    record(label, check, "נכשל", `${describeError(e)} — מחק ידנית בדשבורד: ${guid}`);
   }
 }
 
@@ -468,7 +345,7 @@ async function putProbe(path: string, flags: Flags) {
       if (flags.keep) {
         kept.push({ label, guid });
         record(label, "מחיקה", "דילוג", `--keep: guid ${guid}`);
-      } else await removeVideo(label, guid);
+      } else await removeVideo(label, guid, record);
     }
   }
 }
@@ -499,7 +376,7 @@ export async function main(args: string[]): Promise<Row[]> {
   };
   const LIVE = args.includes("--live");
   const VIDEO_ONLY = args.includes("--video-only");
-  const envFile = loadEnvFile();
+  const envFile = loadEnvFile(T.envFile());
   const video = arg("--video");
   const audio = VIDEO_ONLY ? undefined : arg("--audio");
   if (!video) fail("חסר --video <נתיב>");
