@@ -515,6 +515,182 @@ export type Database = {
           },
         ]
       }
+      client_review_approvals: {
+        Row: {
+          backfill_source: string | null
+          created_at: string
+          decided_at: string
+          decision: string
+          id: string
+          is_backfill: boolean
+          item_id: string
+          link_id: string | null
+          note: string | null
+          revoked_at: string | null
+          revoked_reason: string | null
+          version_id: string | null
+        }
+        Insert: {
+          backfill_source?: string | null
+          created_at?: string
+          decided_at: string
+          decision: string
+          id?: string
+          is_backfill?: boolean
+          item_id: string
+          link_id?: string | null
+          note?: string | null
+          revoked_at?: string | null
+          revoked_reason?: string | null
+          version_id?: string | null
+        }
+        Update: {
+          backfill_source?: string | null
+          created_at?: string
+          decided_at?: string
+          decision?: string
+          id?: string
+          is_backfill?: boolean
+          item_id?: string
+          link_id?: string | null
+          note?: string | null
+          revoked_at?: string | null
+          revoked_reason?: string | null
+          version_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "client_review_approvals_item_id_fkey"
+            columns: ["item_id"]
+            isOneToOne: false
+            referencedRelation: "client_review_items"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_review_approvals_link_id_fkey"
+            columns: ["link_id"]
+            isOneToOne: false
+            referencedRelation: "client_review_links"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cra_version_item_fk"
+            columns: ["version_id", "item_id"]
+            isOneToOne: false
+            referencedRelation: "client_review_versions"
+            referencedColumns: ["id", "item_id"]
+          },
+        ]
+      }
+      client_review_comments: {
+        Row: {
+          acked_at: string | null
+          acked_by: string | null
+          after_response: boolean
+          author_id: string | null
+          author_kind: string
+          author_name: string | null
+          backfill_source: string | null
+          body: string
+          created_at: string
+          id: string
+          is_backfill: boolean
+          item_id: string
+          kind: string
+          link_id: string | null
+          pin_number: number | null
+          resolved_at: string | null
+          resolved_by: string | null
+          time_ms: number | null
+          version_id: string | null
+        }
+        Insert: {
+          acked_at?: string | null
+          acked_by?: string | null
+          after_response?: boolean
+          author_id?: string | null
+          author_kind: string
+          author_name?: string | null
+          backfill_source?: string | null
+          body: string
+          created_at?: string
+          id?: string
+          is_backfill?: boolean
+          item_id: string
+          kind: string
+          link_id?: string | null
+          pin_number?: number | null
+          resolved_at?: string | null
+          resolved_by?: string | null
+          time_ms?: number | null
+          version_id?: string | null
+        }
+        Update: {
+          acked_at?: string | null
+          acked_by?: string | null
+          after_response?: boolean
+          author_id?: string | null
+          author_kind?: string
+          author_name?: string | null
+          backfill_source?: string | null
+          body?: string
+          created_at?: string
+          id?: string
+          is_backfill?: boolean
+          item_id?: string
+          kind?: string
+          link_id?: string | null
+          pin_number?: number | null
+          resolved_at?: string | null
+          resolved_by?: string | null
+          time_ms?: number | null
+          version_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "client_review_comments_acked_by_fkey"
+            columns: ["acked_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_review_comments_author_id_fkey"
+            columns: ["author_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_review_comments_item_id_fkey"
+            columns: ["item_id"]
+            isOneToOne: false
+            referencedRelation: "client_review_items"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_review_comments_link_id_fkey"
+            columns: ["link_id"]
+            isOneToOne: false
+            referencedRelation: "client_review_links"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_review_comments_resolved_by_fkey"
+            columns: ["resolved_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "crc_version_item_fk"
+            columns: ["version_id", "item_id"]
+            isOneToOne: false
+            referencedRelation: "client_review_versions"
+            referencedColumns: ["id", "item_id"]
+          },
+        ]
+      }
       client_review_items: {
         Row: {
           approved: boolean
@@ -701,6 +877,105 @@ export type Database = {
             columns: ["link_id"]
             isOneToOne: true
             referencedRelation: "client_review_links"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      client_review_versions: {
+        Row: {
+          bunny_library_id: number | null
+          bunny_status: string | null
+          bunny_status_at: string | null
+          bunny_status_raw: number | null
+          bunny_video_id: string | null
+          created_at: string
+          created_by: string | null
+          delete_attempts: number
+          delete_last_attempt_at: string | null
+          delete_last_error: string | null
+          duration_ms: number | null
+          has_original: boolean | null
+          id: string
+          is_audio_only: boolean
+          is_backfill: boolean
+          item_id: string
+          media_deleted_at: string | null
+          media_link: string | null
+          number: number | null
+          original_filename: string | null
+          original_sha256: string | null
+          original_size_bytes: number | null
+          ready_at: string | null
+          source: string
+          timeline_offset_ms: number | null
+        }
+        Insert: {
+          bunny_library_id?: number | null
+          bunny_status?: string | null
+          bunny_status_at?: string | null
+          bunny_status_raw?: number | null
+          bunny_video_id?: string | null
+          created_at?: string
+          created_by?: string | null
+          delete_attempts?: number
+          delete_last_attempt_at?: string | null
+          delete_last_error?: string | null
+          duration_ms?: number | null
+          has_original?: boolean | null
+          id?: string
+          is_audio_only?: boolean
+          is_backfill?: boolean
+          item_id: string
+          media_deleted_at?: string | null
+          media_link?: string | null
+          number?: number | null
+          original_filename?: string | null
+          original_sha256?: string | null
+          original_size_bytes?: number | null
+          ready_at?: string | null
+          source: string
+          timeline_offset_ms?: number | null
+        }
+        Update: {
+          bunny_library_id?: number | null
+          bunny_status?: string | null
+          bunny_status_at?: string | null
+          bunny_status_raw?: number | null
+          bunny_video_id?: string | null
+          created_at?: string
+          created_by?: string | null
+          delete_attempts?: number
+          delete_last_attempt_at?: string | null
+          delete_last_error?: string | null
+          duration_ms?: number | null
+          has_original?: boolean | null
+          id?: string
+          is_audio_only?: boolean
+          is_backfill?: boolean
+          item_id?: string
+          media_deleted_at?: string | null
+          media_link?: string | null
+          number?: number | null
+          original_filename?: string | null
+          original_sha256?: string | null
+          original_size_bytes?: number | null
+          ready_at?: string | null
+          source?: string
+          timeline_offset_ms?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "client_review_versions_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_review_versions_item_id_fkey"
+            columns: ["item_id"]
+            isOneToOne: false
+            referencedRelation: "client_review_items"
             referencedColumns: ["id"]
           },
         ]
@@ -2289,6 +2564,26 @@ export type Database = {
           },
         ]
       }
+      v_review_media_purge_due: {
+        Row: {
+          approval_id: string | null
+          approved_at: string | null
+          item_id: string | null
+          latest_ready_at: string | null
+          latest_version_id: string | null
+          purge_after: string | null
+          upload_pending: boolean | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "client_review_approvals_item_id_fkey"
+            columns: ["item_id"]
+            isOneToOne: false
+            referencedRelation: "client_review_items"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Functions: {
       approve_client_registration: {
@@ -2313,6 +2608,10 @@ export type Database = {
           id: string
           job_date: string
         }[]
+      }
+      assign_review_version_number: {
+        Args: { p_version_id: string }
+        Returns: number
       }
       assistant_archive_client_revenue: {
         Args: { p_client_id: string }
@@ -2349,6 +2648,45 @@ export type Database = {
       can_manage_users: { Args: never; Returns: boolean }
       can_view_money: { Args: never; Returns: boolean }
       can_view_stages: { Args: never; Returns: boolean }
+      create_review_pin: {
+        Args: {
+          p_after_response: boolean
+          p_author_id: string
+          p_author_kind: string
+          p_author_name: string
+          p_body: string
+          p_link_id: string
+          p_time_ms: number
+          p_version_id: string
+        }
+        Returns: {
+          acked_at: string | null
+          acked_by: string | null
+          after_response: boolean
+          author_id: string | null
+          author_kind: string
+          author_name: string | null
+          backfill_source: string | null
+          body: string
+          created_at: string
+          id: string
+          is_backfill: boolean
+          item_id: string
+          kind: string
+          link_id: string | null
+          pin_number: number | null
+          resolved_at: string | null
+          resolved_by: string | null
+          time_ms: number | null
+          version_id: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "client_review_comments"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       due_date_for: {
         Args: {
           base: string

@@ -21,10 +21,15 @@
  * scripts/test_e13_backfill_v1.ts). Re-running after --apply writes nothing:
  * each row carries a backfill_source / (item, v1) key and existing keys are
  * left out of the plan.
+ *
+ * TYPED CLIENT (createTypedAdminClient): every .select() / .insert() here is
+ * checked against database.types.ts, and no cast sits between a query and the
+ * field access — a cast would erase that check (lib/supabase/admin.ts).
  */
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createTypedAdminClient } from "../src/lib/supabase/admin";
+import type { Json } from "../src/lib/supabase/database.types";
 import {
   formatBackfillReport,
   planBackfillV1,
@@ -43,44 +48,130 @@ for (const line of readFileSync(join(__dirname, "..", ".env.local"), "utf-8").sp
 const APPLY = process.argv.includes("--apply");
 const PAGE = 1000;
 
-async function all<T>(admin: SupabaseClient, table: string, cols: string, filter?: (q: any) => any): Promise<T[]> {
-  const out: T[] = [];
+type Admin = ReturnType<typeof createTypedAdminClient>;
+
+/** Pages through a typed query; R is inferred from the query, never asserted. */
+async function pages<R>(
+  label: string,
+  page: (from: number, to: number) => PromiseLike<{ data: R[] | null; error: { message: string } | null }>
+): Promise<R[]> {
+  const out: R[] = [];
   for (let from = 0; ; from += PAGE) {
-    let q = admin.from(table).select(cols).order("id").range(from, from + PAGE - 1);
-    if (filter) q = filter(q);
-    const { data, error } = await q;
-    if (error) throw new Error(`${table}: ${error.message}`);
-    out.push(...((data ?? []) as T[]));
+    const { data, error } = await page(from, from + PAGE - 1);
+    if (error) throw new Error(`${label}: ${error.message}`);
+    out.push(...(data ?? []));
     if (!data || data.length < PAGE) return out;
   }
 }
 
-async function main() {
-  const admin = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
-    auth: { persistSession: false },
+// ── Json → the planner's shapes, by inspection (no casts) ──────────────────
+const obj = (j: Json | undefined): { [k: string]: Json | undefined } | null =>
+  j !== null && j !== undefined && typeof j === "object" && !Array.isArray(j) ? j : null;
+const str = (j: Json | undefined): string | null => (typeof j === "string" ? j : null);
+
+type EventItem = NonNullable<NonNullable<BfEvent["payload"]>["items"]>[number];
+
+function toPayload(j: Json): BfEvent["payload"] {
+  const o = obj(j);
+  if (!o) return null;
+  const items: EventItem[] = [];
+  if (Array.isArray(o.items)) {
+    for (const it of o.items) {
+      const r = obj(it);
+      const id = str(r?.id);
+      const kind = str(r?.kind);
+      const response = str(r?.response);
+      if (!r || !id || !kind || !response) continue;
+      items.push({ id, kind, reel_index: typeof r.reel_index === "number" ? r.reel_index : null, response, note: str(r.note) });
+    }
+  }
+  return { link_id: str(o.link_id) ?? undefined, items };
+}
+
+async function loadItems(admin: Admin): Promise<BfItem[]> {
+  const rows = await pages("client_review_items", (f, t) =>
+    admin
+      .from("client_review_items")
+      .select("id,production_id,kind,reel_index,media_link,approved,approved_at")
+      .order("id")
+      .range(f, t)
+  );
+  return rows.map((r) => {
+    if (r.kind !== "episode" && r.kind !== "reel") throw new Error(`client_review_items ${r.id}: kind לא צפוי "${r.kind}"`);
+    return {
+      id: r.id,
+      production_id: r.production_id,
+      kind: r.kind,
+      reel_index: r.reel_index,
+      media_link: r.media_link,
+      approved: r.approved,
+      approved_at: r.approved_at,
+    };
   });
+}
+
+async function loadLinks(admin: Admin): Promise<BfLink[]> {
+  const rows = await pages("client_review_links", (f, t) =>
+    admin
+      .from("client_review_links")
+      .select("id,production_id,responded_at,episode_response,reels_response,episode_note,reels_note")
+      .not("responded_at", "is", null)
+      .order("id")
+      .range(f, t)
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    production_id: r.production_id,
+    responded_at: r.responded_at,
+    episode_response: r.episode_response,
+    reels_response: r.reels_response,
+    episode_note: r.episode_note,
+    reels_note: r.reels_note,
+  }));
+}
+
+async function loadEvents(admin: Admin): Promise<BfEvent[]> {
+  const rows = await pages("events", (f, t) =>
+    admin
+      .from("events")
+      .select("id,event_type,created_at,payload")
+      .in("event_type", ["client_review_approved", "client_review_revisions"])
+      .order("id")
+      .range(f, t)
+  );
+  return rows.map((r) => ({ event_type: r.event_type, created_at: r.created_at, payload: toPayload(r.payload) }));
+}
+
+async function loadV1(admin: Admin) {
+  return pages("client_review_versions", (f, t) =>
+    admin.from("client_review_versions").select("id,item_id").eq("number", 1).order("id").range(f, t)
+  );
+}
+
+async function loadSources(admin: Admin) {
+  const appr = await pages("client_review_approvals", (f, t) =>
+    admin.from("client_review_approvals").select("id,backfill_source").not("backfill_source", "is", null).order("id").range(f, t)
+  );
+  const com = await pages("client_review_comments", (f, t) =>
+    admin.from("client_review_comments").select("id,backfill_source").not("backfill_source", "is", null).order("id").range(f, t)
+  );
+  const keys = (rows: { backfill_source: string | null }[]) =>
+    new Set(rows.flatMap((r) => (r.backfill_source ? [r.backfill_source] : [])));
+  return { approvalSources: keys(appr), commentSources: keys(com) };
+}
+
+async function main() {
+  const admin = createTypedAdminClient();
 
   const { data: ledger, error: lErr } = await admin.from("schema_ledger").select("version").eq("version", "0114").maybeSingle();
   if (lErr) throw new Error(`schema_ledger: ${lErr.message}`);
   if (!ledger) throw new Error("0114 טרם הוחלה — הרץ את המיגרציה קודם");
 
-  const items = await all<BfItem>(admin, "client_review_items", "id,production_id,kind,reel_index,media_link,approved,approved_at");
-  const links = await all<BfLink>(
-    admin,
-    "client_review_links",
-    "id,production_id,responded_at,episode_response,reels_response,episode_note,reels_note",
-    (q) => q.not("responded_at", "is", null)
-  );
-  const events = await all<BfEvent & { id: string }>(admin, "events", "id,event_type,created_at,payload", (q) =>
-    q.in("event_type", ["client_review_approved", "client_review_revisions"])
-  );
-  const v1 = await all<{ id: string; item_id: string }>(admin, "client_review_versions", "id,item_id", (q) => q.eq("number", 1));
-  const apprSrc = await all<{ id: string; backfill_source: string }>(admin, "client_review_approvals", "id,backfill_source", (q) =>
-    q.not("backfill_source", "is", null)
-  );
-  const comSrc = await all<{ id: string; backfill_source: string }>(admin, "client_review_comments", "id,backfill_source", (q) =>
-    q.not("backfill_source", "is", null)
-  );
+  const items = await loadItems(admin);
+  const links = await loadLinks(admin);
+  const events = await loadEvents(admin);
+  const v1 = await loadV1(admin);
+  const { approvalSources, commentSources } = await loadSources(admin);
 
   const runAt = new Date().toISOString();
   const plan = planBackfillV1(
@@ -90,8 +181,8 @@ async function main() {
     {
       v1ItemIds: new Set(v1.map((r) => r.item_id)),
       v1IdByItem: new Map(v1.map((r) => [r.item_id, r.id])),
-      approvalSources: new Set(apprSrc.map((r) => r.backfill_source)),
-      commentSources: new Set(comSrc.map((r) => r.backfill_source)),
+      approvalSources,
+      commentSources,
     },
     runAt
   );
@@ -109,8 +200,7 @@ async function main() {
     if (error) throw new Error(`versions: ${error.message} — לא נכתבו החלטות והערות; הרץ שוב אחרי בירור`);
   }
   // 2. resolve each item's v1 id (new + pre-existing)
-  const v1Now = await all<{ id: string; item_id: string }>(admin, "client_review_versions", "id,item_id", (q) => q.eq("number", 1));
-  const v1Id = new Map(v1Now.map((r) => [r.item_id, r.id]));
+  const v1Id = new Map((await loadV1(admin)).map((r) => [r.item_id, r.id]));
 
   // 3. approvals — one statement
   if (plan.approvals.length) {
@@ -126,7 +216,8 @@ async function main() {
 
   const { error: evErr } = await admin.from("events").insert({
     entity_type: "system",
-    entity_id: null,
+    // events.entity_id is NOT NULL; system events use the zero uuid (registration/approve.ts)
+    entity_id: "00000000-0000-0000-0000-000000000000",
     event_type: "review_backfill_v1_applied",
     payload: { run_at: runAt, versions: plan.versions.length, approvals: plan.approvals.length, comments: plan.comments.length },
   });
