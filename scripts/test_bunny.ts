@@ -14,7 +14,7 @@
 import { createHash, createHmac } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { createVideo, uploadVideo, getVideo, deleteVideo, tusUploadAuthorization, BunnyError, BunnyNetworkError, TUS_UPLOAD_TTL_SECONDS, fetchVideoFromUrl, findVideosByTitle } from "../src/lib/bunny/client";
+import { createVideo, uploadVideo, getVideo, deleteVideo, tusUploadAuthorization, BunnyError, BunnyNetworkError, TUS_UPLOAD_TTL_SECONDS, fetchVideoFromUrl, fetchVideoRaw, findVideosByTitle } from "../src/lib/bunny/client";
 import { describeError } from "../src/lib/bunny/errors";
 import { bunnyTusOptions, shouldRetryTusStatus, TUS_CHUNK_SIZE } from "../src/lib/bunny/tus";
 import { isBunnyDryRun, BunnyConfigError } from "../src/lib/bunny/config";
@@ -383,7 +383,7 @@ async function main() {
   answers = [{ status: 200, body: { success: true, message: null, statusCode: 200 } }];
   const fvLive = await fetchVideoFromUrl("https://example.test/v.mp4", { Authorization: "Bearer B" }, " t ");
   check("live: POST to /videos/fetch with the body Bunny documents", [calls[0].method, calls[0].url, calls[0].body],
-    ["POST", "https://video.bunnycdn.com/library/123456/videos/fetch", JSON.stringify({ url: "https://example.test/v.mp4", headers: { Authorization: "Bearer B" }, title: "t" })]);
+    ["POST", "https://video.bunnycdn.com/library/123456/videos/fetch", JSON.stringify({ url: "https://example.test/v.mp4", title: "t", headers: { Authorization: "Bearer B" } })]);
   check("live: result", fvLive, { dryRun: false, message: null });
   for (const [st, body] of [[422, { success: false, message: "Unable to fetch video from origin", statusCode: 422 }], [429, { success: false, message: "Too many fetch jobs queued", statusCode: 429 }], [200, { success: false, message: "nope", statusCode: 400 }]] as const) {
     answers = [{ status: st, body }];
@@ -394,6 +394,26 @@ async function main() {
       check(`fetch ${st} (${body.message}): BunnyError carrying Bunny's message`, [e instanceof BunnyError, (e as Error).message.includes(body.message)], [true, true]);
     }
   }
+  // owner 15.10: the production shape — ASCII title, no `headers` key when empty
+  calls = [];
+  answers = [{ status: 200, body: { success: true } }];
+  await fetchVideoFromUrl("https://example.test/v.mp4", {}, "E13 url-fetch ab12cd34");
+  check("empty headers are OMITTED, not sent as {}", JSON.parse(String(calls[0].body)), { url: "https://example.test/v.mp4", title: "E13 url-fetch ab12cd34" });
+  calls = [];
+  for (const bad of ["E13 — trailer.mp4", "פרק 12", "tab\there"]) {
+    try {
+      await fetchVideoFromUrl("https://example.test/v.mp4", {}, bad);
+      check(`non-ASCII title ${JSON.stringify(bad)} refused`, "sent", "refused");
+    } catch {
+      check(`non-ASCII title ${JSON.stringify(bad)} refused before any request`, calls.length, 0);
+    }
+  }
+  answers = [{ status: 500, body: { success: false, message: "An error has occurred" }, headers: { "stream-server": "2134", "content-type": "application/json" } }];
+  const raw500 = await fetchVideoRaw({ url: "https://example.test/v.mp4" }, { title: "q t" });
+  check("fetchVideoRaw: 500 is a result (no throw), with body + safe headers; query string appended",
+    ["dryRun" in raw500 ? "dry" : raw500.status, "dryRun" in raw500 ? null : raw500.headers["stream-server"], calls[0].url.endsWith("/videos/fetch?title=q+t")],
+    [500, "2134", true]);
+
   calls = [];
   answers = [
     { status: 503, body: { success: false, message: "Service Unavailable", statusCode: 503 }, headers: { "x-request-id": "r-1", server: "BunnyCDN", "x-secret-token": "LEAK", "content-type": "application/json" } },
@@ -442,8 +462,8 @@ async function main() {
   check("send( is defined once and called from exactly three places (write(), getVideo, findVideosByTitle)", sendCalls.length, 4);
   const listBody = clientSrc.slice(clientSrc.indexOf("export async function findVideosByTitle"), clientSrc.indexOf("export type TusAuthorization"));
   ok("findVideosByTitle's send is a GET", /method: "GET"/.test(listBody) && /send\(/.test(listBody));
-  const fetchFnBody = clientSrc.slice(clientSrc.indexOf("export async function fetchVideoFromUrl"), clientSrc.indexOf("export async function findVideosByTitle"));
-  ok("fetchVideoFromUrl writes only through write()", /await write\(/.test(fetchFnBody) && !/send\(|fetch\(/.test(fetchFnBody));
+  const fetchFnBody = clientSrc.slice(clientSrc.indexOf("export async function fetchVideoRaw"), clientSrc.indexOf("export async function findVideosByTitle"));
+  ok("Fetch Video (raw + production) writes only through write(), exactly once", (fetchFnBody.match(/await write\(/g) ?? []).length === 1 && !/send\(|[^.]fetch\(/.test(fetchFnBody));
   const getVideoBody = clientSrc.slice(clientSrc.indexOf("export async function getVideo"), clientSrc.indexOf("export async function deleteVideo"));
   ok("the send outside write() is the GET in getVideo", /method: "GET"/.test(getVideoBody) && /send\(/.test(getVideoBody));
   const writeBody = clientSrc.slice(clientSrc.indexOf("async function write("), clientSrc.indexOf("export async function createVideo"));

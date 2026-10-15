@@ -11,6 +11,10 @@
  *   … --live --no-wait-encode   stop as soon as Bunny has the whole file
  *   … --live --keep             do not delete at the end; prints the guid
  *   --drive-file-id <id> instead of --drive-url.
+ *   --fetch-variant [--fetch-public-url <url>]: one POST per body shape (url
+ *     only · + ASCII title · title as query · + empty headers · our old body),
+ *     full answer printed, created videos found by a library snapshot and
+ *     deleted unless --keep. Default URL: the W3C trailer below.
  *   --fetch-public-url <url> instead of a Drive file: Bunny fetches a PUBLIC
  *     URL with NO headers — does Fetch Video work at all, Drive aside?
  *     e.g. https://media.w3.org/2010/05/sintel/trailer.mp4 (W3C test media, 4.4MB)
@@ -46,7 +50,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { fetchVideoFromUrl, findVideosByTitle, getVideo } from "../src/lib/bunny/client";
+import { fetchVideoFromUrl, fetchVideoRaw, findVideosByTitle, getVideo, type FetchRawBody } from "../src/lib/bunny/client";
 import { describeError } from "../src/lib/bunny/errors";
 import type { BunnyVideo } from "../src/lib/bunny/status";
 import {
@@ -75,6 +79,8 @@ const T = {
 };
 
 const LABEL = "Drive→Bunny";
+/** W3C test media (Sintel trailer, 4.4MB, unchanged since 2010) — the default for --fetch-variant. */
+export const DEFAULT_PUBLIC_URL = "https://media.w3.org/2010/05/sintel/trailer.mp4";
 const MB = 1024 * 1024;
 const PLANNED = [
   "טוקן Google", "files.get (Drive)", "בקשת משיכה ל-Bunny", "איתור הווידאו ב-Bunny", "הקובץ התקבל ב-Bunny",
@@ -160,6 +166,107 @@ async function sweepAfterFailedFetch(runId: string): Promise<{ guids: string[]; 
   }
 }
 
+// ── --fetch-variant: which body shape does Fetch Video accept? ──────────────
+// The dashboard's own "upload from URL" fetched the W3C trailer; the API
+// answered 500 to our request for the same URL every time (owner 15.10). The
+// variants isolate the difference, one POST each, never retried. Videos are
+// attributed by a snapshot of the library taken BEFORE the run — so a video
+// that already existed (the dashboard one) is never touched, and a video
+// titled by Bunny from the file name is still found.
+type Variant = {
+  key: string;
+  desc: string;
+  body: (url: string, id: string) => FetchRawBody;
+  query?: (id: string) => Record<string, string>;
+};
+export const VARIANTS: Variant[] = [
+  { key: "א", desc: "גוף עם url בלבד", body: (url) => ({ url }) },
+  { key: "ב", desc: "url + title ב-ASCII", body: (url, id) => ({ url, title: `E13 variant-b ${id}` }) },
+  { key: "ג", desc: "title כ-query param (מחוץ למפרט)", body: (url) => ({ url }), query: (id) => ({ title: `E13 variant-c ${id}` }) },
+  { key: "ד", desc: "url + headers ריק ({})", body: (url) => ({ url, headers: {} }) },
+  { key: "ה", desc: "ביקורת: הבקשה הקודמת (headers ריק + title עם —)", body: (url, id) => ({ url, headers: {}, title: `E13 url-fetch ${id} — trailer.mp4` }) },
+];
+
+async function libraryGuids(): Promise<Set<string>> {
+  const all = await withRetry("רשימת הספרייה", () => findVideosByTitle(""));
+  return new Set(all.map((v) => v.guid));
+}
+
+export async function runFetchVariants(url: string, live: boolean, keep: boolean): Promise<{ rows: Row[]; metrics: Metrics }> {
+  const metrics: Metrics = { fileName: null, sizeBytes: null, fetchSeconds: null, serverMbps: null, encodeSeconds: null, hash: null, guid: null };
+  const label = "וריאציות fetch";
+  const summary: { key: string; desc: string; http: string; created: string; verdict: string }[] = [];
+  const created: string[] = [];
+  try {
+    const known = live ? await libraryGuids() : new Set<string>();
+    if (live) console.log(`   תמונת מצב: ${known.size} סרטונים קיימים בספרייה — לא ייגעו בהם`);
+    for (const v of VARIANTS) {
+      const id = randomBytes(4).toString("hex");
+      const body = v.body(url, id);
+      const query = v.query ? v.query(id) : {};
+      console.log(`\n── וריאציה ${v.key}: ${v.desc}`);
+      console.log(`   POST …/videos/fetch${Object.keys(query).length ? `?${new URLSearchParams(query)}` : ""}  body=${JSON.stringify(body)}`);
+      let res;
+      try {
+        res = await fetchVideoRaw(body, query);
+      } catch (e) {
+        record(label, `וריאציה ${v.key}: ${v.desc}`, "נכשל", `אין תשובת HTTP (ניסיון אחד): ${describeError(e)}`);
+        summary.push({ key: v.key, desc: v.desc, http: "רשת", created: "?", verdict: "נכשל" });
+        continue;
+      }
+      if ("dryRun" in res) {
+        record(label, `וריאציה ${v.key}: ${v.desc}`, "דילוג", "dry-run: נרשם בלוג, לא נשלח");
+        summary.push({ key: v.key, desc: v.desc, http: "—", created: "—", verdict: "dry-run" });
+        continue;
+      }
+      const b = res.body && typeof res.body === "object" ? (res.body as { success?: unknown }) : {};
+      const accepted = res.ok && b.success !== false;
+      record(label, `וריאציה ${v.key}: ${v.desc}`, accepted ? "עבר" : "נכשל",
+        `HTTP ${res.status} תוך ${(res.ms / 1000).toFixed(1)}s · body=${typeof res.body === "string" ? res.body : JSON.stringify(res.body)} · headers=${JSON.stringify(res.headers)}`);
+
+      // what did this attempt create? (new guids since the snapshot, up to sweepMs)
+      const start = Date.now();
+      let fresh: string[] = [];
+      for (;;) {
+        try {
+          const now = await libraryGuids();
+          fresh = Array.from(now).filter((g) => !known.has(g));
+        } catch (e) {
+          record(label, `וריאציה ${v.key}: וידאו שנוצר`, "לא נבדק", `רשימת הספרייה נכשלה: ${describeError(e)}`);
+          break;
+        }
+        if (fresh.length || Date.now() - start >= T.sweepMs()) break;
+        await sleep(T.pollMs());
+      }
+      for (const g of fresh) known.add(g);
+      created.push(...fresh);
+      const consistent = accepted ? fresh.length === 1 : fresh.length === 0;
+      if (!rows.some((r) => r.check === `וריאציה ${v.key}: וידאו שנוצר`)) {
+        record(label, `וריאציה ${v.key}: וידאו שנוצר`, consistent ? "עבר" : "נכשל",
+          `${fresh.length} נוצרו${fresh.length ? `: ${fresh.join(", ")}` : ""} (חיפוש ${Math.round((Date.now() - start) / 1000)}s)${consistent ? "" : accepted ? " — התקבל אבל לא נמצא וידאו" : " — נכשל אבל נוצר וידאו"}`);
+      }
+      summary.push({ key: v.key, desc: v.desc, http: String(res.status), created: String(fresh.length), verdict: accepted ? "עובד" : "לא עובד" });
+    }
+  } catch (e) {
+    const f = stepFailure(e);
+    record(label, "תמונת מצב של הספרייה", f.result, f.detail);
+  } finally {
+    for (const g of created) {
+      if (keep) record(label, `מחיקה ${g.slice(0, 8)}`, "דילוג", `--keep: guid ${g}`);
+      else await removeVideo(label, g, record, `מחיקה ${g.slice(0, 8)}`);
+    }
+    console.log("\n═══ סיכום ═══");
+    console.log("| בדיקה | תוצאה | פרט |");
+    console.log("|---|---|---|");
+    for (const r of rows) console.log(`| ${r.check} | ${r.result} | ${r.detail.replace(/\|/g, "/").replace(/\n/g, " ")} |`);
+    console.log("\n═══ וריאציות ═══");
+    console.log("| וריאציה | מה נשלח | HTTP | נוצרו | מסקנה |");
+    console.log("|---|---|---|---|---|");
+    for (const x of summary) console.log(`| ${x.key} | ${x.desc} | ${x.http} | ${x.created} | ${x.verdict} |`);
+  }
+  return { rows, metrics };
+}
+
 /** Returns rows + metrics; throws Refused before any request when a guard says no. */
 export async function main(args: string[]): Promise<{ rows: Row[]; metrics: Metrics }> {
   rows = [];
@@ -174,9 +281,10 @@ export async function main(args: string[]): Promise<{ rows: Row[]; metrics: Metr
   const envFile = loadEnvFile(T.envFile());
 
   // ── the source: a Drive file, or (--fetch-public-url) any public URL ──────
-  const publicUrl = arg("--fetch-public-url");
+  const VARIANT = args.includes("--fetch-variant");
+  const publicUrl = arg("--fetch-public-url") ?? (VARIANT ? DEFAULT_PUBLIC_URL : undefined);
   const raw = arg("--drive-file-id") ?? arg("--drive-url");
-  if (publicUrl && raw) fail("בחר מקור אחד: --fetch-public-url, או --drive-url / --drive-file-id");
+  if (publicUrl && raw) fail(VARIANT ? "--fetch-variant רץ על כתובת ציבורית בלבד, לא על Drive" : "בחר מקור אחד: --fetch-public-url, או --drive-url / --drive-file-id");
   if (!publicUrl && !raw) fail("חסר מקור: --drive-url <קישור שיתוף>, --drive-file-id <מזהה>, או --fetch-public-url <כתובת>");
   let fileId: string | null = null;
   if (publicUrl) {
@@ -199,6 +307,7 @@ export async function main(args: string[]): Promise<{ rows: Row[]; metrics: Metr
 
   console.log(LIVE ? `🔴 ריצה אמיתית: Bunny ימשוך את הקובץ ${publicUrl ? "מכתובת ציבורית, בלי כותרות" : "מ-Drive"}` : `🟢 dry-run — ${publicUrl ? "HEAD לכתובת בלבד" : "קריאה מ-Drive בלבד"}, שום בקשה כותבת לא יוצאת ל-Bunny`);
   console.log(publicUrl ? `   כתובת: ${publicUrl}` : `   קובץ Drive: ${fileId}`);
+  if (VARIANT) return runFetchVariants(publicUrl!, LIVE, KEEP);
 
   let guid: string | null = null;
   let runId: string | null = null;
@@ -264,7 +373,8 @@ export async function main(args: string[]): Promise<{ rows: Row[]; metrics: Metr
     // ── 3. Bunny fetch — ONE attempt, never retried (not idempotent) ───────
     step = "בקשת משיכה ל-Bunny";
     runId = randomBytes(4).toString("hex");
-    const fetchTitle = `E13 ${publicUrl ? "url-fetch" : "drive-fetch"} ${runId} — ${name}`;
+    // ASCII only, with the run id; the file name stays with us (owner 15.10)
+    const fetchTitle = `E13 ${publicUrl ? "url-fetch" : "drive-fetch"} ${runId}`;
     const t0 = Date.now();
     let res;
     try {

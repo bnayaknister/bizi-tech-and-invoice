@@ -56,13 +56,15 @@ type Scenario = {
   statuses: number[]; // successive status reads of the fetched video; the last one repeats
   originalHash: string | null;
   flakyStatusReads: number; // the first N status reads die with a connect timeout
-  fetchMode: "ok" | "503-creates" | "503-nothing";
+  fetchMode: "ok" | "503-creates" | "503-nothing" | "strict";
+  // strict: 500 when the body has a `headers` key or a non-ASCII title (the suspects); otherwise create
 };
 let sc: Scenario;
 let calls: string[] = [];
 let jwtClaims: Record<string, unknown> | null = null;
 let jwtValid = false;
 let fetchBody: { url?: string; headers?: Record<string, string>; title?: string } | null = null;
+let fetchQueries: string[] = [];
 const videos = new Map<string, { title: string; reads: number }>();
 const deleted = new Set<string>();
 let seq = 0;
@@ -96,6 +98,17 @@ global.fetch = (async (input: string, init: RequestInit = {}) => {
   if (m) {
     if (m[1] === "/fetch" && method === "POST") {
       fetchBody = JSON.parse(String(init.body));
+      fetchQueries.push(new URL(url).search);
+      if (sc.fetchMode === "strict") {
+        const nonAscii = typeof fetchBody!.title === "string" && !/^[\x20-\x7E]*$/.test(fetchBody!.title);
+        if ("headers" in fetchBody! || nonAscii) {
+          return new Response(JSON.stringify({ success: false, message: "An error has occurred", statusCode: 500 }), { status: 500, headers: { "content-type": "application/json", "stream-server": "2134" } });
+        }
+        const g = `00000000-0000-4000-8000-${String(++seq).padStart(12, "0")}`;
+        const qTitle = new URL(url).searchParams.get("title");
+        videos.set(g, { title: fetchBody!.title ?? qTitle ?? "trailer.mp4", reads: 0 });
+        return json(200, { success: true, message: null, statusCode: 200 });
+      }
       if (sc.fetchMode !== "503-nothing") {
         const g = `00000000-0000-4000-8000-${String(++seq).padStart(12, "0")}`;
         videos.set(g, { title: fetchBody!.title!, reads: 0 });
@@ -171,6 +184,7 @@ const reset = (s: Partial<Scenario> = {}) => {
   jwtClaims = null;
   jwtValid = false;
   fetchBody = null;
+  fetchQueries = [];
   videos.clear();
   deleted.clear();
 };
@@ -244,7 +258,8 @@ async function main() {
   check("Bunny was asked to fetch the Drive media URL with our bearer header",
     [fetchBody?.url, fetchBody?.headers?.Authorization],
     [`https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media&supportsAllDrives=true`, `Bearer ${TOKEN}`]);
-  ok("the title carries the run id that found the guid", !!fetchBody?.title && /^E13 drive-fetch [0-9a-f]{8} — episode-12\.mp4$/.test(fetchBody.title));
+  ok("the title is ASCII with the run id, WITHOUT the file name", !!fetchBody?.title && /^E13 drive-fetch [0-9a-f]{8}$/.test(fetchBody.title));
+  check("the file name is kept on our side", live.value.metrics.fileName, "episode-12.mp4");
   check("no separate createVideo (Fetch creates the video)", calls.filter((c) => c === "POST https://video.bunnycdn.com/library/111/videos").length, 0);
   check("hash = זהה (base64 from Bunny vs hex from Drive)", [live.value.metrics.hash, row(live.value.rows, "hash מול Drive")?.result], ["זהה", "עבר"]);
   ok("fetch time + Mbps measured", typeof live.value.metrics.fetchSeconds === "number" && typeof live.value.metrics.serverMbps === "number");
@@ -329,8 +344,8 @@ async function main() {
   const pub = await capture(() => run(["--fetch-public-url", PUBLIC_URL, "--live"]));
   check("no failed / not-checked row", pub.value.rows.filter((r) => r.result === "נכשל" || r.result === "לא נבדק").map((r) => `${r.check}: ${r.detail}`), []);
   check("zero Google requests", calls.filter((c) => c.includes("googleapis.com")).length, 0);
-  check("Bunny fetched the public URL with NO headers", [fetchBody?.url, fetchBody?.headers], [PUBLIC_URL, {}]);
-  ok("title marks url-fetch", !!fetchBody?.title && /^E13 url-fetch [0-9a-f]{8} — trailer\.mp4$/.test(fetchBody.title));
+  check("Bunny fetched the public URL with NO `headers` key at all (not {})", [fetchBody?.url, fetchBody ? "headers" in fetchBody : null], [PUBLIC_URL, false]);
+  ok("title marks url-fetch, ASCII only", !!fetchBody?.title && /^E13 url-fetch [0-9a-f]{8}$/.test(fetchBody.title));
   check("Google rows + hash = דילוג", ["טוקן Google", "files.get (Drive)", "hash מול Drive"].map((c) => row(pub.value.rows, c)?.result), ["דילוג", "דילוג", "דילוג"]);
   ok("size from HEAD used for Mbps", pub.value.metrics.sizeBytes === 4372373 && typeof pub.value.metrics.serverMbps === "number");
   check("deleted at the end", deleted.size, 1);
@@ -353,6 +368,53 @@ async function main() {
     both = (e as Error).message;
   }
   check("refused, zero requests", [both.includes("מקור אחד"), calls.length], [true, 0]);
+
+
+  section("--fetch-variant against a strict fake (500 on `headers` key or non-ASCII title)");
+  writeFileSync(envPath, KEYS + "BUNNY_DRY_RUN=false\n");
+  reset({ fetchMode: "strict" });
+  process.env.BUNNY_DRY_RUN = "false";
+  // a video that already exists (the one made from the dashboard) must never be touched
+  videos.set("99999999-0000-4000-8000-000000000001", { title: "trailer", reads: 0 });
+  const vr = await capture(() => run(["--fetch-variant", "--live"]));
+  check("exactly 5 POSTs, one per variant", calls.filter((c) => c.includes("/videos/fetch")).length, 5);
+  check("א ב ג work, ד ה (headers / non-ASCII) fail",
+    ["א", "ב", "ג", "ד", "ה"].map((k) => vr.value.rows.find((r) => r.check.startsWith(`וריאציה ${k}:`) && !r.check.endsWith("וידאו שנוצר"))?.result),
+    ["עבר", "עבר", "עבר", "נכשל", "נכשל"]);
+  check("each working variant created exactly one video, the failing ones none",
+    ["א", "ב", "ג", "ד", "ה"].map((k) => vr.value.rows.find((r) => r.check === `וריאציה ${k}: וידאו שנוצר`)?.detail.split(" ")[0]),
+    ["1", "1", "1", "0", "0"]);
+  ok("variant ג sent title in the query string", fetchQueries.some((q) => /^\?title=E13\+variant-c\+[0-9a-f]{8}$/.test(q)));
+  ok("the full 500 answer is printed (body + stream-server header)", vr.out.includes("An error has occurred") && vr.out.includes("stream-server"));
+  check("the 3 created videos deleted, the pre-existing one untouched", [deleted.size, deleted.has("99999999-0000-4000-8000-000000000001")], [3, false]);
+  ok("summary table of variants printed", vr.out.includes("═══ וריאציות ═══") && vr.out.includes("| ה |"));
+
+  section("--fetch-variant --keep: nothing deleted");
+  reset({ fetchMode: "strict" });
+  const vk = await capture(() => run(["--fetch-variant", "--live", "--keep"]));
+  check("zero DELETE, 3 kept rows", [calls.filter((c) => c.startsWith("DELETE")).length, vk.value.rows.filter((r) => r.check.startsWith("מחיקה") && r.result === "דילוג").length], [0, 3]);
+
+  section("--fetch-variant dry run: zero Bunny requests");
+  reset({ fetchMode: "strict" });
+  delete process.env.BUNNY_DRY_RUN;
+  const vd = await capture(() => run(["--fetch-variant"]));
+  check("zero Bunny requests, 5 skipped", [bunnyCalls().length, vd.value.rows.filter((r) => r.result === "דילוג").length], [0, 5]);
+  process.env.BUNNY_DRY_RUN = "false";
+
+  section("--fetch-variant with a Drive source → refused");
+  reset();
+  let vErr = "";
+  try {
+    await capture(() => run(["--fetch-variant", "--drive-file-id", FILE_ID]));
+  } catch (e) {
+    vErr = (e as Error).message;
+  }
+  check("refused, zero requests", [vErr.includes("כתובת ציבורית"), calls.length], [true, 0]);
+
+  section("the production path now matches the shape that works");
+  reset({ fetchMode: "strict" });
+  const strictLive = await capture(() => run(["--fetch-public-url", PUBLIC_URL, "--live", "--no-wait-encode"]));
+  check("fetchVideoFromUrl accepted by the strict fake (no `headers` key, ASCII title)", row(strictLive.value.rows, "בקשת משיכה ל-Bunny")?.result, "עבר");
 
   rmSync(dir, { recursive: true, force: true });
   console.log(`\n${passed} passed, ${failed} failed`);

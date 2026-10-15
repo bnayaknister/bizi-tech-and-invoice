@@ -204,6 +204,44 @@ export async function deleteVideo(videoId: string): Promise<DryRun | { dryRun: f
  * not idempotent — every POST may create a video, even one that answers 5xx.
  * A caller that needs to know what a failed call left behind searches the
  * library by the title it sent (findVideosByTitle).
+ *
+ * (This block describes the Fetch Video section below: fetchVideoRaw and
+ * fetchVideoFromUrl.)
+ */
+
+/** Printable ASCII only — Bunny gets an id-bearing ASCII title; the file name stays with us (owner 15.10). */
+export const isAsciiTitle = (t: string) => /^[\x20-\x7E]+$/.test(t);
+
+export type FetchRawBody = { url: string; headers?: Record<string, string> | null; title?: string | null };
+export type FetchRawResult = { status: number; ok: boolean; body: unknown; headers: Record<string, string>; ms: number };
+
+/**
+ * ONE raw Fetch Video request, exactly as given — for diagnosing which body
+ * shape Bunny accepts (e13_drive_fetch_test.ts --fetch-variant). Never throws
+ * on an HTTP status: the caller gets status, the whole body and the safe
+ * headers. Still a write: through write() and BUNNY_DRY_RUN, header VALUES
+ * redacted in the dry-run log. Never retried (see fetchVideoFromUrl).
+ */
+export async function fetchVideoRaw(body: FetchRawBody, query: Record<string, string> = {}): Promise<DryRun | FetchRawResult> {
+  const { libraryId, apiKey } = bunnyApiConfig();
+  const qs = new URLSearchParams(query).toString();
+  const url = `${videoUrl(libraryId)}/fetch${qs ? `?${qs}` : ""}`;
+  const summary = {
+    ...body,
+    ...(body.headers ? { headers: Object.fromEntries(Object.keys(body.headers).map((k) => [k, "<redacted>"])) } : {}),
+  };
+  const t0 = Date.now();
+  const res = await write("POST", url, { json: body, bodySummary: JSON.stringify(summary) }, apiKey);
+  if ("dryRun" in res) return res;
+  const parsed = await parse(res);
+  return { status: res.status, ok: res.ok, body: parsed, headers: safeHeaders(res), ms: Date.now() - t0 };
+}
+
+/**
+ * The production shape (owner 15.10, after the API answered 500 to a body the
+ * dashboard's own URL upload accepted): `title` is printable ASCII only and
+ * carries the run id — the file name is kept on our side, never sent; and
+ * `headers` is OMITTED when there are none, never sent as `{}`.
  */
 export async function fetchVideoFromUrl(
   sourceUrl: string,
@@ -212,19 +250,13 @@ export async function fetchVideoFromUrl(
 ): Promise<DryRun | { dryRun: false; message: string | null }> {
   const t = title.trim();
   if (!t) throw new Error("Bunny: כותרת וידאו ריקה");
-  const { libraryId, apiKey } = bunnyApiConfig();
-  const redacted = Object.fromEntries(Object.keys(headers).map((k) => [k, "<redacted>"]));
-  const res = await write(
-    "POST",
-    `${videoUrl(libraryId)}/fetch`,
-    { json: { url: sourceUrl, headers, title: t }, bodySummary: JSON.stringify({ url: sourceUrl, headers: redacted, title: t }) },
-    apiKey
-  );
+  if (!isAsciiTitle(t)) throw new Error("Bunny: כותרת למשיכה חייבת להיות ASCII בלבד (שם הקובץ נשמר אצלנו, לא ב-Bunny)");
+  const body: FetchRawBody = { url: sourceUrl, title: t, ...(Object.keys(headers).length ? { headers } : {}) };
+  const res = await fetchVideoRaw(body);
   if ("dryRun" in res) return res;
-  const body = await parse(res);
-  const b = body && typeof body === "object" ? (body as { success?: unknown; message?: unknown }) : {};
+  const b = res.body && typeof res.body === "object" ? (res.body as { success?: unknown; message?: unknown }) : {};
   if (!res.ok || b.success === false) {
-    throw new BunnyError(`Bunny fetch נכשל (${res.status})${typeof b.message === "string" ? `: ${b.message}` : ""}`, res.status, body, safeHeaders(res));
+    throw new BunnyError(`Bunny fetch נכשל (${res.status})${typeof b.message === "string" ? `: ${b.message}` : ""}`, res.status, res.body, res.headers);
   }
   return { dryRun: false, message: typeof b.message === "string" ? b.message : null };
 }
