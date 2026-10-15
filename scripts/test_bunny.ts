@@ -14,7 +14,9 @@
 import { createHash, createHmac } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { createVideo, uploadVideo, getVideo, deleteVideo, tusUploadAuthorization, BunnyError } from "../src/lib/bunny/client";
+import { createVideo, uploadVideo, getVideo, deleteVideo, tusUploadAuthorization, BunnyError, BunnyNetworkError, TUS_UPLOAD_TTL_SECONDS } from "../src/lib/bunny/client";
+import { describeError } from "../src/lib/bunny/errors";
+import { bunnyTusOptions, shouldRetryTusStatus, TUS_CHUNK_SIZE } from "../src/lib/bunny/tus";
 import { isBunnyDryRun, BunnyConfigError } from "../src/lib/bunny/config";
 import { cdnToken, signedPlaybackUrl, signedOriginalUrl, tusSignature, PLAYBACK_TTL_SECONDS } from "../src/lib/bunny/sign";
 import { deriveVersionFromVideo } from "../src/lib/bunny/status";
@@ -333,14 +335,66 @@ async function main() {
   check("missing/negative length → null duration", [st({ status: 1 }).duration_ms, st({ status: 1, length: -1 }).duration_ms], [null, null]);
 
   // ══════════════════════════════════════════════════════════════════════
+  section("network failures carry their whole cause (first --live run printed only \"fetch failed\")");
+  const sock = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" });
+  const tf = new TypeError("fetch failed", { cause: sock });
+  const dTf = describeError(tf);
+  ok("describeError walks .cause: message + code of the inner error", dTf.includes("fetch failed") && dTf.includes("other side closed") && dTf.includes("code=UND_ERR_SOCKET"));
+  const deep = new Error("a", { cause: new Error("b", { cause: Object.assign(new Error("c"), { code: "ECONNRESET", syscall: "write" }) }) });
+  ok("…to any depth, with syscall", describeError(deep).includes("code=ECONNRESET") && describeError(deep).includes("syscall=write"));
+  const loop: { message: string; cause?: unknown } = { message: "loop" };
+  loop.cause = loop;
+  ok("a cause cycle does not hang", describeError(loop).split("⟵").length <= 6);
+  const tusErr = Object.assign(new Error("tus: unexpected response"), {
+    originalRequest: { getMethod: () => "PATCH", getURL: () => "https://video.bunnycdn.com/tusupload/x" },
+    originalResponse: { getStatus: () => 401, getBody: () => "bad signature" },
+    causingError: null,
+  });
+  ok("a tus DetailedError shows request, status and body", describeError(tusErr).includes("request=PATCH") && describeError(tusErr).includes("status=401") && describeError(tusErr).includes("bad signature"));
+
+  env("false");
+  const realFetch = global.fetch;
+  global.fetch = (async () => {
+    throw tf;
+  }) as unknown as typeof fetch;
+  for (const [name, fn] of [["create", () => createVideo("x")], ["get", () => getVideo(GUID)], ["delete", () => deleteVideo(GUID)]] as const) {
+    try {
+      await fn();
+      check(`${name}: network failure throws`, "no throw", "BunnyNetworkError");
+    } catch (e) {
+      check(`${name}: BunnyNetworkError whose message has the cause code, cause kept`,
+        [e instanceof BunnyNetworkError, (e as Error).message.includes("UND_ERR_SOCKET"), (e as Error).cause === tf], [true, true, true]);
+    }
+  }
+  global.fetch = realFetch;
+
+  // ══════════════════════════════════════════════════════════════════════
+  section("TUS: 24h signature by default, Bunny's retry rule, shared options");
+  env("false");
+  const nowT = Date.UTC(2026, 9, 15, 12, 0, 0);
+  const t24 = tusUploadAuthorization(GUID, undefined, nowT)!;
+  check("default TUS TTL is 24h (the whole resumable window, plan: 10GB files)", [TUS_UPLOAD_TTL_SECONDS, Number(t24.headers.AuthorizationExpire)], [86400, Math.floor(nowT / 1000) + 86400]);
+  check("retry: network error / 5xx / 409 / 423 yes; other 4xx no",
+    [undefined, 0, 500, 503, 409, 423, 400, 401, 403, 404, 410].map((st) => shouldRetryTusStatus(st)),
+    [true, true, true, true, true, true, false, false, false, false, false]);
+  const o = bunnyTusOptions(t24, { filetype: "video/mp4", title: "פרק" });
+  check("options: Bunny endpoint, 50MB chunks, signed headers, required metadata",
+    [o.endpoint, o.chunkSize, o.headers?.VideoId, o.headers?.LibraryId, o.metadata],
+    ["https://video.bunnycdn.com/tusupload", 50 * 1024 * 1024, GUID, "123456", { filetype: "video/mp4", title: "פרק" }]);
+  check("TUS_CHUNK_SIZE = 50MiB", TUS_CHUNK_SIZE, 52428800);
+  ok("the API key is not in the TUS options", !JSON.stringify(o).includes(API_KEY));
+
+  // ══════════════════════════════════════════════════════════════════════
   section("static: the walls in the source");
   const clientSrc = readFileSync(join(__dirname, "../src/lib/bunny/client.ts"), "utf8");
   const fetchCalls = clientSrc.match(/\bfetch\(/g) ?? [];
-  check("client.ts has exactly two fetch( call sites (write() + getVideo)", fetchCalls.length, 2);
+  check("client.ts has exactly one fetch( call site (inside send())", fetchCalls.length, 1);
+  const sendCalls = clientSrc.match(/\bsend\(/g) ?? [];
+  check("send( is defined once and called from exactly two places (write() + getVideo)", sendCalls.length, 3);
   const getVideoBody = clientSrc.slice(clientSrc.indexOf("export async function getVideo"), clientSrc.indexOf("export async function deleteVideo"));
-  ok("the fetch outside write() is the GET in getVideo", /method: "GET"/.test(getVideoBody) && /fetch\(/.test(getVideoBody));
+  ok("the send outside write() is the GET in getVideo", /method: "GET"/.test(getVideoBody) && /send\(/.test(getVideoBody));
   const writeBody = clientSrc.slice(clientSrc.indexOf("async function write("), clientSrc.indexOf("export async function createVideo"));
-  ok("write() checks isBunnyDryRun() before its fetch", writeBody.indexOf("isBunnyDryRun()") > -1 && writeBody.indexOf("isBunnyDryRun()") < writeBody.indexOf("fetch("));
+  ok("write() checks isBunnyDryRun() before it sends", writeBody.indexOf("isBunnyDryRun()") > -1 && writeBody.indexOf("isBunnyDryRun()") < writeBody.indexOf("send("));
 
   const walk = (dir: string): string[] =>
     readdirSync(dir).flatMap((f) => {

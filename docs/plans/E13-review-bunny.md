@@ -211,6 +211,17 @@ clients ←(client_id, nullable להפקה פנימית)— productions —(prod
 ## 5. העלאה ו-webhook
 
 - **ההעלאה מהדפדפן ישירות ל-Bunny, ב-TUS** (`https://video.bunnycdn.com/tusupload`). השרת שלנו יוצר את הווידאו (`POST /library/{id}/videos`), יוצר שורת `client_review_versions` (`bunny_status='created'`; המספר מוקצה רק בסיום העלאה מוצלח, לפי המלצת שאלה 11) ומחזיר חתימה: לפי התיעוד `SHA256(library_id + api_key + expiration_time + video_id)`, בכותרות `AuthorizationSignature`, `AuthorizationExpire`, `LibraryId`, `VideoId`. **מפתח ה-API לא יוצא לדפדפן.** קובץ של שעה לא עובר דרך Vercel.
+- ⚠️ **עודכן 15.10 (הכרעת בעלים, אחרי ההעלאה הראשונה):** הסטודיו מעלה ביום-יום קבצים של **5–10GB**. לכן ההעלאה מהדרואר היא **רק TUS**, ישירות מהדפדפן ל-Bunny, עם חתימה מהשרת שלנו. הקובץ לעולם לא עובר דרך Vercel. ההעלאה חייבת להיות **resumable**: ניתוק באמצע ממשיך מאותה נקודה, ואם אפשר גם אחרי רענון של הדף.
+  - **מה נקבע בקוד:** ‏`tusUploadAuthorization` חותמת ל-**24 שעות** כברירת מחדל (`TUS_UPLOAD_TTL_SECONDS`, וזו גם התקרה). האפשרויות המשותפות לדרואר ולסקריפט נמצאות ב-`lib/bunny/tus.ts`: חתיכות של 50MiB, ‏`retryDelays` לפי ההמלצה של Bunny, וניסיון חוזר רק על שגיאת רשת, 5xx, ‏409 ו-423. על 4xx אחר אין ניסיון חוזר.
+  - **עובדות מהתיעוד של Bunny (15.10):**
+    - `AuthorizationExpire` נבדק בתחילת **כל** בקשת POST, ‏HEAD ו-PATCH, אבל לא באמצע PATCH שכבר זורם.
+    - העלאה שלא הושלמה נשארת resumable עד ה-expire **שאיתו נוצרה**, או עד כ-48 שעות בלי פעילות, המוקדם מביניהם.
+    - **חתימה מחדש לא מאריכה** את החלון הזה.
+    - העלאה שפג תוקפה מחזירה 404.
+    - לא מתועדת מגבלת גודל קובץ. המגבלות המתועדות הן 72 שעות אורך ו-2160p.
+  - **מה המשמעות:** 24 שעות הן כל החלון של קובץ אחד, כולל המשך אחרי ניתוק או רענון. קובץ של 10GB נכנס בחלון הזה כל עוד קצב ההעלאה הממוצע הוא לפחות כ-1Mbps. בחיבור של 100Mbps זה כ-15 דקות.
+  - **המשך אחרי רענון (לדרואר):** לפי התיעוד של Bunny. שומרים ב-localStorage את ה-`videoId` לפי `name:size:lastModified`. השרת **חותם מחדש את אותו וידאו** אם הוא עדיין ב-status 0, ורק אחרת יוצר וידאו חדש. ממשיכים עם `findPreviousUploads` ו-`resumeFromPreviousUpload` רק כשה-`videoId` תואם.
+  - **PUT בודד** (`uploadVideo`) נשאר רק לקבצים קטנים ולתיעוד (`--put-probe`). הוא לא מסלול העלאה במוצר.
 - **Webhook:** ‏`POST /api/bunny/webhook` (ציבורי, ונוסף ל-[middleware.ts](../../src/lib/supabase/middleware.ts#L51) לצד `/api/r/`). לפי התיעוד: HMAC-SHA256 על **הגוף הגולמי**, במפתח **Read-Only API key** של הספרייה. הכותרות הן `X-BunnyStream-Signature` (64 hex), ‏`-Version: v1` ו-`-Algorithm: hmac-sha256`. ההשוואה ב-`timingSafeEqual` עם בדיקת אורך, כמו [overrideTicket.ts](../../src/lib/documents/overrideTicket.ts) שכבר עושה זאת. החתימה **אינה** מכסה זמן, ולכן אין הגנת replay מובנית. הטיפול אידמפוטנטי: כל webhook גורם לשליפה מחדש של אובייקט הווידאו, ועדכון רק אם הסטטוס התקדם.
 - **`BUNNY_DRY_RUN`** בתקדים `MORNING_DRY_RUN` / `CALENDAR_WRITE_DRY_RUN`: כל קריאה שכותבת או מוחקת ב-Bunny עוברת דרכו, וכלל 40 חל גם כאן.
 

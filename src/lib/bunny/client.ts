@@ -1,4 +1,5 @@
 import { bunnyApiConfig, isBunnyDryRun } from "./config";
+import { describeError } from "./errors";
 import { tusSignature } from "./sign";
 import type { BunnyVideo } from "./status";
 
@@ -12,6 +13,12 @@ import type { BunnyVideo } from "./status";
 //   GET    /library/{id}/videos/{guid}     read    VideoModel
 //   DELETE /library/{id}/videos/{guid}     delete  200, or 404 when already gone
 //   header AccessKey = the LIBRARY's API key.
+//
+// ═══ UPLOADS ARE TUS (owner 15.10) ═══
+// Real uploads (5–10GB) go browser → Bunny over TUS: tusUploadAuthorization
+// below + lib/bunny/tus.ts. uploadVideo (one PUT, whole file in memory) is
+// kept ONLY for small files and for `e13_first_upload.ts --put-probe`; it is
+// not an upload path for the product.
 //
 // ═══ EVERY WRITE GOES THROUGH `write()` ═══
 // create, upload and delete all call `write()`, and `write()` is the only
@@ -36,6 +43,26 @@ export class BunnyError extends Error {
     this.name = "BunnyError";
     this.status = status;
     this.body = body;
+  }
+}
+
+/**
+ * No HTTP response at all (DNS, reset, timeout…). The message carries the
+ * whole `.cause` chain — `fetch failed` alone hides the reason (first --live
+ * run, 15.10). The original error stays on `.cause`.
+ */
+export class BunnyNetworkError extends Error {
+  constructor(op: string, cause: unknown) {
+    super(`Bunny ${op}: ${describeError(cause)}`, { cause });
+    this.name = "BunnyNetworkError";
+  }
+}
+
+async function send(op: string, url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (e) {
+    throw new BunnyNetworkError(op, e);
   }
 }
 
@@ -75,7 +102,7 @@ async function write(
     headers["content-type"] = "application/octet-stream";
     body = init.bytes as BodyInit;
   }
-  return fetch(url, { method, headers, body, signal: AbortSignal.timeout(init.timeoutMs ?? TIMEOUT_MS) });
+  return send(`${method} ${url}`, url, { method, headers, body, signal: AbortSignal.timeout(init.timeoutMs ?? TIMEOUT_MS) });
 }
 
 /** Create the video object (no bytes yet). Returns its guid. */
@@ -120,7 +147,7 @@ export async function uploadVideo(
 /** Read the video object. A read writes nothing, so it runs even in dry run. null = 404. */
 export async function getVideo(videoId: string): Promise<BunnyVideo | null> {
   const { libraryId, apiKey } = bunnyApiConfig();
-  const res = await fetch(videoUrl(libraryId, videoId), {
+  const res = await send("GET video", videoUrl(libraryId, videoId), {
     method: "GET",
     headers: { AccessKey: apiKey, accept: "application/json" },
     signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -156,9 +183,18 @@ export type TusAuthorization = {
  * API key is hashed in, never returned. In dry run: null, and logged — a
  * browser holding a valid signature could write to the real library.
  */
+/**
+ * 24h (owner 15.10, for 5–10GB files). Bunny keeps an incomplete upload
+ * resumable only until the expiry it was CREATED with (or ~48h idle), and a
+ * re-sign does not extend it — so this is the whole window for one file,
+ * including any resume after a disconnect or a page reload. 24h covers 10GB
+ * down to ~1 Mbit/s of sustained upload. It is also the hard cap below.
+ */
+export const TUS_UPLOAD_TTL_SECONDS = 24 * 60 * 60;
+
 export function tusUploadAuthorization(
   videoId: string,
-  ttlSeconds: number,
+  ttlSeconds: number = TUS_UPLOAD_TTL_SECONDS,
   nowMs: number = Date.now()
 ): TusAuthorization | null {
   if (!Number.isInteger(ttlSeconds) || ttlSeconds <= 0 || ttlSeconds > 24 * 60 * 60) {
