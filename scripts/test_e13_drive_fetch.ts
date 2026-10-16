@@ -10,7 +10,7 @@
  * on anything it does not know. The service-account key is generated here.
  */
 import { createHash, createVerify, generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -39,9 +39,26 @@ const FILE_ID = "1AbCdEfGhIjKlMnOpQrStUvWxYz012345";
 const BYTES = Buffer.alloc(30 * 1024 * 1024, 7); // a 30MB "file" (only its hash and size are used)
 const SHA_HEX = createHash("sha256").update(BYTES).digest("hex");
 const SHA_B64 = Buffer.from(SHA_HEX, "hex").toString("base64");
+// --inspect-original: an mp3 on Drive, and the mp4 Bunny might keep instead
+const MP3_BYTES = Buffer.concat([Buffer.from("ID3"), Buffer.alloc(1000, 1)]);
+const MP4_BYTES = Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from("ftypisom"), Buffer.alloc(1000, 2)]);
+const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+const MP3_SHA = sha(MP3_BYTES);
+const MP4_SHA = sha(MP4_BYTES);
 
 const dir = mkdtempSync(join(tmpdir(), "e13df-"));
 const envPath = join(dir, "env");
+// a fake ffprobe: an ID3 file is audio-only mp3, anything else an mp4 with h264 + aac
+const FAKE_FFPROBE = join(dir, "ffprobe");
+writeFileSync(FAKE_FFPROBE, `#!/bin/sh
+for a; do f="$a"; done
+if [ "$(head -c 3 "$f")" = "ID3" ]; then
+  echo '{"format":{"format_name":"mp3","duration":"4657.0"},"streams":[{"codec_type":"audio","codec_name":"mp3","sample_rate":"44100","channels":2}]}'
+else
+  echo '{"format":{"format_name":"mov,mp4,m4a,3gp,3g2,mj2","duration":"4657.0"},"streams":[{"codec_type":"video","codec_name":"h264","width":1280,"height":720},{"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2}]}'
+fi
+`);
+chmodSync(FAKE_FFPROBE, 0o755);
 const KEYS = `BUNNY_STREAM_LIBRARY_ID=111\nBUNNY_STREAM_API_KEY=k\nBUNNY_STREAM_CDN_HOSTNAME=vz-fake.b-cdn.net\nBUNNY_CDN_TOKEN_KEY=t\nGOOGLE_SERVICE_ACCOUNT_JSON=${saJson}\n`;
 process.env.E13_DRIVE_FETCH_ENV_FILE = envPath;
 process.env.E13_DRIVE_FETCH_POLL_MS = "1";
@@ -57,6 +74,9 @@ type Scenario = {
   originalHash: string | null;
   flakyStatusReads: number; // the first N status reads die with a connect timeout
   fetchMode: "ok" | "503-creates" | "503-nothing" | "strict";
+  driveBytes: Buffer; // what Drive serves (and its sha256Checksum)
+  originalBytes: Buffer; // what the signed /original serves in full
+  originalFullStatus: number;
   // strict: 500 when the body has a `headers` key or a non-ASCII title (the suspects); otherwise create
 };
 let sc: Scenario;
@@ -65,6 +85,8 @@ let jwtClaims: Record<string, unknown> | null = null;
 let jwtValid = false;
 let fetchBody: { url?: string; headers?: Record<string, string>; title?: string } | null = null;
 let fetchQueries: string[] = [];
+let originalFullGets = 0;
+let driveMediaAuth: string[] = [];
 const videos = new Map<string, { title: string; reads: number }>();
 const deleted = new Set<string>();
 let seq = 0;
@@ -91,7 +113,7 @@ global.fetch = (async (input: string, init: RequestInit = {}) => {
     if (sc.drive === "404") return json(404, { error: { message: `File not found: ${FILE_ID}.`, errors: [{ reason: "notFound" }] } });
     if (sc.drive === "403") return json(403, { error: { message: "The user does not have sufficient permissions for this file.", errors: [{ reason: "insufficientFilePermissions" }] } });
     if (sc.drive === "google-doc") return json(200, { name: "doc", mimeType: "application/vnd.google-apps.document", capabilities: { canDownload: true } });
-    return json(200, { name: "episode-12.mp4", size: String(BYTES.length), mimeType: "video/mp4", sha256Checksum: SHA_HEX, md5Checksum: "abc", capabilities: { canDownload: true } });
+    return json(200, { name: "episode-12.mp4", size: String(sc.driveBytes.length), mimeType: "video/mp4", sha256Checksum: sc.driveBytes === BYTES ? SHA_HEX : sha(sc.driveBytes), md5Checksum: "abc", capabilities: { canDownload: true } });
   }
 
   const m = /^https:\/\/video\.bunnycdn\.com\/library\/111\/videos(\/fetch|\/([0-9a-f-]+))?(\?.*)?$/.exec(url);
@@ -155,12 +177,20 @@ global.fetch = (async (input: string, init: RequestInit = {}) => {
       });
     }
   }
+  if (url === `https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media&supportsAllDrives=true` && method === "GET") {
+    driveMediaAuth.push(hdr.Authorization);
+    return new Response(new Uint8Array(sc.driveBytes), { status: 200 });
+  }
   if (url === PUBLIC_URL && method === "HEAD") {
     return new Response(null, { status: 200, headers: { "content-type": "video/mp4", "content-length": "4372373" } });
   }
   const cdn = /^https:\/\/vz-fake\.b-cdn\.net\/(.*)$/.exec(url);
   if (cdn) {
     const rest = cdn[1];
+    if (/\/original/.test(rest) && rest.includes("token=HS256-") && !hdr.Range) {
+      originalFullGets++;
+      return sc.originalFullStatus === 200 ? new Response(new Uint8Array(sc.originalBytes), { status: 200 }) : new Response("", { status: sc.originalFullStatus });
+    }
     if (/\/original/.test(rest)) return new Response(rest.includes("token=HS256-") ? "x" : "", { status: rest.includes("token=HS256-") ? 206 : 403 });
     if (rest.startsWith("bcdn_token=HS256-")) {
       if (rest.endsWith("/playlist.m3u8")) return new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n240p/video.m3u8\n", { status: 200 });
@@ -184,7 +214,9 @@ async function capture<T>(fn: () => Promise<T>): Promise<{ value: T; out: string
 }
 
 const reset = (s: Partial<Scenario> = {}) => {
-  sc = { drive: "ok", statuses: [0, 0, 1, 2, 3, 4], originalHash: SHA_B64, flakyStatusReads: 0, fetchMode: "ok", ...s };
+  sc = { drive: "ok", statuses: [0, 0, 1, 2, 3, 4], originalHash: SHA_B64, flakyStatusReads: 0, fetchMode: "ok", driveBytes: BYTES, originalBytes: BYTES, originalFullStatus: 200, ...s };
+  originalFullGets = 0;
+  driveMediaAuth = [];
   calls = [];
   jwtClaims = null;
   jwtValid = false;
@@ -521,6 +553,90 @@ async function main() {
   process.env.BUNNY_DRY_RUN = "false"; // --verify forced it on in this process, by design
   const lt = await capture(() => run(["--drive-url", URL_ARG, "--live"]));
   ok("timeline section in the live run", lt.out.includes("═══ זמנים מ-Bunny ═══") && lt.out.includes("dateUploaded"));
+
+  section("--inspect-original: /original == the Drive file → hash עבר, no Drive download, temp removed");
+  process.env.E13_FFPROBE_BIN = FAKE_FFPROBE;
+  reset();
+  process.env.BUNNY_DRY_RUN = "false";
+  const io = await capture(() => run(["--drive-url", URL_ARG, "--live", "--inspect-original"]));
+  check("no failed / not-checked row", io.value.rows.filter((r) => r.result === "נכשל" || r.result === "לא נבדק").map((r) => `${r.check}: ${r.detail}`), []);
+  const dl = row(io.value.rows, "original: הורדה");
+  ok("download row: size + the LOCAL sha256", dl?.result === "עבר" && dl.detail.includes(`${BYTES.length} bytes`) && dl.detail.includes(SHA_HEX));
+  check("sha row = עבר (זהה)", [row(io.value.rows, "original: sha256 מקומי מול Drive")?.result, row(io.value.rows, "original: sha256 מקומי מול Drive")?.detail.startsWith("זהה")], ["עבר", true]);
+  check("the full /original was requested WITHOUT Range (the 403/200 probes use Range)", originalFullGets, 1);
+  check("no Drive media download when the hashes match", calls.filter((c) => c.startsWith("GET") && c.includes("alt=media")).length, 0);
+  check("no Drive comparison row", row(io.value.rows, "Drive: סוג הקובץ (להשוואה)"), undefined);
+  const tmpLine = /🧹 קבצים זמניים נמחקו \((.+)\)/.exec(io.out);
+  ok("temp dir reported and gone", !!tmpLine && !existsSync(tmpLine[1]));
+
+  section("--inspect-original, the audio case: Drive = mp3, Bunny's /original = an mp4 with a video track");
+  reset({ driveBytes: MP3_BYTES, originalBytes: MP4_BYTES });
+  const ia = await capture(() => run(["--drive-url", URL_ARG, "--live", "--inspect-original"]));
+  const sa = row(ia.value.rows, "original: sha256 מקומי מול Drive");
+  ok("sha row = נכשל, both prefixes shown", sa?.result === "נכשל" && sa.detail.includes(MP3_SHA.slice(0, 16)) && sa.detail.includes(MP4_SHA.slice(0, 16)));
+  const ta = row(ia.value.rows, "original: סוג הקובץ");
+  ok("original described: MP4 by sniff, ffprobe says a real video track", !!ta && ta.detail.includes("MP4/ISO-BMFF") && ta.detail.includes("h264") && ta.detail.includes("רצועת וידאו אמיתית: כן"));
+  const dr = row(ia.value.rows, "Drive: סוג הקובץ (להשוואה)");
+  ok("Drive file downloaded + described: MP3, no real video track, its hash = Drive's", dr?.result === "עבר" &&
+    dr.detail.includes("MP3 (תגית ID3") && dr.detail.includes("רצועת וידאו אמיתית: לא") && dr.detail.includes("(= Drive)"));
+  check("Drive media downloaded once, with our bearer token", driveMediaAuth, [`Bearer ${TOKEN}`]);
+  ok("the token appears nowhere in the output", !ia.out.includes(TOKEN));
+  const tmpA = /🧹 קבצים זמניים נמחקו \((.+)\)/.exec(ia.out);
+  ok("temp dir (both files) gone", !!tmpA && !existsSync(tmpA[1]));
+
+  section("--inspect-original without ffprobe: the sniff still answers, the row says how to install it");
+  process.env.E13_FFPROBE_BIN = join(dir, "no-such-ffprobe");
+  reset({ driveBytes: MP3_BYTES, originalBytes: MP4_BYTES });
+  const inf = await capture(() => run(["--drive-url", URL_ARG, "--live", "--inspect-original"]));
+  const tnf = row(inf.value.rows, "original: סוג הקובץ");
+  ok("sniff MP4 + 'brew install ffmpeg'", !!tnf && tnf.detail.includes("MP4/ISO-BMFF") && tnf.detail.includes("brew install ffmpeg"));
+  process.env.E13_FFPROBE_BIN = FAKE_FFPROBE;
+
+  section("--inspect-original: /original refused → הורדה נכשל, temp still removed");
+  reset({ originalFullStatus: 403 });
+  const i403 = await capture(() => run(["--drive-url", URL_ARG, "--live", "--inspect-original"]));
+  check("download row", [row(i403.value.rows, "original: הורדה")?.result, row(i403.value.rows, "original: הורדה")?.detail], ["נכשל", "HTTP 403"]);
+  check("later inspect rows = לא נבדק", row(i403.value.rows, "original: סוג הקובץ")?.result, "לא נבדק");
+  const tmp403 = /🧹 קבצים זמניים נמחקו \((.+)\)/.exec(i403.out);
+  ok("temp dir gone", !!tmp403 && !existsSync(tmp403[1]));
+
+  section("--verify-guid --sha256 --inspect-original: mismatch, no Drive access → comparison row דילוג");
+  reset({ statuses: [4], originalBytes: MP4_BYTES });
+  videos.set(VG, { title: HEB_TITLE, reads: 0 });
+  const iv = await capture(() => run(["--verify-guid", VG, "--sha256", MP3_SHA, "--inspect-original"]));
+  check("sha נכשל, Drive row דילוג, zero Google, zero writes",
+    [row(iv.value.rows, "original: sha256 מקומי מול Drive")?.result, row(iv.value.rows, "Drive: סוג הקובץ (להשוואה)")?.result, calls.filter((c) => c.includes("googleapis.com")).length, writes()],
+    ["נכשל", "דילוג", 0, []]);
+
+  section("--verify-title --drive-file-id --inspect-original: Drive comparison through the service account");
+  reset({ statuses: [4], driveBytes: MP3_BYTES, originalBytes: MP4_BYTES });
+  videos.set(VG, { title: HEB_TITLE, reads: 0 });
+  const ivd = await capture(() => run(["--verify-title", HEB_TITLE, "--drive-file-id", FILE_ID, "--inspect-original"]));
+  check("Drive row = עבר, zero Bunny writes", [row(ivd.value.rows, "Drive: סוג הקובץ (להשוואה)")?.result, writes()], ["עבר", []]);
+
+  section("--inspect-original on a video still encoding → inspect rows לא נבדק, nothing downloaded");
+  reset({ statuses: [3] });
+  videos.set(VG, { title: HEB_TITLE, reads: 0 });
+  const ie = await capture(() => run(["--verify-guid", VG, "--inspect-original"]));
+  check("inspect rows = לא נבדק, zero /original downloads", [row(ie.value.rows, "original: הורדה")?.result, originalFullGets], ["לא נבדק", 0]);
+
+  section("--inspect-original guards");
+  for (const bad of [["--drive-url", URL_ARG, "--live", "--inspect-original", "--no-wait-encode"], ["--fetch-variant", "--inspect-original"]]) {
+    reset();
+    let e3 = "";
+    try {
+      await capture(() => run(bad));
+    } catch (e) {
+      e3 = (e as Error).message;
+    }
+    check(`refused: ${bad.join(" ")}`, [e3.includes("--inspect-original"), calls.length], [true, 0]);
+  }
+
+  section("without --inspect-original nothing is downloaded");
+  reset();
+  process.env.BUNNY_DRY_RUN = "false"; // --verify above forced it on
+  const noi = await capture(() => run(["--drive-url", URL_ARG, "--live"]));
+  check("zero full /original GETs, no inspect rows", [originalFullGets, row(noi.value.rows, "original: הורדה")], [0, undefined]);
 
   rmSync(dir, { recursive: true, force: true });
   console.log(`\n${passed} passed, ${failed} failed`);

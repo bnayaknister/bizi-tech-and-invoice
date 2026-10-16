@@ -24,6 +24,11 @@
  *     and run the after-arrival checks on it — status, hasOriginal, hash vs
  *     Drive's sha256, /original + playlist 403/200, Direct Play, Embed — and
  *     print Bunny's own timestamps (dateUploaded, transcodingMessages).
+ *   --inspect-original (with --live or --verify-*; owner 16.10): after status 4,
+ *     download the signed /original to a temp file, sha256 it HERE, describe
+ *     it (ffprobe if installed + a first-bytes sniff); when it differs from
+ *     Drive's sha256, download the Drive file too and describe it alongside.
+ *     Temp files are deleted at the end. See _inspect_original.ts.
  *
  * 🔴 FETCH VIDEO IS SENT ONCE (owner 15.10, after a live 503): the POST is not
  * idempotent — any attempt may create a video. It is never retried. After a
@@ -70,6 +75,7 @@ import {
   type Result,
   type Row,
 } from "./_bunny_checks";
+import { INSPECT_CHECKS, inspectOriginal } from "./_inspect_original";
 import { DRIVE_READONLY, DriveError, driveFileMeta, driveMediaUrl, extractDriveFileId, serviceAccountEmail, serviceAccountToken } from "./_google_drive";
 
 export type { Row };
@@ -328,7 +334,7 @@ const VERIFY_PLANNED = ["איתור הווידאו ב-Bunny", "status 4", "hasOr
  * could not write. The hash source is Drive's sha256 (--drive-file-id /
  * --drive-url, through the service account) or --sha256 <hex> given by hand.
  */
-export async function runVerify(o: { title?: string; guid?: string; driveRaw?: string; sha256?: string }): Promise<{ rows: Row[]; metrics: Metrics }> {
+export async function runVerify(o: { title?: string; guid?: string; driveRaw?: string; sha256?: string; inspect?: boolean }): Promise<{ rows: Row[]; metrics: Metrics }> {
   const metrics: Metrics = { fileName: null, sizeBytes: null, fetchSeconds: null, serverMbps: null, encodeSeconds: null, hash: null, guid: null };
   const label = "בדיקת וידאו קיים";
   let step = "איתור הווידאו ב-Bunny";
@@ -379,6 +385,7 @@ export async function runVerify(o: { title?: string; guid?: string; driveRaw?: s
     step = "hash מול Drive";
     let sha: string | null = null;
     let shaFrom = "";
+    let driveMedia: string | null = null;
     if (o.sha256) {
       sha = o.sha256.trim();
       shaFrom = "--sha256";
@@ -389,6 +396,7 @@ export async function runVerify(o: { title?: string; guid?: string; driveRaw?: s
         const { token } = await serviceAccountToken(DRIVE_READONLY);
         const meta = await driveFileMeta(fileId, token);
         sha = meta.sha256Checksum;
+        driveMedia = driveMediaUrl(fileId);
         shaFrom = `Drive "${meta.name}" ${fmtSize(meta.size)}`;
         metrics.fileName = meta.name;
       } catch (e) {
@@ -414,13 +422,21 @@ export async function runVerify(o: { title?: string; guid?: string; driveRaw?: s
       for (const c of CDN_CHECKS) record(label, c, "לא נבדק", `status ${v.status} — הקידוד לא הסתיים`);
     } else {
       await runCdnChecks(label, v.guid, record);
+      if (o.inspect) {
+        step = "original: הורדה";
+        await inspectOriginal(label, v.guid, record, {
+          sha256: sha,
+          mediaUrl: driveMedia,
+          getToken: driveMedia ? async () => (await serviceAccountToken(DRIVE_READONLY)).token : null,
+        });
+      }
     }
   } catch (e) {
     const f = stepFailure(e);
     record(label, step, f.result, f.detail);
     stoppedAt = step;
   } finally {
-    for (const c of VERIFY_PLANNED) {
+    for (const c of [...VERIFY_PLANNED, ...(o.inspect ? INSPECT_CHECKS : [])]) {
       if (!rows.some((r) => r.check === c)) record(label, c, "לא נבדק", `לא הגיע לרוץ${stoppedAt ? `: ${stoppedAt}` : ""}`);
     }
     record(label, "מחיקה", "דילוג", "--verify: קריאה בלבד, הווידאו נשאר");
@@ -440,6 +456,9 @@ export async function main(args: string[]): Promise<{ rows: Row[]; metrics: Metr
   const LIVE = args.includes("--live");
   const KEEP = args.includes("--keep");
   const NO_WAIT_ENCODE = args.includes("--no-wait-encode");
+  const INSPECT = args.includes("--inspect-original");
+  if (INSPECT && NO_WAIT_ENCODE) fail("--inspect-original רץ אחרי status 4 — לא משלבים עם --no-wait-encode");
+  if (INSPECT && args.includes("--fetch-variant")) fail("--inspect-original לא רץ עם --fetch-variant");
   const envFile = loadEnvFile(T.envFile());
 
   // ── --verify-title / --verify-guid: read-only checks on an existing video ──
@@ -460,7 +479,7 @@ export async function main(args: string[]): Promise<{ rows: Row[]; metrics: Metr
     const missingV = needV.filter((k) => !(process.env[k] ?? "").trim());
     if (missingV.length) fail(`חסרים ב-.env.local: ${missingV.join(", ")}${driveRaw ? " (או השתמש ב---sha256 במקום Drive)" : ""}`);
     console.log(`🔎 בדיקת וידאו קיים — קריאה בלבד, בלי משיכה ובלי מחיקה: ${guid ? `guid ${guid}` : `"${title}"`}`);
-    return runVerify({ title, guid, driveRaw, sha256 });
+    return runVerify({ title, guid, driveRaw, sha256, inspect: INSPECT });
   }
 
   // ── the source: a Drive file, or (--fetch-public-url) any public URL ──────
@@ -664,12 +683,22 @@ export async function main(args: string[]): Promise<{ rows: Row[]; metrics: Metr
     // ── 7. access checks (shared with e13_first_upload) ───────────────────
     step = "בדיקות CDN";
     await runCdnChecks(label, guid, record);
+
+    // ── 8. --inspect-original: what does Bunny really keep? ────────────────
+    if (INSPECT) {
+      step = "original: הורדה";
+      await inspectOriginal(label, guid, record, publicUrl ? null : {
+        sha256,
+        mediaUrl: sourceUrl,
+        getToken: async () => (await serviceAccountToken(DRIVE_READONLY)).token,
+      });
+    }
   } catch (e) {
     const f = stepFailure(e);
     record(label, step, f.result, f.detail);
     stoppedAt = step;
   } finally {
-    for (const c of PLANNED) {
+    for (const c of [...PLANNED, ...(INSPECT ? INSPECT_CHECKS : [])]) {
       if (!rows.some((r) => r.check === c)) record(label, c, "לא נבדק", `לא הגיע לרוץ${stoppedAt ? `: ${stoppedAt}` : ""}`);
     }
     if (guid) {
