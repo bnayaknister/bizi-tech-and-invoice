@@ -152,6 +152,12 @@ const KIND: Record<string, Kind> = {
   "SUMMARY.body": "body",
   "SUMMARY.confirm": "button",
   "SUMMARY.cancel": "button",
+  "SUMMARY.durationDefault": "body",
+  "SUMMARY.editHint": "body",
+  "QUERY.echo": "body",
+  "QUERY.dropped": "body",
+  "QUERY.broadenDays": "button",
+  "QUERY.broadenHours": "button",
   "OUTCOME.approved": "body",
   "OUTCOME.pending": "body",
   "OUTCOME.cancelled": "body",
@@ -175,6 +181,14 @@ const KIND: Record<string, Kind> = {
   "NOTICE.feedFailed": "body",
   "NOTICE.noRecordings": "body",
   "NOTICE.manageFailed": "body",
+  "NOTICE.noMatchDates": "body",
+  "NOTICE.noMatchHours": "body",
+  "NOTICE.changed": "body",
+  "NOTICE.changedRechoose": "body",
+  "NOTICE.changedPartial": "body",
+  "NOTICE.changedPartialRechoose": "body",
+  "NOTICE.confirmByButton": "body",
+  "NOTICE.editUnclear": "body",
   "JOIN.offerBody": "body",
   "JOIN.newClient": "button",
   "JOIN.existingClient": "button",
@@ -253,6 +267,11 @@ const SAMPLES: Record<string, unknown[][]> = {
   "OUTCOME.moved": SAMPLE_DATES.flatMap((d) => ROOMS.map((r) => [LONG_SHOW, d, "23:30", r])),
   "OUTCOME.movePending": SAMPLE_DATES.map((d) => [d, "23:30"]),
   "NOTICE.noDays": ROOMS.flatMap((r) => DURS.map((d) => [r, d])),
+  // E14: every field set at once, worst-case dates and room
+  "QUERY.echo": [[{ studio: "גבעון גדול", duration: 240, dateFrom: "2026-12-30", dateTo: "2027-01-03", timeFrom: "23:30", timeTo: "23:59" }]],
+  // the items are fragments of the CLIENT's own text; Latin sample keeps the
+  // length honest without putting Hebrew into the EN dictionary's outputs
+  "QUERY.dropped": [[['the time "23:30"', "the room"]]],
 };
 
 /** Walk an object's leaves -> [path, value]. */

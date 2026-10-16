@@ -31,8 +31,10 @@ import {
   type FlowEvent,
   type FlowReply,
   type FlowState,
+  type FlowStep,
   type Transition,
 } from "./machine";
+import { parseAvailabilityText, parseEditText } from "./freetext";
 import { loadConversation, saveConversation } from "./store";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -73,6 +75,15 @@ export function isManageOn(): boolean {
   return process.env.WHATSAPP_BOOKING_MANAGE === "true";
 }
 
+/**
+ * E14's activation switch — the free-language layer. Same direction as the
+ * two above (OFF unless exactly "true"): off, typed text at the menu and the
+ * summary behaves exactly as it did before this layer existed.
+ */
+export function isFreeTextOn(): boolean {
+  return process.env.WHATSAPP_BOOKING_FREETEXT === "true";
+}
+
 export type FlowOutcome =
   | { kind: "send"; reply: FlowReply; meta: Record<string, unknown> }
   /** send the show's booking link — the E9-3 reply, including its no-link path */
@@ -99,11 +110,31 @@ export function interactiveId(message: InboundMessage): string | null {
  * an image, a sticker, a voice note — anything without text — becomes empty
  * text, which every step answers by re-sending itself.
  */
-export function eventFromMessage(message: InboundMessage): FlowEvent {
+export function eventFromMessage(
+  message: InboundMessage,
+  opts: { now?: Date; freeTextOn?: boolean; step?: FlowStep; lang?: Lang } = {}
+): FlowEvent {
   const tapped = parseFlowId(interactiveId(message));
   if (tapped) return tapped;
-  if (message.type === "text") return textEvent(message.body ?? "");
-  return { type: "text", text: "" };
+  if (message.type !== "text") return { type: "text", text: "" };
+  const body = message.body ?? "";
+  const nav = textEvent(body);
+  if (nav.type !== "text") return nav;
+  // E14: the free-language layer — the exact seam machine.ts's text branch
+  // names. Hebrew only (the parser's language); every other step keeps raw
+  // text, and a parse that is not certain stays raw text too — the machine
+  // then re-sends the step, exactly as it does today.
+  if (opts.freeTextOn && opts.now && opts.lang === "he") {
+    const today = israelDateOf(opts.now);
+    if (opts.step === "summary") {
+      const parsed = parseEditText(body, today);
+      if (parsed) return { type: "edit", edits: parsed.edits, dropped: parsed.dropped };
+    } else if (opts.step === "menu" || opts.step === undefined) {
+      const q = parseAvailabilityText(body, today);
+      if (q) return { type: "query", q };
+    }
+  }
+  return nav;
 }
 
 const showInfo = (show: ContactShow, multiShow: boolean, linkUrl: string | null, lang: Lang) => ({
@@ -115,6 +146,7 @@ const showInfo = (show: ContactShow, multiShow: boolean, linkUrl: string | null,
   linkUrl,
   lang,
   bilingualOn: isBilingualOn(),
+  freeTextOn: isFreeTextOn(),
 });
 
 /** A booking row -> the option "ההקלטות שלי" offers. PURE. */
@@ -224,7 +256,9 @@ export async function runFlow(
       ? row.state
       : null;
 
-  const event = input.eventOverride ?? eventFromMessage(message);
+  const event =
+    input.eventOverride ??
+    eventFromMessage(message, { now, freeTextOn: isFreeTextOn(), step: live?.step ?? "menu", lang: input.lang });
 
   /**
    * A new conversation. The link is resolved FIRST: a show that cannot get
@@ -250,7 +284,11 @@ export async function runFlow(
     // the switches are read on every message: turning one off takes effect at
     // once — and so is the language (E19): the saved preference wins over the
     // one the conversation started in, so a switch applies mid-conversation
-    t = reduce({ ...live, manageOn: isManageOn(), lang: input.lang, bilingualOn: isBilingualOn() }, event, { now });
+    t = reduce(
+      { ...live, manageOn: isManageOn(), lang: input.lang, bilingualOn: isBilingualOn(), freeTextOn: isFreeTextOn() },
+      event,
+      { now }
+    );
   } else {
     // step 0 (owner, E9-3): several podcasts and no conversation -> the list
     if (multi) return { kind: "shows" };

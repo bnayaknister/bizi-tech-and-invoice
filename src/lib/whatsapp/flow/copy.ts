@@ -97,6 +97,14 @@ type MoveFacts = {
   from: { dateIsrael: string; start: string; end: string; studio: string };
   to: { dateIsrael: string; start: string; end: string; studio: string };
 };
+type QueryEcho = {
+  studio: string | null;
+  duration: BookingDuration | null;
+  dateFrom: string | null;
+  dateTo: string | null;
+  timeFrom: string | null;
+  timeTo: string | null;
+};
 type SummaryFacts = {
   showName: string;
   dateIsrael: string;
@@ -287,6 +295,30 @@ const HE = {
       ].join("\n"),
     confirm: "✅ לקבוע",
     cancel: "❌ ביטול",
+    // ── E14: shown only while the free-text layer is on ──
+    /** the length is the DEFAULT, not the client's choice (owner, 16.10) */
+    durationDefault:
+      "ℹ️ נקבעה שעה וחצי — ברירת המחדל להקלטה. מתאים 3 או 4 שעות? כתבו לפני האישור, למשל: 3 שעות.",
+    /** the invitation to add or change in free text before confirming */
+    editHint: "תרצו להוסיף משהו או לשנות? אפשר לכתוב כאן ✍️",
+  },
+
+  /** E14: what the language layer understood from free text at the menu */
+  QUERY: {
+    echo: (q: QueryEcho) => {
+      const parts: string[] = [];
+      if (q.studio) parts.push(`אולפן ${studioHe(q.studio)}`);
+      if (q.dateFrom && q.dateTo && q.dateFrom !== q.dateTo) parts.push(`${dayHe(q.dateFrom)} עד ${dayHe(q.dateTo)}`);
+      else if (q.dateFrom) parts.push(dayHe(q.dateFrom));
+      if (q.timeFrom) parts.push(`אחרי ${q.timeFrom}`);
+      if (q.timeTo) parts.push(`לפני ${q.timeTo}`);
+      if (q.duration) parts.push(DURATION_SHORT[q.duration]);
+      return parts.length ? `רשמתי לי: ${parts.join(" · ")}` : "";
+    },
+    dropped: (items: string[]) => `(לא בטוח שהבנתי את ${items.join(" ואת ")}, אז זה לא נלקח בחשבון)`,
+    /** zero-match filter: broadening is the client's explicit choice */
+    broadenDays: "📅 להציג את כל הימים",
+    broadenHours: "🕐 להציג את כל השעות",
   },
 
   OUTCOME: {
@@ -334,6 +366,18 @@ const HE = {
     // ── E9-5 ──
     noRecordings: "אין כרגע הקלטות מאושרות קרובות 🙂",
     manageFailed: "משהו השתבש ולא הצלחנו לבצע את זה. אפשר לנסות שוב:",
+    // ── E14 ──
+    noMatchDates: "בימים שביקשתם אין פנוי 😕 רוצים לראות את כל הימים הפנויים, או לכתוב ימים אחרים?",
+    noMatchHours: "בשעות שביקשתם אין פנוי באותו יום 😕 רוצים לראות את כל השעות הפנויות באותו יום?",
+    changed: "עדכנתי ✔️",
+    changedRechoose: "עדכנתי ✔️ בחרו מחדש מהמועדים הפנויים:",
+    /** when part of the message was NOT understood, the word "updated" must
+     *  not read as "everything you wrote was applied" */
+    changedPartial: "עדכנתי את מה שהבנתי ✔️",
+    changedPartialRechoose: "עדכנתי את מה שהבנתי ✔️ בחרו מחדש מהמועדים הפנויים:",
+    confirmByButton: "עדכנתי ✔️ לאישור סופי לוחצים על \"✅ לקבוע\".",
+    editUnclear:
+      "לא הבנתי מה לשנות 🤔 אפשר לכתוב למשל: \"אורח: יהודה לוי\", \"הערה: ...\", \"3 שעות\", \"גבעון גדול\", \"יום רביעי\", \"15:00\" — או ללחוץ ✅ לקבוע.",
   },
 };
 
@@ -503,6 +547,27 @@ const EN: BotCopy = {
       ].join("\n"),
     confirm: "✅ Book it",
     cancel: "❌ Cancel",
+    // ── E14: shown only while the free-text layer is on ──
+    durationDefault:
+      "ℹ️ It's set to 1.5 hours — the default recording length. Prefer 3 or 4 hours? Write before confirming, e.g.: 3 hours.",
+    editHint: "Want to add or change anything? You can write it here ✍️",
+  },
+
+  /** E14: what the language layer understood from free text at the menu */
+  QUERY: {
+    echo: (q: QueryEcho) => {
+      const parts: string[] = [];
+      if (q.studio) parts.push(`${studioEn(q.studio)} studio`);
+      if (q.dateFrom && q.dateTo && q.dateFrom !== q.dateTo) parts.push(`${dayEn(q.dateFrom)} to ${dayEn(q.dateTo)}`);
+      else if (q.dateFrom) parts.push(dayEn(q.dateFrom));
+      if (q.timeFrom) parts.push(`after ${q.timeFrom}`);
+      if (q.timeTo) parts.push(`before ${q.timeTo}`);
+      if (q.duration) parts.push(DURATION_SHORT_EN[q.duration]);
+      return parts.length ? `Got it: ${parts.join(" · ")}` : "";
+    },
+    dropped: (items: string[]) => `(I wasn't sure about ${items.join(" and ")}, so I left it out)`,
+    broadenDays: "📅 Show all days",
+    broadenHours: "🕐 Show all times",
   },
 
   OUTCOME: {
@@ -542,6 +607,16 @@ const EN: BotCopy = {
     feedFailed: "We couldn't load the available times right now. Please try again in a minute 🙏",
     noRecordings: "You have no upcoming confirmed recordings right now 🙂",
     manageFailed: "Something went wrong and we couldn't do that. You can try again:",
+    // ── E14 ──
+    noMatchDates: "Nothing is free on the days you asked for 😕 Want to see all the free days, or write different ones?",
+    noMatchHours: "Nothing is free at those times on that day 😕 Want to see all the free times that day?",
+    changed: "Updated ✔️",
+    changedRechoose: "Updated ✔️ Please choose again from the free times:",
+    changedPartial: "Updated what I understood ✔️",
+    changedPartialRechoose: "Updated what I understood ✔️ Please choose again from the free times:",
+    confirmByButton: "Updated ✔️ To confirm, tap \"✅ Book it\".",
+    editUnclear:
+      "I didn't understand what to change 🤔 You can write e.g.: \"guest: John\", \"note: ...\", \"3 hours\", \"Givon Large\", \"Wednesday\", \"15:00\" — or tap ✅ Book it.",
   },
 };
 

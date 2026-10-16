@@ -1,4 +1,4 @@
-import { BOOKING_DURATIONS, validateDuration, type BookingDuration } from "@/lib/booking/duration";
+import { BOOKING_DURATIONS, DEFAULT_BOOKING_DURATION, validateDuration, type BookingDuration } from "@/lib/booking/duration";
 import {
   BOOKABLE_ROOM_NAMES,
   normalizeGuest,
@@ -13,6 +13,7 @@ import { STUDIOS } from "@/lib/calendar/studios";
 import type { SubmitResult } from "@/lib/booking/submit";
 import { selfServeAllowed } from "@/lib/booking/manage";
 import { COPY, copy, isLang, DEFAULT_LANG, type BotCopy, type Lang } from "./copy";
+import type { ParsedAvailability, ParsedEdit } from "./freetext";
 import { langButtonId } from "../lang";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -143,6 +144,18 @@ export type FlowState = {
   lang: Lang;
   /** is the bilingual bot switched on (WHATSAPP_BILINGUAL)? decides the menu's language button */
   bilingualOn: boolean;
+  // ── E14 ──
+  /** is the free-text layer switched on (WHATSAPP_BOOKING_FREETEXT)? */
+  freeTextOn: boolean;
+  /**
+   * constraints the client WROTE (E14): they narrow the day and hour lists.
+   * null = the button path, every offered option. A pick is still validated
+   * against the STORED lists — the filter only decides which of them are
+   * stored as offered at all.
+   */
+  filter: { dateFrom: string | null; dateTo: string | null; timeFrom: string | null; timeTo: string | null } | null;
+  /** the length is the DEFAULT the language layer applied, not a choice — the summary says so (owner, 16.10) */
+  durationFromDefault: boolean;
 };
 
 export type FlowEvent =
@@ -171,7 +184,13 @@ export type FlowEvent =
   | { type: "cancel-booking" }
   | { type: "confirm-cancel" }
   // E19: the language changed — say so and re-send the current step in it
-  | { type: "refresh" };
+  | { type: "refresh" }
+  // E14: the language layer parsed a menu text into certain constraints
+  | { type: "query"; q: ParsedAvailability }
+  // E14: …or a summary text into certain edits (nothing silently dropped)
+  | { type: "edit"; edits: ParsedEdit[]; dropped: string[] }
+  // E14: the client chose to see EVERYTHING after a zero-match filter
+  | { type: "broaden" };
 
 export type FlowRow = { id: string; title: string; description?: string };
 
@@ -229,6 +248,8 @@ export const FLOW_ID = {
   move: `${P}move`,
   cancelBooking: `${P}cxl`,
   confirmCancel: `${P}cxl-yes`,
+  // E14
+  broaden: `${P}broaden`,
 } as const;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -264,6 +285,7 @@ export function parseFlowId(raw: unknown): FlowEvent | null {
     move: { type: "move" },
     cxl: { type: "cancel-booking" },
     "cxl-yes": { type: "confirm-cancel" },
+    broaden: { type: "broaden" },
   };
   if (simple[id]) return simple[id];
   const [kind, ...rest] = id.split(":");
@@ -300,6 +322,8 @@ export type ShowInfo = {
   /** E19; absent = Hebrew, off */
   lang?: Lang;
   bilingualOn?: boolean;
+  /** E14; absent = off */
+  freeTextOn?: boolean;
 };
 
 export function initialState(show: ShowInfo): FlowState {
@@ -334,6 +358,9 @@ export function initialState(show: ShowInfo): FlowState {
     target: null,
     lang: isLang(show.lang) ? show.lang : DEFAULT_LANG,
     bilingualOn: show.bilingualOn ?? false,
+    freeTextOn: show.freeTextOn ?? false,
+    filter: null,
+    durationFromDefault: false,
   };
 }
 
@@ -348,6 +375,7 @@ const showOf = (s: FlowState): ShowInfo => ({
   linkUrl: s.linkUrl,
   lang: s.lang,
   bilingualOn: s.bilingualOn,
+  freeTextOn: s.freeTextOn,
 });
 
 /** A fresh conversation: the menu, optionally under a one-line notice. */
@@ -567,6 +595,9 @@ export function render(s: FlowState): Transition {
           ],
         });
       }
+      // E14: the default-length disclosure (owner, 16.10) and the invitation
+      // to edit in free text — only where the layer is on AND parses (he)
+      const freeText = s.freeTextOn && s.lang === "he";
       return out({
         type: "buttons",
         body: body(
@@ -579,7 +610,9 @@ export function render(s: FlowState): Transition {
             duration: s.duration as BookingDuration,
             guest: s.guest,
             note: s.note,
-          })
+          }) +
+            (freeText && s.durationFromDefault ? `\n${C.SUMMARY.durationDefault}` : "") +
+            (freeText ? `\n\n${C.SUMMARY.editHint}` : "")
         ),
         buttons: [
           { id: FLOW_ID.confirm, title: C.SUMMARY.confirm },
@@ -709,7 +742,8 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
 
   switch (s.step) {
     case "menu":
-      if (e.type === "go") return go(s, { step: "duration" });
+      if (e.type === "go") return go(s, { step: "duration", filter: null, durationFromDefault: false });
+      if (e.type === "query") return menuQuery(s, e.q);
       if (e.type === "mine" && s.manageOn) {
         return { kind: "need-recordings", state: { ...s, step: "mine", recordings: [], target: null } };
       }
@@ -757,7 +791,7 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
         if (late || d === null || d !== t.durationMinutes) {
           return { kind: "forward", state: { ...s, step: "submitting" }, change: "move-request" };
         }
-        return go(s, { ...clearFrom("duration"), mode: "move", duration: d, step: "studio-default" });
+        return go(s, { ...clearFrom("duration"), mode: "move", duration: d, step: "studio-default", filter: null, durationFromDefault: false });
       }
       if (e.type === "text") return pick();
       return stale();
@@ -792,6 +826,14 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
     }
 
     case "day":
+      if (e.type === "broaden") {
+        // only as the answer to a zero-match: a stale tap otherwise
+        if (s.days.length > 0 || !s.filter || (!s.filter.dateFrom && !s.filter.dateTo)) return stale();
+        return {
+          kind: "need-availability",
+          state: { ...s, filter: { dateFrom: null, dateTo: null, timeFrom: s.filter.timeFrom, timeTo: s.filter.timeTo } },
+        };
+      }
       if (e.type === "day") {
         if (!s.days.includes(e.date)) return stale();
         // the hours are read FRESH for the chosen day, not from a cached grid
@@ -805,12 +847,27 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
       return stale();
 
     case "hour":
+      if (e.type === "broaden") {
+        if (s.hours.length > 0 || !s.filter || (!s.filter.timeFrom && !s.filter.timeTo)) return stale();
+        return {
+          kind: "need-availability",
+          state: { ...s, filter: { dateFrom: s.filter.dateFrom, dateTo: s.filter.dateTo, timeFrom: null, timeTo: null } },
+        };
+      }
       if (e.type === "hour") {
         const h = s.hours.find((x) => x.start === e.start);
         if (!h) return stale();
         // a move keeps the original's guest and note: straight to "מ־… ל־…"
         if (s.mode === "move") {
           return go(s, { start: h.start, end: h.end, guest: s.target?.guest ?? null, note: s.target?.note ?? null, step: "summary" });
+        }
+        // E14: a slot re-choose AFTER the summary (an edit) keeps the guest
+        // and note it kept — straight back to the updated summary, not
+        // through questions that were already answered. ONLY with the layer on
+        // and in Hebrew: off (or in English) a re-choose — e.g. after a slot
+        // was taken at submission — asks the guest again, exactly as before E14
+        if (s.freeTextOn && s.lang === "he" && (s.guest !== null || s.note !== null)) {
+          return go(s, { start: h.start, end: h.end, step: "summary" });
         }
         return go(s, { start: h.start, end: h.end, step: "guest" });
       }
@@ -842,6 +899,11 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
       return stale();
 
     case "summary":
+      if (e.type === "edit") {
+        // the layer parses Hebrew only, and a move's summary is not editable
+        if (!s.freeTextOn || s.lang !== "he" || s.mode !== "book") return pick();
+        return applyEdits(s, e.edits, e.dropped);
+      }
       if (e.type === "confirm") {
         // 🔴 THE ONLY WAY INTO "submitting". The driver persists this state
         // under the version lock BEFORE it submits, so a second "לקבוע" —
@@ -853,7 +915,11 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
         const body = s.mode === "move" ? C.OUTCOME.moveAbandoned : C.OUTCOME.cancelled;
         return { kind: "reply", state: { ...s, step: "done", notice: null }, reply: { type: "text", body } };
       }
-      if (e.type === "text") return pick();
+      if (e.type === "text") {
+        // E14: where edits are invited, an unparsed text asks WHAT to change
+        if (s.freeTextOn && s.lang === "he" && s.mode === "book") return again(s, C.NOTICE.editUnclear);
+        return pick();
+      }
       return stale();
 
     case "submitting":
@@ -867,6 +933,121 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
   }
 }
 
+// ─── E14: the free-language layer's transitions (PURE) ─────────────────────
+
+/**
+ * A free-text availability request at the menu. What it certainly said is
+ * pre-filled; the reply SAYS what was understood (and what was dropped as
+ * unclear); a length the client did not state is the DEFAULT — disclosed
+ * again at the summary (owner, 16.10), changeable until they confirm, never
+ * a silent guess.
+ */
+function menuQuery(s: FlowState, q: ParsedAvailability): Transition {
+  const C = copy(s.lang);
+  const echo = C.QUERY.echo(q);
+  const notice = q.dropped.length ? (echo ? `${echo} ${C.QUERY.dropped(q.dropped)}` : C.QUERY.dropped(q.dropped)) : echo || null;
+  const patch: Partial<FlowState> = {
+    ...clearFrom("duration"),
+    duration: q.duration ?? DEFAULT_BOOKING_DURATION,
+    durationFromDefault: q.duration === null,
+    filter:
+      q.dateFrom || q.dateTo || q.timeFrom || q.timeTo
+        ? { dateFrom: q.dateFrom, dateTo: q.dateTo, timeFrom: q.timeFrom, timeTo: q.timeTo }
+        : null,
+    notice,
+  };
+  // a room the client named is validated exactly like a tapped one
+  if (q.studio) {
+    return { kind: "need-availability", state: { ...s, ...patch, studio: q.studio, step: "day", dayPage: 0 } };
+  }
+  return go(s, { ...patch, step: studioStep(s) });
+}
+
+/**
+ * Every certain edit from one summary message. The two free values are
+ * validated by the SAME normalisers the screen uses; a slot change (length,
+ * room, day, time) re-reads availability BEFORE anything new is offered.
+ * A field that failed validation fails the WHOLE message — applying half of
+ * what the client asked would silently drop the rest. What the parser could
+ * not be sure of is SAID (`dropped`). And no edit ever confirms — the
+ * "✅ לקבוע" button stays the only way into "submitting".
+ */
+function applyEdits(s: FlowState, edits: ParsedEdit[], dropped: string[]): Transition {
+  const C = copy(s.lang);
+  const tail = (dropped.length ? `\n${C.QUERY.dropped(dropped)}` : "") +
+    (edits.some((e) => "alsoConfirm" in e && e.alsoConfirm) ? `\n${C.NOTICE.confirmByButton}` : "");
+
+  // 1. validate EVERYTHING first — or change nothing at all
+  let guest = s.guest;
+  let note = s.note;
+  let duration = s.duration;
+  let studio = s.studio;
+  let filter = s.filter;
+  for (const edit of edits) {
+    switch (edit.field) {
+      case "confirm-hint":
+        break;
+      case "guest": {
+        const g = normalizeGuest(edit.value);
+        if (!g.ok) return again(s, C.GUEST.tooLong + tail);
+        guest = g.value;
+        break;
+      }
+      case "note": {
+        const n = normalizeNote(edit.value);
+        if (!n.ok) return again(s, C.NOTE.tooLong + tail);
+        note = n.value;
+        break;
+      }
+      case "duration": {
+        const d = validateDuration(edit.minutes);
+        if (d === null || d !== edit.minutes) return again(s, C.NOTICE.editUnclear);
+        duration = d;
+        break;
+      }
+      case "studio": {
+        const r = validateStudio(edit.studio);
+        if (!r) return again(s, C.NOTICE.editUnclear);
+        studio = r;
+        break;
+      }
+      case "day": {
+        if (!DATE_RE.test(edit.date)) return again(s, C.NOTICE.editUnclear);
+        filter = { dateFrom: edit.date, dateTo: edit.date, timeFrom: filter?.timeFrom ?? null, timeTo: filter?.timeTo ?? null };
+        break;
+      }
+      case "time-from": {
+        if (!HHMM_RE.test(edit.hhmm)) return again(s, C.NOTICE.editUnclear);
+        filter = { dateFrom: filter?.dateFrom ?? s.date, dateTo: filter?.dateTo ?? s.date, timeFrom: edit.hhmm, timeTo: null };
+        break;
+      }
+    }
+  }
+  if (edits.length === 1 && edits[0].field === "confirm-hint") return again(s, C.NOTICE.confirmByButton);
+
+  // 2. apply — a slot change re-reads availability; values alone re-render
+  const slotChange =
+    duration !== s.duration ||
+    studio !== s.studio ||
+    (filter?.dateFrom ?? null) !== (s.filter?.dateFrom ?? null) ||
+    (filter?.dateTo ?? null) !== (s.filter?.dateTo ?? null);
+  const timeChange = !slotChange && (filter?.timeFrom ?? null) !== (s.filter?.timeFrom ?? null);
+  const durationFromDefault = duration !== s.duration ? false : s.durationFromDefault;
+  if (slotChange) {
+    return {
+      kind: "need-availability",
+      state: { ...s, guest, note, duration, durationFromDefault, studio, filter, date: null, hours: [], hourPage: 0, start: null, end: null, step: "day", dayPage: 0, notice: (dropped.length ? C.NOTICE.changedPartialRechoose : C.NOTICE.changedRechoose) + tail },
+    };
+  }
+  if (timeChange) {
+    return {
+      kind: "need-availability",
+      state: { ...s, guest, note, filter, hours: [], hourPage: 0, start: null, end: null, step: "hour", notice: (dropped.length ? C.NOTICE.changedPartialRechoose : C.NOTICE.changedRechoose) + tail },
+    };
+  }
+  return go(s, { guest, note, duration, durationFromDefault, notice: `${dropped.length ? C.NOTICE.changedPartial : C.NOTICE.changed}${tail}` });
+}
+
 // ─── fed by the driver (PURE) ──────────────────────────────────────────────
 
 /**
@@ -878,8 +1059,8 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
 export function withAvailability(s: FlowState, pub: PublicAvailability): Transition {
   const C = copy(s.lang);
   if (s.step === "day") {
-    const days = clickableDays(pub.free, s.studio, pub.fromIsrael, pub.toIsrael);
-    if (days.length === 0) {
+    const all = clickableDays(pub.free, s.studio, pub.fromIsrael, pub.toIsrael);
+    if (all.length === 0) {
       // nothing for this (length, room): back to choosing a room, saying why
       return render({
         ...s,
@@ -888,11 +1069,56 @@ export function withAvailability(s: FlowState, pub: PublicAvailability): Transit
         notice: C.NOTICE.noDays(s.studio as string, s.duration as BookingDuration),
       });
     }
-    return render({ ...s, days, dayPage: Math.min(s.dayPage, Math.floor((days.length - 1) / PAGE_SIZE)) });
+    // E14: the written day range narrows the list. If it narrows to NOTHING,
+    // nothing outside the request is offered as if it matched — the client
+    // explicitly chooses "כל הימים" to broaden (a fresh read), or goes back.
+    const f = s.filter;
+    if (f && (f.dateFrom || f.dateTo)) {
+      const from = f.dateFrom ?? pub.fromIsrael;
+      const to = f.dateTo ?? pub.toIsrael;
+      const days = all.filter((d) => d >= from && d <= to);
+      if (days.length === 0) {
+        return {
+          kind: "reply",
+          state: { ...s, days: [], dayPage: 0, notice: null },
+          reply: {
+            type: "buttons",
+            body: C.NOTICE.noMatchDates,
+            buttons: [
+              { id: FLOW_ID.broaden, title: C.QUERY.broadenDays },
+              { id: FLOW_ID.back, title: C.NAV.back },
+            ],
+          },
+        };
+      }
+      return render({ ...s, days, dayPage: Math.min(s.dayPage, Math.floor((days.length - 1) / PAGE_SIZE)) });
+    }
+    return render({ ...s, days: all, dayPage: Math.min(s.dayPage, Math.floor((all.length - 1) / PAGE_SIZE)) });
   }
 
   if (s.step === "hour") {
-    const hours = hoursFor(pub.free, s.studio, s.date).map((h) => ({ start: h.startIsrael, end: h.endIsrael }));
+    const allHours = hoursFor(pub.free, s.studio, s.date).map((h) => ({ start: h.startIsrael, end: h.endIsrael }));
+    // E14: the written time-of-day narrows the list (same rule as the days)
+    const fh = s.filter;
+    const hours =
+      fh && (fh.timeFrom || fh.timeTo)
+        ? allHours.filter((h) => (!fh.timeFrom || h.start >= fh.timeFrom) && (!fh.timeTo || h.start < fh.timeTo))
+        : allHours;
+    if (hours.length === 0 && allHours.length > 0) {
+      // E14: same rule as the days — broadening is the client's choice
+      return {
+        kind: "reply",
+        state: { ...s, hours: [], hourPage: 0, notice: null },
+        reply: {
+          type: "buttons",
+          body: C.NOTICE.noMatchHours,
+          buttons: [
+            { id: FLOW_ID.broaden, title: C.QUERY.broadenHours },
+            { id: FLOW_ID.back, title: C.NAV.back },
+          ],
+        },
+      };
+    }
     if (hours.length === 0) {
       // the day filled up since the list was sent: the fresh days instead
       const days = clickableDays(pub.free, s.studio, pub.fromIsrael, pub.toIsrael);
@@ -1011,6 +1237,10 @@ export function parseFlowState(raw: unknown): FlowState | null {
     // E19 fields, defaulted for a state saved before E19
     lang: isLang(s.lang) ? s.lang : DEFAULT_LANG,
     bilingualOn: s.bilingualOn ?? false,
+    // E14 fields, defaulted for a state saved before E14
+    freeTextOn: s.freeTextOn ?? false,
+    filter: s.filter ?? null,
+    durationFromDefault: s.durationFromDefault ?? false,
   } as FlowState;
 }
 
