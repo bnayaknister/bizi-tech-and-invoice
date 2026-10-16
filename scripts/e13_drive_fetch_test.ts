@@ -18,6 +18,12 @@
  *   --fetch-public-url <url> instead of a Drive file: Bunny fetches a PUBLIC
  *     URL with NO headers — does Fetch Video work at all, Drive aside?
  *     e.g. https://media.w3.org/2010/05/sintel/trailer.mp4 (W3C test media, 4.4MB)
+ *   --verify-title "<title>" | --verify-guid <guid>  [--drive-file-id <id> | --sha256 <hex>]
+ *     (owner 16.10) NO fetch, NO delete, read-only whatever .env.local says:
+ *     find a video already in the library (e.g. imported from the dashboard)
+ *     and run the after-arrival checks on it — status, hasOriginal, hash vs
+ *     Drive's sha256, /original + playlist 403/200, Direct Play, Embed — and
+ *     print Bunny's own timestamps (dateUploaded, transcodingMessages).
  *
  * 🔴 FETCH VIDEO IS SENT ONCE (owner 15.10, after a live 503): the POST is not
  * idempotent — any attempt may create a video. It is never retried. After a
@@ -267,6 +273,162 @@ export async function runFetchVariants(url: string, live: boolean, keep: boolean
   return { rows, metrics };
 }
 
+// ── what Bunny says about WHEN (owner 16.10) ────────────────────────────────
+// VideoModel documents `dateUploaded` and `transcodingMessages[].timeStamp`;
+// there is no documented "fetch finished" or "encoding finished" field. So
+// every date-like field the object actually carries is printed as is, plus
+// the transcoding messages; the only duration derived is dateUploaded → the
+// last transcoding message, and it is labelled an estimate.
+type TranscodingMessage = { timeStamp?: string | null; level?: number | null; issueCode?: number | null; message?: string | null; value?: string | null };
+type RawVideo = BunnyVideo & Record<string, unknown> & { dateUploaded?: string | null; transcodingMessages?: TranscodingMessage[] | null };
+
+/** Bunny's dates come without a zone ("2026-10-16T09:12:03.123") — they are UTC. */
+export function parseBunnyDate(s: unknown): number | null {
+  if (typeof s !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(s)) return null;
+  const t = Date.parse(/(?:[zZ]|[+-]\d\d:?\d\d)$/.test(s) ? s : `${s}Z`);
+  return Number.isFinite(t) ? t : null;
+}
+const fmtIl = (ms: number) => new Date(ms).toLocaleString("he-IL", { timeZone: "Asia/Jerusalem" });
+
+export function bunnyTimeline(v: BunnyVideo): string[] {
+  const raw = v as RawVideo;
+  const lines: string[] = [];
+  const dated = Object.entries(raw).filter(([, val]) => parseBunnyDate(val) !== null);
+  if (!dated.length) lines.push("Bunny לא החזיר שום שדה תאריך בווידאו");
+  for (const [k, val] of dated) lines.push(`${k}: ${val} (UTC) = ${fmtIl(parseBunnyDate(val)!)} שעון ישראל`);
+  const msgs = (Array.isArray(raw.transcodingMessages) ? raw.transcodingMessages : [])
+    .filter((m) => parseBunnyDate(m?.timeStamp) !== null)
+    .sort((a, b) => parseBunnyDate(a.timeStamp)! - parseBunnyDate(b.timeStamp)!);
+  if (!msgs.length) {
+    lines.push("transcodingMessages: אין הודעות עם חותמת זמן");
+  } else {
+    lines.push(`transcodingMessages: ${msgs.length}`);
+    for (const m of msgs.slice(0, 20)) {
+      lines.push(`  ${fmtIl(parseBunnyDate(m.timeStamp)!)} · level ${m.level ?? "?"} · ${m.message ?? ""}${m.value ? ` (${m.value})` : ""}`);
+    }
+    if (msgs.length > 20) lines.push(`  … ועוד ${msgs.length - 20}`);
+    const up = parseBunnyDate(raw.dateUploaded);
+    const last = parseBunnyDate(msgs[msgs.length - 1].timeStamp)!;
+    if (up !== null && last >= up) lines.push(`הערכה: dateUploaded → הודעת הקידוד האחרונה = ${fmtDur(Math.round((last - up) / 1000))}`);
+  }
+  lines.push("שים לב: Bunny לא מתעד שדה של \"סוף המשיכה\" או \"סוף הקידוד\" — אלה השדות היחידים שיש");
+  return lines;
+}
+function printTimeline(v: BunnyVideo) {
+  console.log("\n═══ זמנים מ-Bunny ═══");
+  for (const l of bunnyTimeline(v)) console.log(`  ${l}`);
+}
+
+const VERIFY_PLANNED = ["איתור הווידאו ב-Bunny", "status 4", "hasOriginal", "hash מול Drive", ...CDN_CHECKS];
+
+/**
+ * --verify-title / --verify-guid (owner 16.10): the checks that follow arrival,
+ * on a video ALREADY in the library (e.g. one imported from the dashboard).
+ * READ-ONLY: no fetch, no delete — BUNNY_DRY_RUN is forced on, so even a bug
+ * could not write. The hash source is Drive's sha256 (--drive-file-id /
+ * --drive-url, through the service account) or --sha256 <hex> given by hand.
+ */
+export async function runVerify(o: { title?: string; guid?: string; driveRaw?: string; sha256?: string }): Promise<{ rows: Row[]; metrics: Metrics }> {
+  const metrics: Metrics = { fileName: null, sizeBytes: null, fetchSeconds: null, serverMbps: null, encodeSeconds: null, hash: null, guid: null };
+  const label = "בדיקת וידאו קיים";
+  let step = "איתור הווידאו ב-Bunny";
+  let stoppedAt: string | null = null;
+  try {
+    // ── 1. the video ───────────────────────────────────────────────────────
+    let v: BunnyVideo | null;
+    if (o.guid) {
+      v = await withRetry("קריאת הווידאו", () => getVideo(o.guid!));
+      if (!v) {
+        record(label, step, "נכשל", `אין וידאו עם guid ${o.guid} בספרייה ${process.env.BUNNY_STREAM_LIBRARY_ID}`);
+        stoppedAt = "הווידאו לא נמצא";
+        return { rows, metrics };
+      }
+    } else {
+      const want = o.title!.trim();
+      const hits = await withRetry("חיפוש הווידאו", () => findVideosByTitle(want));
+      const exact = hits.filter((h) => (h.title ?? "").trim() === want);
+      if (exact.length !== 1) {
+        const near = hits.slice(0, 10).map((h) => `"${h.title}" ${h.guid}`).join(" · ");
+        record(label, step, "נכשל", exact.length
+          ? `${exact.length} סרטונים בכותרת "${want}": ${exact.map((h) => h.guid).join(", ")} — הרץ עם --verify-guid`
+          : `אין וידאו בכותרת המדויקת "${want}"${near ? ` · דומים: ${near}` : ""}`);
+        stoppedAt = "הווידאו לא זוהה";
+        return { rows, metrics };
+      }
+      v = await withRetry("קריאת הווידאו", () => getVideo(exact[0].guid));
+      if (!v) {
+        record(label, step, "נכשל", `נמצא ברשימה (${exact[0].guid}) אבל הקריאה החזירה 404`);
+        stoppedAt = "הווידאו נעלם";
+        return { rows, metrics };
+      }
+    }
+    metrics.guid = v.guid;
+    metrics.sizeBytes = v.storageSize ?? null;
+    record(label, step, "עבר", `guid ${v.guid} · "${v.title ?? ""}" · storageSize ${fmtSize(v.storageSize)} · length ${v.length ?? "?"}s, ${v.width ?? 0}x${v.height ?? 0}`);
+    printTimeline(v);
+    console.log("");
+
+    // ── 2. status + original ──────────────────────────────────────────────
+    step = "status 4";
+    const finished = v.status === 4;
+    record(label, "status 4", finished ? "עבר" : v.status === 5 || v.status === 6 ? "נכשל" : "לא נבדק",
+      `status ${v.status}${finished ? "" : ` (${v.encodeProgress ?? "?"}%)`}`);
+    record(label, "hasOriginal", v.hasOriginal === true ? "עבר" : "נכשל", `hasOriginal=${v.hasOriginal}`);
+
+    // ── 3. hash: Drive's sha256 (service account) or one given by hand ────
+    step = "hash מול Drive";
+    let sha: string | null = null;
+    let shaFrom = "";
+    if (o.sha256) {
+      sha = o.sha256.trim();
+      shaFrom = "--sha256";
+    } else if (o.driveRaw) {
+      const fileId = extractDriveFileId(o.driveRaw);
+      try {
+        if (!fileId) throw new Error(`לא הצלחתי לחלץ מזהה קובץ מ: ${o.driveRaw}`);
+        const { token } = await serviceAccountToken(DRIVE_READONLY);
+        const meta = await driveFileMeta(fileId, token);
+        sha = meta.sha256Checksum;
+        shaFrom = `Drive "${meta.name}" ${fmtSize(meta.size)}`;
+        metrics.fileName = meta.name;
+      } catch (e) {
+        const hint = e instanceof DriveError && (e.status === 404 || e.status === 403)
+          ? ` — הקובץ לא משותף עם ${serviceAccountEmail()}; אפשר להעביר את ה-sha256 ידנית עם --sha256`
+          : "";
+        record(label, "hash מול Drive", "לא נבדק", `${describeError(e)}${hint}`);
+      }
+    }
+    if (!rows.some((r) => r.check === "hash מול Drive")) {
+      if (!o.sha256 && !o.driveRaw) {
+        record(label, "hash מול Drive", "דילוג", `אין מקור להשוואה (--drive-file-id או --sha256) · originalHash=${v.originalHash ?? "—"}`);
+      } else {
+        const h = compareHashes(sha, v.originalHash);
+        metrics.hash = h.verdict;
+        record(label, "hash מול Drive", h.verdict === "זהה" ? "עבר" : h.verdict === "לא זהה" ? "נכשל" : "לא נבדק", `${h.verdict}: ${h.detail} (${shaFrom})`);
+      }
+    }
+
+    // ── 4. access checks — only on a finished video ────────────────────────
+    step = "בדיקות CDN";
+    if (!finished) {
+      for (const c of CDN_CHECKS) record(label, c, "לא נבדק", `status ${v.status} — הקידוד לא הסתיים`);
+    } else {
+      await runCdnChecks(label, v.guid, record);
+    }
+  } catch (e) {
+    const f = stepFailure(e);
+    record(label, step, f.result, f.detail);
+    stoppedAt = step;
+  } finally {
+    for (const c of VERIFY_PLANNED) {
+      if (!rows.some((r) => r.check === c)) record(label, c, "לא נבדק", `לא הגיע לרוץ${stoppedAt ? `: ${stoppedAt}` : ""}`);
+    }
+    record(label, "מחיקה", "דילוג", "--verify: קריאה בלבד, הווידאו נשאר");
+    printSummary(metrics);
+  }
+  return { rows, metrics };
+}
+
 /** Returns rows + metrics; throws Refused before any request when a guard says no. */
 export async function main(args: string[]): Promise<{ rows: Row[]; metrics: Metrics }> {
   rows = [];
@@ -279,6 +441,27 @@ export async function main(args: string[]): Promise<{ rows: Row[]; metrics: Metr
   const KEEP = args.includes("--keep");
   const NO_WAIT_ENCODE = args.includes("--no-wait-encode");
   const envFile = loadEnvFile(T.envFile());
+
+  // ── --verify-title / --verify-guid: read-only checks on an existing video ──
+  if (args.includes("--verify-title") || args.includes("--verify-guid")) {
+    const title = arg("--verify-title");
+    const guid = arg("--verify-guid");
+    if (args.includes("--verify-title") && args.includes("--verify-guid")) fail("בחר אחד: --verify-title או --verify-guid");
+    if (args.includes("--verify-title") && (!title || title.startsWith("--") || !title.trim())) fail("--verify-title צריך כותרת");
+    if (args.includes("--verify-guid") && (!guid || !/^[0-9a-f-]{36}$/i.test(guid))) fail(`--verify-guid צריך guid של Bunny: ${guid ?? ""}`);
+    const clash = ["--live", "--keep", "--no-wait-encode", "--fetch-variant", "--fetch-public-url"].filter((f) => args.includes(f));
+    if (clash.length) fail(`--verify הוא קריאה בלבד — לא משלבים עם ${clash.join(", ")}`);
+    const driveRaw = arg("--drive-file-id") ?? arg("--drive-url");
+    const sha256 = arg("--sha256");
+    if (driveRaw && sha256) fail("בחר מקור hash אחד: --drive-file-id / --drive-url, או --sha256");
+    if (sha256 !== undefined && !/^[0-9a-f]{64}$/i.test(sha256)) fail("--sha256 צריך 64 תווי hex");
+    process.env.BUNNY_DRY_RUN = "true"; // read-only: no write can leave, whatever the file says
+    const needV = ["BUNNY_STREAM_LIBRARY_ID", "BUNNY_STREAM_API_KEY", "BUNNY_STREAM_CDN_HOSTNAME", "BUNNY_CDN_TOKEN_KEY", ...(driveRaw ? ["GOOGLE_SERVICE_ACCOUNT_JSON"] : [])];
+    const missingV = needV.filter((k) => !(process.env[k] ?? "").trim());
+    if (missingV.length) fail(`חסרים ב-.env.local: ${missingV.join(", ")}${driveRaw ? " (או השתמש ב---sha256 במקום Drive)" : ""}`);
+    console.log(`🔎 בדיקת וידאו קיים — קריאה בלבד, בלי משיכה ובלי מחיקה: ${guid ? `guid ${guid}` : `"${title}"`}`);
+    return runVerify({ title, guid, driveRaw, sha256 });
+  }
 
   // ── the source: a Drive file, or (--fetch-public-url) any public URL ──────
   const VARIANT = args.includes("--fetch-variant");
@@ -476,6 +659,7 @@ export async function main(args: string[]): Promise<{ rows: Row[]; metrics: Metr
     record(label, "status 4", "עבר", `הקידוד לקח ${fmtDur(metrics.encodeSeconds)} · length ${v.length ?? "?"}s, ${v.width ?? 0}x${v.height ?? 0}`);
     record(label, "hasOriginal", v.hasOriginal === true ? "עבר" : "נכשל", `hasOriginal=${v.hasOriginal}`);
     hashRow(v);
+    printTimeline(v);
 
     // ── 7. access checks (shared with e13_first_upload) ───────────────────
     step = "בדיקות CDN";

@@ -147,6 +147,11 @@ global.fetch = (async (input: string, init: RequestInit = {}) => {
         guid, title: v.title, status, encodeProgress: status >= 4 ? 100 : 0,
         storageSize: status >= 1 ? BYTES.length : 0, length: 60, width: 1920, height: 1080,
         hasOriginal: status >= 1, originalHash: status >= 1 ? sc.originalHash : null,
+        dateUploaded: "2026-10-16T08:00:00.000", averageWatchTime: 0, totalWatchTime: 0,
+        transcodingMessages: status >= 4 ? [
+          { timeStamp: "2026-10-16T08:47:30", level: 1, issueCode: 0, message: "Encoding finished", value: null },
+          { timeStamp: "2026-10-16T08:40:00", level: 1, issueCode: 0, message: "Encoding started", value: null },
+        ] : [],
       });
     }
   }
@@ -415,6 +420,107 @@ async function main() {
   reset({ fetchMode: "strict" });
   const strictLive = await capture(() => run(["--fetch-public-url", PUBLIC_URL, "--live", "--no-wait-encode"]));
   check("fetchVideoFromUrl accepted by the strict fake (no `headers` key, ASCII title)", row(strictLive.value.rows, "בקשת משיכה ל-Bunny")?.result, "עבר");
+
+  section("parseBunnyDate: Bunny's zone-less dates are UTC");
+  const { parseBunnyDate, bunnyTimeline } = await import("./e13_drive_fetch_test");
+  check("zone-less = UTC", parseBunnyDate("2026-10-16T08:00:00.000"), Date.UTC(2026, 9, 16, 8, 0, 0));
+  check("explicit Z kept", parseBunnyDate("2026-10-16T08:00:00Z"), Date.UTC(2026, 9, 16, 8, 0, 0));
+  check("not a date → null", [parseBunnyDate("hello"), parseBunnyDate(5), parseBunnyDate(null)], [null, null, null]);
+  ok("timeline with no date fields says so", bunnyTimeline({ guid: "g", status: 4 }).some((l) => l.includes("לא החזיר שום שדה תאריך")));
+
+  const HEB_TITLE = "פרק 8 בדיקה";
+  const VG = "00000000-0000-4000-8000-0000000000aa";
+  const writes = () => calls.filter((c) => /^(POST|PUT|DELETE|PATCH) /.test(c) && !c.includes("oauth2.googleapis.com"));
+
+  section("--verify-title (Hebrew) + --drive-file-id: every check, zero writes, even with BUNNY_DRY_RUN=false in the file");
+  writeFileSync(envPath, KEYS + "BUNNY_DRY_RUN=false\n");
+  reset({ statuses: [4] });
+  process.env.BUNNY_DRY_RUN = "false";
+  videos.set(VG, { title: HEB_TITLE, reads: 0 });
+  videos.set("00000000-0000-4000-8000-0000000000bb", { title: `${HEB_TITLE} ישן`, reads: 0 }); // substring match, not exact
+  const vt = await capture(() => run(["--verify-title", HEB_TITLE, "--drive-file-id", FILE_ID]));
+  check("no failed / not-checked row", vt.value.rows.filter((r) => r.result === "נכשל" || r.result === "לא נבדק").map((r) => `${r.check}: ${r.detail}`), []);
+  check("zero Bunny writes (no fetch, no delete)", writes(), []);
+  check("found the EXACT title, not the longer one", vt.value.metrics.guid, VG);
+  check("status 4 / hasOriginal / hash", ["status 4", "hasOriginal", "hash מול Drive"].map((c) => row(vt.value.rows, c)?.result), ["עבר", "עבר", "עבר"]);
+  check("CDN checks all passed", ["/original בלי טוקן → 403", "/original חתום → 200", "playlist בלי טוקן → 403", "playlist חתום → 200", "תת-playlist דרך טוקן התיקייה → 200", "Direct Play חסום", "Embed בלי טוקן חסום"].map((c) => row(vt.value.rows, c)?.result), ["עבר", "עבר", "עבר", "עבר", "עבר", "עבר", "עבר"]);
+  check("delete row = דילוג", row(vt.value.rows, "מחיקה")?.result, "דילוג");
+  ok("timeline: dateUploaded in UTC + Israel time", vt.out.includes("═══ זמנים מ-Bunny ═══") && vt.out.includes("dateUploaded: 2026-10-16T08:00:00.000 (UTC)") && vt.out.includes("11:00:00"));
+  ok("timeline: transcoding messages sorted, estimate 47.5 min", vt.out.includes("transcodingMessages: 2") &&
+    vt.out.indexOf("Encoding started") < vt.out.indexOf("Encoding finished") && vt.out.includes("= 47.5 דק׳"));
+  ok("numeric watch-time fields are not mistaken for dates", !vt.out.includes("averageWatchTime"));
+  ok("the token appears nowhere in the output", !vt.out.includes(TOKEN));
+
+  section("--verify-guid + --sha256 by hand: no Google at all; mismatch → נכשל");
+  reset({ statuses: [4] });
+  videos.set(VG, { title: HEB_TITLE, reads: 0 });
+  const vs = await capture(() => run(["--verify-guid", VG, "--sha256", "a".repeat(64)]));
+  check("zero Google requests, zero writes", [calls.filter((c) => c.includes("googleapis.com")).length, writes()], [0, []]);
+  check("hash row = נכשל (לא זהה)", [row(vs.value.rows, "hash מול Drive")?.result, vs.value.metrics.hash], ["נכשל", "לא זהה"]);
+  reset({ statuses: [4] });
+  videos.set(VG, { title: HEB_TITLE, reads: 0 });
+  const vs2 = await capture(() => run(["--verify-guid", VG, "--sha256", SHA_HEX]));
+  check("matching --sha256 → עבר", row(vs2.value.rows, "hash מול Drive")?.result, "עבר");
+
+  section("--verify without a hash source → hash דילוג, the rest still runs");
+  reset({ statuses: [4] });
+  videos.set(VG, { title: HEB_TITLE, reads: 0 });
+  const vn = await capture(() => run(["--verify-guid", VG]));
+  check("hash = דילוג, playlist signed = עבר", [row(vn.value.rows, "hash מול Drive")?.result, row(vn.value.rows, "playlist חתום → 200")?.result], ["דילוג", "עבר"]);
+
+  section("--verify, Drive file not shared with the SA → hash לא נבדק with the --sha256 hint; CDN still checked");
+  reset({ statuses: [4], drive: "403" });
+  videos.set(VG, { title: HEB_TITLE, reads: 0 });
+  const v403 = await capture(() => run(["--verify-guid", VG, "--drive-file-id", FILE_ID]));
+  const h403 = row(v403.value.rows, "hash מול Drive");
+  ok("hash = לא נבדק, hint names --sha256", h403?.result === "לא נבדק" && h403.detail.includes("--sha256"));
+  check("CDN checks still ran", row(v403.value.rows, "/original חתום → 200")?.result, "עבר");
+
+  section("--verify on a video still encoding → status 4 לא נבדק, no CDN requests");
+  reset({ statuses: [3] });
+  videos.set(VG, { title: HEB_TITLE, reads: 0 });
+  const venc = await capture(() => run(["--verify-guid", VG]));
+  check("status 4 + CDN rows = לא נבדק", ["status 4", "/original חתום → 200"].map((c) => row(venc.value.rows, c)?.result), ["לא נבדק", "לא נבדק"]);
+  check("no CDN / player requests", calls.filter((c) => c.includes("b-cdn.net") || c.includes("mediadelivery")).length, 0);
+
+  section("--verify-title: not found / two exact matches → נכשל, the next step named");
+  reset({ statuses: [4] });
+  videos.set(VG, { title: `${HEB_TITLE} ישן`, reads: 0 });
+  const vnf = await capture(() => run(["--verify-title", HEB_TITLE]));
+  const fnf = row(vnf.value.rows, "איתור הווידאו ב-Bunny");
+  ok("not found: נכשל, lists the near match", fnf?.result === "נכשל" && fnf.detail.includes("דומים") && fnf.detail.includes(VG));
+  check("later checks = לא נבדק", row(vnf.value.rows, "status 4")?.result, "לא נבדק");
+  reset({ statuses: [4] });
+  videos.set(VG, { title: HEB_TITLE, reads: 0 });
+  videos.set("00000000-0000-4000-8000-0000000000cc", { title: HEB_TITLE, reads: 0 });
+  const vdup = await capture(() => run(["--verify-title", HEB_TITLE]));
+  ok("two exact: נכשל, suggests --verify-guid", row(vdup.value.rows, "איתור הווידאו ב-Bunny")?.detail.includes("--verify-guid") === true);
+
+  section("--verify guards: refused before any request");
+  for (const bad of [
+    ["--verify-title", HEB_TITLE, "--live"],
+    ["--verify-guid", VG, "--keep"],
+    ["--verify-title", HEB_TITLE, "--verify-guid", VG],
+    ["--verify-guid", "not-a-guid"],
+    ["--verify-title"],
+    ["--verify-guid", VG, "--sha256", "xyz"],
+    ["--verify-guid", VG, "--sha256", SHA_HEX, "--drive-file-id", FILE_ID],
+  ]) {
+    reset();
+    let e2 = "";
+    try {
+      await capture(() => run(bad));
+    } catch (e) {
+      e2 = (e as Error).message;
+    }
+    check(`refused: ${bad.join(" ")}`, [e2 !== "", calls.length], [true, 0]);
+  }
+
+  section("the live Drive run prints Bunny's timeline too");
+  reset();
+  process.env.BUNNY_DRY_RUN = "false"; // --verify forced it on in this process, by design
+  const lt = await capture(() => run(["--drive-url", URL_ARG, "--live"]));
+  ok("timeline section in the live run", lt.out.includes("═══ זמנים מ-Bunny ═══") && lt.out.includes("dateUploaded"));
 
   rmSync(dir, { recursive: true, force: true });
   console.log(`\n${passed} passed, ${failed} failed`);
