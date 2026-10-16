@@ -28,6 +28,8 @@ export type BunnyVideo = {
   hasMP4Fallback?: boolean | null;
   hasOriginal?: boolean | null;
   originalHash?: string | null;
+  /** ISO time Bunny created the video — orders two videos that share a title (E13-4, plan §5.3) */
+  dateUploaded?: string | null;
 };
 
 export type ReviewVersionStatus = "created" | "uploading" | "processing" | "playable" | "ready" | "failed";

@@ -99,6 +99,10 @@ file("ZEROSIZE000000000001", { size: "0" });
 file("NOSHA000000000000001", { sha256Checksum: undefined });
 file("BADSHA000000000000001".slice(0, 20), { sha256Checksum: "not-a-hash" });
 file("UPPERMIME00000000001", { mimeType: "VIDEO/QuickTime" });
+// owner 16.10: macOS AppleDouble next to the real file (seen live: a 4KB "._2_COMBO-2.wav" typed audio/wav)
+file("APPLEDOUBLE000000001", { name: "._2_COMBO-2.wav", mimeType: "audio/wav", size: "4096" });
+file("DOTFILE0000000000001", { name: ".hidden episode.mp4" });
+file("DOTINSIDE00000000001", { name: "MALI ep.5 v3._final.mp4" }); // a dot INSIDE the name is fine
 tree.set("FORBIDDEN00000000001", { status: 403 });
 tree.set("BROKEN00000000000001", { status: 500 });
 for (let i = 7; i <= 9; i++) file(`DEPTH${i}`.padEnd(20, "0"), { parents: [chain(11 - i)] }); // ROOT at level i
@@ -179,6 +183,8 @@ async function main() {
     ["SHORTCUT000000000001", "not_media"],
     ["ZIPfile0000000000001", "not_media"],
     ["TRASHED0000000000001", "trashed"],
+    ["APPLEDOUBLE000000001", "system_file"],
+    ["DOTFILE0000000000001", "system_file"],
     ["NODOWNLOAD0000000001", "cannot_download"],
     ["NOCAPS00000000000001", "cannot_download"],
     ["NOSIZE00000000000001", "no_size"],
@@ -198,6 +204,10 @@ async function main() {
   }
   ok("every refusal carries a Hebrew message", msgs.length === cases.length && msgs.every((m) => /[א-ת]/.test(m)));
   ok("no message contains the token", msgs.every((m) => !m.includes(TOKEN)));
+  const ad = await run("APPLEDOUBLE000000001");
+  check("._ file → the owner's message, word for word", !ad.ok && ad.message, "זה קובץ מערכת של Mac ולא הקובץ עצמו. בחר את הקובץ בלי ._ בתחילת השם");
+  const di = await run("DOTINSIDE00000000001");
+  ok("a dot inside the name (not at its start) is accepted", di.ok);
   calls = [];
   await code("GDOC0000000000000001");
   check("not media → refused before any folder walk", calls.length, 1);

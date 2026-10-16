@@ -8,6 +8,8 @@ import { ACTIVE_CLIENT } from "@/lib/clients/status";
 import { canManageBookingContacts } from "@/lib/clients/access";
 import { PERF_OFF, type PerfTimer } from "@/lib/perf/timing";
 import type { Profile } from "@/lib/profile";
+import { publicVersion, type PublicVersion } from "@/lib/review/versions";
+import { toVersionRow, VERSION_SELECT } from "@/lib/review/versionStore";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET /api/entity/[type]/[id] — everything after authentication. T34.
@@ -64,7 +66,16 @@ type Review = {
   episode_note: string | null;
   reels_note: string | null;
 };
-type ReviewItem = { id: string; kind: string; reel_index: number | null; media_link: string | null; approved: boolean; last_note: string | null };
+type ReviewItem = {
+  id: string;
+  kind: string;
+  reel_index: number | null;
+  media_link: string | null;
+  approved: boolean;
+  last_note: string | null;
+  // E13-4: the item's versions, oldest first — team only (the drawer's send-for-review panel)
+  versions: PublicVersion[];
+};
 
 export async function entityGet(deps: EntityGetDeps): Promise<{ status: number; json: Record<string, unknown> }> {
   const { type, id, user, profile, supabase, admin, origin, liveLinksTimeoutMs } = deps;
@@ -171,6 +182,23 @@ export async function entityGet(deps: EntityGetDeps): Promise<{ status: number; 
       .eq("production_id", id)
       .order("kind")
       .order("reel_index", { ascending: true });
+    // E13-4 — versions of these items. A failed read leaves the lists empty
+    // and never fails the drawer (rule 38): the media fields still work.
+    const ids = (itemRows ?? []).map((r) => r.id as string);
+    const byItem = new Map<string, PublicVersion[]>();
+    if (ids.length) {
+      const { data: vRows } = await admin
+        .from("client_review_versions")
+        .select(VERSION_SELECT)
+        .in("item_id", ids)
+        .order("created_at", { ascending: true });
+      for (const v of vRows ?? []) {
+        const pv = publicVersion(toVersionRow(v));
+        const list = byItem.get(v.item_id as string) ?? [];
+        list.push(pv);
+        byItem.set(v.item_id as string, list);
+      }
+    }
     return (itemRows ?? []).map((r) => ({
       id: r.id as string,
       kind: r.kind as string,
@@ -178,6 +206,7 @@ export async function entityGet(deps: EntityGetDeps): Promise<{ status: number; 
       media_link: (r.media_link as string | null) ?? null,
       approved: !!r.approved,
       last_note: (r.last_note as string | null) ?? null,
+      versions: byItem.get(r.id as string) ?? [],
     }));
   };
 

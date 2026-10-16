@@ -30,6 +30,7 @@ import ClientMorningCard from "@/components/ClientMorningCard";
 import ClientBookingContactsCard from "@/components/ClientBookingContactsCard";
 import EntityFieldRows, { type FieldMeta } from "@/components/EntityFieldRows";
 import ClientNotesModal from "./ClientNotesModal";
+import ReviewVersionsPanel, { type PanelVersion } from "@/components/ReviewVersionsPanel";
 import IconTile, { type IconAccent } from "@/components/IconTile";
 import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
 import { displayDate, displayDateTime, displayLogTime } from "@/lib/dates";
@@ -119,7 +120,7 @@ type DrawerData = {
   // per-deliverable media links + review state (0057 / stage 1b) — null/empty
   // until the items model reaches this production (seeded at link mint or
   // first drawer save)
-  reviewItems: { id: string; kind: string; reel_index: number | null; media_link: string | null; approved: boolean; last_note: string | null }[] | null;
+  reviewItems: { id: string; kind: string; reel_index: number | null; media_link: string | null; approved: boolean; last_note: string | null; versions?: PanelVersion[] }[] | null;
   // links still live for this production (Q7) — not superseded, unanswered,
   // unexpired. Scope-aware supersession means there can be two (episode +
   // reels), so pressing send may burn one, both, or none.
@@ -2093,6 +2094,17 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                               : undefined
                           }
                           liveLinks={liveForReels}
+                        />
+                      )}
+                      {/* E13-4 — send a Drive file to Bunny for review, per deliverable (team only) */}
+                      {data.canEditStages && (
+                        <ReviewVersionsPanel
+                          productionId={ref.id}
+                          hasEpisode={epStages.length > 0}
+                          reelCount={reelCount}
+                          items={data.reviewItems ?? []}
+                          canEdit={data.canEditStages}
+                          onChanged={() => void load(ref, true)}
                         />
                       )}
                       {/* unified send — takes both blocks' links at once */}

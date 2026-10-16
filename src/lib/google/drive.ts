@@ -200,6 +200,7 @@ export type ReviewFileRejection =
   | "bad_link"
   | "not_visible"
   | "trashed"
+  | "system_file"
   | "not_media"
   | "cannot_download"
   | "no_size"
@@ -245,6 +246,12 @@ export async function checkReviewFile(input: string, opts: { token: string; fold
   }
 
   if (meta.trashed) return reject("trashed", "הקובץ נמצא באשפה של Drive");
+  // owner 16.10: a name starting with a dot is never the deliverable. macOS
+  // leaves "._name" AppleDouble files next to the real one on shared drives;
+  // Drive types them by extension (a 4KB "._2_COMBO-2.wav" passed as audio/wav).
+  if (meta.name.trim().startsWith(".")) {
+    return reject("system_file", "זה קובץ מערכת של Mac ולא הקובץ עצמו. בחר את הקובץ בלי ._ בתחילת השם");
+  }
   const mime = meta.mimeType.toLowerCase();
   if (!mime.startsWith("video/") && !mime.startsWith("audio/")) {
     return reject("not_media", `הקובץ אינו וידאו או אודיו (${meta.mimeType || "סוג לא ידוע"})`);
