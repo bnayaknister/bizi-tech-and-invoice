@@ -106,6 +106,8 @@ const videos = new Map<string, BunnyVideo & { listedAfter: number }>();
 let listCalls = 0;
 let fetchPosts: { url: string; title: string; headers?: Record<string, string> }[] = [];
 let headLength: number | "fail" = 0;
+const PULL_ZONE_REFERER = "https://bizi-tech-and-invoice.vercel.app/";
+const cdnReferers: (string | null)[] = [];
 let guidSeq = 0;
 const newGuid = () => `00000000-0000-4000-8000-${String(++guidSeq).padStart(12, "0")}`;
 const mkVideo = (title: string, over: Partial<BunnyVideo> = {}) => {
@@ -151,6 +153,10 @@ global.fetch = (async (input: string | URL, init: RequestInit = {}) => {
     return v ? new Response(JSON.stringify(v), { status: 200 }) : new Response("{}", { status: 404 });
   }
   if (url.startsWith("https://vz-test.b-cdn.net/") && method === "HEAD") {
+    // the real pull zone (16.10): Allowed Referrers — no Referer from our domain → 403, token or not
+    const ref = new Headers(init.headers).get("referer");
+    cdnReferers.push(ref);
+    if (ref !== PULL_ZONE_REFERER) return new Response(null, { status: 403 });
     if (headLength === "fail") return new Response(null, { status: 500 });
     return new Response(null, { status: 200, headers: { "content-length": String(headLength) } });
   }
@@ -393,18 +399,30 @@ async function main() {
   const ag = ver(aid).bunny_video_id!;
   headLength = "fail";
   setVideo(ag, { status: 4, hasOriginal: true, originalHash: "d".repeat(64) }); // Bunny's hash never matches an mp3
-  await refreshVersion(PROD, aid, deps);
+  const failRf = await refreshVersion(PROD, aid, deps);
   check("HEAD fails → unchecked, not final, label בבדיקת שלמות", [ver(aid).integrity, isFinal(ver(aid)), versionLabel(publicVersion(ver(aid))).text], ["unchecked", false, "בבדיקת שלמות"]);
+  check("…and the refresh answer carries a log line with the reason", failRf.log, { version_id: aid, production_id: PROD, integrity: "unchecked", detail: "HEAD /original → HTTP 500" });
+  ok("the log is NOT in the body the browser gets", !("log" in failRf.body) && !JSON.stringify(failRf.body).includes("HTTP 500"));
+  // 16.10 live: the pull zone 403s a server request without our Referer
+  process.env.BUNNY_CDN_REFERER = "https://somewhere-else.example/";
   headLength = 77000000;
-  await refreshVersion(PROD, aid, deps);
-  check("next refresh retries → size_match (hash ignored for audio)", ver(aid).integrity, "size_match");
+  const refRf = await refreshVersion(PROD, aid, deps);
+  delete process.env.BUNNY_CDN_REFERER;
+  check("a wrong Referer → 403 → still unchecked, and the log says 403", [ver(aid).integrity, refRf.log?.detail], ["unchecked", "HEAD /original → HTTP 403"]);
+  ok("the log never carries the signed URL or its token", !/token=|b-cdn\.net|expires=/.test(JSON.stringify([failRf.log, refRf.log])));
+  const okRf = await refreshVersion(PROD, aid, deps);
+  check("next refresh retries (with the pull zone's Referer) → size_match (hash ignored for audio)", ver(aid).integrity, "size_match");
+  check("a match leaves no log line", okRf.log, undefined);
+  ok("every CDN HEAD the code sent carried a Referer", cdnReferers.length > 0 && cdnReferers.every((r) => typeof r === "string" && r.length > 0));
+  check("…the pull zone's domain by default", cdnReferers.at(-1), PULL_ZONE_REFERER);
   reset();
   const a2 = await send("reel", 3, link("MP3file0000000000001"));
   const a2id = (a2.body.version as { id: string }).id;
   headLength = 76999999;
   setVideo(ver(a2id).bunny_video_id!, { status: 4, hasOriginal: true, originalHash: "e".repeat(64) });
-  await refreshVersion(PROD, a2id, deps);
+  const mmRf = await refreshVersion(PROD, a2id, deps);
   check("audio of another size → mismatch (size)", [ver(a2id).integrity, evs("review_integrity_mismatch").at(-1)?.payload.kind], ["mismatch", "size"]);
+  check("…logged with both sizes", mmRf.log?.detail, "size 76999999 ≠ Drive 77000000");
 
   // ══════════════════════════════════════════════════════════════════════
   section("Bunny reports failure; original missing");
@@ -485,6 +503,19 @@ async function main() {
   const store_src = readFileSync(join(__dirname, "../src/lib/review/versionStore.ts"), "utf8");
   ok("createItem writes approved: false (Q6)", /insert\(\{ production_id: productionId, kind, reel_index: reelIndex, approved: false \}\)/.test(store_src));
   ok("no DELETE anywhere in the store", !/\.delete\(/.test(store_src));
+  // 16.10: every SERVER request to the CDN must send the pull zone's Referer.
+  // Any fetch in src/ to a signed CDN URL without `Referer:` beside it fails here.
+  const { readdirSync, statSync } = await import("node:fs");
+  const walk = (d: string): string[] =>
+    readdirSync(d).flatMap((f) => {
+      const p = join(d, f);
+      return statSync(p).isDirectory() ? walk(p) : /\.(ts|tsx)$/.test(p) ? [p] : [];
+    });
+  const cdnCallers = walk(join(__dirname, "../src"))
+    .filter((f) => !f.endsWith("lib/bunny/sign.ts"))
+    .filter((f) => /signedOriginalUrl\(|signedPlaybackUrl\(/.test(readFileSync(f, "utf8")));
+  const missing = cdnCallers.filter((f) => !/Referer:\s*bunnyCdnReferer\(\)/.test(readFileSync(f, "utf8")));
+  check("every src/ file that signs a CDN URL sends Referer: bunnyCdnReferer()", missing.map((f) => f.split("/src/")[1]), []);
 
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);

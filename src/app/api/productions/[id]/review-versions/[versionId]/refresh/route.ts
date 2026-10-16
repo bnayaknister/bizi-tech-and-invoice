@@ -22,6 +22,10 @@ export async function POST(_request: Request, { params }: { params: { id: string
   try {
     const store = supabaseVersionStore(createTypedAdminClient());
     const res = await refreshVersion(params.id, params.versionId, { store });
+    // an integrity check that did not end in a match leaves one line in the
+    // Vercel log (16.10: the first mp3 sat in 'unchecked' for hours with
+    // nothing to read). Status codes and reasons only — never a signed URL.
+    if (res.log) console.warn(JSON.stringify({ tag: "review_integrity_not_matched", ...res.log }));
     return NextResponse.json(res.body, { status: res.status });
   } catch (e) {
     return NextResponse.json({ error: `רענון נכשל: ${describeError(e)}` }, { status: 500 });

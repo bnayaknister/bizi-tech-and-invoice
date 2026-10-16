@@ -39,6 +39,19 @@ export function bunnyApiConfig(): { libraryId: string; apiKey: string } {
   return { libraryId, apiKey };
 }
 
+// ═══ THE PULL ZONE ALSO CHECKS Referer (found live, E13-4, 16.10) ═══
+// Allowed Referrers is set on the library's pull zone: a request WITHOUT a
+// Referer from our domain gets 403 even with a valid token. Browsers send one
+// on their own; server-side fetches (Node) send none. So every SERVER request
+// to the CDN (not the API) carries this. It is the production domain the pull
+// zone allows — the same one scripts/_bunny_checks.ts has always sent — and
+// deliberately NOT NEXT_PUBLIC_APP_URL: a different public URL would not be on
+// the pull zone's list. BUNNY_CDN_REFERER overrides it if the zone ever moves.
+const DEFAULT_CDN_REFERER = "https://bizi-tech-and-invoice.vercel.app/";
+export function bunnyCdnReferer(): string {
+  return read("BUNNY_CDN_REFERER") || DEFAULT_CDN_REFERER;
+}
+
 /** What signing a CDN URL needs. Throws on anything missing. */
 export function bunnyCdnConfig(): { hostname: string; tokenKey: string } {
   const hostname = read("BUNNY_STREAM_CDN_HOSTNAME").replace(/^https?:\/\//, "").replace(/\/+$/, "");

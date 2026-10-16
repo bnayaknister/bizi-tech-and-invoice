@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { bunnyApiConfig, isBunnyDryRun } from "@/lib/bunny/config";
+import { bunnyApiConfig, bunnyCdnReferer, isBunnyDryRun } from "@/lib/bunny/config";
 import { fetchVideoFromUrl, findVideosByTitle, getVideo } from "@/lib/bunny/client";
 import { describeError } from "@/lib/bunny/errors";
 import { signedOriginalUrl } from "@/lib/bunny/sign";
@@ -122,7 +122,8 @@ export type Deps = {
   newId?: () => string;
 };
 
-export type Answer = { status: number; body: Record<string, unknown> };
+/** `log` is for the route to write to the server log — never sent to the browser. */
+export type Answer = { status: number; body: Record<string, unknown>; log?: Record<string, unknown> };
 
 const err = (status: number, error: string, extra: Record<string, unknown> = {}): Answer => ({ status, body: { error, ...extra } });
 
@@ -347,10 +348,14 @@ export async function sendForReview(input: SendInput, deps: Deps): Promise<Answe
  * 'ready' are never undone by a later read. Numbers the version once the
  * upload is confirmed (Q11). Runs the integrity check once ready (decision 4).
  */
-export async function applyVideoState(row: VersionRow, video: BunnyVideo, productionId: string, deps: Deps): Promise<void> {
+/** What a caller may want to log: set only when an integrity check did not end in a match. */
+export type ApplyOutcome = { integrity?: Integrity; integrityDetail?: string | null };
+
+export async function applyVideoState(row: VersionRow, video: BunnyVideo, productionId: string, deps: Deps): Promise<ApplyOutcome> {
   const { store } = deps;
   const now = (deps.now ?? (() => new Date()))().toISOString();
-  if (row.source !== "bunny" || !row.bunny_video_id) return;
+  let outcome: ApplyOutcome = {};
+  if (row.source !== "bunny" || !row.bunny_video_id) return outcome;
   const d = deriveVersionFromVideo(video);
   const current = row.bunny_status;
 
@@ -385,8 +390,10 @@ export async function applyVideoState(row: VersionRow, video: BunnyVideo, produc
 
   if (next === "ready" && (row.integrity === null || row.integrity === "unchecked")) {
     const original = patch.original_sha256 ?? d.original_sha256;
-    const integrity = await checkIntegrity(row, original);
+    const checked = await checkIntegrity(row, original);
+    const integrity = checked.integrity;
     await store.update(row.id, { integrity, integrity_at: now });
+    if (integrity === "unchecked" || integrity === "mismatch") outcome = { integrity, integrityDetail: checked.detail };
     if (integrity === "hash_match" || integrity === "size_match") {
       await store.event("review_version_ready", productionId, { version_id: row.id, number, integrity });
     } else if (integrity === "mismatch") {
@@ -400,6 +407,7 @@ export async function applyVideoState(row: VersionRow, video: BunnyVideo, produc
       });
     }
   }
+  return outcome;
 }
 
 /**
@@ -407,20 +415,31 @@ export async function applyVideoState(row: VersionRow, video: BunnyVideo, produc
  * Audio (Bunny's hash does not match an mp3, 16.10), or no sha256 from
  * Drive: the size of /original (a signed HEAD, valid one minute) against
  * Drive's size. A HEAD that fails is 'unchecked' — the next refresh retries.
+ *
+ * The HEAD carries the pull zone's Referer (bunnyCdnReferer): without it the
+ * CDN answers 403 even to a valid token, and the first live mp3 sat in
+ * 'unchecked' for hours (16.10). `detail` says why a check did not conclude —
+ * a status code or a reason, never the signed URL.
  */
-async function checkIntegrity(row: VersionRow, bunnyHash: string | null): Promise<Integrity> {
+export type IntegrityResult = { integrity: Integrity; detail: string | null };
+
+async function checkIntegrity(row: VersionRow, bunnyHash: string | null): Promise<IntegrityResult> {
   if (!row.is_audio_only && row.drive_sha256) {
-    return bunnyHash && bunnyHash.toLowerCase() === row.drive_sha256.toLowerCase() ? "hash_match" : "mismatch";
+    const same = !!bunnyHash && bunnyHash.toLowerCase() === row.drive_sha256.toLowerCase();
+    return { integrity: same ? "hash_match" : "mismatch", detail: same ? null : bunnyHash ? "hash differs" : "no originalHash from Bunny" };
   }
-  if (!row.bunny_video_id || row.drive_size_bytes === null) return "unchecked";
+  if (!row.bunny_video_id) return { integrity: "unchecked", detail: "skipped: no guid" };
+  if (row.drive_size_bytes === null) return { integrity: "unchecked", detail: "skipped: no Drive size" };
   try {
     const { url } = signedOriginalUrl(row.bunny_video_id, 60);
-    const res = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(15_000) });
+    const res = await fetch(url, { method: "HEAD", headers: { Referer: bunnyCdnReferer() }, signal: AbortSignal.timeout(15_000) });
     const len = res.headers.get("content-length");
-    if (!res.ok || !len || !/^\d+$/.test(len)) return "unchecked";
-    return Number(len) === row.drive_size_bytes ? "size_match" : "mismatch";
-  } catch {
-    return "unchecked";
+    if (!res.ok) return { integrity: "unchecked", detail: `HEAD /original → HTTP ${res.status}` };
+    if (!len || !/^\d+$/.test(len)) return { integrity: "unchecked", detail: "HEAD /original: no content-length" };
+    if (Number(len) === row.drive_size_bytes) return { integrity: "size_match", detail: null };
+    return { integrity: "mismatch", detail: `size ${len} ≠ Drive ${row.drive_size_bytes}` };
+  } catch (e) {
+    return { integrity: "unchecked", detail: `HEAD /original threw: ${describeError(e)}` };
   }
 }
 
@@ -434,6 +453,7 @@ export async function refreshVersion(productionId: string, versionId: string, de
   if (!row) return err(404, "הגרסה לא נמצאה");
   if (isFinal(row)) return { status: 200, body: { version: publicVersion(row) } };
 
+  let outcome: ApplyOutcome = {};
   try {
     if (!row.bunny_video_id) {
       const v = await videoByTitle(versionTitle(row.id), productionId, row.id, store);
@@ -442,13 +462,16 @@ export async function refreshVersion(productionId: string, versionId: string, de
     }
     if (row.bunny_video_id) {
       const video = await getVideo(row.bunny_video_id);
-      if (video) await applyVideoState(row, video, productionId, deps);
+      if (video) outcome = await applyVideoState(row, video, productionId, deps);
       row = (await store.getVersion(versionId)) ?? row;
     }
   } catch (e) {
     return err(502, `לא הצלחתי לקרוא את הסטטוס מ-Bunny: ${describeError(e)}`, { version: publicVersion(row) });
   }
-  return { status: 200, body: { version: publicVersion(row) } };
+  const log = outcome.integrity
+    ? { version_id: row.id, production_id: productionId, integrity: outcome.integrity, detail: outcome.integrityDetail ?? null }
+    : undefined;
+  return { status: 200, body: { version: publicVersion(row) }, ...(log ? { log } : {}) };
 }
 
 // ── what the drawer sees ───────────────────────────────────────────────────
