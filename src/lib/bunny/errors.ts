@@ -4,7 +4,7 @@
 // and puts the real reason one or two levels down in `.cause` (undici:
 // UND_ERR_SOCKET "other side closed", ECONNRESET, ETIMEDOUT, EPIPE…). Printing
 // only `.message` — what the first upload script did — throws exactly that
-// reason away. tus-js-client's DetailedError carries it in `causingError`,
+// reason away. A DetailedError-style error (the TUS client, removed in E13-3) carries it in `causingError`,
 // plus the request it was on and the response, if one came back.
 //
 // Walks `.cause` and `.causingError` up to a fixed depth, so a cycle cannot hang.

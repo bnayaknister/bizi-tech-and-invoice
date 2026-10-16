@@ -13,7 +13,9 @@
  *   · Bunny: NOTHING. These are Drive history rows; no file moves anywhere.
  *   · Our DB (via .env.local, service role): reads client_review_items,
  *     responded client_review_links, the client_review_approved/revisions
- *     events, and the backfill rows already in the 0114 tables. With --apply
+ *     events, the versions already in client_review_versions (any version an
+ *     item already has blocks its v1 — E13-3), and the backfill rows already
+ *     in the 0114 tables. With --apply
  *     only: INSERT into client_review_versions, client_review_approvals,
  *     client_review_comments. No UPDATE, no DELETE, nothing in any older table.
  *
@@ -142,10 +144,20 @@ async function loadEvents(admin: Admin): Promise<BfEvent[]> {
   return rows.map((r) => ({ event_type: r.event_type, created_at: r.created_at, payload: toPayload(r.payload) }));
 }
 
-async function loadV1(admin: Admin) {
-  return pages("client_review_versions", (f, t) =>
-    admin.from("client_review_versions").select("id,item_id").eq("number", 1).order("id").range(f, t)
+/**
+ * All versions, split in two (E13-3): the backfill v1 rows (number 1,
+ * is_backfill) and the items that have any OTHER version. Only backfill v1
+ * rows count as "v1 present" and only they are linked to approvals — a Bunny
+ * version numbered 1 is not the Drive history this script writes.
+ */
+async function loadVersions(admin: Admin) {
+  const rows = await pages("client_review_versions", (f, t) =>
+    admin.from("client_review_versions").select("id,item_id,number,is_backfill").order("id").range(f, t)
   );
+  const v1 = rows.filter((r) => r.number === 1 && r.is_backfill);
+  const v1Items = new Set(v1.map((r) => r.item_id));
+  const other = new Set(rows.filter((r) => !(r.number === 1 && r.is_backfill) && !v1Items.has(r.item_id)).map((r) => r.item_id));
+  return { v1, other };
 }
 
 async function loadSources(admin: Admin) {
@@ -170,7 +182,7 @@ async function main() {
   const items = await loadItems(admin);
   const links = await loadLinks(admin);
   const events = await loadEvents(admin);
-  const v1 = await loadV1(admin);
+  const { v1, other } = await loadVersions(admin);
   const { approvalSources, commentSources } = await loadSources(admin);
 
   const runAt = new Date().toISOString();
@@ -181,6 +193,7 @@ async function main() {
     {
       v1ItemIds: new Set(v1.map((r) => r.item_id)),
       v1IdByItem: new Map(v1.map((r) => [r.item_id, r.id])),
+      otherVersionItemIds: other,
       approvalSources,
       commentSources,
     },
@@ -200,7 +213,7 @@ async function main() {
     if (error) throw new Error(`versions: ${error.message} — לא נכתבו החלטות והערות; הרץ שוב אחרי בירור`);
   }
   // 2. resolve each item's v1 id (new + pre-existing)
-  const v1Id = new Map((await loadV1(admin)).map((r) => [r.item_id, r.id]));
+  const v1Id = new Map((await loadVersions(admin)).v1.map((r) => [r.item_id, r.id]));
 
   // 3. approvals — one statement
   if (plan.approvals.length) {

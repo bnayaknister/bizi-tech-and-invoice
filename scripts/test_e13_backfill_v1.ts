@@ -27,7 +27,7 @@ function check(name: string, got: unknown, want: unknown) {
 const section = (t: string) => console.log(`\n── ${t}`);
 
 const RUN = "2026-10-15T09:00:00.000Z";
-const none = (): BfExisting => ({ v1ItemIds: new Set(), v1IdByItem: new Map(), approvalSources: new Set(), commentSources: new Set() });
+const none = (): BfExisting => ({ v1ItemIds: new Set(), v1IdByItem: new Map(), otherVersionItemIds: new Set(), approvalSources: new Set(), commentSources: new Set() });
 
 // P1: episode + 2 reels, item mode, everything approved
 // P2: episode only, approved then B10 reset (approved=false now)
@@ -127,6 +127,7 @@ section("idempotency: a second run with the first run's keys plans nothing");
 const existing: BfExisting = {
   v1ItemIds: new Set(plan.versions.map((v) => v.item_id)),
   v1IdByItem: new Map(plan.versions.map((v) => [v.item_id, `ver-${v.item_id}`])),
+  otherVersionItemIds: new Set(),
   approvalSources: new Set(plan.approvals.map((a) => a.backfill_source)),
   commentSources: new Set(plan.comments.map((c) => c.backfill_source)),
 };
@@ -134,6 +135,18 @@ const again = planBackfillV1(items, links, events, existing, RUN);
 check("second run: 0 / 0 / 0", [again.versions.length, again.approvals.length, again.comments.length], [0, 0, 0]);
 check("second run reports them as already present", again.report.alreadyPresent, { versions: 5, approvals: plan.approvals.length, comments: 2 });
 check("backfill_source unique within a run", new Set(plan.approvals.map((a) => a.backfill_source)).size, plan.approvals.length);
+
+section("E13-3: an item that already has a non-backfill version gets no v1");
+const guarded = planBackfillV1(items, links, events, { ...none(), otherVersionItemIds: new Set(["e4"]) }, RUN);
+check("e4 gets no v1, the others still do", [guarded.versions.some((v) => v.item_id === "e4"), guarded.versions.length], [false, plan.versions.length - 1]);
+check("e4 is reported", guarded.report.skipped.itemHasOtherVersion, ["e4"]);
+const e4c = guarded.approvals.find((a) => a.item_id === "e4" && a.decision === "approved");
+check("e4's flag approval is still written, but not linked to any version", [Boolean(e4c), e4c?.v1_of_item ?? null], [true, null]);
+check("nothing else changes", [guarded.approvals.length, guarded.comments.length], [plan.approvals.length, plan.comments.length]);
+check("no guard set → none reported", plan.report.skipped.itemHasOtherVersion, []);
+check("the report names the guarded item", formatBackfillReport(guarded).includes("e4"), true);
+const guardedV1 = planBackfillV1(items, links, events, { ...none(), v1ItemIds: new Set(["e4"]), otherVersionItemIds: new Set(["e4"]) }, RUN);
+check("a backfill v1 already present wins over the guard (counted present, not reported)", [guardedV1.report.alreadyPresent.versions, guardedV1.report.skipped.itemHasOtherVersion], [1, []]);
 
 section("determinism and the report");
 check("same input → same plan", JSON.stringify(planBackfillV1(items, [...links].reverse(), events, none(), RUN)), JSON.stringify(plan));

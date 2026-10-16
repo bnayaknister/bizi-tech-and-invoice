@@ -1,6 +1,6 @@
 /**
  * E13-2 — lib/bunny: the HTTP layer, BUNNY_DRY_RUN, status derivation, and
- * the signed CDN / TUS signatures.
+ * the signed CDN URLs. (TUS and the single PUT were removed in E13-3, Q16.)
  *
  * Run: npx tsx --tsconfig tsconfig.scripts.json scripts/test_bunny.ts
  *
@@ -11,14 +11,13 @@
  * (github.com/BunnyWay/BunnyCDN.TokenAuthentication, e2e/vectors.json),
  * copied below as literals.
  */
-import { createHash, createHmac } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { createVideo, uploadVideo, getVideo, deleteVideo, tusUploadAuthorization, BunnyError, BunnyNetworkError, TUS_UPLOAD_TTL_SECONDS, fetchVideoFromUrl, fetchVideoRaw, findVideosByTitle } from "../src/lib/bunny/client";
+import { createVideo, getVideo, deleteVideo, BunnyError, BunnyNetworkError, fetchVideoFromUrl, fetchVideoRaw, findVideosByTitle } from "../src/lib/bunny/client";
 import { describeError } from "../src/lib/bunny/errors";
-import { bunnyTusOptions, shouldRetryTusStatus, TUS_CHUNK_SIZE } from "../src/lib/bunny/tus";
 import { isBunnyDryRun, BunnyConfigError } from "../src/lib/bunny/config";
-import { cdnToken, signedPlaybackUrl, signedOriginalUrl, tusSignature, PLAYBACK_TTL_SECONDS } from "../src/lib/bunny/sign";
+import { cdnToken, signedPlaybackUrl, signedOriginalUrl, PLAYBACK_TTL_SECONDS } from "../src/lib/bunny/sign";
 import { deriveVersionFromVideo } from "../src/lib/bunny/status";
 
 let passed = 0;
@@ -86,7 +85,7 @@ async function main() {
   }
 
   // ══════════════════════════════════════════════════════════════════════
-  section("dry run: create / upload / delete send NOTHING and log what would be sent");
+  section("dry run: create / delete send NOTHING and log what would be sent");
   env(undefined);
   calls = [];
   const c = await captureLogs(() => createVideo("פרק 12 — v2"));
@@ -98,18 +97,9 @@ async function main() {
   check("create log: body is the title", logged.body, JSON.stringify({ title: "פרק 12 — v2" }));
   ok("create: no synthetic guid handed back", !("video" in c));
 
-  const u = await captureLogs(() => uploadVideo(GUID, new Uint8Array(2048)));
-  check("upload: dryRun, zero fetches", ["dryRun" in u && u.dryRun, calls.length], [true, 0]);
-  check("upload log: PUT to the video + a size summary, not the bytes", [JSON.parse(logs[0]).method, JSON.parse(logs[0]).url, JSON.parse(logs[0]).body],
-    ["PUT", `https://video.bunnycdn.com/library/123456/videos/${GUID}`, "<2048 bytes application/octet-stream>"]);
-
   const d = await captureLogs(() => deleteVideo(GUID));
   check("delete: dryRun, zero fetches", ["dryRun" in d && d.dryRun, calls.length], [true, 0]);
   check("delete log: DELETE to the video", [JSON.parse(logs[0]).method, JSON.parse(logs[0]).url], ["DELETE", `https://video.bunnycdn.com/library/123456/videos/${GUID}`]);
-
-  const t = await captureLogs(() => tusUploadAuthorization(GUID, 3600));
-  check("TUS authorisation in dry run: null (a browser must not get a real signature)", t, null);
-  check("TUS dry run: logged, zero fetches", [logs.length, calls.length], [1, 0]);
 
   for (const v of [undefined, "true", "", "FALSE"]) {
     env(v);
@@ -124,11 +114,9 @@ async function main() {
   env(undefined);
   await captureLogs(async () => {
     await createVideo("t");
-    await uploadVideo(GUID, new Uint8Array(1));
     await deleteVideo(GUID);
-    tusUploadAuthorization(GUID, 60);
   });
-  ok("the API key appears in no dry-run log line", logs.length === 4 && logs.every((l) => !l.includes(API_KEY)));
+  ok("the API key appears in no dry-run log line", logs.length === 2 && logs.every((l) => !l.includes(API_KEY)));
 
   // ══════════════════════════════════════════════════════════════════════
   section("reads run for real even in dry run (they write nothing)");
@@ -159,14 +147,6 @@ async function main() {
   check("create: AccessKey + json body (title trimmed)", [calls[0].headers.AccessKey, calls[0].headers["content-type"], calls[0].body],
     [API_KEY, "application/json", JSON.stringify({ title: "פרק 3" })]);
   check("create: guid returned", "video" in live ? live.video.guid : null, GUID);
-
-  calls = [];
-  answers = [{ status: 200, body: { success: true, statusCode: 200 } }];
-  const bytes = new Uint8Array([1, 2, 3]);
-  await uploadVideo(GUID, bytes);
-  check("upload: PUT octet-stream to the video", [calls[0].method, calls[0].url, calls[0].headers["content-type"]],
-    ["PUT", `https://video.bunnycdn.com/library/123456/videos/${GUID}`, "application/octet-stream"]);
-  ok("upload: the bytes themselves are the body", calls[0].body === bytes);
 
   calls = [];
   answers = [{ status: 200, body: { success: true } }];
@@ -214,27 +194,6 @@ async function main() {
     check("non-numeric library id throws", "no throw", "throw");
   } catch {
     check("non-numeric library id throws, zero fetches", calls.length, 0);
-  }
-
-  // ══════════════════════════════════════════════════════════════════════
-  section("TUS authorisation (live mode): Bunny's documented hash, key never returned");
-  env("false");
-  const now = Date.UTC(2026, 9, 15, 12, 0, 0);
-  const tus = tusUploadAuthorization(GUID, 7200, now)!;
-  const exp = Math.floor(now / 1000) + 7200;
-  check("expire = now + ttl (unix seconds)", tus.headers.AuthorizationExpire, String(exp));
-  check("signature = hex sha256(library + key + expire + guid)", tus.headers.AuthorizationSignature,
-    createHash("sha256").update(`123456${API_KEY}${exp}${GUID}`).digest("hex"));
-  check("tusSignature helper agrees", tusSignature("123456", API_KEY, exp, GUID), tus.headers.AuthorizationSignature);
-  check("headers name library + video", [tus.headers.LibraryId, tus.headers.VideoId, tus.endpoint], ["123456", GUID, "https://video.bunnycdn.com/tusupload"]);
-  ok("the API key is nowhere in the authorisation", !JSON.stringify(tus).includes(API_KEY));
-  for (const bad of [0, -5, 1.5, 86401]) {
-    try {
-      tusUploadAuthorization(GUID, bad, now);
-      check(`TUS ttl ${bad} refused`, "accepted", "refused");
-    } catch {
-      check(`TUS ttl ${bad} refused`, "refused", "refused");
-    }
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -438,29 +397,13 @@ async function main() {
   check("findVideosByTitle: GET with search, returns items", [calls[0].method, calls[0].url.includes("/videos?search=abc%20def"), found.map((v) => v.guid)], ["GET", true, [GUID]]);
 
   // ══════════════════════════════════════════════════════════════════════
-  section("TUS: 24h signature by default, Bunny's retry rule, shared options");
-  env("false");
-  const nowT = Date.UTC(2026, 9, 15, 12, 0, 0);
-  const t24 = tusUploadAuthorization(GUID, undefined, nowT)!;
-  check("default TUS TTL is 24h (the whole resumable window, plan: 10GB files)", [TUS_UPLOAD_TTL_SECONDS, Number(t24.headers.AuthorizationExpire)], [86400, Math.floor(nowT / 1000) + 86400]);
-  check("retry: network error / 5xx / 409 / 423 yes; other 4xx no",
-    [undefined, 0, 500, 503, 409, 423, 400, 401, 403, 404, 410].map((st) => shouldRetryTusStatus(st)),
-    [true, true, true, true, true, true, false, false, false, false, false]);
-  const o = bunnyTusOptions(t24, { filetype: "video/mp4", title: "פרק" });
-  check("options: Bunny endpoint, 50MB chunks, signed headers, required metadata",
-    [o.endpoint, o.chunkSize, o.headers?.VideoId, o.headers?.LibraryId, o.metadata],
-    ["https://video.bunnycdn.com/tusupload", 50 * 1024 * 1024, GUID, "123456", { filetype: "video/mp4", title: "פרק" }]);
-  check("TUS_CHUNK_SIZE = 50MiB", TUS_CHUNK_SIZE, 52428800);
-  ok("the API key is not in the TUS options", !JSON.stringify(o).includes(API_KEY));
-
-  // ══════════════════════════════════════════════════════════════════════
   section("static: the walls in the source");
   const clientSrc = readFileSync(join(__dirname, "../src/lib/bunny/client.ts"), "utf8");
   const fetchCalls = clientSrc.match(/\bfetch\(/g) ?? [];
   check("client.ts has exactly one fetch( call site (inside send())", fetchCalls.length, 1);
   const sendCalls = clientSrc.match(/\bsend\(/g) ?? [];
   check("send( is defined once and called from exactly three places (write(), getVideo, findVideosByTitle)", sendCalls.length, 4);
-  const listBody = clientSrc.slice(clientSrc.indexOf("export async function findVideosByTitle"), clientSrc.indexOf("export type TusAuthorization"));
+  const listBody = clientSrc.slice(clientSrc.indexOf("export async function findVideosByTitle"));
   ok("findVideosByTitle's send is a GET", /method: "GET"/.test(listBody) && /send\(/.test(listBody));
   const fetchFnBody = clientSrc.slice(clientSrc.indexOf("export async function fetchVideoRaw"), clientSrc.indexOf("export async function findVideosByTitle"));
   ok("Fetch Video (raw + production) writes only through write(), exactly once", (fetchFnBody.match(/await write\(/g) ?? []).length === 1 && !/send\(|[^.]fetch\(/.test(fetchFnBody));
@@ -479,6 +422,12 @@ async function main() {
   check("no NEXT_PUBLIC_BUNNY* anywhere in src/", publicLeak, []);
   const outside = src.filter((f) => !f.includes("/lib/bunny/") && /video\.bunnycdn\.com/.test(readFileSync(f, "utf8")));
   check("only lib/bunny talks to video.bunnycdn.com", outside, []);
+
+  // E13-3 (Q16): the browser TUS route is gone, and stays gone
+  const tusLeft = src.filter((f) => /tusupload|tus-js-client|tusSignature|tusUploadAuthorization|uploadVideo\(/.test(readFileSync(f, "utf8")));
+  check("no TUS / single-PUT upload left in src/", tusLeft, []);
+  const pkg = readFileSync(join(__dirname, "../package.json"), "utf8");
+  ok("tus-js-client is not a dependency", !pkg.includes("tus-js-client"));
 
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);

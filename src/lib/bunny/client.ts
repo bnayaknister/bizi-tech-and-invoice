@@ -1,6 +1,5 @@
 import { bunnyApiConfig, isBunnyDryRun } from "./config";
 import { describeError } from "./errors";
-import { tusSignature } from "./sign";
 import type { BunnyVideo } from "./status";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -9,28 +8,25 @@ import type { BunnyVideo } from "./status";
 //
 // Endpoints (bunny.net/docs/reference, read 15.10):
 //   POST   /library/{id}/videos            create  {title} → VideoModel (guid)
-//   PUT    /library/{id}/videos/{guid}     upload  raw bytes, application/octet-stream
 //   GET    /library/{id}/videos/{guid}     read    VideoModel
 //   DELETE /library/{id}/videos/{guid}     delete  200, or 404 when already gone
+//   POST   /library/{id}/videos/fetch      fetch   {url, headers?, title} -> StatusModel (no guid)
 //   header AccessKey = the LIBRARY's API key.
 //
-// ═══ UPLOADS ARE TUS (owner 15.10) ═══
-// Real uploads (5–10GB) go browser → Bunny over TUS: tusUploadAuthorization
-// below + lib/bunny/tus.ts. uploadVideo (one PUT, whole file in memory) is
-// kept ONLY for small files and for `e13_first_upload.ts --put-probe`; it is
-// not an upload path for the product.
+// ═══ UPLOADS ARE DRIVE -> BUNNY FETCH (owner 16.10) ═══
+// The file is uploaded to Google Drive; Bunny pulls it from there with a
+// service-account Bearer (fetchVideoFromUrl below, plan section 5). The browser
+// TUS route and the single PUT were removed in E13-3 (Q16, still in git
+// history up to a0198cb): the studio line uploads to Bunny at ~1 Mbit/s.
 //
 // ═══ EVERY WRITE GOES THROUGH `write()` ═══
-// create, upload and delete all call `write()`, and `write()` is the only
+// create, fetch and delete all call `write()`, and `write()` is the only
 // place that checks BUNNY_DRY_RUN. In dry run it makes NO request: it logs one
 // `bunny_dry_run` line with what WOULD have been sent (method, URL, body
 // summary — never the key) and returns `{ dryRun: true }`. There is no
 // synthetic guid: a fake id written into client_review_versions would look
 // like a real video to every later step. scripts/test_bunny.ts asserts that
 // no other function in this file issues a non-GET request.
-//
-// TUS authorisation is not a request but it LETS a browser write, so it obeys
-// the same switch.
 
 const API_BASE = "https://video.bunnycdn.com";
 const TIMEOUT_MS = 15_000;
@@ -99,9 +95,9 @@ async function parse(res: Response): Promise<unknown> {
 
 /** The ONLY non-GET path to Bunny. Honours BUNNY_DRY_RUN before anything else. */
 async function write(
-  method: "POST" | "PUT" | "DELETE",
+  method: "POST" | "DELETE",
   url: string,
-  init: { json?: unknown; bytes?: Uint8Array | ArrayBuffer; bodySummary: string; timeoutMs?: number },
+  init: { json?: unknown; bodySummary: string; timeoutMs?: number },
   apiKey: string
 ): Promise<DryRun | Response> {
   if (isBunnyDryRun()) {
@@ -114,9 +110,6 @@ async function write(
   if (init.json !== undefined) {
     headers["content-type"] = "application/json";
     body = JSON.stringify(init.json);
-  } else if (init.bytes !== undefined) {
-    headers["content-type"] = "application/octet-stream";
-    body = init.bytes as BodyInit;
   }
   return send(`${method} ${url}`, url, { method, headers, body, signal: AbortSignal.timeout(init.timeoutMs ?? TIMEOUT_MS) });
 }
@@ -133,31 +126,6 @@ export async function createVideo(title: string): Promise<DryRun | { dryRun: fal
   const video = body as BunnyVideo;
   if (!video || typeof video.guid !== "string") throw new BunnyError("Bunny create: אין guid בתשובה", res.status, body, safeHeaders(res));
   return { dryRun: false, video };
-}
-
-/**
- * Server-side upload of the whole file (PUT). For the first test upload and
- * for scripts — the technician's upload from the drawer goes browser→Bunny
- * over TUS (tusUploadAuthorization), so an hour of video never passes
- * through a Vercel function.
- */
-export async function uploadVideo(
-  videoId: string,
-  bytes: Uint8Array | ArrayBuffer,
-  opts: { timeoutMs?: number } = {}
-): Promise<DryRun | { dryRun: false }> {
-  const { libraryId, apiKey } = bunnyApiConfig();
-  const size = bytes.byteLength;
-  const res = await write(
-    "PUT",
-    videoUrl(libraryId, videoId),
-    { bytes, bodySummary: `<${size} bytes application/octet-stream>`, timeoutMs: opts.timeoutMs ?? 10 * 60_000 },
-    apiKey
-  );
-  if ("dryRun" in res) return res;
-  const body = await parse(res);
-  if (!res.ok) throw new BunnyError(`Bunny upload נכשל (${res.status})`, res.status, body, safeHeaders(res));
-  return { dryRun: false };
 }
 
 /** Read the video object. A read writes nothing, so it runs even in dry run. null = 404. */
@@ -274,48 +242,4 @@ export async function findVideosByTitle(search: string): Promise<BunnyVideo[]> {
   if (!res.ok) throw new BunnyError(`Bunny list נכשל (${res.status})`, res.status, body, safeHeaders(res));
   const items = body && typeof body === "object" ? (body as { items?: unknown }).items : null;
   return Array.isArray(items) ? (items as BunnyVideo[]) : [];
-}
-
-export type TusAuthorization = {
-  endpoint: string;
-  headers: { AuthorizationSignature: string; AuthorizationExpire: string; LibraryId: string; VideoId: string };
-};
-
-/**
- * What the browser needs to upload straight to Bunny over TUS (plan §5). The
- * API key is hashed in, never returned. In dry run: null, and logged — a
- * browser holding a valid signature could write to the real library.
- */
-/**
- * 24h (owner 15.10, for 5–10GB files). Bunny keeps an incomplete upload
- * resumable only until the expiry it was CREATED with (or ~48h idle), and a
- * re-sign does not extend it — so this is the whole window for one file,
- * including any resume after a disconnect or a page reload. 24h covers 10GB
- * down to ~1 Mbit/s of sustained upload. It is also the hard cap below.
- */
-export const TUS_UPLOAD_TTL_SECONDS = 24 * 60 * 60;
-
-export function tusUploadAuthorization(
-  videoId: string,
-  ttlSeconds: number = TUS_UPLOAD_TTL_SECONDS,
-  nowMs: number = Date.now()
-): TusAuthorization | null {
-  if (!Number.isInteger(ttlSeconds) || ttlSeconds <= 0 || ttlSeconds > 24 * 60 * 60) {
-    throw new Error("Bunny: תוקף העלאה חייב להיות 1–86400 שניות");
-  }
-  const { libraryId, apiKey } = bunnyApiConfig();
-  const expires = Math.floor(nowMs / 1000) + ttlSeconds;
-  if (isBunnyDryRun()) {
-    console.log(JSON.stringify({ tag: "bunny_dry_run", method: "TUS", url: `${API_BASE}/tusupload`, body: `videoId=${videoId}` }));
-    return null;
-  }
-  return {
-    endpoint: `${API_BASE}/tusupload`,
-    headers: {
-      AuthorizationSignature: tusSignature(libraryId, apiKey, expires, videoId),
-      AuthorizationExpire: String(expires),
-      LibraryId: libraryId,
-      VideoId: videoId,
-    },
-  };
 }

@@ -1,4 +1,4 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { bunnyCdnConfig } from "./config";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -112,13 +112,4 @@ export function signedOriginalUrl(
   const path = `/${videoId}/original`;
   const token = cdnToken(cfg.tokenKey, path, expires);
   return { url: `https://${cfg.hostname}${path}?token=${token}&expires=${expires}`, expires };
-}
-
-/**
- * TUS upload authorisation for the browser (plan §5), per Bunny's docs:
- * hex SHA256(library_id + api_key + expiration_time + video_id). The API key
- * goes into the hash and never into the response. PURE.
- */
-export function tusSignature(libraryId: string, apiKey: string, expires: number, videoId: string): string {
-  return createHash("sha256").update(`${libraryId}${apiKey}${expires}${videoId}`).digest("hex");
 }

@@ -1,5 +1,5 @@
 /**
- * Shared by the E13 Bunny test scripts (e13_first_upload.ts, e13_drive_fetch_test.ts).
+ * Shared by the E13 Bunny test scripts (e13_drive_fetch_test.ts; e13_first_upload.ts was removed in E13-3).
  * Not a test itself (no `test_` prefix).
  *
  *   · loadEnvFile        — what .env.local SAYS, kept apart from the process env

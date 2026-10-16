@@ -680,7 +680,7 @@ export async function main(args: string[]): Promise<{ rows: Row[]; metrics: Metr
     hashRow(v);
     printTimeline(v);
 
-    // ── 7. access checks (shared with e13_first_upload) ───────────────────
+    // ── 7. access checks (shared via _bunny_checks) ───────────────────
     step = "בדיקות CDN";
     await runCdnChecks(label, guid, record);
 

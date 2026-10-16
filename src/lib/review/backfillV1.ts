@@ -45,6 +45,10 @@ import { parseReelNotes } from "./reelNotes";
 // IDEMPOTENT: every row carries a backfill_source (unique in 0114 for comments
 // and approvals; versions are keyed by (item_id, number=1)). Rows whose key
 // already exists are left out of the plan, so a second run writes nothing.
+//
+// E13-3: an item that already has a NON-backfill version (sent from the
+// drawer) gets no v1 — its numbers are taken — and is reported. The script is
+// meant to run before the first send, so this list should be empty.
 
 export const PLACEHOLDER_REEL_NOTE = "תיקונים התבקשו";
 
@@ -82,6 +86,13 @@ export type BfExisting = {
   v1ItemIds: Set<string>;
   /** item id → id of its existing v1 (for linking approvals on a re-run) */
   v1IdByItem: Map<string, string>;
+  /**
+   * E13-3: item ids that already have a version that is NOT the backfill v1
+   * (a Bunny version sent from the drawer, numbered or not). Such an item gets
+   * no backfill v1 — its numbers are taken (unique (item_id, number)) — and
+   * is reported instead.
+   */
+  otherVersionItemIds: Set<string>;
   approvalSources: Set<string>;
   commentSources: Set<string>;
 };
@@ -122,6 +133,7 @@ export type BackfillReport = {
     reelItemMissing: string[]; // "link:reel"
     approvedWithoutTimestamp: string[]; // item ids
     eventItemUnknown: string[]; // item ids named in an event that do not exist
+    itemHasOtherVersion: string[]; // item ids (E13-3): already has a non-backfill version
   };
   alreadyPresent: { versions: number; approvals: number; comments: number };
 };
@@ -153,6 +165,7 @@ export function planBackfillV1(
       reelItemMissing: [],
       approvedWithoutTimestamp: [],
       eventItemUnknown: [],
+      itemHasOtherVersion: [],
     },
     alreadyPresent: { versions: 0, approvals: 0, comments: 0 },
   };
@@ -173,6 +186,10 @@ export function planBackfillV1(
     if (!link) continue;
     if (existing.v1ItemIds.has(i.id)) {
       report.alreadyPresent.versions++;
+      continue;
+    }
+    if (existing.otherVersionItemIds.has(i.id)) {
+      report.skipped.itemHasOtherVersion.push(i.id);
       continue;
     }
     versions.push({ item_id: i.id, number: 1, source: "drive", media_link: link, is_backfill: true });
@@ -353,6 +370,7 @@ export function formatBackfillReport(plan: BackfillPlan, expectedVersions = 89):
     `  · אין פריט לריל שבהערה: ${s.reelItemMissing.length}${s.reelItemMissing.length ? ` — ${s.reelItemMissing.join(", ")}` : ""}`,
     `  · פריט מאושר בלי חותמת ובלי אירוע: ${s.approvedWithoutTimestamp.length}${s.approvedWithoutTimestamp.length ? ` — ${s.approvedWithoutTimestamp.join(", ")}` : ""}`,
     `  · פריט מאירוע שאינו קיים: ${s.eventItemUnknown.length}${s.eventItemUnknown.length ? ` — ${s.eventItemUnknown.join(", ")}` : ""}`,
+    `  · לפריט כבר יש גרסה שאינה v1 של ה-backfill (נשלחה מהדרואר), ולכן לא נוצר לו v1: ${s.itemHasOtherVersion.length}${s.itemHasOtherVersion.length ? ` — ${s.itemHasOtherVersion.join(", ")}` : ""}`,
   ];
   return lines.join("\n");
 }
