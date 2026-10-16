@@ -893,9 +893,16 @@ export type Database = {
           delete_attempts: number
           delete_last_attempt_at: string | null
           delete_last_error: string | null
+          drive_file_id: string | null
+          drive_mime_type: string | null
+          drive_sha256: string | null
+          drive_size_bytes: number | null
           duration_ms: number | null
+          fetch_requested_at: string | null
           has_original: boolean | null
           id: string
+          integrity: string | null
+          integrity_at: string | null
           is_audio_only: boolean
           is_backfill: boolean
           item_id: string
@@ -920,9 +927,16 @@ export type Database = {
           delete_attempts?: number
           delete_last_attempt_at?: string | null
           delete_last_error?: string | null
+          drive_file_id?: string | null
+          drive_mime_type?: string | null
+          drive_sha256?: string | null
+          drive_size_bytes?: number | null
           duration_ms?: number | null
+          fetch_requested_at?: string | null
           has_original?: boolean | null
           id?: string
+          integrity?: string | null
+          integrity_at?: string | null
           is_audio_only?: boolean
           is_backfill?: boolean
           item_id: string
@@ -947,9 +961,16 @@ export type Database = {
           delete_attempts?: number
           delete_last_attempt_at?: string | null
           delete_last_error?: string | null
+          drive_file_id?: string | null
+          drive_mime_type?: string | null
+          drive_sha256?: string | null
+          drive_size_bytes?: number | null
           duration_ms?: number | null
+          fetch_requested_at?: string | null
           has_original?: boolean | null
           id?: string
+          integrity?: string | null
+          integrity_at?: string | null
           is_audio_only?: boolean
           is_backfill?: boolean
           item_id?: string
