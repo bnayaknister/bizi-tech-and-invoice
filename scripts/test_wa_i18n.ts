@@ -189,6 +189,8 @@ const KIND: Record<string, Kind> = {
   "NOTICE.changedPartialRechoose": "body",
   "NOTICE.confirmByButton": "body",
   "NOTICE.editUnclear": "body",
+  "NOTICE.unchanged": "body",
+  "NOTICE.alreadySet": "body",
   "JOIN.offerBody": "body",
   "JOIN.newClient": "button",
   "JOIN.existingClient": "button",

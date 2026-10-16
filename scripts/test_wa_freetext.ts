@@ -15,6 +15,7 @@
  */
 import {
   afterSubmit,
+  FLOW_ID,
   initialState,
   parseFlowState,
   reduce,
@@ -446,6 +447,132 @@ console.log("\n=== 10. regression: a re-chosen hour skips to the summary ONLY wi
     return parsed;
   });
   check("an old state without freeTextOn (through parseFlowState): defaults off, guest step", [legacyParsed.state.freeTextOn, legacyParsed.state.step], [false, "guest"]);
+}
+
+// ─── regression 16.10: the zero-match screens and the "updated" lines ──────
+const buttonIds = (t: Transition) => {
+  const r = replyOf(t);
+  return r.type === "buttons" ? r.buttons.map((b) => b.id) : r.type === "list" ? r.sections.flatMap((x) => x.rows.map((y) => y.id)) : [];
+};
+const textAt = (s: FlowState, text: string) =>
+  reduce(s, eventFromMessage(msg(text), { now: NOW, freeTextOn: s.freeTextOn, step: s.step, lang: s.lang }), { now: NOW });
+
+console.log("\n=== 11. zero-match DAYS: typed text never empties the screen; only the tap broadens ===");
+{
+  let t = start(SHOW);
+  t = reduce(t.state, { type: "query", q: { studio: "חשמונאים", duration: null, dateFrom: "2026-10-28", dateTo: "2026-10-28", timeFrom: null, timeTo: null, dropped: [] } });
+  if (t.kind !== "need-availability") throw new Error("unreachable");
+  t = withAvailability(t.state, availability(NEXT_WEEK));
+  const Z = t.state;
+  check("the zero-match screen: broaden + back", buttonIds(t), [FLOW_ID.broaden, FLOW_ID.back]);
+  ok("…no invitation to type other days", !bodyOf(t).includes("לכתוב"), bodyOf(t));
+  for (const typed of ["סתם משהו", "כן", "אז אולי ביום שני?"]) {
+    const r = textAt(Z, typed);
+    check(`"${typed}": the same zero-match screen again (broaden + back)`, [r.kind, buttonIds(r)], ["reply", [FLOW_ID.broaden, FLOW_ID.back]]);
+    ok(`"${typed}": says nothing is free — never "these are the free days"`, bodyOf(r).includes(C.NOTICE.noMatchDates) && !bodyOf(r).includes("שיש בהם מקום"), bodyOf(r));
+    check(`"${typed}": filter and (empty) list untouched`, [r.state.filter, r.state.days, r.state.step], [Z.filter, [], "day"]);
+  }
+  const staleDay = reduce(Z, { type: "day", date: "2026-10-20" });
+  ok("a stale day tap: 'no longer active' + the zero-match screen", bodyOf(staleDay).includes(C.NOTICE.stale) && bodyOf(staleDay).includes(C.NOTICE.noMatchDates), bodyOf(staleDay));
+  check("…its buttons kept", buttonIds(staleDay), [FLOW_ID.broaden, FLOW_ID.back]);
+  const back = reduce(Z, { type: "back" });
+  check("back is not blocked (to the room question)", back.state.step, "studio-default");
+  const restart = reduce(Z, { type: "restart" });
+  check("restart is not blocked (to the menu, filter gone)", [restart.state.step, restart.state.filter], ["menu", null]);
+  let b = reduce(Z, { type: "broaden" });
+  check("the explicit tap re-reads availability", b.kind, "need-availability");
+  if (b.kind !== "need-availability") throw new Error("unreachable");
+  b = withAvailability(b.state, availability(NEXT_WEEK));
+  check("…and offers every free day", b.state.days, NEXT_WEEK);
+  const oldBroaden = reduce(b.state, { type: "broaden" });
+  ok("an OLD broaden tap after that is stale — the list stays", bodyOf(oldBroaden).includes(C.NOTICE.stale) && oldBroaden.state.days.length === NEXT_WEEK.length, bodyOf(oldBroaden));
+}
+
+console.log("\n=== 12. zero-match HOURS: the same rule ===");
+{
+  let t = start(SHOW);
+  t = reduce(t.state, { type: "query", q: { studio: "חשמונאים", duration: null, dateFrom: "2026-10-20", dateTo: "2026-10-20", timeFrom: "20:00", timeTo: null, dropped: [] } });
+  if (t.kind !== "need-availability") throw new Error("unreachable");
+  t = withAvailability(t.state, availability(NEXT_WEEK));
+  t = reduce(t.state, { type: "day", date: "2026-10-20" });
+  if (t.kind !== "need-availability") throw new Error("unreachable");
+  t = withAvailability(t.state, availability(NEXT_WEEK));
+  const Z = t.state;
+  check("the zero-match hours screen: broaden + back", [Z.step, buttonIds(t)], ["hour", [FLOW_ID.broaden, FLOW_ID.back]]);
+  for (const typed of ["סתם משהו", "כן", "אז אולי ב-10:00?"]) {
+    const r = textAt(Z, typed);
+    check(`"${typed}": the same zero-match screen again`, [r.kind, buttonIds(r)], ["reply", [FLOW_ID.broaden, FLOW_ID.back]]);
+    ok(`"${typed}": says nothing is free at those times`, bodyOf(r).includes(C.NOTICE.noMatchHours), bodyOf(r));
+    check(`"${typed}": filter and (empty) list untouched`, [r.state.filter, r.state.hours, r.state.date], [Z.filter, [], "2026-10-20"]);
+  }
+  const staleHour = reduce(Z, { type: "hour", start: "13:00" });
+  ok("a stale hour tap: 'no longer active' + the zero-match screen", bodyOf(staleHour).includes(C.NOTICE.stale) && bodyOf(staleHour).includes(C.NOTICE.noMatchHours), bodyOf(staleHour));
+  const back = reduce(Z, { type: "back" });
+  check("back is not blocked (to the day list)", [back.state.step, back.state.days], ["day", ["2026-10-20"]]);
+  check("restart is not blocked", reduce(Z, { type: "restart" }).state.step, "menu");
+  let b = reduce(Z, { type: "broaden" });
+  if (b.kind !== "need-availability") throw new Error("unreachable");
+  b = withAvailability(b.state, availability(NEXT_WEEK));
+  check("the explicit tap: every hour of that day", b.state.hours[0]?.start, "09:00");
+  const oldBroaden = reduce(b.state, { type: "broaden" });
+  ok("an OLD broaden tap after that is stale — the hours stay", bodyOf(oldBroaden).includes(C.NOTICE.stale) && oldBroaden.state.hours.length > 0, bodyOf(oldBroaden));
+}
+
+console.log("\n=== 13. the 'updated' line is said only about a real change ===");
+{
+  let t = start(SHOW);
+  t = reduce(t.state, { type: "go" });
+  t = reduce(t.state, { type: "duration", minutes: 90 });
+  t = reduce(t.state, { type: "studio-yes" });
+  t = withAvailability(t.state, availability(NEXT_WEEK, "גבעון"));
+  t = reduce(t.state, { type: "day", date: "2026-10-20" });
+  t = withAvailability(t.state, availability(NEXT_WEEK, "גבעון"));
+  t = reduce(t.state, { type: "hour", start: "14:00" });
+  t = reduce(t.state, { type: "text", text: "יהודה" });
+  t = reduce(t.state, { type: "no-note" });
+  const S = { ...t.state, filter: { dateFrom: "2026-10-18", dateTo: "2026-10-21", timeFrom: "13:00", timeTo: null } };
+  const UPDATED = "עדכנתי";
+  const count = (hay: string, needle: string) => hay.split(needle).length - 1;
+
+  for (const typed of ["כן", "מאשר"]) {
+    const r = textAt(S, typed);
+    ok(`"${typed}": explains the button, no "updated"`, bodyOf(r).includes(C.NOTICE.confirmByButton) && !bodyOf(r).includes(UPDATED), bodyOf(r));
+    check(`"${typed}": nothing submitted, nothing changed`, [r.kind, r.state.step, r.state.guest, r.state.start], ["reply", "summary", "יהודה", "14:00"]);
+  }
+  const unclear = textAt(S, "יום רביעי או יום חמישי");
+  ok("two conflicting days: says what was unclear AND that nothing changed", bodyOf(unclear).includes(C.NOTICE.unchanged) && bodyOf(unclear).includes("היום") && !bodyOf(unclear).includes(UPDATED), bodyOf(unclear));
+  check("…the summary is the real one", [unclear.state.date, unclear.state.start], ["2026-10-20", "14:00"]);
+  const mixed = textAt(S, "מאשר, ותוסיף אורח רון");
+  check('a real edit + "מאשר": exactly ONE "updated"', count(bodyOf(mixed), UPDATED), 1);
+  ok("…plus the button line, guest changed, still the summary", bodyOf(mixed).includes(C.NOTICE.confirmByButton) && mixed.state.guest === "רון" && mixed.state.step === "summary", bodyOf(mixed));
+  const same = textAt(S, "אורח: יהודה");
+  ok("the guest already saved: 'already set', no 'updated'", bodyOf(same).includes(C.NOTICE.alreadySet) && !bodyOf(same).includes(UPDATED), bodyOf(same));
+  const sameConfirm = textAt(S, "מאשר, ותוסיף אורח יהודה");
+  ok("…with 'מאשר' too: 'already set' + the button line, no 'updated'", bodyOf(sameConfirm).includes(C.NOTICE.alreadySet) && bodyOf(sameConfirm).includes(C.NOTICE.confirmByButton) && !bodyOf(sameConfirm).includes(UPDATED), bodyOf(sameConfirm));
+  const sameDay = textAt(S, "יום שלישי");
+  check("the day already chosen: no re-read, 'already set'", [sameDay.kind, bodyOf(sameDay).includes(C.NOTICE.alreadySet)], ["reply", true]);
+  const sameTime = textAt(S, "14:00");
+  check("the hour already chosen: no re-read, 'already set'", [sameTime.kind, bodyOf(sameTime).includes(C.NOTICE.alreadySet)], ["reply", true]);
+  const sameRoom = textAt(S, "גבעון");
+  check("the room already chosen: no re-read, 'already set'", [sameRoom.kind, bodyOf(sameRoom).includes(C.NOTICE.alreadySet)], ["reply", true]);
+  // the filter already says 13:00 but the chosen start is 14:00: "13:00" IS a change
+  const earlier = textAt(S, "13:00");
+  check("13:00 when 14:00 is chosen (filter already 13:00): a real change -> hours re-read", [earlier.kind, earlier.state.step], ["need-availability", "hour"]);
+  // a length change on the same day keeps the day the client named
+  const longer = textAt(S, "יום שלישי, 3 שעות");
+  check("3 hours + the same day: re-read, narrowed to that day", [longer.kind, longer.state.duration, longer.state.filter?.dateFrom], ["need-availability", 180, "2026-10-20"]);
+}
+
+console.log("\n=== 14. switch off / English: unchanged ===");
+{
+  const S = { ...initialState({ ...SHOW, freeTextOn: false }), step: "summary" as const, date: "2026-10-18", start: "09:30", end: "11:00", duration: 90 as const, studio: "גבעון" as const };
+  for (const typed of ["כן", "יום רביעי או יום חמישי", "אורח: רון"]) {
+    const r = textAt(S, typed);
+    ok(`off, "${typed}": 'choose from the options', no new copy`, bodyOf(r).includes(C.NOTICE.pickFromList) && !bodyOf(r).includes(C.NOTICE.unchanged) && !bodyOf(r).includes(C.NOTICE.alreadySet), bodyOf(r));
+  }
+  const E = { ...initialState({ ...SHOW, freeTextOn: true, lang: "en" }), step: "summary" as const, date: "2026-10-18", start: "09:30", end: "11:00", duration: 90 as const, studio: "גבעון" as const };
+  const en = textAt(E, "כן");
+  ok('English + on, "כן": the old pick-from-list', bodyOf(en).includes(COPY.en.NOTICE.pickFromList), bodyOf(en));
 }
 
 console.log(`\n${failed === 0 ? "✅ ALL PASSED" : "❌ FAILED"}: ${passed} passed, ${failed} failed`);

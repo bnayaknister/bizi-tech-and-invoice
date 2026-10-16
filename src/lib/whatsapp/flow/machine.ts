@@ -393,6 +393,10 @@ const navRows = (C: BotCopy): FlowRow[] => [
 
 const withNotice = (s: FlowState, body: string) => (s.notice ? `${s.notice}\n\n${body}` : body);
 
+/** E14: is a written day range / time-of-day narrowing the lists? */
+const dateFiltered = (s: FlowState) => !!s.filter && (!!s.filter.dateFrom || !!s.filter.dateTo);
+const timeFiltered = (s: FlowState) => !!s.filter && (!!s.filter.timeFrom || !!s.filter.timeTo);
+
 /**
  * The message for the state's current step. The notice is consumed here:
  * the returned state no longer carries it, so it is said exactly once.
@@ -515,6 +519,20 @@ export function render(s: FlowState): Transition {
       });
 
     case "day": {
+      // E14: the written day range matched NOTHING. Every re-render of this
+      // state (typed text, a stale tap, a language switch) says so again with
+      // the broaden/back buttons — never an empty list that reads as "these
+      // are the free days". Broadening stays the client's explicit tap.
+      if (s.days.length === 0 && dateFiltered(s)) {
+        return out({
+          type: "buttons",
+          body: body(C.NOTICE.noMatchDates),
+          buttons: [
+            { id: FLOW_ID.broaden, title: C.QUERY.broadenDays },
+            { id: FLOW_ID.back, title: C.NAV.back },
+          ],
+        });
+      }
       const page = s.days.slice(s.dayPage * PAGE_SIZE, (s.dayPage + 1) * PAGE_SIZE);
       const more = (s.dayPage + 1) * PAGE_SIZE < s.days.length;
       return out({
@@ -535,6 +553,17 @@ export function render(s: FlowState): Transition {
     }
 
     case "hour": {
+      // E14: same rule as the days, for a written time-of-day
+      if (s.hours.length === 0 && timeFiltered(s)) {
+        return out({
+          type: "buttons",
+          body: body(C.NOTICE.noMatchHours),
+          buttons: [
+            { id: FLOW_ID.broaden, title: C.QUERY.broadenHours },
+            { id: FLOW_ID.back, title: C.NAV.back },
+          ],
+        });
+      }
       const page = s.hours.slice(s.hourPage * PAGE_SIZE, (s.hourPage + 1) * PAGE_SIZE);
       const more = (s.hourPage + 1) * PAGE_SIZE < s.hours.length;
       return out({
@@ -982,7 +1011,8 @@ function applyEdits(s: FlowState, edits: ParsedEdit[], dropped: string[]): Trans
   let note = s.note;
   let duration = s.duration;
   let studio = s.studio;
-  let filter = s.filter;
+  let dayEdit: string | null = null;
+  let timeEdit: string | null = null;
   for (const edit of edits) {
     switch (edit.field) {
       case "confirm-hint":
@@ -1013,25 +1043,42 @@ function applyEdits(s: FlowState, edits: ParsedEdit[], dropped: string[]): Trans
       }
       case "day": {
         if (!DATE_RE.test(edit.date)) return again(s, C.NOTICE.editUnclear);
-        filter = { dateFrom: edit.date, dateTo: edit.date, timeFrom: filter?.timeFrom ?? null, timeTo: filter?.timeTo ?? null };
+        dayEdit = edit.date;
         break;
       }
       case "time-from": {
         if (!HHMM_RE.test(edit.hhmm)) return again(s, C.NOTICE.editUnclear);
-        filter = { dateFrom: filter?.dateFrom ?? s.date, dateTo: filter?.dateTo ?? s.date, timeFrom: edit.hhmm, timeTo: null };
+        timeEdit = edit.hhmm;
         break;
       }
     }
   }
   if (edits.length === 1 && edits[0].field === "confirm-hint") return again(s, C.NOTICE.confirmByButton);
 
-  // 2. apply — a slot change re-reads availability; values alone re-render
-  const slotChange =
-    duration !== s.duration ||
-    studio !== s.studio ||
-    (filter?.dateFrom ?? null) !== (s.filter?.dateFrom ?? null) ||
-    (filter?.dateTo ?? null) !== (s.filter?.dateTo ?? null);
-  const timeChange = !slotChange && (filter?.timeFrom ?? null) !== (s.filter?.timeFrom ?? null);
+  // 2. what ACTUALLY changes — measured against the chosen slot and values,
+  // not against the filter: writing a value that is already set is no change
+  // (owner, 16.10), and "updated" is never said about a message that changed
+  // nothing
+  const slotChange = duration !== s.duration || studio !== s.studio || (dayEdit !== null && dayEdit !== s.date);
+  const timeChange = !slotChange && timeEdit !== null && timeEdit !== s.start;
+  const valueChange = guest !== s.guest || note !== s.note;
+  if (!slotChange && !timeChange && !valueChange) {
+    return again(s, (dropped.length ? C.NOTICE.unchanged : C.NOTICE.alreadySet) + tail);
+  }
+
+  // 3. apply — a slot change re-reads availability; values alone re-render.
+  // A day/time the client named narrows the re-offered lists.
+  let filter = s.filter;
+  if (slotChange && (dayEdit !== null || timeEdit !== null)) {
+    filter = {
+      dateFrom: dayEdit ?? filter?.dateFrom ?? null,
+      dateTo: dayEdit ?? filter?.dateTo ?? null,
+      timeFrom: timeEdit ?? filter?.timeFrom ?? null,
+      timeTo: timeEdit !== null ? null : filter?.timeTo ?? null,
+    };
+  } else if (timeChange) {
+    filter = { dateFrom: filter?.dateFrom ?? s.date, dateTo: filter?.dateTo ?? s.date, timeFrom: timeEdit, timeTo: null };
+  }
   const durationFromDefault = duration !== s.duration ? false : s.durationFromDefault;
   if (slotChange) {
     return {
@@ -1077,20 +1124,8 @@ export function withAvailability(s: FlowState, pub: PublicAvailability): Transit
       const from = f.dateFrom ?? pub.fromIsrael;
       const to = f.dateTo ?? pub.toIsrael;
       const days = all.filter((d) => d >= from && d <= to);
-      if (days.length === 0) {
-        return {
-          kind: "reply",
-          state: { ...s, days: [], dayPage: 0, notice: null },
-          reply: {
-            type: "buttons",
-            body: C.NOTICE.noMatchDates,
-            buttons: [
-              { id: FLOW_ID.broaden, title: C.QUERY.broadenDays },
-              { id: FLOW_ID.back, title: C.NAV.back },
-            ],
-          },
-        };
-      }
+      // zero-match: render() owns that message, so every re-render matches it
+      if (days.length === 0) return render({ ...s, days: [], dayPage: 0, notice: null });
       return render({ ...s, days, dayPage: Math.min(s.dayPage, Math.floor((days.length - 1) / PAGE_SIZE)) });
     }
     return render({ ...s, days: all, dayPage: Math.min(s.dayPage, Math.floor((all.length - 1) / PAGE_SIZE)) });
@@ -1106,18 +1141,7 @@ export function withAvailability(s: FlowState, pub: PublicAvailability): Transit
         : allHours;
     if (hours.length === 0 && allHours.length > 0) {
       // E14: same rule as the days — broadening is the client's choice
-      return {
-        kind: "reply",
-        state: { ...s, hours: [], hourPage: 0, notice: null },
-        reply: {
-          type: "buttons",
-          body: C.NOTICE.noMatchHours,
-          buttons: [
-            { id: FLOW_ID.broaden, title: C.QUERY.broadenHours },
-            { id: FLOW_ID.back, title: C.NAV.back },
-          ],
-        },
-      };
+      return render({ ...s, hours: [], hourPage: 0, notice: null });
     }
     if (hours.length === 0) {
       // the day filled up since the list was sent: the fresh days instead

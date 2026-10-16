@@ -367,7 +367,8 @@ const HE = {
     noRecordings: "אין כרגע הקלטות מאושרות קרובות 🙂",
     manageFailed: "משהו השתבש ולא הצלחנו לבצע את זה. אפשר לנסות שוב:",
     // ── E14 ──
-    noMatchDates: "בימים שביקשתם אין פנוי 😕 רוצים לראות את כל הימים הפנויים, או לכתוב ימים אחרים?",
+    // only the buttons move on from here — free text is not parsed at this step
+    noMatchDates: "בימים שביקשתם אין פנוי 😕 אפשר לראות את כל הימים הפנויים, או לחזור אחורה — בכפתורים למטה 👇",
     noMatchHours: "בשעות שביקשתם אין פנוי באותו יום 😕 רוצים לראות את כל השעות הפנויות באותו יום?",
     changed: "עדכנתי ✔️",
     changedRechoose: "עדכנתי ✔️ בחרו מחדש מהמועדים הפנויים:",
@@ -375,7 +376,13 @@ const HE = {
      *  not read as "everything you wrote was applied" */
     changedPartial: "עדכנתי את מה שהבנתי ✔️",
     changedPartialRechoose: "עדכנתי את מה שהבנתי ✔️ בחרו מחדש מהמועדים הפנויים:",
-    confirmByButton: "עדכנתי ✔️ לאישור סופי לוחצים על \"✅ לקבוע\".",
+    /** NOT an "updated" line: it follows one when there was an edit, and
+     *  stands alone after a bare "כן" — said once either way */
+    confirmByButton: "טקסט לא מאשר את ההקלטה — לאישור סופי לוחצים על \"✅ לקבוע\" 👇",
+    /** the message changed nothing: what was unclear follows (QUERY.dropped) */
+    unchanged: "לא שיניתי כלום.",
+    /** the message only repeated values already set */
+    alreadySet: "זה כבר מעודכן — לא היה מה לשנות.",
     editUnclear:
       "לא הבנתי מה לשנות 🤔 אפשר לכתוב למשל: \"אורח: יהודה לוי\", \"הערה: ...\", \"3 שעות\", \"גבעון גדול\", \"יום רביעי\", \"15:00\" — או ללחוץ ✅ לקבוע.",
   },
@@ -608,13 +615,15 @@ const EN: BotCopy = {
     noRecordings: "You have no upcoming confirmed recordings right now 🙂",
     manageFailed: "Something went wrong and we couldn't do that. You can try again:",
     // ── E14 ──
-    noMatchDates: "Nothing is free on the days you asked for 😕 Want to see all the free days, or write different ones?",
+    noMatchDates: "Nothing is free on the days you asked for 😕 You can see all the free days, or go back — with the buttons below 👇",
     noMatchHours: "Nothing is free at those times on that day 😕 Want to see all the free times that day?",
     changed: "Updated ✔️",
     changedRechoose: "Updated ✔️ Please choose again from the free times:",
     changedPartial: "Updated what I understood ✔️",
     changedPartialRechoose: "Updated what I understood ✔️ Please choose again from the free times:",
-    confirmByButton: "Updated ✔️ To confirm, tap \"✅ Book it\".",
+    confirmByButton: "Text doesn't confirm the booking — to confirm, tap \"✅ Book it\" 👇",
+    unchanged: "I didn't change anything.",
+    alreadySet: "That's already set — nothing to change.",
     editUnclear:
       "I didn't understand what to change 🤔 You can write e.g.: \"guest: John\", \"note: ...\", \"3 hours\", \"Givon Large\", \"Wednesday\", \"15:00\" — or tap ✅ Book it.",
   },
