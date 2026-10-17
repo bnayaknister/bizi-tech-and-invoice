@@ -49,7 +49,7 @@ export async function createReviewLink(
   productionId: string,
   opts: { createdBy: string; baseUrl: string; scope: "episode" | "reels" | "all"; episodeLink?: string | null; reelsLink?: string | null }
 ): Promise<CreateLinkResult> {
-  const overlappingScopes = opts.scope === "all" ? ["episode", "reels", "all"] : [opts.scope, "all"];
+  const overlapping = overlappingScopes(opts.scope);
   // `.select()` added with the carry-forward (0078): the rows this statement
   // retires ARE the previous round(s), and asking the database which they were
   // is the only definition that cannot drift from the supersede rule above. A
@@ -60,7 +60,7 @@ export async function createReviewLink(
     .from("client_review_links")
     .update({ superseded: true })
     .eq("production_id", productionId)
-    .in("scope", overlappingScopes)
+    .in("scope", overlapping)
     .eq("superseded", false)
     .is("responded_at", null)
     .select("id,scope,audio_link");
@@ -318,12 +318,52 @@ export type ReviewItem = {
 // and length — this is the one screen whose job is to show it.
 export type ReviewTranscript = { content: string; source: "pasted" | "link" | "auto"; char_count: number | null };
 
+// E13-7 (owner 17.10): an ANSWERED link is no longer a dead end. It resolves
+// "ok" with mode 'post_response' — view, version picker and download, no
+// 14-day expiry — until a NEWER link of the same production in an overlapping
+// scope exists; then it is "superseded" like any replaced link. Responding is
+// still closed on it: POST respond checks `mode` and answers 410 (§4b (2)).
+// Approve / revisions on the latest version open in E13-8, in a new route.
+export type LinkMode = "live" | "post_response";
+
 export type LinkState =
-  | { status: "ok"; link: ReviewLinkRow; production: ReviewProductionRow; addons: ReviewAddon[]; baseAmount: number | null; items: ReviewItem[]; transcript: ReviewTranscript | null }
+  | { status: "ok"; mode: LinkMode; link: ReviewLinkRow; production: ReviewProductionRow; addons: ReviewAddon[]; baseAmount: number | null; items: ReviewItem[]; transcript: ReviewTranscript | null }
   | { status: "missing" }
   | { status: "expired" }
-  | { status: "superseded" }
-  | { status: "responded" };
+  | { status: "superseded" };
+
+/**
+ * The scopes a link of `scope` shares a track with — the same rule
+ * createReviewLink supersedes by: 'all' overlaps everything, 'episode' and
+ * 'reels' overlap themselves and 'all', never each other (B1).
+ */
+export function overlappingScopes(scope: "episode" | "reels" | "all"): ("episode" | "reels" | "all")[] {
+  return scope === "all" ? ["episode", "reels", "all"] : [scope, "all"];
+}
+
+/**
+ * Was this ANSWERED link replaced? Computed, not flagged (owner 17.10): the
+ * supersede in createReviewLink skips answered links on purpose (a round's
+ * history row is never touched), so `superseded` is never set on one. A
+ * newer link of the same production in an overlapping scope — answered or
+ * not — is what replaces it. A failed read answers "not replaced": the link
+ * then shows view-only, which can never write anything (rule 38).
+ */
+async function answeredLinkReplaced(admin: SupabaseClient, link: { id: string; production_id: string; scope: "episode" | "reels" | "all"; created_at: string }): Promise<boolean> {
+  const { data, error } = await admin
+    .from("client_review_links")
+    .select("id")
+    .eq("production_id", link.production_id)
+    .in("scope", overlappingScopes(link.scope))
+    .gt("created_at", link.created_at)
+    .neq("id", link.id)
+    .limit(1);
+  if (error) {
+    console.warn(JSON.stringify({ tag: "review_link_replaced_check_failed", link_id: link.id, error: error.message }));
+    return false;
+  }
+  return (data ?? []).length > 0;
+}
 
 export type ReviewLinkRow = {
   id: string;
@@ -331,6 +371,7 @@ export type ReviewLinkRow = {
   token: string;
   expires_at: string;
   responded_at: string | null;
+  created_at: string;
   superseded: boolean;
   reels_included: boolean;
   scope: "episode" | "reels" | "all";
@@ -356,13 +397,19 @@ export type ReviewProductionRow = {
 export async function resolveLink(admin: SupabaseClient, token: string): Promise<LinkState> {
   const { data: link } = await admin
     .from("client_review_links")
-    .select("id,production_id,token,expires_at,responded_at,superseded,reels_included,scope,episode_link,reels_link,audio_link")
+    .select("id,production_id,token,expires_at,responded_at,created_at,superseded,reels_included,scope,episode_link,reels_link,audio_link")
     .eq("token", token)
     .maybeSingle();
   if (!link) return { status: "missing" };
   if (link.superseded) return { status: "superseded" };
-  if (link.responded_at) return { status: "responded" };
-  if (new Date(link.expires_at).getTime() < Date.now()) return { status: "expired" };
+  let mode: LinkMode = "live";
+  if (link.responded_at) {
+    // E13-7: answered → view-only, no expiry, until a newer overlapping link replaces it
+    if (await answeredLinkReplaced(admin, link)) return { status: "superseded" };
+    mode = "post_response";
+  } else if (new Date(link.expires_at).getTime() < Date.now()) {
+    return { status: "expired" };
+  }
 
   const { data: production } = await admin
     .from("productions")
@@ -433,7 +480,7 @@ export async function resolveLink(admin: SupabaseClient, token: string): Promise
       }
     : null;
 
-  return { status: "ok", link: link as ReviewLinkRow, production: production as ReviewProductionRow, addons, baseAmount, items, transcript };
+  return { status: "ok", mode, link: link as ReviewLinkRow, production: production as ReviewProductionRow, addons, baseAmount, items, transcript };
 }
 
 export type TrackResponse = "approved" | "revisions" | undefined;

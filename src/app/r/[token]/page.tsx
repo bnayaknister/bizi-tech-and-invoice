@@ -102,11 +102,11 @@ function Notice({ title, sub }: { title: string; sub: string }) {
 export default async function ReviewPage({ params }: { params: { token: string } }) {
   const state = await getLinkState(params.token);
 
-  if (state.status === "responded") {
-    return <Notice title="התקבל, תודה!" sub="התשובה שלך נקלטה. אפשר לסגור את החלון." />;
-  }
+  // E13-7: an answered link no longer stops here — it resolves "ok" in
+  // post_response mode (view + download, responding locked) until a newer
+  // overlapping link replaces it, and then it lands on the notice below.
   if (state.status === "superseded") {
-    return <Notice title="הלינק אינו זמין" sub="נשלח קישור עדכני יותר להפקה זו. פנו ל-Bizi Podclub." />;
+    return <Notice title="יש קישור חדש יותר" sub="נשלח קישור עדכני יותר להפקה זו. פנו ל-Bizi Podclub." />;
   }
   if (state.status === "expired") {
     return <Notice title="הלינק אינו זמין" sub="תוקף הקישור פג. פנו ל-Bizi Podclub." />;
@@ -147,6 +147,7 @@ export default async function ReviewPage({ params }: { params: { token: string }
         transcript={state.transcript}
         audioLink={state.link.audio_link}
         versionsByItem={versionsByItem}
+        respondedAt={state.mode === "post_response" ? state.link.responded_at : null}
       />
     </Shell>
   );

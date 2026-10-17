@@ -91,7 +91,7 @@ async function main() {
   const code = src.replace(/^\s*\/\/.*$/gm, "");
   const iGate = code.indexOf("gateDownloadForLink(");
   const iProbe = code.indexOf("probeDriveDownload(");
-  const iMissing = code.indexOf("client_review_download_missing");
+  const iMissing = code.indexOf("event_type: MISSING_EVENT"); // the constant from lib/review/downloadAttention
   const iRedirect = code.indexOf("NextResponse.redirect(");
   ok("order: gate → probe → (missing page) → redirect", iGate > 0 && iProbe > iGate && iMissing > iProbe && iRedirect > iMissing);
   ok("only 'unavailable' refuses; 'unknown' falls through to the 302", /if \(probe\.state === "unavailable"\)/.test(code) && !/probe\.state === "unknown"\)\s*return/.test(code));

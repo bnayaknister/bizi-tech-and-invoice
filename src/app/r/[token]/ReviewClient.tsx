@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { classifyDriveLink } from "@/lib/review/drive";
-import { displayDate } from "@/lib/dates";
+import { displayDate, displayStampDate } from "@/lib/dates";
 import ReviewPlayer, { type ClientVersionView } from "./ReviewPlayer";
 
 // The client-facing review UI. Mobile-first — it opens from WhatsApp. Two
@@ -394,6 +394,7 @@ export default function ReviewClient({
   transcript = null,
   audioLink = null,
   versionsByItem = {},
+  respondedAt = null,
 }: {
   token: string;
   showName: string;
@@ -416,7 +417,13 @@ export default function ReviewClient({
   // E13-6: per item, the versions the client may see (lib/review/clientVersions).
   // An item absent here never reached Bunny and renders exactly as before.
   versionsByItem?: Record<string, ClientVersionView[]>;
+  // E13-7: set when the link was already answered (post_response). The page
+  // is then view + download only: a line saying when the answer arrived, no
+  // approve / revisions buttons, no add-on choices, no submit — responding on
+  // the latest version opens in E13-8, in a route of its own.
+  respondedAt?: string | null;
 }) {
+  const viewOnly = !!respondedAt;
   const [epChoice, setEpChoice] = useState<Choice>(null);
   // E13-6: which version each item shows; absent = the current (latest) one
   const [selectedVersion, setSelectedVersion] = useState<Record<string, string>>({});
@@ -542,6 +549,23 @@ export default function ReviewClient({
         </p>
       </div>
 
+      {viewOnly && (
+        <div
+          style={{
+            ...card,
+            textAlign: "center",
+            padding: "12px 14px",
+            fontSize: 14,
+            fontWeight: 700,
+            color: "#c4b5fd",
+            border: "1px solid rgba(167,139,250,0.35)",
+            background: "rgba(167,139,250,0.08)",
+          }}
+        >
+          {displayStampDate(respondedAt) ? `התשובה שלכם התקבלה ב-${displayStampDate(respondedAt)}` : "התשובה שלכם התקבלה"}
+        </div>
+      )}
+
       {(() => {
         // item-based layout (stage 1b): a box per deliverable, each with its
         // OWN approve/revisions buttons and note — the client can approve reel
@@ -559,7 +583,7 @@ export default function ReviewClient({
                   emoji="🎬"
                   title="הפרק המלא"
                   approved={episodeApproved}
-                  pending={episodePending}
+                  pending={episodePending && !viewOnly}
                   link={episodeLink}
                   choice={epChoice}
                   setChoice={setEpChoice}
@@ -573,7 +597,7 @@ export default function ReviewClient({
                   emoji="📱"
                   title="רילז"
                   approved={reelsApproved}
-                  pending={reelsPending}
+                  pending={reelsPending && !viewOnly}
                   link={reelsLink}
                   choice={reChoice}
                   setChoice={setReChoice}
@@ -596,7 +620,7 @@ export default function ReviewClient({
             emoji={emoji}
             title={title}
             approved={it.approved}
-            pending={!it.approved}
+            pending={!it.approved && !viewOnly}
             link={it.media_link || fallbackLink}
             choice={itemChoice[it.id] ?? null}
             setChoice={(c) => setItemChoice((prev) => ({ ...prev, [it.id]: c }))}
@@ -644,7 +668,7 @@ export default function ReviewClient({
           card on a page whose whole job is one decision is noise. */}
       {(transcript || audioLink) && <ExtraMaterials transcript={transcript} audioLink={audioLink} />}
 
-      {addons.length > 0 && (
+      {addons.length > 0 && !viewOnly && (
         <div style={card}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
             <span style={{ fontSize: 22 }}>➕</span>
@@ -692,10 +716,11 @@ export default function ReviewClient({
           gone — the client sees no episode price here (Q1, owner 2026-08-16).
           Add-on prices above stay: the client is approving those quotes. */}
 
-      {error && (
+      {!viewOnly && error && (
         <div style={{ color: "#fb7185", fontSize: 13, textAlign: "center", marginBottom: 10 }}>{error}</div>
       )}
 
+      {!viewOnly && (
       <button
         onClick={submit}
         disabled={busy}
@@ -715,6 +740,7 @@ export default function ReviewClient({
       >
         {busy ? "שולח…" : willApproveAll ? "✓ מאשר את כל התוצרים" : "שלח תשובה"}
       </button>
+      )}
     </div>
   );
 }

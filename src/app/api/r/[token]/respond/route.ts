@@ -29,8 +29,14 @@ export async function POST(request: Request, { params }: { params: { token: stri
   const admin = createAdminClient();
   const state = await resolveLink(admin, token);
   if (state.status !== "ok") {
-    // missing / expired / superseded / responded → all "not available"
+    // missing / expired / superseded → all "not available"
     return NextResponse.json({ error: "הלינק אינו זמין יותר", reason: state.status }, { status: 410 });
+  }
+  // E13-7: an answered link resolves "ok" (post_response: view + download),
+  // but a SECOND response on it stays closed (owner 16.10, §4b (2)). Nothing
+  // in the database stops a second applyResponse — this line is the guard.
+  if (state.mode === "post_response") {
+    return NextResponse.json({ error: "הלינק אינו זמין יותר", reason: "responded" }, { status: 410 });
   }
 
   const body = (await request.json().catch(() => ({}))) as {

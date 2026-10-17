@@ -4,6 +4,7 @@ import { createTypedAdminClient } from "@/lib/supabase/admin";
 import { sendForReview } from "@/lib/review/versions";
 import { supabaseVersionStore } from "@/lib/review/versionStore";
 import { describeError } from "@/lib/bunny/errors";
+import { resolveDownloadMissing } from "@/lib/review/downloadAttention";
 
 // E13-4 — "שלח לביקורת": a Drive link → a Bunny review version (plan §5,
 // lib/review/versions.ts). Same permission model as review-items: an
@@ -29,6 +30,20 @@ export async function POST(request: Request, { params }: { params: { id: string 
       { productionId: params.id, kind: body.kind, reelIndex: body.reel_index, driveUrl: body.drive_url, userId: user.id },
       { store }
     );
+    // E13-6 (owner 17.10): a new version for an item puts out the red dot a
+    // missing Drive file of that item lit. Best-effort, never fails the send.
+    const sentId = res.status === 200 ? (res.body as { version?: { id?: unknown } }).version?.id : null;
+    // Its own try: the send already happened, so a failure here must not
+    // reach the catch below and report "not sent".
+    if (typeof sentId === "string") {
+      try {
+        const admin = createTypedAdminClient();
+        const { data: sent } = await admin.from("client_review_versions").select("item_id").eq("id", sentId).maybeSingle();
+        if (sent?.item_id) await resolveDownloadMissing(admin, params.id, { itemId: sent.item_id }, "new_version");
+      } catch (e) {
+        console.warn(JSON.stringify({ tag: "review_download_missing_resolve_failed", production_id: params.id, error: describeError(e) }));
+      }
+    }
     return NextResponse.json(res.body, { status: res.status });
   } catch (e) {
     // a failure to CHECK (Google token, Drive 5xx, DB) — nothing was sent to Bunny

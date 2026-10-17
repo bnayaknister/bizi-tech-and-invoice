@@ -136,9 +136,11 @@ function HlsMedia({ token, version }: { token: string; version: Extract<ClientVe
 
 // The bytes come from Drive (owner 17.10); our route only checks the token,
 // logs client_review_download and 302s to Drive's direct download.
+// rel="noreferrer": with our Referer, Drive shows its virus-scan page on files
+// over ~100MB even with confirm=t (the route's 302 also says no-referrer).
 function DownloadButton({ token, versionId, fileName, tall }: { token: string; versionId: string; fileName: string | null; tall?: boolean }) {
   return (
-    <a href={`/api/r/${encodeURIComponent(token)}/download/${encodeURIComponent(versionId)}`} style={tall ? { ...primaryButton, padding: "16px 12px" } : primaryButton}>
+    <a href={`/api/r/${encodeURIComponent(token)}/download/${encodeURIComponent(versionId)}`} rel="noreferrer" style={tall ? { ...primaryButton, padding: "16px 12px" } : primaryButton}>
       ⬇ הורדת הקובץ המקורי
       {fileName ? <span style={{ display: "block", fontSize: 11, fontWeight: 400, color: "#9a94b8", marginTop: 3 }} dir="auto">{fileName}</span> : null}
     </a>
