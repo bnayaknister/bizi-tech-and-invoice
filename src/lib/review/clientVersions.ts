@@ -13,8 +13,12 @@ import { signedPlaybackUrl, PLAYBACK_TTL_SECONDS, type SignedUrl } from "@/lib/b
 //   · bunny  — ready, integrity hash_match / size_match (Q14), original kept,
 //              media not deleted: our player + a download button
 //   · archived — a bunny version that WAS shown and whose media Bunny has since
-//              deleted (E13-10): a button to the original in Drive instead of
-//              the player (owner 16.10, §4b (1))
+//              deleted (E13-10): the download button only, no player
+//              (owner 16.10, §4b (1))
+// The download is ALWAYS the version's own file in Drive (drive_file_id),
+// before and after Bunny deletes the media — owner 17.10: Bunny is for
+// playback only, never for downloading. Replaces "download through the
+// system" (/original) of 11.10.
 // Everything else — processing, unchecked, mismatch, failed — is NOT shown, and
 // the client simply sees the previous shown version, with no notice (owner
 // 17.10). An item with no SHOWN bunny/archived version is left exactly as it
@@ -37,9 +41,9 @@ export type VersionForClient = {
 };
 
 export type ClientVersion =
-  | { id: string; number: number; kind: "bunny"; isAudio: boolean; fileName: string | null; playbackUrl: string; expires: number }
+  | { id: string; number: number; kind: "bunny"; isAudio: boolean; fileName: string | null; playbackUrl: string; expires: number; downloadable: boolean }
   | { id: string; number: number; kind: "drive"; mediaLink: string }
-  | { id: string; number: number; kind: "archived"; isAudio: boolean; fileName: string | null; driveUrl: string };
+  | { id: string; number: number; kind: "archived"; isAudio: boolean; fileName: string | null };
 
 const INTEGRITY_OK = new Set(["hash_match", "size_match"]);
 
@@ -61,7 +65,14 @@ function isArchivedBunny(v: VersionForClient): boolean {
   return v.source === "bunny" && !!v.media_deleted_at && INTEGRITY_OK.has(v.integrity ?? "") && !!v.drive_file_id && v.number !== null;
 }
 
-export const driveViewUrl = (fileId: string) => `https://drive.google.com/file/d/${encodeURIComponent(fileId)}/view`;
+/**
+ * Drive's direct-download address (the current form of uc?export=download —
+ * drive.google.com/uc now redirects here). confirm=t skips the "can't scan for
+ * viruses" page Google puts in front of large files. Works only for a file
+ * shared "anyone with the link" — the review folder is (memory: BIZI PODCLUB).
+ */
+export const driveDownloadUrl = (fileId: string) =>
+  `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`;
 
 /**
  * One item's versions as the client sees them, oldest first (the last one is
@@ -82,9 +93,9 @@ export function clientVersionsForItem(
       out.push({ id: r.id, number: n, kind: "drive", mediaLink: r.media_link });
     } else if (isPlayableBunny(r)) {
       const s = sign(r.bunny_video_id as string);
-      out.push({ id: r.id, number: n, kind: "bunny", isAudio: r.is_audio_only, fileName: r.original_filename, playbackUrl: s.url, expires: s.expires });
+      out.push({ id: r.id, number: n, kind: "bunny", isAudio: r.is_audio_only, fileName: r.original_filename, playbackUrl: s.url, expires: s.expires, downloadable: !!r.drive_file_id });
     } else if (isArchivedBunny(r)) {
-      out.push({ id: r.id, number: n, kind: "archived", isAudio: r.is_audio_only, fileName: r.original_filename, driveUrl: driveViewUrl(r.drive_file_id as string) });
+      out.push({ id: r.id, number: n, kind: "archived", isAudio: r.is_audio_only, fileName: r.original_filename });
     }
   }
   return out;
@@ -122,12 +133,24 @@ export function itemInLinkScope(link: LinkForGate, item: ItemForGate, reelsRequi
 }
 
 export type GateResult = { ok: true } | { ok: false; reason: "not_in_scope" | "not_playable" };
+export type DownloadGateResult = { ok: true; driveFileId: string } | { ok: false; reason: "not_in_scope" | "not_downloadable" };
 
-/** May this link play / download this version? Both routes ask exactly this, after resolveLink said "ok". */
+/** May this link renew playback of this version? The playback route asks exactly this, after resolveLink said "ok". */
 export function gateVersionForLink(link: LinkForGate, reelsRequired: boolean, item: ItemForGate, version: VersionForClient): GateResult {
   if (version.item_id !== item.id || !itemInLinkScope(link, item, reelsRequired)) return { ok: false, reason: "not_in_scope" };
   if (!isPlayableBunny(version)) return { ok: false, reason: "not_playable" };
   return { ok: true };
+}
+
+/**
+ * May this link download this version? Exactly the versions that carry a
+ * download button on the page: shown bunny (before deletion) and archived
+ * (after), with a Drive file id. The bytes always come from Drive.
+ */
+export function gateDownloadForLink(link: LinkForGate, reelsRequired: boolean, item: ItemForGate, version: VersionForClient): DownloadGateResult {
+  if (version.item_id !== item.id || !itemInLinkScope(link, item, reelsRequired)) return { ok: false, reason: "not_in_scope" };
+  if (!version.drive_file_id || !(isPlayableBunny(version) || isArchivedBunny(version))) return { ok: false, reason: "not_downloadable" };
+  return { ok: true, driveFileId: version.drive_file_id };
 }
 
 export async function loadVersionWithItem(

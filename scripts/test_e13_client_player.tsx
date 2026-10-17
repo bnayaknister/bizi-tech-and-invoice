@@ -16,7 +16,8 @@ import React from "react";
 import { renderToString } from "react-dom/server";
 import {
   clientVersionsForItem,
-  driveViewUrl,
+  driveDownloadUrl,
+  gateDownloadForLink,
   gateVersionForLink,
   isPlayableBunny,
   itemInLinkScope,
@@ -96,14 +97,19 @@ for (const [label, over] of [
 const onlyHidden = clientVersionsForItem([drive1(), v({ number: 2, integrity: "mismatch" })], sign);
 check("v2 in mismatch and nothing else from Bunny → nothing changes, today's view stays", onlyHidden, []);
 const archived = clientVersionsForItem([drive1(), v({ number: 2, media_deleted_at: "2027-01-20T00:00:00Z", drive_file_id: "ORIG123" })], sign);
-check("v2 deleted at Bunny (E13-10) → archived: a Drive button to the original", archived.map((x) => x.kind), ["drive", "archived"]);
-check("…pointing at the Drive view page, not a direct download", archived[1].kind === "archived" && archived[1].driveUrl, driveViewUrl("ORIG123"));
+check("v2 deleted at Bunny (E13-10) → archived: the download button, no player", archived.map((x) => x.kind), ["drive", "archived"]);
+check("the archived entry carries no Drive id or URL to the page (the route resolves it)", Object.keys(archived[1]).sort(), ["fileName", "id", "isAudio", "kind", "number"]);
+check("bunny with a Drive id → downloadable", both[1].kind === "bunny" && both[1].downloadable, true);
+const noDrive = clientVersionsForItem([v({ number: 2, drive_file_id: null })], sign);
+check("bunny without a Drive id → still plays, not downloadable", noDrive[0].kind === "bunny" && noDrive[0].downloadable, false);
+check("Drive direct-download address (owner 17.10: from Drive, not the view page)", driveDownloadUrl("ORIG123"), "https://drive.usercontent.google.com/download?id=ORIG123&export=download&confirm=t");
+check("the Drive id is URL-encoded", driveDownloadUrl("a&b"), "https://drive.usercontent.google.com/download?id=a%26b&export=download&confirm=t");
 const audio = clientVersionsForItem([v({ number: 2, is_audio_only: true, integrity: "size_match", original_filename: "DLP - V1.mp3" })], sign);
 check("audio with size_match → shown, flagged as audio", audio[0].kind === "bunny" && [audio[0].isAudio, audio[0].fileName], [true, "DLP - V1.mp3"]);
 check("isPlayableBunny refuses a Drive row", isPlayableBunny(drive1()), false);
 
 // ══════════════════════════════════════════════════════════════════════
-section("who may renew playback / download (same gate for both routes)");
+section("who may renew playback / who may download");
 const PROD = "22222222-2222-4222-8222-222222222222";
 const linkAll = { production_id: PROD, scope: "all" as const };
 const ep = { id: ITEM, production_id: PROD, kind: "episode" };
@@ -117,6 +123,15 @@ check("version of a different item → not_in_scope", gateVersionForLink(linkAll
 check("mismatch version → not_playable (no download of a file that failed integrity)", gateVersionForLink(linkAll, true, ep, v({ integrity: "mismatch" })), { ok: false, reason: "not_playable" });
 check("deleted version → not_playable", gateVersionForLink(linkAll, true, ep, v({ media_deleted_at: "2027-01-01T00:00:00Z" })), { ok: false, reason: "not_playable" });
 check("Drive version → not_playable (nothing of ours to sign)", gateVersionForLink(linkAll, true, ep, drive1()), { ok: false, reason: "not_playable" });
+check("download: ready version in scope → ok, with ITS Drive file", gateDownloadForLink(linkAll, true, ep, ready), { ok: true, driveFileId: "DRIVEFILE" });
+const deleted = v({ media_deleted_at: "2027-01-01T00:00:00Z", drive_file_id: "ORIG9" });
+check("download: deleted at Bunny → still ok, from Drive (before AND after deletion)", gateDownloadForLink(linkAll, true, ep, deleted), { ok: true, driveFileId: "ORIG9" });
+check("download: deleted at Bunny → playback refused", gateVersionForLink(linkAll, true, ep, deleted).ok, false);
+check("download: out of scope → not_in_scope", gateDownloadForLink({ ...linkAll, scope: "episode" }, true, reel, ready), { ok: false, reason: "not_in_scope" });
+check("download: mismatch → refused (a version the client is not shown)", gateDownloadForLink(linkAll, true, ep, v({ integrity: "mismatch" })), { ok: false, reason: "not_downloadable" });
+check("download: still processing → refused", gateDownloadForLink(linkAll, true, ep, v({ bunny_status: "processing", integrity: null })), { ok: false, reason: "not_downloadable" });
+check("download: no Drive id → refused", gateDownloadForLink(linkAll, true, ep, v({ drive_file_id: null })), { ok: false, reason: "not_downloadable" });
+check("download: Drive history row → refused (it keeps today's iframe + open-in-Drive)", gateDownloadForLink(linkAll, true, ep, drive1()), { ok: false, reason: "not_downloadable" });
 
 // ══════════════════════════════════════════════════════════════════════
 section("ReviewPlayer renders (server render, no hls.js on the server)");
@@ -134,7 +149,9 @@ ok("a single version → no picker", !chipText(one, 2) && one.includes("<video")
 const aud = render(<ReviewPlayer token="tok" versions={audio as ClientVersionView[]} selectedId={null} onSelect={() => {}} renderDrive={driveStub} />);
 ok("audio → <audio controls>, not <video>", aud.includes("<audio") && !aud.includes("<video"), aud);
 const arch = render(<ReviewPlayer token="tok" versions={archived as ClientVersionView[]} selectedId={null} onSelect={() => {}} renderDrive={driveStub} />);
-ok("archived → the Drive button, no player, no 'פנו לצוות'", arch.includes("לקובץ המקורי ב-Google Drive") && !arch.includes("<video") && !arch.includes("פנו"), arch);
+ok("archived → the download button through OUR route, no player, no 'פנו לצוות'", arch.includes("הורדת הקובץ המקורי") && arch.includes("/api/r/tok/download/") && !arch.includes("<video") && !arch.includes("פנו"), arch);
+const nd = render(<ReviewPlayer token="tok" versions={noDrive as ClientVersionView[]} selectedId={null} onSelect={() => {}} renderDrive={driveStub} />);
+ok("bunny without a Drive id → player, no download button", nd.includes("<video") && !nd.includes("/download/"), nd);
 const noName = render(<ReviewPlayer token="tok" versions={[{ ...(views[1] as Extract<ClientVersionView, { kind: "bunny" }>), fileName: null }]} selectedId={null} onSelect={() => {}} renderDrive={driveStub} />);
 ok("missing file name → renders, no crash", !noName.startsWith("THREW") && noName.includes("הורדת הקובץ המקורי"), noName);
 const strayId = render(<ReviewPlayer token="tok" versions={views} selectedId="not-a-real-id" onSelect={() => {}} renderDrive={driveStub} />);
@@ -177,8 +194,8 @@ ok("an approved reel still shows its player and download (download always, owner
 section("static: the routes and the page");
 const root = join(__dirname, "..");
 const dl = readFileSync(join(root, "src/app/api/r/[token]/download/[versionId]/route.ts"), "utf8");
-ok("download: resolveLink, then the shared gate, then a 302", /resolveLink\(/.test(dl) && /gateVersionForLink\(/.test(dl) && /status: 302/.test(dl));
-ok("download: signed for 10 minutes, the exact /original path", /DOWNLOAD_TTL_SECONDS = 600/.test(dl) && /signedOriginalUrl\(/.test(dl));
+ok("download: resolveLink, then the download gate, then a 302", /resolveLink\(/.test(dl) && /gateDownloadForLink\(/.test(dl) && /status: 302/.test(dl));
+ok("download: to Drive's direct download, nothing from Bunny (owner 17.10)", /driveDownloadUrl\(gate\.driveFileId\)/.test(dl) && !/signedOriginalUrl|\/original|@\/lib\/bunny/.test(dl.replace(/^\s*\/\/.*$/gm, "")));
 ok("download: not a proxy (no fetch of the file)", !/await fetch\(|=\s*fetch\(/.test(dl));
 ok("download: leaves a client_review_download event", /client_review_download/.test(dl));
 const pb = readFileSync(join(root, "src/app/api/r/[token]/playback/route.ts"), "utf8");

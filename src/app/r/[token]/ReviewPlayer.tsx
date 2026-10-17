@@ -18,9 +18,9 @@ import { useEffect, useRef, useState } from "react";
 
 // mirrors ClientVersion from lib/review/clientVersions (redeclared — client component)
 export type ClientVersionView =
-  | { id: string; number: number; kind: "bunny"; isAudio: boolean; fileName: string | null; playbackUrl: string; expires: number }
+  | { id: string; number: number; kind: "bunny"; isAudio: boolean; fileName: string | null; playbackUrl: string; expires: number; downloadable: boolean }
   | { id: string; number: number; kind: "drive"; mediaLink: string }
-  | { id: string; number: number; kind: "archived"; isAudio: boolean; fileName: string | null; driveUrl: string };
+  | { id: string; number: number; kind: "archived"; isAudio: boolean; fileName: string | null };
 
 const chip = (active: boolean): React.CSSProperties => ({
   padding: "5px 12px",
@@ -134,6 +134,17 @@ function HlsMedia({ token, version }: { token: string; version: Extract<ClientVe
   );
 }
 
+// The bytes come from Drive (owner 17.10); our route only checks the token,
+// logs client_review_download and 302s to Drive's direct download.
+function DownloadButton({ token, versionId, fileName, tall }: { token: string; versionId: string; fileName: string | null; tall?: boolean }) {
+  return (
+    <a href={`/api/r/${encodeURIComponent(token)}/download/${encodeURIComponent(versionId)}`} style={tall ? { ...primaryButton, padding: "16px 12px" } : primaryButton}>
+      ⬇ הורדת הקובץ המקורי
+      {fileName ? <span style={{ display: "block", fontSize: 11, fontWeight: 400, color: "#9a94b8", marginTop: 3 }} dir="auto">{fileName}</span> : null}
+    </a>
+  );
+}
+
 export default function ReviewPlayer({
   token,
   versions,
@@ -171,20 +182,14 @@ export default function ReviewPlayer({
       {selected.kind === "bunny" && (
         <>
           <HlsMedia key={selected.id} token={token} version={selected} />
-          <a href={`/api/r/${encodeURIComponent(token)}/download/${encodeURIComponent(selected.id)}`} style={primaryButton}>
-            ⬇ הורדת הקובץ המקורי{selected.fileName ? <span style={{ display: "block", fontSize: 11, fontWeight: 400, color: "#9a94b8", marginTop: 3 }} dir="auto">{selected.fileName}</span> : null}
-          </a>
+          {selected.downloadable && <DownloadButton token={token} versionId={selected.id} fileName={selected.fileName} />}
         </>
       )}
 
       {selected.kind === "drive" && renderDrive(selected.mediaLink)}
 
-      {selected.kind === "archived" && (
-        <a href={selected.driveUrl} target="_blank" rel="noopener noreferrer" style={{ ...primaryButton, padding: "16px 12px" }}>
-          {selected.isAudio ? "🎧" : "🎬"} לקובץ המקורי ב-Google Drive ↗
-          {selected.fileName ? <span style={{ display: "block", fontSize: 11, fontWeight: 400, color: "#9a94b8", marginTop: 4 }} dir="auto">{selected.fileName}</span> : null}
-        </a>
-      )}
+      {/* E13-10: media deleted at Bunny — no player, the same Drive download */}
+      {selected.kind === "archived" && <DownloadButton token={token} versionId={selected.id} fileName={selected.fileName} tall />}
     </div>
   );
 }
