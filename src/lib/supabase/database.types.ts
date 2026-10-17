@@ -2750,6 +2750,21 @@ export type Database = {
         Args: { p_actor: string; p_reason: string; p_registration_id: string }
         Returns: Json
       }
+      review_item_comment: {
+        Args: {
+          p_body: string
+          p_item_id: string
+          p_kind: string
+          p_link_id: string
+          p_time_ms: number
+          p_version_id: string
+        }
+        Returns: Json
+      }
+      review_item_reapprove: {
+        Args: { p_item_id: string; p_link_id: string; p_version_id: string }
+        Returns: Json
+      }
     }
     Enums: {
       billing_cadence: "per_episode" | "monthly" | "every_n"
