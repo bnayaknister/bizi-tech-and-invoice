@@ -103,6 +103,23 @@ export function clientVersionsForItem(
 
 const SELECT =
   "id,item_id,number,source,media_link,bunny_video_id,bunny_status,integrity,has_original,is_audio_only,original_filename,drive_file_id,media_deleted_at";
+/** The columns VersionForClient needs, for callers that read versions themselves. */
+export const CLIENT_VERSION_SELECT = SELECT;
+
+/**
+ * The version the client is looking at as "the current one" — the version a
+ * decision on this item is about (E13-8: the approvals ledger, and "respond on
+ * the latest version only"). The last entry of clientVersionsForItem; when
+ * nothing reached Bunny the page shows the item's Drive media, so the latest
+ * Drive history row. null when the item has no version row at all (28 items,
+ * 17.10): such a decision cannot name a version (0114 cra_version_chk).
+ */
+export function latestShownVersionId(rows: VersionForClient[]): string | null {
+  const shown = clientVersionsForItem(rows, () => ({ url: "", expires: 0 }));
+  if (shown.length) return shown[shown.length - 1].id;
+  const drive = rows.filter((r) => r.source === "drive" && r.number !== null).sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
+  return drive.length ? drive[drive.length - 1].id : null;
+}
 
 /** All items' client versions in one read. Throws on a read error — the page catches it (rule 38). */
 export async function loadClientVersions(admin: SupabaseClient<Database>, itemIds: string[]): Promise<Record<string, ClientVersion[]>> {

@@ -2,6 +2,8 @@ import { randomBytes } from "crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { enqueueDocument, getClientCadence, type ProductionForBilling } from "@/lib/documents/enqueue";
 import { bumpReelsCountForAddons } from "@/lib/production/reels";
+import { CLIENT_VERSION_SELECT, type VersionForClient } from "@/lib/review/clientVersions";
+import { buildApprovalLedgerRows } from "@/lib/review/approvalLedger";
 
 // Client review links (screens-spec §9a). Server-only — every function here
 // runs with the service-role client, since the public page and the response
@@ -717,10 +719,11 @@ export async function applyResponse(
   };
 
   // record the response on the link (history) and lock it
+  const respondedAt = new Date().toISOString();
   const { error: histErr } = await admin
     .from("client_review_links")
     .update({
-      responded_at: new Date().toISOString(),
+      responded_at: respondedAt,
       episode_response: respEpisode ?? null,
       reels_response: reelsInScope ? respReels ?? null : null,
       episode_note: respEpisodeNote?.trim() || null,
@@ -744,6 +747,36 @@ export async function applyResponse(
     },
   });
   if (evErr) await recordFailure("response_event", evErr.message);
+
+  // E13-8a: the approvals ledger (lib/review/approvalLedger) — one row per
+  // item decided this round, on the version the client was shown. A follow-up
+  // like the rest: the decision itself is already on the items and the link.
+  if (itemDetail.length) {
+    try {
+      const { data: verRows, error: verErr } = await admin
+        .from("client_review_versions")
+        .select(CLIENT_VERSION_SELECT)
+        .in("item_id", itemDetail.map((d) => d.id));
+      if (verErr) throw new Error(verErr.message);
+      const byItem = new Map<string, VersionForClient[]>();
+      for (const r of (verRows ?? []) as VersionForClient[]) byItem.set(r.item_id, [...(byItem.get(r.item_id) ?? []), r]);
+      const { rows, withoutVersion } = buildApprovalLedgerRows(itemDetail, byItem, link.id, respondedAt);
+      if (rows.length) {
+        const { error: ledErr } = await admin.from("client_review_approvals").insert(rows);
+        if (ledErr) throw new Error(ledErr.message);
+      }
+      if (withoutVersion.length) {
+        await admin.from("events").insert({
+          entity_type: "production",
+          entity_id: production.id,
+          event_type: "review_approval_ledger_no_version",
+          payload: { link_id: link.id, item_ids: withoutVersion },
+        });
+      }
+    } catch (e) {
+      await recordFailure("approval_ledger", e instanceof Error ? e.message : String(e));
+    }
+  }
 
   // the client's correction notes join the production journal (§3, owner
   // 2026-07-24) — one full story. kind='client', author null (the client),

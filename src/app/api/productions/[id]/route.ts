@@ -157,6 +157,32 @@ export async function POST(request: Request, { params }: { params: { id: string 
     // so widening the condition cannot reach jobs, documents or
     // pending_documents.
     if (approvalReset) {
+      // E13-8a: the approvals ledger first. Every valid approval of this
+      // production's items is marked revoked (never deleted) — otherwise an
+      // item rolled back here would still count as approved for the 90-day
+      // deletion (v_review_media_purge_due reads only the ledger). Same gate as
+      // the items reset below: a failure leaves the board where it was.
+      const { data: itemRows, error: itemReadErr } = await resetAdmin
+        .from("client_review_items")
+        .select("id")
+        .eq("production_id", id);
+      const itemIds = (itemRows ?? []).map((r) => r.id as string);
+      const { error: ledgerErr } = itemReadErr
+        ? { error: itemReadErr }
+        : itemIds.length
+          ? await resetAdmin
+              .from("client_review_approvals")
+              .update({ revoked_at: new Date().toISOString(), revoked_reason: "board_rollback" })
+              .in("item_id", itemIds)
+              .eq("decision", "approved")
+              .is("revoked_at", null)
+          : { error: null };
+      if (ledgerErr) {
+        return NextResponse.json(
+          { error: `ביטול האישורים ביומן האישורים נכשל, הסטטוס לא שונה: ${ledgerErr.message}` },
+          { status: 500 }
+        );
+      }
       const { error: itemsErr } = await resetAdmin
         .from("client_review_items")
         .update({ approved: false, approved_at: null })
