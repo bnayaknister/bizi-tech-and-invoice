@@ -513,7 +513,8 @@ Fetch Video לא מחזיר guid (ה-OpenAPI של Bunny מחזיר רק StatusMo
   3. בדיקה שלילית: קישור לקובץ מחוץ ל-BIZI PODCLUB, וקישור לקובץ שאינו מדיה. צפוי: דחייה עם הודעה ברורה.
   4. ‏`BUNNY_DRY_RUN=false`, ואז ריל אמיתי אחד ו-mp3 אחד. צפוי: "מוכן ✓". לריל `hash_match`, ולאודיו `size_match`.
 
-**E13-5: webhook + קרון גיבוי** (תכנון מפורט 16.10, טרם אושר. בלי קוד)
+**E13-5: webhook + קרון גיבוי** (תכנון מפורט 16.10)
+> 🔵 **17.10, נבנה ונדחף (`feat/e13-5-webhook`), עוד לא נבדק חי.** הכרעות הבעלים 17.10: ‏0117 אושרה (‏`failed` בלי guid, הקרון מסמן אחרי 24 שעות). הגרסאות הלא-סופיות נבדקות **כל שעה**, והיתומים **פעם ביום** (צוות Vercel ‏`bizi-unity` במסלול Pro, ולכן קרון שעתי מותר). **‏0117 הוחלה 17.10** (dryrun 7/7, apply, ו-verify true עם `n_guidless_rows=0`), אחרי בדיקה על Postgres מקומי מעל 0114–0116 האמיתיים. ‏`BUNNY_STREAM_READONLY_KEY` נוסף ל-`.env.local` ול-Production. נבדק: ‏GET לספרייה 776376 מחזיר 200, והמפתח שונה ממפתח ה-API המלא. **הקוד:** ‏`lib/bunny/webhookSignature.ts`, ‏`lib/review/bunnySync.ts` (ה-webhook ושני הקרונים), ו-`syncVersion` ב-`versions.ts`, שמשותף לרענון, ל-webhook ולקרון. **הבדיקות:** ‏`scripts/test_e13_webhook_cron.ts` (52).
 
 **(א) מה Bunny שולח** (התיעוד, נקרא 16.10: [bunny.net/docs/stream-webhook](https://bunny.net/docs/stream-webhook)):
 - ‏`POST` עם JSON של שלושה שדות: `VideoLibraryId`, ‏`VideoGuid`, ‏`Status`.
