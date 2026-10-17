@@ -80,10 +80,20 @@ export async function POST(request: Request, { params }: { params: { token: stri
     if (Object.keys(itemDecisions).length === 0 && !onlyAddonsLeft) {
       return NextResponse.json({ error: "יש לבחור אישור או תיקונים לפחות עבור תוצר אחד" }, { status: 400 });
     }
-    // a revision must carry a note (that's the whole point of the loop)
+    // a revision must carry a note (that's the whole point of the loop) — or,
+    // since E13-8c (owner 17.10, option א), the client's own comments / pins
+    // on this item from THIS link: on a Bunny version "✎ תיקונים" opens the
+    // pins, and the pins ARE the note. The round then records a short pointer
+    // to them; the comments themselves live in client_review_comments.
+    const commentCount = await clientCommentsOnLink(admin, state.link.id, pendingInScope.map((i) => i.id));
     for (const it of pendingInScope) {
       const d = itemDecisions[it.id];
       if (d?.response === "revisions" && !(d.note ?? "").trim()) {
+        const n = commentCount.get(it.id) ?? 0;
+        if (n > 0) {
+          d.note = n === 1 ? "הערה אחת בנגן" : `${n} הערות בנגן`;
+          continue;
+        }
         const label = it.kind === "episode" ? "בפרק" : `בריל ${it.reel_index}`;
         return NextResponse.json({ error: `נא לפרט מה לתקן ${label}` }, { status: 400 });
       }
@@ -132,4 +142,19 @@ export async function POST(request: Request, { params }: { params: { token: stri
   });
 
   return NextResponse.json({ ok: true, approved_all: approvedAll });
+}
+
+/** E13-8c: the client's comments per item from this link (pins + general), for "תיקונים" without text. */
+async function clientCommentsOnLink(admin: ReturnType<typeof createAdminClient>, linkId: string, itemIds: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (!itemIds.length) return out;
+  const { data } = await admin
+    .from("client_review_comments")
+    .select("item_id")
+    .eq("link_id", linkId)
+    .eq("author_kind", "client")
+    .eq("is_backfill", false)
+    .in("item_id", itemIds);
+  for (const r of (data ?? []) as { item_id: string }[]) out.set(r.item_id, (out.get(r.item_id) ?? 0) + 1);
+  return out;
 }

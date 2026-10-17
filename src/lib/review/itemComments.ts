@@ -83,6 +83,8 @@ export type ClientComment = {
   time_ms: number | null;
   body: string;
   created_at: string;
+  /** E13-8c: written through THIS link (the round on screen) */
+  mine: boolean;
 };
 
 export type ApprovalRow = { decision: string; decided_at: string; created_at: string; id: string; revoked_at: string | null; revoked_reason: string | null };
@@ -154,6 +156,7 @@ export async function loadClientComments(
       time_ms: r.time_ms,
       body: r.body,
       created_at: r.created_at,
+      mine: r.link_id === linkId,
     });
   }
   const reapprovable: Record<string, boolean> = {};

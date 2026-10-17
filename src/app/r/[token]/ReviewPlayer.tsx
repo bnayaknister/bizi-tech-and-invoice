@@ -36,6 +36,8 @@ export type ClientCommentView = {
   time_ms: number | null;
   body: string;
   created_at: string;
+  /** E13-8c: written through this link (optional: older payloads omit it) */
+  mine?: boolean;
 };
 
 /** "00:42", "1:02:03" — mirrors formatPinTime in lib/review/itemComments. */

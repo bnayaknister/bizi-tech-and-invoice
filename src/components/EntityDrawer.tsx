@@ -31,6 +31,8 @@ import ClientBookingContactsCard from "@/components/ClientBookingContactsCard";
 import EntityFieldRows, { type FieldMeta } from "@/components/EntityFieldRows";
 import ClientNotesModal from "./ClientNotesModal";
 import ReviewVersionsPanel, { type PanelVersion } from "@/components/ReviewVersionsPanel";
+import ClientCommentHistory, { type HistoryItemView } from "@/components/ClientCommentHistory";
+import { eventLabel } from "@/lib/events/labels";
 import IconTile, { type IconAccent } from "@/components/IconTile";
 import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
 import { displayDate, displayDateTime, displayLogTime } from "@/lib/dates";
@@ -121,6 +123,10 @@ type DrawerData = {
   // until the items model reaches this production (seeded at link mint or
   // first drawer save)
   reviewItems: { id: string; kind: string; reel_index: number | null; media_link: string | null; approved: boolean; last_note: string | null; versions?: PanelVersion[] }[] | null;
+  // E13-8c — every client comment / pin, all items, versions and rounds
+  // (lib/review/commentHistory). null for a viewer without stages, or when the
+  // read failed (rule 38: the section is simply absent then).
+  commentHistory?: HistoryItemView[] | null;
   // links still live for this production (Q7) — not superseded, unanswered,
   // unexpired. Scope-aware supersession means there can be two (episode +
   // reels), so pressing send may burn one, both, or none.
@@ -1455,7 +1461,9 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
 
   function renderChanges(h: HistoryEntry) {
     const changes = (h.payload?.changes ?? null) as Record<string, { from: unknown; to: unknown }> | null;
-    if (!changes) return <span className="text-[11px] text-[var(--faint)]">{h.event_type}</span>;
+    // E13-8c: the event's name is in the header line now (eventLabel); a row
+    // without field changes has nothing more to say
+    if (!changes) return null;
     return (
       <div className="space-y-0.5">
         {Object.entries(changes).map(([k, c]) => {
@@ -2107,6 +2115,20 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           onChanged={() => void load(ref, true)}
                         />
                       )}
+                      {/* E13-8c (owner 17.10) — the client's comments, permanently:
+                          never cleared by a re-approval, a new version or "קיבלתי".
+                          Open ones stand out, handled ones are dimmed. */}
+                      {data.commentHistory && data.commentHistory.some((i) => i.comments.length > 0) && (
+                        <div className="border border-[var(--rule)] rounded-xl p-3">
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="font-bold text-sm">💬 הערות הלקוח · כל ההיסטוריה</span>
+                            <span className="text-[11px] text-[var(--faint)]">
+                              {data.commentHistory.reduce((n, i) => n + i.comments.filter((c) => c.open).length, 0)} פתוחות
+                            </span>
+                          </div>
+                          <ClientCommentHistory items={data.commentHistory} />
+                        </div>
+                      )}
                       {/* unified send — takes both blocks' links at once */}
                       {showUnified && (
                         <div className="space-y-1.5">
@@ -2322,7 +2344,15 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           <div className="flex gap-2 text-[var(--faint)]">
                             <span>{displayDateTime(h.created_at)}</span>
                             <span>{h.actor}</span>
-                            <span>{h.event_type}</span>
+                            {/* E13-8c (owner 17.10): Hebrew, not deal_invoice_skipped_already_billed.
+                                An unmapped type still shows — named "אירוע מערכת", code in small print */}
+                            {eventLabel(h.event_type) ? (
+                              <span className="text-[var(--dim)]">{eventLabel(h.event_type)}</span>
+                            ) : (
+                              <span>
+                                אירוע מערכת <span dir="ltr" className="text-[10px] opacity-70">{h.event_type}</span>
+                              </span>
+                            )}
                           </div>
                           {renderChanges(h)}
                         </div>

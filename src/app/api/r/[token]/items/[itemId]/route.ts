@@ -97,6 +97,7 @@ export async function POST(request: Request, { params }: { params: { token: stri
       time_ms: action.action === "pin" ? action.timeMs : null,
       body: action.body,
       created_at: new Date().toISOString(),
+      mine: true,
     },
     revoked: !!res.revoked,
   });

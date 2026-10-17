@@ -1,4 +1,7 @@
 import { getSessionAndProfile } from "@/lib/profile";
+import { createTypedAdminClient } from "@/lib/supabase/admin";
+import { loadCommentHistory, type HistoryItem } from "@/lib/review/commentHistory";
+import ClientCommentHistory from "@/components/ClientCommentHistory";
 import { createClient } from "@/lib/supabase/server";
 import { parseReelNotes } from "@/lib/review/reelNotes";
 import { displayDate, displayDateTime } from "@/lib/dates";
@@ -133,11 +136,35 @@ export default async function ReviewNotesPrintPage({
 
   const autoPrint = searchParams.print === "1";
 
+  // E13-8c (owner 17.10): EVERY comment and pin, all items / versions /
+  // rounds, the same list the drawer and the window show. Read with the
+  // service role AFTER the can_edit_stages check above: the 0114 tables are
+  // closed to every session (RLS on, zero policies).
+  let history: HistoryItem[] = [];
+  let historyFailed = false;
+  try {
+    history = await loadCommentHistory(createTypedAdminClient(), params.id);
+  } catch {
+    historyFailed = true;
+  }
+  const hasComments = history.some((i) => i.comments.length > 0);
+  const historyBlock = (
+    <>
+      {hasComments && (
+        <h2 style={{ fontSize: 16, margin: "24px 0 10px" }}>כל ההערות והנעצים</h2>
+      )}
+      {hasComments && <ClientCommentHistory items={history} />}
+      {historyFailed && <p style={{ fontSize: 13, color: "#b91c1c" }}>שגיאה בטעינת ההערות. רעננו את הדף.</p>}
+    </>
+  );
+
   if (!round) {
     return (
       <Sheet>
+        {autoPrint && hasComments && <PrintTrigger />}
         <Header podcastName={prod.podcast_name as string} recordDate={prod.record_date as string | null} answeredAt={null} />
-        <p style={{ fontSize: 15, color: "#555555" }}>אין הערות פתוחות מהלקוח.</p>
+        {!hasComments && !historyFailed && <p style={{ fontSize: 15, color: "#555555" }}>אין הערות פתוחות מהלקוח.</p>}
+        {historyBlock}
       </Sheet>
     );
   }
@@ -169,7 +196,8 @@ export default async function ReviewNotesPrintPage({
           note={r.note}
         />
       ))}
-      {!hasDetail && <p style={{ fontSize: 15, color: "#555555" }}>אין פירוט הערות בסבב זה.</p>}
+      {!hasDetail && !hasComments && <p style={{ fontSize: 15, color: "#555555" }}>אין פירוט הערות בסבב זה.</p>}
+      {historyBlock}
 
       {/* screen only — on paper the browser prints its own header/footer */}
       <p className="no-print" style={{ marginTop: 28, fontSize: 12, color: "#888888" }}>

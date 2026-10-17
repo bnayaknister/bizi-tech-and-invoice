@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createAdminClient, createTypedAdminClient } from "@/lib/supabase/admin";
+import { loadCommentHistory, type HistoryItem } from "@/lib/review/commentHistory";
 import { parseReelNotes } from "@/lib/review/reelNotes";
 
 // The client's correction notes from the round they last answered, shaped for
@@ -51,7 +52,22 @@ export async function GET(_request: Request, { params }: { params: { id: string 
 
   // No round ever answered on this production. Not an error — the popup shows
   // its empty state, and a 404 here would read as "the production is missing".
-  if (!round) return NextResponse.json({ round: null });
+  // E13-8c (owner 17.10): EVERY comment and pin of every item, all versions
+  // and rounds, acked or not — from client_review_comments, never from
+  // last_note (a re-approval clears that cache; this list never loses a row).
+  // up_to = the newest client comment shown: "קיבלתי" acks up to it, so a
+  // comment that lands after this read stays open (lib/review/reviewAck).
+  let items: HistoryItem[] = [];
+  try {
+    items = await loadCommentHistory(createTypedAdminClient(), params.id);
+  } catch {
+    return NextResponse.json({ error: "שגיאה בטעינת ההערות" }, { status: 400 });
+  }
+  const clientComments = items.flatMap((i) => i.comments).filter((c) => c.author_kind === "client" && !c.is_backfill);
+  const upTo = clientComments.reduce<string | null>((m, c) => (!m || c.created_at > m ? c.created_at : m), null);
+  const unacked = clientComments.filter((c) => c.open).length;
+
+  if (!round) return NextResponse.json({ round: null, items, up_to: upTo, unacked });
 
   const episodeNote = (round.episode_note as string | null)?.trim() || null;
   const reelsNote = (round.reels_note as string | null)?.trim() || null;
@@ -71,5 +87,8 @@ export async function GET(_request: Request, { params }: { params: { id: string 
       episode,
       reels,
     },
+    items,
+    up_to: upTo,
+    unacked,
   });
 }

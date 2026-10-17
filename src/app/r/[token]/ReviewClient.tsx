@@ -294,6 +294,9 @@ const Block = ({
   media,
   respondHint,
   extra,
+  onApprove,
+  onRevisions,
+  hideNote,
 }: {
   emoji: string;
   title: string;
@@ -311,6 +314,12 @@ const Block = ({
   respondHint?: string | null;
   /** E13-8b: the comment box / re-approve, under everything else */
   extra?: React.ReactNode;
+  /** E13-8c: replaces setChoice("approved") — the "יש לך הערות" confirm */
+  onApprove?: () => void;
+  /** E13-8c: replaces setChoice("revisions") — on a Bunny version it opens the pins */
+  onRevisions?: () => void;
+  /** E13-8c: no free-text note under "תיקונים" (a Bunny version: the pins are the note) */
+  hideNote?: boolean;
 }) => (
   <div style={card}>
     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
@@ -326,7 +335,7 @@ const Block = ({
       <>
         <div style={{ display: "flex", gap: 8 }}>
           <button
-            onClick={() => setChoice("approved")}
+            onClick={() => (onApprove ? onApprove() : setChoice("approved"))}
             style={{
               flex: 1,
               padding: "10px",
@@ -341,7 +350,7 @@ const Block = ({
             ✓ מאשר
           </button>
           <button
-            onClick={() => setChoice("revisions")}
+            onClick={() => (onRevisions ? onRevisions() : setChoice("revisions"))}
             style={{
               flex: 1,
               padding: "10px",
@@ -356,7 +365,7 @@ const Block = ({
             ✎ תיקונים
           </button>
         </div>
-        {choice === "revisions" && (
+        {choice === "revisions" && !hideNote && (
           <textarea
             value={note}
             onChange={(e) => setNote(e.target.value)}
@@ -617,7 +626,14 @@ export default function ReviewClient({
     }
     setBoxText((p) => ({ ...p, [itemId]: "" }));
     setBoxOpen((p) => ({ ...p, [itemId]: false }));
-    setBoxSent((p) => ({ ...p, [itemId]: "ההערה הועברה לצוות" }));
+    if (viewOnly) {
+      setBoxSent((p) => ({ ...p, [itemId]: "ההערה הועברה לצוות" }));
+    } else {
+      // E13-8c (owner 17.10): the first pin on an item marks it "תיקונים"
+      setItemChoice((prev) => ({ ...prev, [itemId]: "revisions" }));
+      setError(null);
+      setBoxSent((p) => ({ ...p, [itemId]: "ההערה נשמרה. תישלח לצוות עם התשובה" }));
+    }
   }
 
   async function reapprove(itemId: string) {
@@ -664,6 +680,19 @@ export default function ReviewClient({
 
   const itemLabel = (i: ReviewItemView) => (i.kind === "episode" ? "פרק מלא" : `ריל ${i.reel_index}`);
 
+  // E13-8c: on a live link, is this item's CURRENT version a Bunny one, on
+  // screen? Then "✎ תיקונים" means pins (owner 17.10, option א).
+  const liveBunny = (it: ReviewItemView) => {
+    const versions = versionsByItem[it.id];
+    if (viewOnly || !commentsEnabled || !versions?.length) return false;
+    const latest = versions[versions.length - 1];
+    const selectedId = selectedVersion[it.id] ?? latest.id;
+    return latest.kind === "bunny" && selectedId === latest.id;
+  };
+  // the client's comments on this item from THIS link (the round on screen)
+  const myCommentCount = (it: ReviewItemView) =>
+    [...(comments[it.id] ?? []), ...(addedComments[it.id] ?? [])].filter((c) => c.mine).length;
+
   async function submit() {
     setError(null);
     let payload: Record<string, unknown>;
@@ -677,7 +706,10 @@ export default function ReviewClient({
           return;
         }
         if (c === "revisions" && !(itemNote[it.id] ?? "").trim()) {
-          setError(`נא לפרט מה לתקן — ${itemLabel(it)}`);
+          // E13-8c: on a Bunny version the pins ARE the note (the server
+          // checks the same and records "N הערות בנגן" on the round)
+          if (liveBunny(it) && myCommentCount(it) > 0) continue;
+          setError(liveBunny(it) ? `הוסיפו לפחות הערה אחת בנגן — ${itemLabel(it)}` : `נא לפרט מה לתקן — ${itemLabel(it)}`);
           return;
         }
       }
@@ -789,9 +821,15 @@ export default function ReviewClient({
                   pending={episodePending && !viewOnly}
                   link={episodeLink}
                   choice={epChoice}
-                  setChoice={setEpChoice}
+                  setChoice={(c) => {
+                    setError(null);
+                    setEpChoice(c);
+                  }}
                   note={epNote}
-                  setNote={setEpNote}
+                  setNote={(t) => {
+                    setError(null);
+                    setEpNote(t);
+                  }}
                   notePlaceholder="מה לתקן בפרק?"
                 />
               )}
@@ -803,9 +841,15 @@ export default function ReviewClient({
                   pending={reelsPending && !viewOnly}
                   link={reelsLink}
                   choice={reChoice}
-                  setChoice={setReChoice}
+                  setChoice={(c) => {
+                    setError(null);
+                    setReChoice(c);
+                  }}
                   note={reNote}
-                  setNote={setReNote}
+                  setNote={(t) => {
+                    setError(null);
+                    setReNote(t);
+                  }}
                   notePlaceholder="מה לתקן ברילז?"
                 />
               )}
@@ -830,7 +874,7 @@ export default function ReviewClient({
               pinMs={boxPinMs[it.id] ?? null}
               pinOn={!!boxPinOn[it.id]}
               setPinOn={(v) => setBoxPinOn((p) => ({ ...p, [it.id]: v }))}
-              pinOnly={!viewOnly}
+              pinOnly={false}
               noPinReason={viewOnly && !canPin ? "בגרסה הזו אין הערה בנקודת זמן" : null}
               text={boxText[it.id] ?? ""}
               setText={(t) => setBoxText((p) => ({ ...p, [it.id]: t }))}
@@ -853,19 +897,13 @@ export default function ReviewClient({
                   </button>
                 </div>
               )}
+              {/* E13-8c: on a live link "✎ תיקונים" opens the pins; after one is
+                  sent, this adds the next. Pins before "תיקונים" are possible
+                  too (decision 1) — the first one marks the item "תיקונים" */}
               {commentsEnabled && !boxOpen[it.id] && !viewOnly && !approved && canPin && (
                 <div style={{ textAlign: "center", marginTop: 8 }}>
-                  <button
-                    type="button"
-                    style={linkButton}
-                    onClick={() =>
-                      // a live link takes pins only (decision 1): no player yet → no box, never a silent general comment
-                      playerApis.current[it.id]
-                        ? openBox(it.id, true)
-                        : setBoxError((p) => ({ ...p, [it.id]: "הנגן עוד לא נטען. נסו שוב בעוד רגע" }))
-                    }
-                  >
-                    📍 הערה בנקודת זמן
+                  <button type="button" style={linkButton} onClick={() => openBox(it.id, true)}>
+                    {myCommentCount(it) > 0 ? "📍 הוסף עוד הערה" : "📍 הערה בנקודת זמן"}
                   </button>
                 </div>
               )}
@@ -902,9 +940,33 @@ export default function ReviewClient({
             pending={!it.approved && !viewOnly}
             link={it.media_link || fallbackLink}
             choice={itemChoice[it.id] ?? null}
-            setChoice={(c) => setItemChoice((prev) => ({ ...prev, [it.id]: c }))}
+            setChoice={(c) => {
+              setError(null);
+              setItemChoice((prev) => ({ ...prev, [it.id]: c }));
+            }}
             note={itemNote[it.id] ?? ""}
-            setNote={(s) => setItemNote((prev) => ({ ...prev, [it.id]: s }))}
+            setNote={(s) => {
+              setError(null);
+              setItemNote((prev) => ({ ...prev, [it.id]: s }));
+            }}
+            hideNote={liveBunny(it)}
+            onRevisions={
+              liveBunny(it)
+                ? () => {
+                    setError(null);
+                    setItemChoice((prev) => ({ ...prev, [it.id]: "revisions" }));
+                    openBox(it.id, true);
+                  }
+                : undefined
+            }
+            onApprove={() => {
+              // E13-8c: approving an item the client commented on — ask once;
+              // yes = approved, and the comments reach the team as minor notes
+              if (myCommentCount(it) > 0 && !window.confirm("יש לך הערות. לאשר בכל זאת?")) return;
+              setError(null);
+              setBoxOpen((p) => ({ ...p, [it.id]: false }));
+              setItemChoice((prev) => ({ ...prev, [it.id]: "approved" }));
+            }}
             notePlaceholder={notePlaceholder}
             media={
               versions?.length ? (

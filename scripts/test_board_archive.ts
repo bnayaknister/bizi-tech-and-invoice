@@ -291,7 +291,9 @@ async function main() {
     });
   const mentions = walk(join(root, "src"))
     .filter((f) => !f.endsWith("database.types.ts"))
-    .filter((f) => readFileSync(f, "utf8").includes("board_archived"))
+    // the COLUMN, not the event name production_board_archived (the drawer's
+    // Hebrew label map, E13-8c, names that event and touches no column)
+    .filter((f) => /(?<!production_)board_archived/.test(readFileSync(f, "utf8")))
     .map((f) => relative(root, f))
     .sort();
   check("board_archived_* is read/written ONLY by the board, its page, and the archive route + lib", mentions, [

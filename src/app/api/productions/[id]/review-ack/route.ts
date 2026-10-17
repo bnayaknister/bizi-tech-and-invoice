@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { planReviewAck, type AckComment } from "@/lib/review/reviewAck";
 
 // "קיבלתי, מטפל" — the technician's answer to a client's correction round
 // (0071). The gap it closes: a revisions response lights productions
@@ -34,8 +35,12 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const { data: profile } = await supabase.from("profiles").select("can_edit_stages").eq("id", user.id).single();
   if (!profile?.can_edit_stages) return NextResponse.json({ error: "אין הרשאת עריכת שלבים" }, { status: 403 });
 
-  const body = (await request.json().catch(() => ({}))) as { link_id?: string };
-  if (typeof body.link_id !== "string" || !body.link_id) {
+  // E13-8c: link_id may be null (pins on a live link, no answered round yet);
+  // up_to is the newest comment the window SHOWED (lib/review/reviewAck).
+  const body = (await request.json().catch(() => ({}))) as { link_id?: unknown; up_to?: unknown };
+  const requestedLinkId = typeof body.link_id === "string" && body.link_id ? body.link_id : null;
+  const upTo = typeof body.up_to === "string" && !Number.isNaN(Date.parse(body.up_to)) ? body.up_to : null;
+  if (!requestedLinkId && !upTo) {
     return NextResponse.json({ error: "חסר מזהה סבב" }, { status: 400 });
   }
 
@@ -48,27 +53,13 @@ export async function POST(request: Request, { params }: { params: { id: string 
   // (links.ts:176 — it is not, and must not be, a "live" link).
   const { data: latestRound, error: roundErr } = await admin
     .from("client_review_links")
-    .select("id,responded_at")
+    .select("id,responded_at,episode_response,reels_response")
     .eq("production_id", params.id)
     .not("responded_at", "is", null)
     .order("responded_at", { ascending: false })
     .limit(1)
     .maybeSingle();
   if (roundErr) return NextResponse.json({ error: roundErr.message }, { status: 400 });
-  if (!latestRound) return NextResponse.json({ error: "אין סבב הערות לאישור" }, { status: 400 });
-
-  // A newer round answered while this screen was open. Refused with the id it
-  // should have been acking, so the caller can refresh onto the real one.
-  if (latestRound.id !== body.link_id) {
-    return NextResponse.json(
-      {
-        error: "יש סבב חדש יותר — רענן ונסה שוב",
-        status: "stale_round",
-        latest_link_id: latestRound.id,
-      },
-      { status: 409 }
-    );
-  }
 
   const { data: prod, error: prodErr } = await admin
     .from("productions")
@@ -78,29 +69,77 @@ export async function POST(request: Request, { params }: { params: { id: string 
   if (prodErr) return NextResponse.json({ error: prodErr.message }, { status: 400 });
   if (!prod) return NextResponse.json({ error: "ההפקה לא נמצאה" }, { status: 404 });
 
-  // Already acknowledged, same round — a double click, not a second event.
-  // Nothing is written: re-stamping review_ack_at would move the moment
-  // someone actually received the note.
-  if (prod.review_ack_link_id === latestRound.id) {
+  // the client's comments the team has not acknowledged yet (E13-8c)
+  const { data: itemRows, error: itemErr } = await admin.from("client_review_items").select("id").eq("production_id", params.id);
+  if (itemErr) return NextResponse.json({ error: itemErr.message }, { status: 400 });
+  const itemIds = (itemRows ?? []).map((r) => r.id as string);
+  const { data: openComments, error: cErr } = itemIds.length
+    ? await admin
+        .from("client_review_comments")
+        .select("id,created_at")
+        .in("item_id", itemIds)
+        .eq("author_kind", "client")
+        .eq("is_backfill", false)
+        .is("acked_at", null)
+        .is("resolved_at", null)
+    : { data: [], error: null };
+  if (cErr) return NextResponse.json({ error: cErr.message }, { status: 400 });
+
+  const plan = planReviewAck({
+    requestedLinkId,
+    upTo,
+    latestRound: latestRound ?? null,
+    prodAckLinkId: (prod.review_ack_link_id as string | null) ?? null,
+    unackedComments: (openComments ?? []) as AckComment[],
+  });
+
+  // A newer round answered while this screen was open. Refused with the id it
+  // should have been acking, so the caller can refresh onto the real one.
+  if (plan.kind === "stale_round") {
+    return NextResponse.json(
+      {
+        error: "יש סבב חדש יותר — רענן ונסה שוב",
+        status: "stale_round",
+        latest_link_id: plan.latestLinkId,
+      },
+      { status: 409 }
+    );
+  }
+
+  // Already acknowledged — a double click, not a second event. Nothing is
+  // written: re-stamping review_ack_at would move the moment someone actually
+  // received the note.
+  if (plan.kind === "nothing") {
     return NextResponse.json({ ok: true, already: true });
   }
 
-  // ═══ 1. THE ACK ═══════════════════════════════════════════════════════════
-  const { data: updated, error: updErr } = await admin
-    .from("productions")
-    .update({
-      review_ack_at: new Date().toISOString(),
-      review_ack_by: user.id,
-      review_ack_link_id: latestRound.id,
-      // the red dot goes out here. Leaving it lit put the production in two
-      // places at once — "דורש טיפול" and "בעבודה עכשיו" — which reads as two
-      // jobs when it is one. status is NOT touched: the client's response
-      // already set it to בעריכה (links.ts:406) and that is still true.
-      needs_attention: false,
-    })
-    .eq("id", params.id)
-    .select("id,review_ack_at,review_ack_by,review_ack_link_id,needs_attention")
-    .single();
+  const nowIso = new Date().toISOString();
+
+  // ═══ 1a. THE COMMENTS (E13-8c) — acked, never hidden ═══════════════════════
+  if (plan.commentIds.length) {
+    const { error: ackErr } = await admin
+      .from("client_review_comments")
+      .update({ acked_at: nowIso, acked_by: user.id })
+      .in("id", plan.commentIds)
+      .is("acked_at", null);
+    if (ackErr) return NextResponse.json({ error: ackErr.message }, { status: 400 });
+  }
+
+  // ═══ 1b. THE ROUND + THE DOT ══════════════════════════════════════════════
+  const patch: Record<string, unknown> = {};
+  if (plan.ackRound && latestRound) {
+    patch.review_ack_at = nowIso;
+    patch.review_ack_by = user.id;
+    patch.review_ack_link_id = latestRound.id;
+  }
+  // the red dot goes out only when nothing unread is left. Leaving it lit when
+  // all is read put the production in two places at once — "דורש טיפול" and
+  // "בעבודה עכשיו". status is NOT touched: the client's response already set it.
+  if (plan.clearAttention) patch.needs_attention = false;
+  const PROD_COLS = "id,review_ack_at,review_ack_by,review_ack_link_id,needs_attention";
+  const { data: updated, error: updErr } = Object.keys(patch).length
+    ? await admin.from("productions").update(patch).eq("id", params.id).select(PROD_COLS).single()
+    : await admin.from("productions").select(PROD_COLS).eq("id", params.id).single();
   if (updErr || !updated) {
     return NextResponse.json({ error: "ההפקה לא נמצאה או שאין הרשאה" }, { status: 404 });
   }
@@ -128,5 +167,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     review_ack_by: updated.review_ack_by,
     review_ack_link_id: updated.review_ack_link_id,
     needs_attention: updated.needs_attention,
+    acked_comments: plan.commentIds.length,
+    newer_unacked: plan.newerUnacked,
   });
 }

@@ -119,7 +119,25 @@ export async function resolveDownloadMissing(
       admin.from("productions").select("needs_attention,review_ack_link_id").eq("id", productionId).maybeSingle(),
     ]);
     if (!prod?.needs_attention) return { resolved: hit.length, cleared: false };
-    if (!shouldClearFlag(remaining, clientNotesUnacked((round ?? null) as LatestRound, (prod.review_ack_link_id as string | null) ?? null))) {
+    // E13-8c: a client comment / pin not yet acked ("קיבלתי") also keeps the
+    // dot lit — the dot is shared, and this clear must never hide a comment
+    const { data: itemRows } = await admin.from("client_review_items").select("id").eq("production_id", productionId);
+    const itemIds = (itemRows ?? []).map((r) => r.id as string);
+    let openComments = 0;
+    if (itemIds.length) {
+      const { count, error: cErr } = await admin
+        .from("client_review_comments")
+        .select("id", { count: "exact", head: true })
+        .in("item_id", itemIds)
+        .eq("author_kind", "client")
+        .eq("is_backfill", false)
+        .is("acked_at", null)
+        .is("resolved_at", null);
+      if (cErr) throw new Error(cErr.message);
+      openComments = count ?? 0;
+    }
+    const notesWaiting = clientNotesUnacked((round ?? null) as LatestRound, (prod.review_ack_link_id as string | null) ?? null) || openComments > 0;
+    if (!shouldClearFlag(remaining, notesWaiting)) {
       return { resolved: hit.length, cleared: false };
     }
     const { error: updErr } = await admin.from("productions").update({ needs_attention: false }).eq("id", productionId);

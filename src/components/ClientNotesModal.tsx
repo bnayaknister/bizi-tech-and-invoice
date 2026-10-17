@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { displayDateTime } from "@/lib/dates";
+import ClientCommentHistory, { type HistoryItemView } from "@/components/ClientCommentHistory";
 
 // The client's correction notes from the round they last answered, and the one
 // button that closes the loop: "קיבלתי, מטפל" (0071). Until this existed the
@@ -14,6 +15,12 @@ import { displayDateTime } from "@/lib/dates";
 // against that exact round id (api/productions/[id]/review-ack). The link_id
 // travels from one to the other unchanged, which is what lets the server
 // refuse an ack aimed at a round that is no longer the latest.
+//
+// E13-8c (owner 17.10): the window also shows EVERY comment and pin the client
+// left — all items, versions and rounds (review-current `items`). "קיבלתי"
+// acks them up to `up_to`, the newest one this window showed; acked ones stay
+// in the list, dimmed. Before this, a round answered with pins alone read
+// "אין פירוט הערות בסבב זה" while five pins sat in the table.
 
 type Round = {
   link_id: string;
@@ -48,6 +55,10 @@ export default function ClientNotesModal({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [round, setRound] = useState<Round | null>(null);
+  const [items, setItems] = useState<HistoryItemView[]>([]);
+  const [upTo, setUpTo] = useState<string | null>(null);
+  const [unacked, setUnacked] = useState(0);
+  const [reloadKey, setReloadKey] = useState(0);
   const [acking, setAcking] = useState(false);
   const [acked, setAcked] = useState(false);
 
@@ -65,22 +76,25 @@ export default function ClientNotesModal({
       const d = await res.json();
       if (cancelled) return;
       setRound(d.round);
+      setItems(Array.isArray(d.items) ? d.items : []);
+      setUpTo(typeof d.up_to === "string" ? d.up_to : null);
+      setUnacked(typeof d.unacked === "number" ? d.unacked : 0);
       setLoading(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, [productionId]);
+  }, [productionId, reloadKey]);
 
   async function ack() {
-    if (!round) return;
+    if (!round && !upTo) return;
     setAcking(true);
     setError(null);
     try {
       const res = await fetch(`/api/productions/${productionId}/review-ack`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ link_id: round.link_id }),
+        body: JSON.stringify({ link_id: round?.link_id ?? null, up_to: upTo }),
       });
       const d = await res.json().catch(() => ({}));
       if (res.ok && d.already) {
@@ -90,6 +104,8 @@ export default function ClientNotesModal({
       } else if (res.ok) {
         setAcked(true);
         onAcked?.();
+        // the acked comments stay in the list — reload to show them dimmed
+        setReloadKey((k) => k + 1);
       } else if (res.status === 409) {
         setError("הגיע סבב הערות חדש יותר — סגור ופתח מחדש כדי לראות אותו");
       } else {
@@ -101,6 +117,7 @@ export default function ClientNotesModal({
   }
 
   const hasDetail = !!round && (!!round.episode || round.reels.length > 0);
+  const hasComments = items.some((i) => i.comments.length > 0);
 
   return (
     <div
@@ -124,7 +141,7 @@ export default function ClientNotesModal({
 
         {loading && <div className="text-sm text-[var(--dim)]">טוען הערות…</div>}
 
-        {!loading && !round && (
+        {!loading && !round && !hasComments && (
           <div className="text-sm text-[var(--dim)]">אין הערות פתוחות מהלקוח.</div>
         )}
 
@@ -147,10 +164,19 @@ export default function ClientNotesModal({
                 <NoteBox>{r.note}</NoteBox>
               </div>
             ))}
-            {!hasDetail && (
+            {!hasDetail && !hasComments && (
               <div className="text-sm text-[var(--dim)]">אין פירוט הערות בסבב זה.</div>
             )}
           </>
+        )}
+
+        {!loading && hasComments && (
+          <div className="mt-2">
+            <div className="font-bold text-sm mb-2">
+              כל ההערות והנעצים{unacked ? ` · ${unacked} פתוחות` : ""}
+            </div>
+            <ClientCommentHistory items={items} />
+          </div>
         )}
 
         {error && <div className="text-[11px] text-[var(--peak)] mb-2">{error}</div>}
@@ -158,7 +184,7 @@ export default function ClientNotesModal({
         {/* flex-wrap: four controls do not fit one line on a phone, and a
             footer that overflows hides the one button that matters */}
         <div className="flex flex-wrap items-center gap-2 mt-4">
-          {round && !acked && (
+          {(round || unacked > 0) && !acked && (
             <button
               onClick={ack}
               disabled={acking}
@@ -175,7 +201,7 @@ export default function ClientNotesModal({
               print dialog on arrival — that dialog is where the PDF comes from,
               so there is no PDF dependency behind this button. Nothing to print
               without a round, so both are gated on it. */}
-          {round && (
+          {(round || hasComments) && (
             <>
               <button
                 onClick={() =>

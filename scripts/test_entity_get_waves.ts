@@ -117,7 +117,15 @@ async function both(type: EntityType, id: string, profile: Profile, opts: { hang
   const legacy = await legacyEntityGet({ ...common, supabase: w1.client as never, admin: w1.client as never });
   const waves = await entityGet({ ...common, supabase: w2.client as never, admin: w2.client as never });
   console.warn = quiet;
-  return { legacy, waves };
+  // E13-8c added commentHistory after the legacy snapshot was frozen: compared
+  // separately (section 5), so the old-vs-new equality still covers the rest
+  const json = (waves as { json?: Record<string, unknown> }).json;
+  const commentHistory = json ? json.commentHistory : undefined;
+  if (json) delete json.commentHistory;
+  // …and E13-4 added reviewItems[].versions after it, too (this suite had
+  // failed on those four cases since E13-4; found 17.10)
+  if (json && Array.isArray(json.reviewItems)) json.reviewItems = (json.reviewItems as Record<string, unknown>[]).map(({ versions: _v, ...rest }) => rest);
+  return { legacy, waves, commentHistory };
 }
 
 async function main() {
@@ -172,6 +180,14 @@ async function main() {
     check("bookkeeper: stages / review items / review links never queried", ["stages", "client_review_items", "client_review_links"].filter((t) => t2.has(t)), []);
   }
 
+  section("4a. E13-8c: the comment history rides along for a production, never for a non-stage viewer");
+  {
+    const o = await both("production", "p-plain", OWNER);
+    check("owner: commentHistory is an array (the items, with their comments)", Array.isArray(o.commentHistory), true);
+    const bk = await both("production", "p-plain", BOOKKEEPER);
+    check("bookkeeper (no stages): commentHistory is null", bk.commentHistory, null);
+  }
+
   section("4. T35 timing: the step names are kept, plus wave_1 / wave_2");
   {
     const w = world();
@@ -180,7 +196,7 @@ async function main() {
     await entityGet({ type: "production", id: "p-plain", user: { id: "u-owner" }, profile: OWNER, supabase: w.client as never, admin: w.client as never, origin: "x", perf });
     perf.done();
     const names = (JSON.parse(lines[0]).steps as { name: string }[]).map((s) => s.name);
-    const want = ["entity", "options_clients_shows", "wave_1", "stages_reels", "hours", "review_items", "review_links_transcripts", "log_disk_authors", "linked_jobs", "contract_quota", "other_types", "history", "wave_2"];
+    const want = ["entity", "options_clients_shows", "wave_1", "stages_reels", "hours", "review_items", "review_comments", "review_links_transcripts", "log_disk_authors", "linked_jobs", "contract_quota", "other_types", "history", "wave_2"];
     check("every step name is present", want.filter((n) => !names.includes(n)), []);
     check("wave_1 comes before every wave_2 block, and wave_2 closes it", [names.indexOf("wave_1") < names.indexOf("history"), names[names.length - 1]], [true, "wave_2"]);
   }

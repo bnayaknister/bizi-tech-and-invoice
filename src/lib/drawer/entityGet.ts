@@ -10,6 +10,8 @@ import { PERF_OFF, type PerfTimer } from "@/lib/perf/timing";
 import type { Profile } from "@/lib/profile";
 import { publicVersion, type PublicVersion } from "@/lib/review/versions";
 import { toVersionRow, VERSION_SELECT } from "@/lib/review/versionStore";
+import { loadCommentHistory, type HistoryItem } from "@/lib/review/commentHistory";
+import type { Database } from "@/lib/supabase/database.types";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET /api/entity/[type]/[id] — everything after authentication. T34.
@@ -210,6 +212,18 @@ export async function entityGet(deps: EntityGetDeps): Promise<{ status: number; 
     }));
   };
 
+  // E13-8c (owner 17.10) — the client's comments, permanently: every item,
+  // version and round, acked or not (lib/review/commentHistory). A failed read
+  // leaves the section out and never fails the drawer (rule 38).
+  const commentHistory = async (): Promise<HistoryItem[] | null> => {
+    if (!seesStages || type !== "production") return null;
+    try {
+      return await loadCommentHistory(admin as unknown as SupabaseClient<Database>, id);
+    } catch {
+      return null;
+    }
+  };
+
   // LIVE review links (Q7), with T36's ceiling per read
   const liveLinks = async () => {
     if (!seesStages) return { links: null, incomplete: false };
@@ -347,10 +361,11 @@ export async function entityGet(deps: EntityGetDeps): Promise<{ status: number; 
     }));
   };
 
-  const [sr, hourly, items, live, ld, prodLinked, quotaOver, other, hist] = await Promise.all([
+  const [sr, hourly, items, comments, live, ld, prodLinked, quotaOver, other, hist] = await Promise.all([
     perf.time("stages_reels", stagesReels()),
     perf.time("hours", hours()),
     perf.time("review_items", reviewItems()),
+    perf.time("review_comments", commentHistory()),
     perf.time("review_links_transcripts", liveLinks()),
     perf.time("log_disk_authors", logAndDisks()),
     perf.time("linked_jobs", linkedJobs()),
@@ -389,6 +404,7 @@ export async function entityGet(deps: EntityGetDeps): Promise<{ status: number; 
       quotaOver,
       review: sr.review,
       reviewItems: items,
+      commentHistory: comments,
       reviewLinks: live.links,
       reviewLinksIncomplete: live.incomplete,
       reelsSummary: sr.reelsSummary,
