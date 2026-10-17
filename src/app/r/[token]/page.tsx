@@ -2,6 +2,7 @@ import { cache } from "react";
 import type { Metadata } from "next";
 import { createAdminClient, createTypedAdminClient } from "@/lib/supabase/admin";
 import { loadClientVersions, type ClientVersion } from "@/lib/review/clientVersions";
+import { loadClientComments, type ClientComment } from "@/lib/review/itemComments";
 import { resolveLink } from "@/lib/review/links";
 import { displayDate } from "@/lib/dates";
 import ReviewClient from "./ReviewClient";
@@ -125,6 +126,23 @@ export default async function ReviewPage({ params }: { params: { token: string }
     console.warn(JSON.stringify({ tag: "review_page_versions_failed", link_id: state.link.id, error: e instanceof Error ? e.message : String(e) }));
   }
 
+  // E13-8b: the client's comments, re-approvable items, each item's current
+  // version. Same rule 38: a failure leaves the page as E13-7 left it — no
+  // comment box (it would have no version to name), no re-approve.
+  let commentsByItem: Record<string, ClientComment[]> = {};
+  let reapprovable: Record<string, boolean> = {};
+  let currentVersion: Record<string, string | null> = {};
+  let commentsReady = false;
+  try {
+    const c = await loadClientComments(createTypedAdminClient(), state.items, state.link.id);
+    commentsByItem = c.comments;
+    reapprovable = c.reapprovable;
+    currentVersion = c.currentVersion;
+    commentsReady = true;
+  } catch (e) {
+    console.warn(JSON.stringify({ tag: "review_page_comments_failed", link_id: state.link.id, error: e instanceof Error ? e.message : String(e) }));
+  }
+
   const p = state.production;
   const episodeLabel =
     p.split_count && p.split_count > 1 ? `פרק ${p.split_index} מתוך ${p.split_count}` : "הפרק המלא";
@@ -148,6 +166,9 @@ export default async function ReviewPage({ params }: { params: { token: string }
         audioLink={state.link.audio_link}
         versionsByItem={versionsByItem}
         respondedAt={state.mode === "post_response" ? state.link.responded_at : null}
+        comments={commentsByItem}
+        reapprovable={reapprovable}
+        currentVersion={commentsReady ? currentVersion : undefined}
       />
     </Shell>
   );

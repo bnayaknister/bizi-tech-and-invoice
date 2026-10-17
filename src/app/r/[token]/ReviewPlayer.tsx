@@ -22,6 +22,32 @@ export type ClientVersionView =
   | { id: string; number: number; kind: "drive"; mediaLink: string }
   | { id: string; number: number; kind: "archived"; isAudio: boolean; fileName: string | null };
 
+// E13-8b: what the item's comment box needs from the player — the time to pin
+// at (exact ms, owner 17.10: E13-11 exports it), a pause while the client
+// types, and a seek from the pins list.
+export type PlayerApi = { currentMs: () => number; pause: () => void; seek: (ms: number) => void };
+
+// mirrors ClientComment from lib/review/itemComments (redeclared — client component)
+export type ClientCommentView = {
+  id: string;
+  version_id: string | null;
+  kind: "pin" | "general";
+  pin_number: number | null;
+  time_ms: number | null;
+  body: string;
+  created_at: string;
+};
+
+/** "00:42", "1:02:03" — mirrors formatPinTime in lib/review/itemComments. */
+export function formatPinTime(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = total % 60;
+  const two = (n: number) => String(n).padStart(2, "0");
+  return h ? `${h}:${two(m)}:${two(sec)}` : `${two(m)}:${two(sec)}`;
+}
+
 const chip = (active: boolean): React.CSSProperties => ({
   padding: "5px 12px",
   borderRadius: 999,
@@ -46,10 +72,35 @@ const primaryButton: React.CSSProperties = {
   textDecoration: "none",
 };
 
-function HlsMedia({ token, version }: { token: string; version: Extract<ClientVersionView, { kind: "bunny" }> }) {
+function HlsMedia({
+  token,
+  version,
+  onApi,
+}: {
+  token: string;
+  version: Extract<ClientVersionView, { kind: "bunny" }>;
+  onApi?: (api: PlayerApi | null) => void;
+}) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [failed, setFailed] = useState(false);
+  // a ref, not an effect dependency: a new callback each render must never
+  // re-run the loading effect below (that would reload the media)
+  const onApiRef = useRef(onApi);
+  onApiRef.current = onApi;
+
+  useEffect(() => {
+    const el: HTMLMediaElement | null = version.isAudio ? audioRef.current : videoRef.current;
+    if (!el) return;
+    onApiRef.current?.({
+      currentMs: () => Math.round(el.currentTime * 1000),
+      pause: () => el.pause(),
+      seek: (ms: number) => {
+        el.currentTime = ms / 1000;
+      },
+    });
+    return () => onApiRef.current?.(null);
+  }, [version.id, version.isAudio]);
 
   useEffect(() => {
     const el: HTMLMediaElement | null = version.isAudio ? audioRef.current : videoRef.current;
@@ -147,12 +198,56 @@ function DownloadButton({ token, versionId, fileName, tall }: { token: string; v
   );
 }
 
+// E13-8b: the client's comments on the version on screen — pins by time (a
+// tap seeks there), then the general ones. A list, not marks on the bar: the
+// native controls (iOS above all) cannot carry marks.
+function CommentsList({ comments, onSeek }: { comments: ClientCommentView[]; onSeek: ((ms: number) => void) | null }) {
+  if (!comments.length) return null;
+  const pins = comments.filter((c) => c.kind === "pin" && c.time_ms !== null).sort((a, b) => (a.time_ms ?? 0) - (b.time_ms ?? 0));
+  const general = comments.filter((c) => c.kind === "general");
+  const row: React.CSSProperties = {
+    display: "flex",
+    gap: 8,
+    alignItems: "baseline",
+    width: "100%",
+    textAlign: "right",
+    padding: "7px 10px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "rgba(255,255,255,0.03)",
+    color: "#ece9f5",
+    fontSize: 13,
+    marginBottom: 6,
+  };
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ fontSize: 12, color: "#9a94b8", marginBottom: 6 }}>ההערות שלכם על הגרסה הזו</div>
+      {pins.map((c) => (
+        <button key={c.id} type="button" onClick={() => onSeek?.(c.time_ms ?? 0)} style={{ ...row, cursor: onSeek ? "pointer" : "default" }}>
+          <span style={{ color: "#c4b5fd", fontWeight: 700, whiteSpace: "nowrap" }}>
+            📍{c.pin_number ?? ""} · <span dir="ltr">{formatPinTime(c.time_ms ?? 0)}</span>
+          </span>
+          <span dir="auto" style={{ flex: 1, whiteSpace: "pre-wrap" }}>{c.body}</span>
+        </button>
+      ))}
+      {general.map((c) => (
+        <div key={c.id} style={row}>
+          <span style={{ color: "#9a94b8", whiteSpace: "nowrap" }}>כללית</span>
+          <span dir="auto" style={{ flex: 1, whiteSpace: "pre-wrap" }}>{c.body}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function ReviewPlayer({
   token,
   versions,
   selectedId,
   onSelect,
   renderDrive,
+  comments = [],
+  onApi,
 }: {
   token: string;
   versions: ClientVersionView[];
@@ -160,7 +255,12 @@ export default function ReviewPlayer({
   onSelect: (id: string) => void;
   /** today's Drive rendering (iframe + "open in Drive"), passed in by ReviewClient */
   renderDrive: (link: string) => React.ReactNode;
+  /** E13-8b: the client's comments on this item, all versions; the list shows the selected one's */
+  comments?: ClientCommentView[];
+  /** E13-8b: the player's time / pause / seek, for the comment box; null when no Bunny player is on screen */
+  onApi?: (api: PlayerApi | null) => void;
 }) {
+  const apiRef = useRef<PlayerApi | null>(null);
   if (!versions.length) return null;
   const latest = versions[versions.length - 1];
   const selected = versions.find((v) => v.id === selectedId) ?? latest;
@@ -183,15 +283,34 @@ export default function ReviewPlayer({
 
       {selected.kind === "bunny" && (
         <>
-          <HlsMedia key={selected.id} token={token} version={selected} />
+          <HlsMedia
+            key={selected.id}
+            token={token}
+            version={selected}
+            onApi={(api) => {
+              apiRef.current = api;
+              onApi?.(api);
+            }}
+          />
+          <CommentsList comments={comments.filter((c) => c.version_id === selected.id)} onSeek={(ms) => apiRef.current?.seek(ms)} />
           {selected.downloadable && <DownloadButton token={token} versionId={selected.id} fileName={selected.fileName} />}
         </>
       )}
 
-      {selected.kind === "drive" && renderDrive(selected.mediaLink)}
+      {selected.kind === "drive" && (
+        <>
+          {renderDrive(selected.mediaLink)}
+          <CommentsList comments={comments.filter((c) => c.version_id === selected.id)} onSeek={null} />
+        </>
+      )}
 
       {/* E13-10: media deleted at Bunny — no player, the same Drive download */}
-      {selected.kind === "archived" && <DownloadButton token={token} versionId={selected.id} fileName={selected.fileName} tall />}
+      {selected.kind === "archived" && (
+        <>
+          <CommentsList comments={comments.filter((c) => c.version_id === selected.id)} onSeek={null} />
+          <DownloadButton token={token} versionId={selected.id} fileName={selected.fileName} tall />
+        </>
+      )}
     </div>
   );
 }

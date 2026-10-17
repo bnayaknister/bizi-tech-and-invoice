@@ -808,54 +808,64 @@ export async function applyResponse(
 
   // full approval → deal invoice into the queue (same as the manual path).
   // The add-ons were already resolved above, before the status flip.
-  if (approvedAll) {
-    const { data: prod } = await admin
-      .from("productions")
-      // `guest` feeds the printed line (buildLineItemText) — omitting the
-      // column would quietly bill a guest session as a guestless one
-      // 0067: `status` and `studio_hours` decide an hourly show's amount, and
-      // an omitted status reads as "recorded with no hours" — a 🟡 raised by a
-      // missing column rather than by a missing number
-      .select("id,kind,legacy,client_id,show_id,podcast_name,record_date,guest,price_override,status,studio_hours")
-      .eq("id", production.id)
-      .maybeSingle();
-    const { data: link2 } = await admin
-      .from("job_productions")
-      .select("job_id")
-      .eq("production_id", production.id)
-      .limit(1)
-      .maybeSingle();
-    if (prod) {
-      // Cadence brake (owner spec 2026-07-28): monthly / every_n clients wait
-      // for redemption — the deal invoice is not enqueued here. per_episode
-      // enqueues immediately, same as the manual board path. The DB trigger
-      // has already created the internal job either way.
-      // The client's approval is already recorded — a failed enqueue (or a
-      // failed cadence read, which throws) must not read as a failed approval
-      // on the public page. Leave a trace instead of throwing.
-      try {
-        const cadence = await getClientCadence(admin, prod.client_id);
-        if (cadence === "per_episode") {
-          const res = await enqueueDocument(admin, "deal_invoice", prod as ProductionForBilling, { jobId: link2?.job_id ?? null });
-          if (res.status === "error" || res.status === "blocked") {
-            await admin.from("events").insert({
-              entity_type: "production",
-              entity_id: production.id,
-              event_type: "deal_invoice_enqueue_failed",
-              payload: { status: res.status, detail: res.status === "error" ? res.error : res.reason },
-            });
-          }
-        }
-      } catch (e) {
-        await admin.from("events").insert({
-          entity_type: "production",
-          entity_id: production.id,
-          event_type: "deal_invoice_enqueue_failed",
-          payload: { status: "error", detail: e instanceof Error ? e.message : String(e) },
-        });
-      }
-    }
-  }
+  if (approvedAll) await enqueueDealInvoiceAfterApproval(admin, production.id);
 
   return { approvedAll };
+}
+
+/**
+ * After a client approval flipped the production to אושר_ע"י_לקוח: the deal
+ * invoice for a per_episode client. Shared by applyResponse and the E13-8
+ * re-approval (POST /api/r/[token]/items/[itemId]) so both take exactly one
+ * path. A second approval is not a second invoice: enqueueDocument runs
+ * findBilledEvidence and skips (deal_invoice_skipped_already_billed).
+ * Never throws — the approval is already recorded; a failure leaves an event.
+ */
+export async function enqueueDealInvoiceAfterApproval(admin: SupabaseClient, productionId: string): Promise<void> {
+  const { data: prod } = await admin
+    .from("productions")
+    // `guest` feeds the printed line (buildLineItemText) — omitting the
+    // column would quietly bill a guest session as a guestless one
+    // 0067: `status` and `studio_hours` decide an hourly show's amount, and
+    // an omitted status reads as "recorded with no hours" — a 🟡 raised by a
+    // missing column rather than by a missing number
+    .select("id,kind,legacy,client_id,show_id,podcast_name,record_date,guest,price_override,status,studio_hours")
+    .eq("id", productionId)
+    .maybeSingle();
+  const { data: link2 } = await admin
+    .from("job_productions")
+    .select("job_id")
+    .eq("production_id", productionId)
+    .limit(1)
+    .maybeSingle();
+  if (prod) {
+    // Cadence brake (owner spec 2026-07-28): monthly / every_n clients wait
+    // for redemption — the deal invoice is not enqueued here. per_episode
+    // enqueues immediately, same as the manual board path. The DB trigger
+    // has already created the internal job either way.
+    // The client's approval is already recorded — a failed enqueue (or a
+    // failed cadence read, which throws) must not read as a failed approval
+    // on the public page. Leave a trace instead of throwing.
+    try {
+      const cadence = await getClientCadence(admin, prod.client_id);
+      if (cadence === "per_episode") {
+        const res = await enqueueDocument(admin, "deal_invoice", prod as ProductionForBilling, { jobId: link2?.job_id ?? null });
+        if (res.status === "error" || res.status === "blocked") {
+          await admin.from("events").insert({
+            entity_type: "production",
+            entity_id: productionId,
+            event_type: "deal_invoice_enqueue_failed",
+            payload: { status: res.status, detail: res.status === "error" ? res.error : res.reason },
+          });
+        }
+      }
+    } catch (e) {
+      await admin.from("events").insert({
+        entity_type: "production",
+        entity_id: productionId,
+        event_type: "deal_invoice_enqueue_failed",
+        payload: { status: "error", detail: e instanceof Error ? e.message : String(e) },
+      });
+    }
+  }
 }

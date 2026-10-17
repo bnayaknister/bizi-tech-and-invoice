@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { classifyDriveLink } from "@/lib/review/drive";
 import { displayDate, displayStampDate } from "@/lib/dates";
-import ReviewPlayer, { type ClientVersionView } from "./ReviewPlayer";
+import ReviewPlayer, { formatPinTime, type ClientCommentView, type ClientVersionView, type PlayerApi } from "./ReviewPlayer";
 
 // The client-facing review UI. Mobile-first — it opens from WhatsApp. Two
 // blocks (episode / reels), each independently approved or sent back with a
@@ -293,6 +293,7 @@ const Block = ({
   notePlaceholder,
   media,
   respondHint,
+  extra,
 }: {
   emoji: string;
   title: string;
@@ -308,6 +309,8 @@ const Block = ({
   media?: React.ReactNode;
   /** E13-6: an older version is selected — no response controls, this line instead (owner 16.10, §4b (2)) */
   respondHint?: string | null;
+  /** E13-8b: the comment box / re-approve, under everything else */
+  extra?: React.ReactNode;
 }) => (
   <div style={card}>
     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
@@ -375,8 +378,118 @@ const Block = ({
         )}
       </>
     )}
+    {extra}
   </div>
 );
+
+// E13-8b — the comment box under an item (plan §9.2 E13-8 (e); owner 17.10).
+// MODULE LEVEL like Block: declared inside ReviewClient it would be a new
+// component type on every render, and the textarea would lose focus per key.
+//   · post_response: opened by "יש לי עוד הערה" — a pin at the player's time
+//     when the current version is a Bunny one, else a general comment.
+//   · live link (decision 1): a pin only, opened by "📍 הערה בנקודת זמן".
+function CommentBox({
+  pinMs,
+  pinOn,
+  setPinOn,
+  pinOnly,
+  noPinReason,
+  text,
+  setText,
+  busy,
+  error,
+  onSend,
+  onCancel,
+}: {
+  pinMs: number | null;
+  pinOn: boolean;
+  setPinOn: (v: boolean) => void;
+  pinOnly: boolean;
+  noPinReason: string | null;
+  text: string;
+  setText: (s: string) => void;
+  busy: boolean;
+  error: string | null;
+  onSend: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div style={{ marginTop: 10, padding: 10, borderRadius: 12, border: "1px solid rgba(167,139,250,0.35)", background: "rgba(167,139,250,0.06)" }}>
+      {pinMs !== null && !pinOnly && (
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 8, cursor: "pointer" }}>
+          <input type="checkbox" checked={pinOn} onChange={(e) => setPinOn(e.target.checked)} />
+          <span>
+            📍 הערה בנקודה <span dir="ltr">{formatPinTime(pinMs)}</span>
+          </span>
+        </label>
+      )}
+      {pinMs !== null && pinOnly && (
+        <div style={{ fontSize: 13, marginBottom: 8 }}>
+          📍 הערה בנקודה <span dir="ltr">{formatPinTime(pinMs)}</span>
+        </div>
+      )}
+      {pinMs === null && noPinReason && <div style={{ fontSize: 12, color: "#9a94b8", marginBottom: 8 }}>{noPinReason}</div>}
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="מה תרצו להעיר?"
+        rows={3}
+        maxLength={2000}
+        style={{
+          width: "100%",
+          background: "rgba(0,0,0,0.25)",
+          border: "1px solid rgba(255,255,255,0.14)",
+          borderRadius: 12,
+          padding: 10,
+          color: "#ece9f5",
+          fontSize: 14,
+          fontFamily: "inherit",
+          resize: "vertical",
+          boxSizing: "border-box",
+        }}
+      />
+      {error && <div style={{ color: "#fb7185", fontSize: 12, marginTop: 6 }}>{error}</div>}
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <button
+          type="button"
+          onClick={onSend}
+          disabled={busy || !text.trim()}
+          style={{
+            flex: 1,
+            padding: "10px",
+            borderRadius: 12,
+            fontSize: 14,
+            fontWeight: 700,
+            border: "none",
+            background: "linear-gradient(135deg, #8b5cf6, #6d28d9)",
+            color: "white",
+            opacity: busy || !text.trim() ? 0.5 : 1,
+          }}
+        >
+          {busy ? "שולח…" : "שליחה"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={busy}
+          style={{ padding: "10px 16px", borderRadius: 12, fontSize: 14, border: "1px solid rgba(255,255,255,0.14)", background: "transparent", color: "#ece9f5" }}
+        >
+          ביטול
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const linkButton: React.CSSProperties = {
+  background: "none",
+  border: "none",
+  padding: "4px 0",
+  color: "#c4b5fd",
+  fontSize: 13,
+  textDecoration: "underline",
+  cursor: "pointer",
+};
 
 export default function ReviewClient({
   token,
@@ -395,6 +508,9 @@ export default function ReviewClient({
   audioLink = null,
   versionsByItem = {},
   respondedAt = null,
+  comments = {},
+  reapprovable = {},
+  currentVersion: currentVersionProp,
 }: {
   token: string;
   showName: string;
@@ -422,8 +538,95 @@ export default function ReviewClient({
   // approve / revisions buttons, no add-on choices, no submit — responding on
   // the latest version opens in E13-8, in a route of its own.
   respondedAt?: string | null;
+  // E13-8b: the client's own comments per item, which items may be approved
+  // again from this link, and each item's current version id (what a comment
+  // is about — a Drive row when nothing reached Bunny). All optional: absent =
+  // the page as E13-7 left it.
+  comments?: Record<string, ClientCommentView[]>;
+  reapprovable?: Record<string, boolean>;
+  currentVersion?: Record<string, string | null>;
 }) {
   const viewOnly = !!respondedAt;
+  // ── E13-8b: comment box state, per item ──
+  // no currentVersion from the server (its read failed, rule 38) → no box at
+  // all: a comment would have no version to name, and the route would refuse it
+  const commentsEnabled = currentVersionProp !== undefined;
+  const currentVersion = currentVersionProp ?? {};
+  const playerApis = useRef<Record<string, PlayerApi | null>>({});
+  const [addedComments, setAddedComments] = useState<Record<string, ClientCommentView[]>>({});
+  const [approvedNow, setApprovedNow] = useState<Record<string, boolean>>({});
+  const [reapproveNow, setReapproveNow] = useState<Record<string, boolean>>({});
+  const [boxOpen, setBoxOpen] = useState<Record<string, boolean>>({});
+  const [boxText, setBoxText] = useState<Record<string, string>>({});
+  const [boxPinMs, setBoxPinMs] = useState<Record<string, number | null>>({});
+  const [boxPinOn, setBoxPinOn] = useState<Record<string, boolean>>({});
+  const [boxBusy, setBoxBusy] = useState<string | null>(null);
+  const [boxError, setBoxError] = useState<Record<string, string | null>>({});
+  const [boxSent, setBoxSent] = useState<Record<string, string | null>>({});
+
+  const openBox = (itemId: string, canPin: boolean) => {
+    const api = canPin ? playerApis.current[itemId] : null;
+    if (api) api.pause(); // the time must not run on while the client types
+    setBoxPinMs((p) => ({ ...p, [itemId]: api ? api.currentMs() : null }));
+    setBoxPinOn((p) => ({ ...p, [itemId]: !!api }));
+    setBoxError((p) => ({ ...p, [itemId]: null }));
+    setBoxSent((p) => ({ ...p, [itemId]: null }));
+    setBoxOpen((p) => ({ ...p, [itemId]: true }));
+  };
+
+  async function postItem(itemId: string, payload: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+    setBoxBusy(itemId);
+    setBoxError((p) => ({ ...p, [itemId]: null }));
+    try {
+      const res = await fetch(`/api/r/${encodeURIComponent(token)}/items/${encodeURIComponent(itemId)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!res.ok) {
+        setBoxError((p) => ({ ...p, [itemId]: typeof body.error === "string" ? body.error : "השמירה נכשלה" }));
+        return null;
+      }
+      return body;
+    } catch {
+      setBoxError((p) => ({ ...p, [itemId]: "שגיאת רשת" }));
+      return null;
+    } finally {
+      setBoxBusy(null);
+    }
+  }
+
+  async function sendComment(itemId: string) {
+    const text = (boxText[itemId] ?? "").trim();
+    if (!text) return;
+    const pinMs = boxPinMs[itemId];
+    const asPin = boxPinOn[itemId] && pinMs !== null && pinMs !== undefined;
+    const body = await postItem(
+      itemId,
+      asPin
+        ? { action: "pin", version_id: currentVersion[itemId], time_ms: pinMs, body: text }
+        : { action: "comment", version_id: currentVersion[itemId] ?? null, body: text }
+    );
+    if (!body) return;
+    const c = body.comment as ClientCommentView | undefined;
+    if (c) setAddedComments((p) => ({ ...p, [itemId]: [...(p[itemId] ?? []), c] }));
+    if (body.revoked) {
+      setApprovedNow((p) => ({ ...p, [itemId]: false }));
+      setReapproveNow((p) => ({ ...p, [itemId]: true }));
+    }
+    setBoxText((p) => ({ ...p, [itemId]: "" }));
+    setBoxOpen((p) => ({ ...p, [itemId]: false }));
+    setBoxSent((p) => ({ ...p, [itemId]: "ההערה הועברה לצוות" }));
+  }
+
+  async function reapprove(itemId: string) {
+    const body = await postItem(itemId, { action: "approve", version_id: currentVersion[itemId] });
+    if (!body) return;
+    setApprovedNow((p) => ({ ...p, [itemId]: true }));
+    setReapproveNow((p) => ({ ...p, [itemId]: false }));
+    setBoxSent((p) => ({ ...p, [itemId]: "אושר שוב, תודה" }));
+  }
   const [epChoice, setEpChoice] = useState<Choice>(null);
   // E13-6: which version each item shows; absent = the current (latest) one
   const [selectedVersion, setSelectedVersion] = useState<Record<string, string>>({});
@@ -614,12 +817,88 @@ export default function ReviewClient({
           const versions = versionsByItem[it.id];
           const latestId = versions?.length ? versions[versions.length - 1].id : null;
           const selectedId = selectedVersion[it.id] ?? latestId;
+          // ── E13-8b ──
+          const approved = approvedNow[it.id] ?? it.approved;
+          const onLatest = !latestId || selectedId === latestId;
+          const latest = versions?.length ? versions[versions.length - 1] : null;
+          const canPin = !!latest && latest.kind === "bunny" && onLatest;
+          const itemComments = [...(comments[it.id] ?? []), ...(addedComments[it.id] ?? [])];
+          const mayReapprove = commentsEnabled && viewOnly && !approved && (reapproveNow[it.id] ?? !!reapprovable[it.id]) && onLatest && !!currentVersion[it.id];
+          const revokedHere = approvedNow[it.id] === false && it.approved;
+          const box = boxOpen[it.id] ? (
+            <CommentBox
+              pinMs={boxPinMs[it.id] ?? null}
+              pinOn={!!boxPinOn[it.id]}
+              setPinOn={(v) => setBoxPinOn((p) => ({ ...p, [it.id]: v }))}
+              pinOnly={!viewOnly}
+              noPinReason={viewOnly && !canPin ? "בגרסה הזו אין הערה בנקודת זמן" : null}
+              text={boxText[it.id] ?? ""}
+              setText={(t) => setBoxText((p) => ({ ...p, [it.id]: t }))}
+              busy={boxBusy === it.id}
+              error={boxError[it.id] ?? null}
+              onSend={() => void sendComment(it.id)}
+              onCancel={() => setBoxOpen((p) => ({ ...p, [it.id]: false }))}
+            />
+          ) : null;
+          const extra = (
+            <>
+              {revokedHere && <div style={{ fontSize: 13, color: "#fbbf24", textAlign: "center", marginTop: 8 }}>ממתין · ההערה הועברה לצוות</div>}
+              {!revokedHere && boxSent[it.id] && <div style={{ fontSize: 13, color: "#4ade80", textAlign: "center", marginTop: 8 }}>{boxSent[it.id]}</div>}
+              {viewOnly && !onLatest && <div style={{ fontSize: 13, color: "#9a94b8", textAlign: "center", padding: "6px 0" }}>אפשר להגיב רק על הגרסה הנוכחית</div>}
+              {box}
+              {commentsEnabled && !boxOpen[it.id] && viewOnly && onLatest && (
+                <div style={{ textAlign: "center", marginTop: 6 }}>
+                  <button type="button" style={linkButton} onClick={() => openBox(it.id, canPin)}>
+                    יש לי עוד הערה
+                  </button>
+                </div>
+              )}
+              {commentsEnabled && !boxOpen[it.id] && !viewOnly && !approved && canPin && (
+                <div style={{ textAlign: "center", marginTop: 8 }}>
+                  <button
+                    type="button"
+                    style={linkButton}
+                    onClick={() =>
+                      // a live link takes pins only (decision 1): no player yet → no box, never a silent general comment
+                      playerApis.current[it.id]
+                        ? openBox(it.id, true)
+                        : setBoxError((p) => ({ ...p, [it.id]: "הנגן עוד לא נטען. נסו שוב בעוד רגע" }))
+                    }
+                  >
+                    📍 הערה בנקודת זמן
+                  </button>
+                </div>
+              )}
+              {mayReapprove && !boxOpen[it.id] && (
+                <button
+                  type="button"
+                  onClick={() => void reapprove(it.id)}
+                  disabled={boxBusy === it.id}
+                  style={{
+                    width: "100%",
+                    marginTop: 8,
+                    padding: "10px",
+                    borderRadius: 12,
+                    fontSize: 14,
+                    fontWeight: 700,
+                    border: "1px solid #4ade80",
+                    background: "rgba(74,222,128,0.12)",
+                    color: "#4ade80",
+                    opacity: boxBusy === it.id ? 0.5 : 1,
+                  }}
+                >
+                  {boxBusy === it.id ? "שולח…" : "✓ מאשר שוב"}
+                </button>
+              )}
+              {!boxOpen[it.id] && boxError[it.id] && <div style={{ color: "#fb7185", fontSize: 12, textAlign: "center", marginTop: 6 }}>{boxError[it.id]}</div>}
+            </>
+          );
           return (
           <Block
             key={it.id}
             emoji={emoji}
             title={title}
-            approved={it.approved}
+            approved={approved}
             pending={!it.approved && !viewOnly}
             link={it.media_link || fallbackLink}
             choice={itemChoice[it.id] ?? null}
@@ -635,10 +914,15 @@ export default function ReviewClient({
                   selectedId={selectedId}
                   onSelect={(id) => setSelectedVersion((prev) => ({ ...prev, [it.id]: id }))}
                   renderDrive={(l) => <MediaView link={l} />}
+                  comments={itemComments}
+                  onApi={(api) => {
+                    playerApis.current[it.id] = api;
+                  }}
                 />
               ) : undefined
             }
             respondHint={versions?.length && selectedId !== latestId ? "אפשר להגיב רק על הגרסה הנוכחית" : null}
+            extra={extra}
           />
           );
         };
