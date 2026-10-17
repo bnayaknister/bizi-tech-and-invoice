@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { font-family: sans-serif; font-size: 13px; padding: 12px; color: #e6e6e6; direction: rtl; }
+      h1 { font-size: 14px; margin: 0 0 6px; }
+      p { margin: 0 0 10px; color: #b5b5b5; line-height: 1.5; }
+      button { width: 100%; padding: 8px; font-size: 13px; font-weight: bold; border-radius: 6px; border: 1px solid #7c5cff; background: #3b2a8a; color: #fff; }
+      button:disabled { opacity: 0.5; }
+      #status { margin-top: 10px; white-space: pre-wrap; line-height: 1.5; }
+      #status.ok { color: #4ade80; }
+      #status.warn { color: #fbbf24; }
+      #status.err { color: #fb7185; }
+      ol { margin: 0 0 10px; padding-inline-start: 18px; color: #b5b5b5; }
+    </style>
+  </head>
+  <body>
+    <h1>Bizi · מרקרים</h1>
+    <ol>
+      <li>ב-Bizi, בדרואר: "⬇ מרקרים ל-Premiere".</li>
+      <li>פתחו את הרצף בטיימליין.</li>
+      <li>לחצו כאן ובחרו את הקובץ.</li>
+    </ol>
+    <button id="pick" type="button">בחר קובץ…</button>
+    <div id="status"></div>
+    <script src="index.js"></script>
+  </body>
+</html>

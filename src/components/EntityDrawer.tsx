@@ -32,6 +32,7 @@ import EntityFieldRows, { type FieldMeta } from "@/components/EntityFieldRows";
 import ClientNotesModal from "./ClientNotesModal";
 import ReviewVersionsPanel, { type PanelVersion } from "@/components/ReviewVersionsPanel";
 import ClientCommentHistory, { type HistoryItemView } from "@/components/ClientCommentHistory";
+import MarkerExportControls from "@/components/MarkerExportControls";
 import { eventLabel } from "@/lib/events/labels";
 import IconTile, { type IconAccent } from "@/components/IconTile";
 import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
@@ -2126,7 +2127,15 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                               {data.commentHistory.reduce((n, i) => n + i.comments.filter((c) => c.open).length, 0)} פתוחות
                             </span>
                           </div>
-                          <ClientCommentHistory items={data.commentHistory} />
+                          <ClientCommentHistory
+                            items={data.commentHistory}
+                            // E13-11: the Premiere markers export, per item (team with stage edit only — the route checks the same)
+                            itemActions={
+                              data.canEditStages
+                                ? (it) => <MarkerExportControls productionId={ref.id} itemId={it.id} hasComments={it.comments.some((c) => c.kind === "pin" || c.kind === "general")} />
+                                : undefined
+                            }
+                          />
                         </div>
                       )}
                       {/* unified send — takes both blocks' links at once */}

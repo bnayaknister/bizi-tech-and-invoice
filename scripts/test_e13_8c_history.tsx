@@ -200,7 +200,7 @@ const iLoad = pr.indexOf("loadCommentHistory(createTypedAdminClient()");
 ok("PDF page: the history is read with the service role only AFTER the can_edit_stages check", iGate > 0 && iLoad > iGate);
 ok("PDF page: the same component as the window", /<ClientCommentHistory items=\{history\} \/>/.test(pr));
 const dr = strip(readFileSync(join(root, "src/components/EntityDrawer.tsx"), "utf8"));
-ok("drawer: the history section, from data.commentHistory", /<ClientCommentHistory items=\{data\.commentHistory\} \/>/.test(dr));
+ok("drawer: the history section, from data.commentHistory", /<ClientCommentHistory\s+items=\{data\.commentHistory\}/.test(dr));
 ok("drawer: Hebrew event names in the change history, 'אירוע מערכת' for an unknown one", /eventLabel\(h\.event_type\)/.test(dr) && dr.includes("אירוע מערכת"));
 const eg = strip(readFileSync(join(root, "src/lib/drawer/entityGet.ts"), "utf8"));
 ok("entityGet: history only with stages, only for a production, failure → null (rule 38)", /if \(!seesStages \|\| type !== "production"\) return null;/.test(eg) && /catch \{\s*return null;/.test(eg));

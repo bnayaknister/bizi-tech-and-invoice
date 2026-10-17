@@ -1,0 +1,31 @@
+{
+  "manifestVersion": 5,
+  "id": "co.bizi.premiere.markers",
+  "name": "Bizi · Markers",
+  "version": "1.0.0",
+  "main": "index.html",
+  "host": {
+    "app": "premierepro",
+    "minVersion": "25.6.0"
+  },
+  "requiredPermissions": {
+    "localFileSystem": "request"
+  },
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "biziMarkers",
+      "label": { "default": "Bizi · מרקרים" },
+      "minimumSize": { "width": 240, "height": 220 },
+      "maximumSize": { "width": 1200, "height": 1200 },
+      "preferredDockedSize": { "width": 300, "height": 320 },
+      "preferredFloatingSize": { "width": 340, "height": 360 },
+      "icons": [
+        { "width": 23, "height": 23, "path": "icons/panel.svg", "scale": [1, 2], "theme": ["all"] }
+      ]
+    }
+  ],
+  "icons": [
+    { "width": 48, "height": 48, "path": "icons/plugin.svg", "scale": [1, 2], "theme": ["all"], "species": ["pluginList"] }
+  ]
+}

@@ -46,7 +46,16 @@ const STATE_TONE: Record<CommentState, { bg: string; fg: string }> = {
   history: { bg: "rgba(148,163,184,0.12)", fg: "#94a3b8" },
 };
 
-export default function ClientCommentHistory({ items, emptyText = "אין הערות מהלקוח." }: { items: HistoryItemView[]; emptyText?: string }) {
+export default function ClientCommentHistory({
+  items,
+  emptyText = "אין הערות מהלקוח.",
+  itemActions,
+}: {
+  items: HistoryItemView[];
+  emptyText?: string;
+  /** E13-11: per item, under its header — the drawer's "⬇ מרקרים ל-Premiere" (never in the client's window / PDF) */
+  itemActions?: (item: HistoryItemView) => React.ReactNode;
+}) {
   const withComments = items.filter((i) => i.comments.length);
   if (!withComments.length) return <div style={{ fontSize: 13, opacity: 0.7 }}>{emptyText}</div>;
   return (
@@ -61,6 +70,7 @@ export default function ClientCommentHistory({ items, emptyText = "אין הער
                 {it.comments.length} הערות{open ? ` · ${open} פתוחות` : ""} · {it.approved ? "מאושר ✓" : "ממתין"}
               </span>
             </div>
+            {itemActions?.(it)}
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {it.comments.map((c) => {
                 const tone = STATE_TONE[c.state];
