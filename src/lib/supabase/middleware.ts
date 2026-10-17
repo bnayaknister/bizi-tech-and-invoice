@@ -77,6 +77,9 @@ export async function updateSession(request: NextRequest) {
       // in the middle of that reads as the route being broken. The route's own
       // gate is the HMAC signature, which is strictly stronger than this wall.
       path.startsWith("/api/wa/") ||
+      // Bunny Stream's webhook (E13-5). Same reasoning as /api/wa/: Bunny
+      // sends no cookies, and the route's own gate is the HMAC signature.
+      path.startsWith("/api/bunny/") ||
       // the public privacy policy Meta's app settings link to (E9). Anyone may
       // read it, an unapproved account included — a /pending bounce would make
       // the policy unreachable for exactly the people it describes.

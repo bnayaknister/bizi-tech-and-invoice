@@ -113,6 +113,17 @@ export interface VersionStore {
   versionProduction(versionId: string): Promise<string | null>;
   assignNumber(versionId: string): Promise<number>;
   event(type: string, productionId: string, payload: Record<string, unknown>, actorId?: string | null): Promise<void>;
+  // ── E13-5: the webhook and the crons ──
+  /** The version that already carries this Bunny guid. */
+  versionByGuid(guid: string): Promise<VersionRow | null>;
+  /** Bunny versions that still need polling (isFinal false, media not deleted), oldest fetch first, with their production. */
+  pendingVersions(limit: number): Promise<{ row: VersionRow; productionId: string }[]>;
+  /** Which of these guids some version already carries. */
+  knownGuids(guids: string[]): Promise<Set<string>>;
+  /** An event of this type whose payload[key] = value already exists — so a recurring finding is written once. */
+  eventExists(type: string, key: string, value: string): Promise<boolean>;
+  /** An event that belongs to no production (an orphan video): entity 'system', the zero uuid. */
+  systemEvent(type: string, payload: Record<string, unknown>): Promise<void>;
 }
 
 export type Deps = {
@@ -158,7 +169,7 @@ export function isFinal(v: Pick<VersionRow, "source" | "bunny_status" | "integri
  * match only (the API's search is a substring). Two with the same title: the
  * earliest is the one, and the event says so (§5.3) — the other is never linked.
  */
-async function videoByTitle(
+export async function videoByTitle(
   title: string,
   productionId: string,
   versionId: string,
@@ -449,29 +460,75 @@ export async function refreshVersion(productionId: string, versionId: string, de
   const { store } = deps;
   const owner = await store.versionProduction(versionId);
   if (!owner || owner !== productionId) return err(404, "הגרסה לא נמצאה בהפקה הזו");
-  let row = await store.getVersion(versionId);
+  const row = await store.getVersion(versionId);
   if (!row) return err(404, "הגרסה לא נמצאה");
-  if (isFinal(row)) return { status: 200, body: { version: publicVersion(row) } };
-
-  let outcome: ApplyOutcome = {};
+  let synced: SyncResult;
   try {
-    if (!row.bunny_video_id) {
-      const v = await videoByTitle(versionTitle(row.id), productionId, row.id, store);
-      if (v) await store.attachGuid(row.id, v.guid);
-      row = (await store.getVersion(versionId)) ?? row;
-    }
-    if (row.bunny_video_id) {
-      const video = await getVideo(row.bunny_video_id);
-      if (video) outcome = await applyVideoState(row, video, productionId, deps);
-      row = (await store.getVersion(versionId)) ?? row;
-    }
+    // the drawer's poll never marks anything failed — that is the cron's call
+    synced = await syncVersion(row, productionId, deps);
   } catch (e) {
     return err(502, `לא הצלחתי לקרוא את הסטטוס מ-Bunny: ${describeError(e)}`, { version: publicVersion(row) });
   }
-  const log = outcome.integrity
-    ? { version_id: row.id, production_id: productionId, integrity: outcome.integrity, detail: outcome.integrityDetail ?? null }
+  const log = integrityLog(synced, productionId);
+  return { status: 200, body: { version: publicVersion(synced.row) }, ...(log ? { log } : {}) };
+}
+
+/** The server-log line for an integrity check that did not end in a match, or nothing. */
+export function integrityLog(synced: SyncResult, productionId: string): Record<string, unknown> | undefined {
+  const o = synced.outcome;
+  return o.integrity
+    ? { version_id: synced.row.id, production_id: productionId, integrity: o.integrity, detail: o.integrityDetail ?? null }
     : undefined;
-  return { status: 200, body: { version: publicVersion(row) }, ...(log ? { log } : {}) };
+}
+
+// ── one sync, three callers: the drawer's refresh, the webhook, the hourly cron ──
+
+export type SyncOptions = {
+  /** cron only: a version whose guid Bunny no longer knows (404) becomes 'failed' */
+  markMissingFailed?: boolean;
+  /** cron only: no guid this long after the fetch → 'failed' (0117) */
+  stuckAfterMs?: number;
+};
+export type SyncResult = { row: VersionRow; outcome: ApplyOutcome; note?: "stuck_failed" | "video_missing_failed" | "no_guid_yet" | "final" };
+
+/** Exactly what refresh did in E13-4, plus the two cron-only endings. Reads Bunny; writes only our row. */
+export async function syncVersion(row: VersionRow, productionId: string, deps: Deps, opts: SyncOptions = {}): Promise<SyncResult> {
+  const { store } = deps;
+  const now = (deps.now ?? (() => new Date()))();
+  if (isFinal(row)) return { row, outcome: {}, note: "final" };
+  const reload = async () => (await store.getVersion(row.id)) ?? row;
+
+  if (!row.bunny_video_id) {
+    const v = await videoByTitle(versionTitle(row.id), productionId, row.id, store);
+    if (v) await store.attachGuid(row.id, v.guid);
+    row = await reload();
+    if (!row.bunny_video_id) {
+      const since = row.fetch_requested_at ? now.getTime() - Date.parse(row.fetch_requested_at) : 0;
+      if (opts.stuckAfterMs && row.bunny_status === "uploading" && since > opts.stuckAfterMs) {
+        await store.update(row.id, { bunny_status: "failed", bunny_status_at: now.toISOString() });
+        await store.event("review_fetch_stuck", productionId, {
+          version_id: row.id,
+          fetch_requested_at: row.fetch_requested_at,
+          hours_without_guid: Math.floor(since / 3_600_000),
+          marked_failed: true,
+        });
+        return { row: await reload(), outcome: {}, note: "stuck_failed" };
+      }
+      return { row, outcome: {}, note: "no_guid_yet" };
+    }
+  }
+
+  const video = await getVideo(row.bunny_video_id!);
+  if (!video) {
+    if (opts.markMissingFailed && row.bunny_status !== "ready") {
+      await store.update(row.id, { bunny_status: "failed", bunny_status_at: now.toISOString() });
+      await store.event("review_video_missing", productionId, { version_id: row.id, guid: row.bunny_video_id });
+      return { row: await reload(), outcome: {}, note: "video_missing_failed" };
+    }
+    return { row, outcome: {} };
+  }
+  const outcome = await applyVideoState(row, video, productionId, deps);
+  return { row: await reload(), outcome };
 }
 
 // ── what the drawer sees ───────────────────────────────────────────────────

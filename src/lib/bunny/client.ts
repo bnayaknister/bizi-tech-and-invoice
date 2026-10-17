@@ -243,3 +243,21 @@ export async function findVideosByTitle(search: string): Promise<BunnyVideo[]> {
   const items = body && typeof body === "object" ? (body as { items?: unknown }).items : null;
   return Array.isArray(items) ? (items as BunnyVideo[]) : [];
 }
+
+/** One page of the library's videos, newest first (read-only; runs in dry run too). E13-5 orphan sweep. */
+export async function listVideos(page: number, itemsPerPage = 100): Promise<{ items: BunnyVideo[]; totalItems: number | null }> {
+  const { libraryId, apiKey } = bunnyApiConfig();
+  const url = `${videoUrl(libraryId)}?page=${page}&itemsPerPage=${itemsPerPage}&orderBy=date`;
+  const res = await send("GET videos page", url, {
+    method: "GET",
+    headers: { AccessKey: apiKey, accept: "application/json" },
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  const body = await parse(res);
+  if (!res.ok) throw new BunnyError(`Bunny list נכשל (${res.status})`, res.status, body, safeHeaders(res));
+  const o = body && typeof body === "object" ? (body as { items?: unknown; totalItems?: unknown }) : {};
+  return {
+    items: Array.isArray(o.items) ? (o.items as BunnyVideo[]) : [],
+    totalItems: typeof o.totalItems === "number" ? o.totalItems : null,
+  };
+}

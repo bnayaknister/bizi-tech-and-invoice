@@ -143,6 +143,59 @@ export function supabaseVersionStore(admin: SupabaseClient<Database>): VersionSt
       return Number(data);
     },
 
+    async versionByGuid(guid) {
+      const { data, error } = await admin.from("client_review_versions").select(VERSION_COLS).eq("bunny_video_id", guid).maybeSingle();
+      if (error) throw new Error(`client_review_versions: ${error.message}`);
+      return data ? toVersionRow(data) : null;
+    },
+
+    async pendingVersions(limit) {
+      // isFinal() as a filter: a live Bunny row that is not failed, and not
+      // ready-with-a-concluded-integrity. Oldest fetch first.
+      const { data, error } = await admin
+        .from("client_review_versions")
+        .select(VERSION_COLS)
+        .eq("source", "bunny")
+        .is("media_deleted_at", null)
+        .or("bunny_status.in.(uploading,created,processing,playable),and(bunny_status.eq.ready,or(integrity.is.null,integrity.eq.unchecked))")
+        .order("fetch_requested_at", { ascending: true })
+        .limit(limit);
+      if (error) throw new Error(`client_review_versions pending: ${error.message}`);
+      const rows = (data ?? []).map(toVersionRow);
+      const itemIds = Array.from(new Set(rows.map((r) => r.item_id)));
+      if (!itemIds.length) return [];
+      const { data: items, error: iErr } = await admin.from("client_review_items").select("id,production_id").in("id", itemIds);
+      if (iErr) throw new Error(`client_review_items: ${iErr.message}`);
+      const prodOf = new Map((items ?? []).map((i) => [i.id, i.production_id]));
+      return rows.flatMap((row) => {
+        const productionId = prodOf.get(row.item_id);
+        return productionId ? [{ row, productionId }] : [];
+      });
+    },
+
+    async knownGuids(guids) {
+      if (!guids.length) return new Set<string>();
+      const { data, error } = await admin.from("client_review_versions").select("bunny_video_id").in("bunny_video_id", guids);
+      if (error) throw new Error(`client_review_versions guids: ${error.message}`);
+      return new Set((data ?? []).flatMap((r) => (r.bunny_video_id ? [r.bunny_video_id] : [])));
+    },
+
+    async eventExists(type, key, value) {
+      const { data, error } = await admin.from("events").select("id").eq("event_type", type).eq(`payload->>${key}`, value).limit(1);
+      if (error) throw new Error(`events: ${error.message}`);
+      return (data ?? []).length > 0;
+    },
+
+    async systemEvent(type, payload) {
+      // events.entity_id is NOT NULL; system events use the zero uuid (registration/approve.ts, the E13 backfill)
+      await admin.from("events").insert({
+        entity_type: "system",
+        entity_id: "00000000-0000-0000-0000-000000000000",
+        event_type: type,
+        payload: JSON.parse(JSON.stringify(payload)),
+      });
+    },
+
     async event(type, productionId, payload, actorId) {
       // a trace, never a reason to fail the action that produced it
       await admin.from("events").insert({

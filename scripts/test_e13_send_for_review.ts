@@ -249,6 +249,23 @@ const store: VersionStore = {
   async event(type, production, payload) {
     events.push({ type, production, payload });
   },
+  // E13-5 methods — exercised in scripts/test_e13_webhook_cron.ts
+  async versionByGuid(guid) {
+    const v = vers.find((o) => o.bunny_video_id === guid);
+    return v ? { ...v } : null;
+  },
+  async pendingVersions() {
+    return [];
+  },
+  async knownGuids(guids) {
+    return new Set(vers.flatMap((v) => (v.bunny_video_id && guids.includes(v.bunny_video_id) ? [v.bunny_video_id] : [])));
+  },
+  async eventExists(type, key, value) {
+    return events.some((e) => e.type === type && String(e.payload[key]) === value);
+  },
+  async systemEvent(type, payload) {
+    events.push({ type, production: "system", payload });
+  },
 };
 
 let ids = 0;

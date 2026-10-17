@@ -402,9 +402,11 @@ async function main() {
   const fetchCalls = clientSrc.match(/\bfetch\(/g) ?? [];
   check("client.ts has exactly one fetch( call site (inside send())", fetchCalls.length, 1);
   const sendCalls = clientSrc.match(/\bsend\(/g) ?? [];
-  check("send( is defined once and called from exactly three places (write(), getVideo, findVideosByTitle)", sendCalls.length, 4);
-  const listBody = clientSrc.slice(clientSrc.indexOf("export async function findVideosByTitle"));
+  check("send( is defined once and called from exactly four places (write(), getVideo, findVideosByTitle, listVideos — E13-5)", sendCalls.length, 5);
+  const listBody = clientSrc.slice(clientSrc.indexOf("export async function findVideosByTitle"), clientSrc.indexOf("export async function listVideos"));
   ok("findVideosByTitle's send is a GET", /method: "GET"/.test(listBody) && /send\(/.test(listBody));
+  const pageBody = clientSrc.slice(clientSrc.indexOf("export async function listVideos"));
+  ok("listVideos' send is a GET (the orphan sweep only reads)", /method: "GET"/.test(pageBody) && /send\(/.test(pageBody) && !/write\(/.test(pageBody));
   const fetchFnBody = clientSrc.slice(clientSrc.indexOf("export async function fetchVideoRaw"), clientSrc.indexOf("export async function findVideosByTitle"));
   ok("Fetch Video (raw + production) writes only through write(), exactly once", (fetchFnBody.match(/await write\(/g) ?? []).length === 1 && !/send\(|[^.]fetch\(/.test(fetchFnBody));
   const getVideoBody = clientSrc.slice(clientSrc.indexOf("export async function getVideo"), clientSrc.indexOf("export async function deleteVideo"));

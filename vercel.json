@@ -19,6 +19,14 @@
     {
       "path": "/api/cron/purge-registrations",
       "schedule": "30 2 * * *"
+    },
+    {
+      "path": "/api/cron/review-versions",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/review-orphans",
+      "schedule": "15 1 * * *"
     }
   ]
 }
