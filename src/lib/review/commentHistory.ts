@@ -12,26 +12,32 @@ import type { Database } from "@/lib/supabase/database.types";
 // one-line cache that a re-approval clears. That cache is exactly the bug the
 // test found: after "מאשר שוב" the note vanished from the drawer.
 //
-// THE STATE of each comment, derived from the approvals ledger:
+// THE STATE of each comment — by its OWN round (its link), from what the
+// client did in that round AFTER writing it (owner 18.10: "לפי מה שקרה בפועל
+// באותו סבב, אחריו"). Checked in this order:
 //   revoked_approval — this comment revoked a valid approval (0118 writes the
-//                      revoke in the same transaction, so revoked_at equals
-//                      the comment's created_at)
-//   after_approval   — written while a valid approval stood, without revoking
-//                      it (does not happen through 0118 today; kept so a
-//                      future path cannot be mislabelled)
-//   minor            — written before an approval that the client then gave
-//                      on the SAME link: "approved with notes" (owner 17.10,
-//                      option א — the comments reach the team as minor notes)
-//   before_approval  — everything else: a correction the item still waits on
+//                      revoke in the same transaction: revoked_at = created_at)
+//   minor            — the client then APPROVED the item in the same round:
+//                      "approved with notes" (owner 17.10, option א)
+//   revisions        — the client then asked for corrections in the same round
+//   after_response   — written after the round's response (answered link,
+//                      "יש לי עוד הערה" on an item that was not approved)
+//   pending_decision — the round is still open: no decision on this item yet
+//                      ("ממתין להחלטת הלקוח")
+//   history          — a row with no round (the 16.10 backfill)
+// An earlier round's approval NEVER labels a comment of a later round — the
+// bug of 18.10 (pin 6 read "אושר עם הערות" while its own round was open).
 // ═══════════════════════════════════════════════════════════════════════════
 
-export type CommentState = "before_approval" | "minor" | "revoked_approval" | "after_approval";
+export type CommentState = "pending_decision" | "minor" | "revisions" | "revoked_approval" | "after_response" | "history";
 
 export const COMMENT_STATE_LABEL: Record<CommentState, string> = {
-  before_approval: "לפני אישור",
+  pending_decision: "ממתין להחלטת הלקוח",
   minor: "הערה קטנה · אושר עם הערות",
+  revisions: "בקשת תיקון",
   revoked_approval: "ביטלה אישור",
-  after_approval: "אחרי אישור",
+  after_response: "אחרי התשובה",
+  history: "היסטוריה",
 };
 
 export type HcComment = {
@@ -56,25 +62,21 @@ export type HcApproval = { item_id: string; link_id: string | null; decision: st
 const SAME_TXN_MS = 2000;
 const t = (s: string) => Date.parse(s);
 
-/** Pure: one comment's state against its item's ledger rows. */
+/** Pure: one comment's state, by its own round, against its item's ledger rows. */
 export function commentState(c: HcComment, approvals: HcApproval[]): CommentState {
   const mine = approvals.filter((a) => a.item_id === c.item_id);
   const at = t(c.created_at);
   if (mine.some((a) => a.revoked_reason === "client_comment" && a.revoked_at && Math.abs(t(a.revoked_at) - at) <= SAME_TXN_MS)) {
     return "revoked_approval";
   }
-  const validThen = mine.some(
-    (a) => a.decision === "approved" && t(a.decided_at) <= at && (!a.revoked_at || t(a.revoked_at) > at + SAME_TXN_MS)
-  );
-  if (validThen) return "after_approval";
-  if (c.link_id) {
-    // the next decision on this item from the SAME link, after the comment
-    const next = mine
-      .filter((a) => a.link_id === c.link_id && t(a.decided_at) >= at)
-      .sort((a, b) => t(a.decided_at) - t(b.decided_at))[0];
-    if (next && next.decision === "approved") return "minor";
-  }
-  return "before_approval";
+  if (!c.link_id) return "history";
+  // the client's next decision on this item in the SAME round, after the comment
+  const next = mine
+    .filter((a) => a.link_id === c.link_id && t(a.decided_at) >= at)
+    .sort((a, b) => t(a.decided_at) - t(b.decided_at))[0];
+  if (next) return next.decision === "approved" ? "minor" : "revisions";
+  if (c.after_response) return "after_response";
+  return "pending_decision";
 }
 
 export type HistoryComment = HcComment & {

@@ -82,13 +82,25 @@ section("commentState — derived from the approvals ledger");
 check("pins 1–4: before the approval the client gave on the SAME link → minor ('אושר עם הערות')", today.slice(0, 4).map((c) => commentState(c, ledger)), ["minor", "minor", "minor", "minor"]);
 check("pin 5: revoked the approval in the same transaction → revoked_approval", commentState(today[4], ledger), "revoked_approval");
 const revisionsLedger: HcApproval[] = [{ item_id: REEL, link_id: L, decision: "revisions", decided_at: "2026-10-17T20:14:00.310Z", revoked_at: null, revoked_reason: null }];
-check("the client then chose 'תיקונים' → before_approval (a correction still owed)", commentState(today[0], revisionsLedger), "before_approval");
-check("no decision yet → before_approval", commentState(today[0], []), "before_approval");
+check("the client then sent 'תיקונים' in that round → revisions ('בקשת תיקון') — pin 8 of 18.10", commentState(today[0], revisionsLedger), "revisions");
+check("no decision in its round yet → pending_decision ('ממתין להחלטת הלקוח')", commentState(today[0], []), "pending_decision");
 const otherLink: HcApproval[] = [{ item_id: REEL, link_id: "OTHER", decision: "approved", decided_at: "2026-10-17T20:14:00.310Z", revoked_at: null, revoked_reason: null }];
-check("approved later through ANOTHER link → still before_approval (not 'with notes')", commentState(today[0], otherLink), "before_approval");
-const standing: HcApproval[] = [{ item_id: REEL, link_id: L, decision: "approved", decided_at: "2026-10-17T19:00:00Z", revoked_at: null, revoked_reason: null }];
-check("written while an approval stood, not revoking it → after_approval", commentState(today[0], standing), "after_approval");
-check("another item's ledger is never consulted", commentState({ ...today[4], item_id: "OTHER" }, ledger), "before_approval");
+check("approved through ANOTHER round → its own round is still open: pending_decision", commentState(today[0], otherLink), "pending_decision");
+// the bug of 18.10, pin 6: an EARLIER round's approval must never label a comment of a later round
+const earlier: HcApproval[] = [{ item_id: REEL, link_id: "OLD", decision: "approved", decided_at: "2026-10-17T19:00:00Z", revoked_at: null, revoked_reason: null }];
+check("an approval from an earlier round, still standing → pending_decision, not 'אושר עם הערות'", commentState(today[0], earlier), "pending_decision");
+check("written after its round's response, on an item not approved → after_response", commentState({ ...today[0], after_response: true }, []), "after_response");
+check("a row with no round (backfill) → history", commentState({ ...today[0], link_id: null }, []), "history");
+check("another item's ledger is never consulted (pin 5 was written after its round's response)", commentState({ ...today[4], item_id: "OTHER" }, ledger), "after_response");
+// the 18.10 test, as in the DB: pin 6 on round 5ca6e8c3 approved after it (21:06:53), pin 8 on round 4b62a14f with 'תיקונים'
+const r1810: HcApproval[] = [
+  { item_id: REEL, link_id: "5ca6e8c3", decision: "approved", decided_at: "2026-10-17T21:06:53Z", revoked_at: "2026-10-17T21:08:42Z", revoked_reason: "board_rollback" },
+  { item_id: REEL, link_id: "8449350d", decision: "approved", decided_at: "2026-10-17T21:10:22Z", revoked_at: "2026-10-17T21:12:57Z", revoked_reason: "board_rollback" },
+  { item_id: REEL, link_id: "4b62a14f", decision: "revisions", decided_at: "2026-10-17T21:13:45Z", revoked_at: null, revoked_reason: null },
+];
+check("18.10 pin 6 (its round approved after it) → minor", commentState(pin(6, 20960, "2026-10-17T21:05:01Z", { link_id: "5ca6e8c3" }), r1810), "minor");
+check("18.10 pin 6, viewed BEFORE its round's decision → pending_decision", commentState(pin(6, 20960, "2026-10-17T21:05:01Z", { link_id: "5ca6e8c3" }), r1810.filter((a) => a.link_id !== "5ca6e8c3")), "pending_decision");
+check("18.10 pin 8 ('תיקונים' in its round) → revisions", commentState(pin(8, 1000, "2026-10-17T21:13:31Z", { link_id: "4b62a14f" }), r1810), "revisions");
 
 section("buildCommentHistory — the bug of 17.10: nothing disappears after 'מאשר שוב'");
 const items = [
@@ -119,13 +131,14 @@ const mixed = buildCommentHistory({
     { ...today[0], id: "g1", kind: "general", pin_number: null, time_ms: null, version_id: V2, created_at: "2026-10-17T20:00:00Z" },
     { ...today[1], id: "old", version_id: "V1", created_at: "2026-10-10T10:00:00Z" },
     today[2],
-    { ...today[3], id: "bf", version_id: null, kind: "general", pin_number: null, time_ms: null, is_backfill: true, created_at: "2026-08-01T00:00:00Z" },
+    { ...today[3], id: "bf", version_id: null, link_id: null, kind: "general", pin_number: null, time_ms: null, is_backfill: true, created_at: "2026-08-01T00:00:00Z" },
   ],
   approvals: [],
   versions: [{ id: V2, number: 2, original_filename: null }, { id: "V1", number: 1, original_filename: null }],
   names: {},
 });
 check("order: newest version first; pins before general inside a version; history (no version) last", mixed[0].comments.map((c) => c.id), ["c3", "g1", "old", "bf"]);
+check("a row with no round (backfill without a link) reads 'היסטוריה'", mixed[0].comments.find((c) => c.id === "bf")?.state_label, "היסטוריה");
 check("unacked count ignores backfill and team rows", unackedCommentCount([...today, { ...today[0], is_backfill: true }, { ...today[0], author_kind: "team" }, { ...today[0], acked_at: "x" }]), 5);
 
 // ══════════════════════════════════════════════════════════════════════

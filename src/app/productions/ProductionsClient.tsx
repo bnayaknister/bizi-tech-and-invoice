@@ -21,6 +21,10 @@ export type CalendarDupe = {
 
 export type BoardProduction = {
   id: string;
+  // E13-8c (owner 18.10), derived from open client comments: 🟠 approved with
+  // notes (until "קיבלתי"), 🔴 comments left on a live link and not sent for 24h
+  review_minor?: boolean;
+  review_unsent?: boolean;
   status: string;
   record_date: string | null;
   record_time: string | null;
@@ -672,6 +676,11 @@ function ProductionCard({
     >
       <div className="flex items-center gap-1.5 mb-1">
         {p.needs_attention && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: "var(--red)" }} title="דורש טיפול" />}
+        {/* 🟠 distinct from the red "תיקונים" dot: the client approved, with
+            notes. The production stays אושר_ע"י_לקוח; this goes on "קיבלתי". */}
+        {!p.needs_attention && p.review_minor && (
+          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: "#fb923c" }} title="אושר עם הערות" />
+        )}
         <span className="font-bold text-sm truncate flex-1">{p.show_name}</span>
         {p.on_hold && <span className="text-[10px] text-[var(--amber)] shrink-0">⏸ מוקפא</span>}
         {p.board_archived_at && (
@@ -855,7 +864,16 @@ function ProductionCard({
         {/* only while the flag is lit — the button exists to answer the red
             dot, and once the notes are acknowledged the dot goes out and this
             goes with it. Red like "בטל הפקה", because it belongs to the flag. */}
-        {canEditStages && onNotesAsk && p.needs_attention && (
+        {/* the reason, in words, under the dot (owner 18.10) */}
+        {p.review_unsent && (
+          <span className="text-[10px] text-[var(--red)]">הלקוח השאיר הערות ולא שלח</span>
+        )}
+        {!p.needs_attention && p.review_minor && (
+          <span className="text-[10px]" style={{ color: "#fb923c" }}>
+            אושר עם הערות
+          </span>
+        )}
+        {canEditStages && onNotesAsk && (p.needs_attention || p.review_minor) && (
           <button
             onClick={(e) => {
               e.stopPropagation();

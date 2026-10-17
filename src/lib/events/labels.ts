@@ -13,6 +13,7 @@ export const EVENT_LABEL: Record<string, string> = {
   client_review_post_response_comment: "הלקוח הוסיף הערה אחרי התשובה",
   client_review_download: "הלקוח הוריד קובץ",
   client_review_download_missing: "הלקוח ניסה להוריד, והקובץ חסר ב-Drive",
+  client_review_comments_unsent: "הלקוח השאיר הערות ולא שלח (24 שעות)",
   client_review_download_missing_resolved: "הקובץ להורדה זמין שוב",
   production_review_backfilled: "היסטוריית ביקורת הועתקה",
   review_materials_updated: "חומרים נוספים לביקורת עודכנו",

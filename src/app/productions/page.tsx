@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { getSessionAndProfile } from "@/lib/profile";
 import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createAdminClient, createTypedAdminClient } from "@/lib/supabase/admin";
+import { loadReviewFlags, type ReviewFlags } from "@/lib/review/attentionFlags";
 import AppHeader from "@/components/AppHeader";
 import ProductionsClient, { type BoardProduction } from "./ProductionsClient";
 import { hoursMissing } from "@/lib/productions/hours";
@@ -247,6 +248,16 @@ export default async function ProductionsPage() {
   const nameById = new Map((profilesRows ?? []).map((p) => [p.id, p.name || p.email || "—"]));
   const clientById = new Map((clientsRes.data ?? []).map((c) => [c.id, c.name]));
 
+  // E13-8c (owner 18.10): 🟠 "אושר עם הערות" and 🔴 "הלקוח השאיר הערות ולא
+  // שלח", derived from the client's open comments (lib/review/attentionFlags).
+  // Rule 38: a failed read leaves both off and never breaks the board.
+  let reviewFlags = new Map<string, ReviewFlags>();
+  try {
+    reviewFlags = await loadReviewFlags(createTypedAdminClient(), Date.now(), (prods ?? []).map((p) => p.id));
+  } catch (e) {
+    console.warn(JSON.stringify({ tag: "board_review_flags_failed", error: e instanceof Error ? e.message : String(e) }));
+  }
+
   const board: BoardProduction[] = (prods ?? []).map((p) => {
     const show = p.show_id ? showById.get(p.show_id) : undefined;
     const r = rollup.get(p.id);
@@ -266,6 +277,8 @@ export default async function ProductionsPage() {
       on_hold_reason: p.on_hold_reason ?? null,
       on_hold_since: p.on_hold_since ?? null,
       needs_attention: p.needs_attention,
+      review_minor: reviewFlags.get(p.id)?.minor ?? false,
+      review_unsent: reviewFlags.get(p.id)?.unsent ?? false,
       show_name: show?.name ?? "—",
       show_color: show?.color ?? null,
       show_active: show?.active ?? true,

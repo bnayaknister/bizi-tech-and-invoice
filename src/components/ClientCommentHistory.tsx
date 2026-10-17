@@ -38,10 +38,12 @@ export function formatPinTimeExact(ms: number): string {
 }
 
 const STATE_TONE: Record<CommentState, { bg: string; fg: string }> = {
-  before_approval: { bg: "rgba(251,191,36,0.16)", fg: "#d97706" },
-  minor: { bg: "rgba(96,165,250,0.16)", fg: "#3b82f6" },
+  pending_decision: { bg: "rgba(148,163,184,0.18)", fg: "#94a3b8" },
+  minor: { bg: "rgba(251,146,60,0.18)", fg: "#ea580c" },
+  revisions: { bg: "rgba(251,191,36,0.16)", fg: "#d97706" },
   revoked_approval: { bg: "rgba(251,113,133,0.16)", fg: "#e11d48" },
-  after_approval: { bg: "rgba(148,163,184,0.18)", fg: "#94a3b8" },
+  after_response: { bg: "rgba(96,165,250,0.16)", fg: "#3b82f6" },
+  history: { bg: "rgba(148,163,184,0.12)", fg: "#94a3b8" },
 };
 
 export default function ClientCommentHistory({ items, emptyText = "אין הערות מהלקוח." }: { items: HistoryItemView[]; emptyText?: string }) {
