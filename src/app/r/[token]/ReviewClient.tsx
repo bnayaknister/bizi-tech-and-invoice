@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { classifyDriveLink } from "@/lib/review/drive";
 import { displayDate } from "@/lib/dates";
+import ReviewPlayer, { type ClientVersionView } from "./ReviewPlayer";
 
 // The client-facing review UI. Mobile-first — it opens from WhatsApp. Two
 // blocks (episode / reels), each independently approved or sent back with a
@@ -290,6 +291,8 @@ const Block = ({
   note,
   setNote,
   notePlaceholder,
+  media,
+  respondHint,
 }: {
   emoji: string;
   title: string;
@@ -301,6 +304,10 @@ const Block = ({
   note: string;
   setNote: (s: string) => void;
   notePlaceholder: string;
+  /** E13-6: the player + picker for an item that reached Bunny — replaces today's Drive view */
+  media?: React.ReactNode;
+  /** E13-6: an older version is selected — no response controls, this line instead (owner 16.10, §4b (2)) */
+  respondHint?: string | null;
 }) => (
   <div style={card}>
     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
@@ -308,8 +315,11 @@ const Block = ({
       <span style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>{title}</span>
       {approved && <span style={{ color: "#4ade80", fontSize: 13, fontWeight: 700 }}>✓ אושר</span>}
     </div>
-    {link && <MediaView link={link} />}
-    {pending && (
+    {media ?? (link && <MediaView link={link} />)}
+    {pending && respondHint && (
+      <div style={{ fontSize: 13, color: "#9a94b8", textAlign: "center", padding: "6px 0" }}>{respondHint}</div>
+    )}
+    {pending && !respondHint && (
       <>
         <div style={{ display: "flex", gap: 8 }}>
           <button
@@ -383,6 +393,7 @@ export default function ReviewClient({
   items = [],
   transcript = null,
   audioLink = null,
+  versionsByItem = {},
 }: {
   token: string;
   showName: string;
@@ -402,8 +413,13 @@ export default function ReviewClient({
   // usually absent; the section does not exist when they are.
   transcript?: { content: string; source: "pasted" | "link" | "auto"; char_count: number | null } | null;
   audioLink?: string | null;
+  // E13-6: per item, the versions the client may see (lib/review/clientVersions).
+  // An item absent here never reached Bunny and renders exactly as before.
+  versionsByItem?: Record<string, ClientVersionView[]>;
 }) {
   const [epChoice, setEpChoice] = useState<Choice>(null);
+  // E13-6: which version each item shows; absent = the current (latest) one
+  const [selectedVersion, setSelectedVersion] = useState<Record<string, string>>({});
   const [epNote, setEpNote] = useState("");
   const [reChoice, setReChoice] = useState<Choice>(null);
   const [reNote, setReNote] = useState("");
@@ -570,7 +586,11 @@ export default function ReviewClient({
           );
         }
 
-        const itemBlock = (it: ReviewItemView, emoji: string, title: string, fallbackLink: string | null, notePlaceholder: string) => (
+        const itemBlock = (it: ReviewItemView, emoji: string, title: string, fallbackLink: string | null, notePlaceholder: string) => {
+          const versions = versionsByItem[it.id];
+          const latestId = versions?.length ? versions[versions.length - 1].id : null;
+          const selectedId = selectedVersion[it.id] ?? latestId;
+          return (
           <Block
             key={it.id}
             emoji={emoji}
@@ -583,8 +603,21 @@ export default function ReviewClient({
             note={itemNote[it.id] ?? ""}
             setNote={(s) => setItemNote((prev) => ({ ...prev, [it.id]: s }))}
             notePlaceholder={notePlaceholder}
+            media={
+              versions?.length ? (
+                <ReviewPlayer
+                  token={token}
+                  versions={versions}
+                  selectedId={selectedId}
+                  onSelect={(id) => setSelectedVersion((prev) => ({ ...prev, [it.id]: id }))}
+                  renderDrive={(l) => <MediaView link={l} />}
+                />
+              ) : undefined
+            }
+            respondHint={versions?.length && selectedId !== latestId ? "אפשר להגיב רק על הגרסה הנוכחית" : null}
           />
-        );
+          );
+        };
 
         return (
           <>

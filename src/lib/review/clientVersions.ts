@@ -1,0 +1,143 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "@/lib/supabase/database.types";
+import { signedPlaybackUrl, PLAYBACK_TTL_SECONDS, type SignedUrl } from "@/lib/bunny/sign";
+
+// ═══════════════════════════════════════════════════════════════════════════
+// E13-6 — which versions the CLIENT sees on /r/[token] (plan §9.2 E13-6 (a)).
+// Server-side only. The page, the playback-renewal route and the download
+// route all decide through these functions, so the three never disagree.
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// A version is SHOWN when it is:
+//   · drive  — Drive history (the backfill v1, or older): shown in today's iframe
+//   · bunny  — ready, integrity hash_match / size_match (Q14), original kept,
+//              media not deleted: our player + a download button
+//   · archived — a bunny version that WAS shown and whose media Bunny has since
+//              deleted (E13-10): a button to the original in Drive instead of
+//              the player (owner 16.10, §4b (1))
+// Everything else — processing, unchecked, mismatch, failed — is NOT shown, and
+// the client simply sees the previous shown version, with no notice (owner
+// 17.10). An item with no SHOWN bunny/archived version is left exactly as it
+// renders today (media_link): E13-6 changes only items that reached Bunny.
+
+export type VersionForClient = {
+  id: string;
+  item_id: string;
+  number: number | null;
+  source: string;
+  media_link: string | null;
+  bunny_video_id: string | null;
+  bunny_status: string | null;
+  integrity: string | null;
+  has_original: boolean | null;
+  is_audio_only: boolean;
+  original_filename: string | null;
+  drive_file_id: string | null;
+  media_deleted_at: string | null;
+};
+
+export type ClientVersion =
+  | { id: string; number: number; kind: "bunny"; isAudio: boolean; fileName: string | null; playbackUrl: string; expires: number }
+  | { id: string; number: number; kind: "drive"; mediaLink: string }
+  | { id: string; number: number; kind: "archived"; isAudio: boolean; fileName: string | null; driveUrl: string };
+
+const INTEGRITY_OK = new Set(["hash_match", "size_match"]);
+
+/** Ready, verified, original kept, not deleted — what the player and the download route may serve. */
+export function isPlayableBunny(v: VersionForClient): boolean {
+  return (
+    v.source === "bunny" &&
+    !!v.bunny_video_id &&
+    v.bunny_status === "ready" &&
+    INTEGRITY_OK.has(v.integrity ?? "") &&
+    v.has_original === true &&
+    !v.media_deleted_at &&
+    v.number !== null
+  );
+}
+
+/** Verified once, deleted since (E13-10): the client gets the Drive original instead. */
+function isArchivedBunny(v: VersionForClient): boolean {
+  return v.source === "bunny" && !!v.media_deleted_at && INTEGRITY_OK.has(v.integrity ?? "") && !!v.drive_file_id && v.number !== null;
+}
+
+export const driveViewUrl = (fileId: string) => `https://drive.google.com/file/d/${encodeURIComponent(fileId)}/view`;
+
+/**
+ * One item's versions as the client sees them, oldest first (the last one is
+ * "the current version"). Empty when nothing ever reached Bunny for this item:
+ * the page then renders the item exactly as before E13-6. PURE apart from
+ * `sign`, which is injected so tests need no keys.
+ */
+export function clientVersionsForItem(
+  rows: VersionForClient[],
+  sign: (guid: string) => SignedUrl = (g) => signedPlaybackUrl(g, PLAYBACK_TTL_SECONDS)
+): ClientVersion[] {
+  const sorted = [...rows].filter((r) => r.number !== null).sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
+  if (!sorted.some((r) => isPlayableBunny(r) || isArchivedBunny(r))) return [];
+  const out: ClientVersion[] = [];
+  for (const r of sorted) {
+    const n = r.number as number;
+    if (r.source === "drive" && r.media_link) {
+      out.push({ id: r.id, number: n, kind: "drive", mediaLink: r.media_link });
+    } else if (isPlayableBunny(r)) {
+      const s = sign(r.bunny_video_id as string);
+      out.push({ id: r.id, number: n, kind: "bunny", isAudio: r.is_audio_only, fileName: r.original_filename, playbackUrl: s.url, expires: s.expires });
+    } else if (isArchivedBunny(r)) {
+      out.push({ id: r.id, number: n, kind: "archived", isAudio: r.is_audio_only, fileName: r.original_filename, driveUrl: driveViewUrl(r.drive_file_id as string) });
+    }
+  }
+  return out;
+}
+
+const SELECT =
+  "id,item_id,number,source,media_link,bunny_video_id,bunny_status,integrity,has_original,is_audio_only,original_filename,drive_file_id,media_deleted_at";
+
+/** All items' client versions in one read. Throws on a read error — the page catches it (rule 38). */
+export async function loadClientVersions(admin: SupabaseClient<Database>, itemIds: string[]): Promise<Record<string, ClientVersion[]>> {
+  if (!itemIds.length) return {};
+  const { data, error } = await admin.from("client_review_versions").select(SELECT).in("item_id", itemIds);
+  if (error) throw new Error(`client_review_versions: ${error.message}`);
+  const byItem = new Map<string, VersionForClient[]>();
+  for (const r of data ?? []) byItem.set(r.item_id, [...(byItem.get(r.item_id) ?? []), r]);
+  const out: Record<string, ClientVersion[]> = {};
+  byItem.forEach((rows, itemId) => {
+    const list = clientVersionsForItem(rows);
+    if (list.length) out[itemId] = list;
+  });
+  return out;
+}
+
+// ── the gate for the playback-renewal and download routes ─────────────────
+
+export type LinkForGate = { production_id: string; scope: "episode" | "reels" | "all" };
+export type ItemForGate = { id: string; production_id: string; kind: string };
+
+/** Same rule as the page: the item belongs to the link's production and its kind is in the link's scope. */
+export function itemInLinkScope(link: LinkForGate, item: ItemForGate, reelsRequired: boolean): boolean {
+  if (item.production_id !== link.production_id) return false;
+  if (item.kind === "episode") return link.scope === "episode" || link.scope === "all";
+  if (item.kind === "reel") return (link.scope === "reels" || link.scope === "all") && reelsRequired;
+  return false;
+}
+
+export type GateResult = { ok: true } | { ok: false; reason: "not_in_scope" | "not_playable" };
+
+/** May this link play / download this version? Both routes ask exactly this, after resolveLink said "ok". */
+export function gateVersionForLink(link: LinkForGate, reelsRequired: boolean, item: ItemForGate, version: VersionForClient): GateResult {
+  if (version.item_id !== item.id || !itemInLinkScope(link, item, reelsRequired)) return { ok: false, reason: "not_in_scope" };
+  if (!isPlayableBunny(version)) return { ok: false, reason: "not_playable" };
+  return { ok: true };
+}
+
+export async function loadVersionWithItem(
+  admin: SupabaseClient<Database>,
+  versionId: string
+): Promise<{ version: VersionForClient; item: ItemForGate } | null> {
+  if (!/^[0-9a-f-]{36}$/i.test(versionId)) return null;
+  const { data: version, error } = await admin.from("client_review_versions").select(SELECT).eq("id", versionId).maybeSingle();
+  if (error || !version) return null;
+  const { data: item } = await admin.from("client_review_items").select("id,production_id,kind").eq("id", version.item_id).maybeSingle();
+  if (!item) return null;
+  return { version, item };
+}

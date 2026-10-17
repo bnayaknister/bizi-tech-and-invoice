@@ -528,11 +528,19 @@ async function main() {
       const p = join(d, f);
       return statSync(p).isDirectory() ? walk(p) : /\.(ts|tsx)$/.test(p) ? [p] : [];
     });
+  // A file that only SIGNS a URL and hands it to the browser (the E13-6 player
+  // and download routes) is fine: the browser sends our origin itself. The
+  // trap is a SERVER fetch() of a signed CDN URL — that one must add it.
   const cdnCallers = walk(join(__dirname, "../src"))
     .filter((f) => !f.endsWith("lib/bunny/sign.ts"))
-    .filter((f) => /signedOriginalUrl\(|signedPlaybackUrl\(/.test(readFileSync(f, "utf8")));
+    .filter((f) => !/\.tsx$/.test(f)) // client components: the browser fetches, with its own Referer
+    .filter((f) => {
+      const src = readFileSync(f, "utf8");
+      return /signedOriginalUrl\(|signedPlaybackUrl\(/.test(src) && /(await|=)\s*fetch\(/.test(src);
+    });
   const missing = cdnCallers.filter((f) => !/Referer:\s*bunnyCdnReferer\(\)/.test(readFileSync(f, "utf8")));
-  check("every src/ file that signs a CDN URL sends Referer: bunnyCdnReferer()", missing.map((f) => f.split("/src/")[1]), []);
+  check("every src/ file that FETCHES a signed CDN URL from the server sends Referer: bunnyCdnReferer()", missing.map((f) => f.split("/src/")[1]), []);
+  ok("…and versions.ts (the integrity HEAD) is one of them", cdnCallers.some((f) => f.endsWith("lib/review/versions.ts")));
 
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);

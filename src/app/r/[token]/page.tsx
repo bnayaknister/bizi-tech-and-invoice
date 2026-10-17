@@ -1,6 +1,7 @@
 import { cache } from "react";
 import type { Metadata } from "next";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { createAdminClient, createTypedAdminClient } from "@/lib/supabase/admin";
+import { loadClientVersions, type ClientVersion } from "@/lib/review/clientVersions";
 import { resolveLink } from "@/lib/review/links";
 import { displayDate } from "@/lib/dates";
 import ReviewClient from "./ReviewClient";
@@ -114,6 +115,16 @@ export default async function ReviewPage({ params }: { params: { token: string }
     return <Notice title="הלינק אינו זמין" sub="ייתכן שפג תוקפו או שנשלח קישור עדכני יותר. פנו ל-Bizi Podclub." />;
   }
 
+  // E13-6: the versions each item may show. Rule 38: any failure here (a read,
+  // a signing key) leaves the page exactly as it was before E13-6 — today's
+  // Drive view — and never breaks it.
+  let versionsByItem: Record<string, ClientVersion[]> = {};
+  try {
+    versionsByItem = await loadClientVersions(createTypedAdminClient(), state.items.map((i) => i.id));
+  } catch (e) {
+    console.warn(JSON.stringify({ tag: "review_page_versions_failed", link_id: state.link.id, error: e instanceof Error ? e.message : String(e) }));
+  }
+
   const p = state.production;
   const episodeLabel =
     p.split_count && p.split_count > 1 ? `פרק ${p.split_index} מתוך ${p.split_count}` : "הפרק המלא";
@@ -135,6 +146,7 @@ export default async function ReviewPage({ params }: { params: { token: string }
         items={state.items}
         transcript={state.transcript}
         audioLink={state.link.audio_link}
+        versionsByItem={versionsByItem}
       />
     </Shell>
   );
