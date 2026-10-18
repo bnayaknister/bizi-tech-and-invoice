@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { displayDateTime } from "@/lib/dates";
 import ClientCommentHistory, { type HistoryItemView } from "@/components/ClientCommentHistory";
+import { postResolve } from "@/lib/review/resolveFetch";
 
 // The client's correction notes from the round they last answered, and the one
 // button that closes the loop: "קיבלתי, מטפל" (0071). Until this existed the
@@ -61,6 +62,7 @@ export default function ClientNotesModal({
   const [reloadKey, setReloadKey] = useState(0);
   const [acking, setAcking] = useState(false);
   const [acked, setAcked] = useState(false);
+  const [resolving, setResolving] = useState<string | null>(null);
 
   useEffect(() => {
     // a response that lands after the modal is gone has nothing to update
@@ -114,6 +116,21 @@ export default function ClientNotesModal({
     } finally {
       setAcking(false);
     }
+  }
+
+  // E13-9: "טופל" on one comment — also acks it; reload to show the mark,
+  // and tell the board (the dot may have gone out)
+  async function resolve(commentId: string, resolved: boolean) {
+    setResolving(commentId);
+    setError(null);
+    const err = await postResolve(productionId, commentId, resolved);
+    setResolving(null);
+    if (err) {
+      setError(err);
+      return;
+    }
+    onAcked?.();
+    setReloadKey((k) => k + 1);
   }
 
   const hasDetail = !!round && (!!round.episode || round.reels.length > 0);
@@ -173,9 +190,9 @@ export default function ClientNotesModal({
         {!loading && hasComments && (
           <div className="mt-2">
             <div className="font-bold text-sm mb-2">
-              כל ההערות והנעצים{unacked ? ` · ${unacked} פתוחות` : ""}
+              כל ההערות והנעצים{unacked ? ` · ${unacked} חדשות` : ""}
             </div>
-            <ClientCommentHistory items={items} />
+            <ClientCommentHistory items={items} onResolve={(id, r) => void resolve(id, r)} busyId={resolving} />
           </div>
         )}
 

@@ -42,6 +42,7 @@ import { HOURS_STEP, MAX_HOURS, hoursError as validateHours, hoursMissing } from
 import { CreateJobButton, CreateJobModalBody } from "@/components/CreateJobBody";
 import { quotaOverNotice } from "@/lib/contracts/quota";
 import { isPerfClientOn, perfEndAfterPaint, perfNote, perfStart } from "@/lib/perf/client";
+import { postResolve } from "@/lib/review/resolveFetch";
 
 // entity type -> line icon + tile accent (no emoji, DESIGN.md §12)
 const ENTITY_ICON: Record<string, string> = {
@@ -900,6 +901,8 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   const [reviewSending, setReviewSending] = useState<string | null>(null); // scope currently being sent
   // the client's notes from the last answered round, + the "קיבלתי" step (0071)
   const [showClientNotes, setShowClientNotes] = useState(false);
+  // E13-9: the comment whose "טופל" mark is being saved
+  const [resolvingComment, setResolvingComment] = useState<string | null>(null);
   // scope — where the sent-box renders (per-track block, or "all" = under the
   // unified button); sentScope — what the unified send ACTUALLY minted, for the
   // success label (the unified button downgrades to a single track when only
@@ -1115,6 +1118,22 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   function broadcast() {
     if (ref) window.dispatchEvent(new CustomEvent("bizi:entity-updated", { detail: ref }));
     router.refresh();
+  }
+
+  // E13-9: "טופל" / "בטל טופל" on one client comment (also acks it). The
+  // board hears of it — the red dot may have gone out
+  async function resolveComment(commentId: string, resolved: boolean) {
+    if (!ref) return;
+    setResolvingComment(commentId);
+    setError(null);
+    const err = await postResolve(ref.id, commentId, resolved);
+    setResolvingComment(null);
+    if (err) {
+      setError(err);
+      return;
+    }
+    broadcast();
+    void load(ref, true);
   }
 
   async function post(
@@ -2152,11 +2171,13 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           <div className="flex items-center gap-2 mb-2">
                             <span className="font-bold text-sm">💬 הערות הלקוח · כל ההיסטוריה</span>
                             <span className="text-[11px] text-[var(--faint)]">
-                              {data.commentHistory.reduce((n, i) => n + i.comments.filter((c) => c.open).length, 0)} פתוחות
+                              {data.commentHistory.reduce((n, i) => n + i.comments.filter((c) => c.open).length, 0)} לא טופלו
                             </span>
                           </div>
                           <ClientCommentHistory
                             items={data.commentHistory}
+                            onResolve={data.canEditStages ? (id, r) => void resolveComment(id, r) : undefined}
+                            busyId={resolvingComment}
                             // E13-11: the Premiere markers export, per item (team with stage edit only — the route checks the same)
                             itemActions={
                               data.canEditStages

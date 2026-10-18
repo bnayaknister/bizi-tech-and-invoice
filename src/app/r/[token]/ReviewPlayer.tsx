@@ -38,6 +38,8 @@ export type ClientCommentView = {
   created_at: string;
   /** E13-8c: written through this link (optional: older payloads omit it) */
   mine?: boolean;
+  /** E13-9: the team marked it "טופל" */
+  resolved?: boolean;
 };
 
 /** "00:42", "1:02:03" — mirrors formatPinTime in lib/review/itemComments. */
@@ -203,6 +205,12 @@ function DownloadButton({ token, versionId, fileName, tall }: { token: string; v
 // E13-8b: the client's comments on the version on screen — pins by time (a
 // tap seeks there), then the general ones. A list, not marks on the bar: the
 // native controls (iOS above all) cannot carry marks.
+// E13-9 (owner 18.10): "טופל ✓" beside a comment the team marked handled.
+function ResolvedTag({ c }: { c: ClientCommentView }) {
+  if (!c.resolved) return null;
+  return <span style={{ color: "#4ade80", fontWeight: 700, fontSize: 12, whiteSpace: "nowrap" }}>טופל ✓</span>;
+}
+
 function CommentsList({ comments, onSeek }: { comments: ClientCommentView[]; onSeek: ((ms: number) => void) | null }) {
   if (!comments.length) return null;
   const pins = comments.filter((c) => c.kind === "pin" && c.time_ms !== null).sort((a, b) => (a.time_ms ?? 0) - (b.time_ms ?? 0));
@@ -230,12 +238,14 @@ function CommentsList({ comments, onSeek }: { comments: ClientCommentView[]; onS
             📍{c.pin_number ?? ""} · <span dir="ltr">{formatPinTime(c.time_ms ?? 0)}</span>
           </span>
           <span dir="auto" style={{ flex: 1, whiteSpace: "pre-wrap" }}>{c.body}</span>
+          <ResolvedTag c={c} />
         </button>
       ))}
       {general.map((c) => (
         <div key={c.id} style={row}>
           <span style={{ color: "#9a94b8", whiteSpace: "nowrap" }}>כללית</span>
           <span dir="auto" style={{ flex: 1, whiteSpace: "pre-wrap" }}>{c.body}</span>
+          <ResolvedTag c={c} />
         </div>
       ))}
     </div>

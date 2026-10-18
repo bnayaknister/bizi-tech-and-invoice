@@ -65,7 +65,8 @@ export async function GET(_request: Request, { params }: { params: { id: string 
   }
   const clientComments = items.flatMap((i) => i.comments).filter((c) => c.author_kind === "client" && !c.is_backfill);
   const upTo = clientComments.reduce<string | null>((m, c) => (!m || c.created_at > m ? c.created_at : m), null);
-  const unacked = clientComments.filter((c) => c.open).length;
+  // E13-9: "open" now means not "טופל"; the button and the count read UNREAD
+  const unacked = clientComments.filter((c) => c.unread).length;
 
   if (!round) return NextResponse.json({ round: null, items, up_to: upTo, unacked });
 

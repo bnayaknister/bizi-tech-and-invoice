@@ -123,7 +123,8 @@ const acked = buildCommentHistory({
   names: { u1: "אלי" },
 });
 const ar = acked.find((i) => i.id === REEL)!;
-check("an acked comment STAYS in the list, marked handled, with who acked", ar.comments.map((c) => [c.id, c.open, c.acked_by_name]).sort(), [["c1", false, "\u05d0\u05dc\u05d9"], ["c2", true, null]]);
+// E13-9 (owner 18.10): "קיבלתי" = read, not handled — the acked comment stays OPEN (not "טופל"), only no longer unread
+check("an acked comment STAYS in the list, still open (not 'טופל'), no longer unread, with who acked", ar.comments.map((c) => [c.id, c.open, c.unread, c.acked_by_name]).sort(), [["c1", true, false, "\u05d0\u05dc\u05d9"], ["c2", true, true, null]]);
 check("…both comments present (acked one included)", ar.comments.length, 2);
 const mixed = buildCommentHistory({
   items: [{ id: REEL, kind: "reel", reel_index: 1, approved: false }],
@@ -158,7 +159,7 @@ section("ClientCommentHistory — open stand out, handled dimmed, none hidden");
 check("exact pin time", [formatPinTimeExact(0), formatPinTimeExact(42180), formatPinTimeExact(3723004)], ["00:00.000", "00:42.180", "1:02:03.004"]);
 const html = renderToString(<ClientCommentHistory items={acked} />);
 ok("both comments rendered (the acked one too)", html.includes("נעץ 1") && html.includes("נעץ 2"), html);
-ok("open = full opacity, handled = dimmed", (html.match(/data-open="1"/g) ?? []).length === 1 && (html.match(/data-open="0"/g) ?? []).length === 1 && html.includes("opacity:0.55"), html);
+ok("acked is not dimmed (E13-9: only 'טופל' dims) — unread accent on the new one only", (html.match(/data-open="1"/g) ?? []).length === 2 && (html.match(/data-unread="1"/g) ?? []).length === 1 && !html.includes("opacity:0.55"), html);
 ok("who acked is shown", html.includes("קיבלתי") && html.includes("אלי"), html);
 ok("state label shown ('הערה קטנה · אושר עם הערות')", html.includes("הערה קטנה"), html);
 const htmlToday = renderToString(<ClientCommentHistory items={hist} />);
@@ -192,7 +193,7 @@ const ra = strip(readFileSync(join(root, "src/app/api/productions/[id]/review-ac
 ok("review-ack: planReviewAck decides; comments acked with acked_at/acked_by, never deleted", /planReviewAck\(/.test(ra) && /\.update\(\{ acked_at: nowIso, acked_by: user\.id \}\)/.test(ra) && !/\.delete\(/.test(ra));
 ok("review-ack: the dot goes out only when the plan says so", /if \(plan\.clearAttention\) patch\.needs_attention = false;/.test(ra));
 const modal = strip(readFileSync(join(root, "src/components/ClientNotesModal.tsx"), "utf8"));
-ok("window: renders the full history and sends up_to with 'קיבלתי'", /<ClientCommentHistory items=\{items\} \/>/.test(modal) && /up_to: upTo/.test(modal));
+ok("window: renders the full history and sends up_to with 'קיבלתי'", /<ClientCommentHistory items=\{items\}/.test(modal) && /up_to: upTo/.test(modal));
 ok("window: 'אין פירוט הערות בסבב זה' only when there are no comments either", /\{!hasDetail && !hasComments && \(/.test(modal));
 const pr = strip(readFileSync(join(root, "src/app/productions/[id]/review-notes/print/page.tsx"), "utf8"));
 const iGate = pr.indexOf("if (!profile.can_edit_stages)");

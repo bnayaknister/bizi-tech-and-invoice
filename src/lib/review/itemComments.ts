@@ -85,6 +85,8 @@ export type ClientComment = {
   created_at: string;
   /** E13-8c: written through THIS link (the round on screen) */
   mine: boolean;
+  /** E13-9 (owner 18.10): the team marked it "טופל" — the client sees "טופל ✓". Who and when stay internal */
+  resolved: boolean;
 };
 
 export type ApprovalRow = { decision: string; decided_at: string; created_at: string; id: string; revoked_at: string | null; revoked_reason: string | null };
@@ -128,7 +130,7 @@ export async function loadClientComments(
   if (!ids.length) return { comments: {}, reapprovable: {}, currentVersion: {} };
   const { data: cRows, error: cErr } = await admin
     .from("client_review_comments")
-    .select("id,item_id,version_id,link_id,kind,pin_number,time_ms,body,author_kind,created_at,is_backfill")
+    .select("id,item_id,version_id,link_id,kind,pin_number,time_ms,body,author_kind,created_at,is_backfill,resolved_at")
     .in("item_id", ids)
     .eq("is_backfill", false)
     .eq("author_kind", "client")
@@ -157,6 +159,7 @@ export async function loadClientComments(
       body: r.body,
       created_at: r.created_at,
       mine: r.link_id === linkId,
+      resolved: !!r.resolved_at,
     });
   }
   const reapprovable: Record<string, boolean> = {};

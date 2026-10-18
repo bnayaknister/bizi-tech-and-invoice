@@ -98,6 +98,7 @@ export async function POST(request: Request, { params }: { params: { token: stri
       body: action.body,
       created_at: new Date().toISOString(),
       mine: true,
+      resolved: false,
     },
     revoked: !!res.revoked,
   });

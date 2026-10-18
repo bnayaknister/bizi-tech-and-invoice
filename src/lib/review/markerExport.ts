@@ -9,8 +9,9 @@
 //     HH:MM:SS:FF), which is added to every pin.
 //   · a pin lands on the NEAREST frame (time_ms is exact to the millisecond;
 //     a marker can only sit on a frame).
-//   · default: the OPEN comments of the LATEST version; "all" = every comment
-//     of that version, acked ones too.
+//   · default: the OPEN comments of the LATEST version — E13-9 (owner 18.10):
+//     open = not marked "טופל", acked ("קיבלתי") or not; "all" = every
+//     comment of that version, resolved ones too.
 //   · general comments (no time) → ONE marker at the start (+ offset) holding
 //     all of their text, so nothing is lost (owner 18.10).
 //

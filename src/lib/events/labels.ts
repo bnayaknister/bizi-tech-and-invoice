@@ -11,6 +11,8 @@ export const EVENT_LABEL: Record<string, string> = {
   client_review_approval_revoked: "הלקוח ביטל אישור בהערה",
   client_review_reapproved: "הלקוח אישר שוב",
   client_review_post_response_comment: "הלקוח הוסיף הערה אחרי התשובה",
+  client_review_comment_resolved: "הערת לקוח סומנה כטופלה",
+  client_review_comment_unresolved: "סימון 'טופל' בוטל בהערת לקוח",
   client_review_download: "הלקוח הוריד קובץ",
   client_review_download_missing: "הלקוח ניסה להוריד, והקובץ חסר ב-Drive",
   client_review_comments_unsent: "הלקוח השאיר הערות ולא שלח (24 שעות)",

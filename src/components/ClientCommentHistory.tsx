@@ -2,8 +2,11 @@ import { displayDateTime } from "@/lib/dates";
 import type { CommentState } from "@/lib/review/commentHistory";
 
 // E13-8c — the client's comments, ALL of them (owner 17.10): every item,
-// every version, every round. Open ones stand out; handled ones ("קיבלתי",
-// later "טופל") are dimmed — never hidden. One component for the drawer, the
+// every version, every round. Open ones stand out; handled ones are dimmed —
+// never hidden. E13-9 (owner 18.10): "handled" = "טופל". An acked ("קיבלתי")
+// comment is still open work: full strength, only the "חדשה" accent goes.
+// The drawer and the window pass onResolve → a "טופל" / "בטל טופל" button per
+// comment; the PDF page passes nothing and shows the marks only. One component for the drawer, the
 // "💬 הערות הלקוח" window and its PDF page, so the three never disagree.
 // No hooks: it renders on the server (the print page) and in the browser.
 
@@ -19,8 +22,12 @@ export type HistoryCommentView = {
   state: CommentState;
   state_label: string;
   open: boolean;
+  /** not acked, not resolved (optional: older payloads omit it → read as open) */
+  unread?: boolean;
   acked_at: string | null;
   acked_by_name: string | null;
+  resolved_at?: string | null;
+  resolved_by_name?: string | null;
   is_backfill: boolean;
 };
 export type HistoryItemView = { id: string; label: string; approved: boolean; comments: HistoryCommentView[] };
@@ -50,11 +57,17 @@ export default function ClientCommentHistory({
   items,
   emptyText = "אין הערות מהלקוח.",
   itemActions,
+  onResolve,
+  busyId = null,
 }: {
   items: HistoryItemView[];
   emptyText?: string;
   /** E13-11: per item, under its header — the drawer's "⬇ מרקרים ל-Premiere" (never in the client's window / PDF) */
   itemActions?: (item: HistoryItemView) => React.ReactNode;
+  /** E13-9: mark / unmark "טופל" on one comment. Absent → no buttons (the PDF page) */
+  onResolve?: (commentId: string, resolved: boolean) => void;
+  /** the comment whose mark is being saved — its button is disabled */
+  busyId?: string | null;
 }) {
   const withComments = items.filter((i) => i.comments.length);
   if (!withComments.length) return <div style={{ fontSize: 13, opacity: 0.7 }}>{emptyText}</div>;
@@ -67,19 +80,21 @@ export default function ClientCommentHistory({
             <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 6, fontWeight: 700, fontSize: 14 }}>
               <span>{it.label}</span>
               <span style={{ fontSize: 12, fontWeight: 400, opacity: 0.75 }}>
-                {it.comments.length} הערות{open ? ` · ${open} פתוחות` : ""} · {it.approved ? "מאושר ✓" : "ממתין"}
+                {it.comments.length} הערות{open ? ` · ${open} לא טופלו` : ""} · {it.approved ? "מאושר ✓" : "ממתין"}
               </span>
             </div>
             {itemActions?.(it)}
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {it.comments.map((c) => {
                 const tone = STATE_TONE[c.state];
+                const unread = c.unread ?? c.open;
                 return (
                   <div
                     key={c.id}
                     data-open={c.open ? "1" : "0"}
+                    data-unread={unread ? "1" : "0"}
                     style={{
-                      border: c.open ? "1px solid rgba(139,92,246,0.55)" : "1px solid rgba(127,127,127,0.25)",
+                      border: unread ? "1px solid rgba(139,92,246,0.55)" : "1px solid rgba(127,127,127,0.25)",
                       borderRadius: 10,
                       padding: "8px 10px",
                       opacity: c.open ? 1 : 0.55,
@@ -102,13 +117,40 @@ export default function ClientCommentHistory({
                       <span style={{ opacity: 0.7 }}>{displayDateTime(c.created_at) ?? ""}</span>
                       <span style={{ background: tone.bg, color: tone.fg, borderRadius: 999, padding: "1px 8px", fontWeight: 700 }}>{c.state_label}</span>
                       {c.is_backfill && <span style={{ opacity: 0.7 }}>היסטוריה</span>}
+                      {unread && c.open && <span style={{ color: "#8b5cf6", fontWeight: 700 }}>חדשה</span>}
                       {c.acked_at && (
                         <span style={{ opacity: 0.85 }}>
                           ✓ קיבלתי{c.acked_by_name ? ` · ${c.acked_by_name}` : ""} · {displayDateTime(c.acked_at) ?? ""}
                         </span>
                       )}
+                      {c.resolved_at && (
+                        <span style={{ color: "#16a34a", fontWeight: 700 }}>
+                          ✓ טופל{c.resolved_by_name ? ` · ${c.resolved_by_name}` : ""} · {displayDateTime(c.resolved_at) ?? ""}
+                        </span>
+                      )}
+                      {onResolve && (
+                        <button
+                          type="button"
+                          onClick={() => onResolve(c.id, !c.resolved_at)}
+                          disabled={busyId === c.id}
+                          style={{
+                            marginInlineStart: "auto",
+                            border: "1px solid rgba(127,127,127,0.4)",
+                            borderRadius: 8,
+                            padding: "1px 8px",
+                            fontSize: 12,
+                            fontWeight: 700,
+                            background: "transparent",
+                            color: c.resolved_at ? "inherit" : "#16a34a",
+                            cursor: busyId === c.id ? "wait" : "pointer",
+                            opacity: busyId === c.id ? 0.5 : 1,
+                          }}
+                        >
+                          {busyId === c.id ? "שומר…" : c.resolved_at ? "בטל טופל" : "✓ טופל"}
+                        </button>
+                      )}
                     </div>
-                    <div dir="auto" style={{ fontSize: 14, whiteSpace: "pre-wrap", fontWeight: c.open ? 600 : 400 }}>
+                    <div dir="auto" style={{ fontSize: 14, whiteSpace: "pre-wrap", fontWeight: unread ? 600 : 400 }}>
                       {c.body}
                     </div>
                   </div>

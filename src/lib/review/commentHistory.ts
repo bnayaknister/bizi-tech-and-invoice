@@ -6,6 +6,9 @@ import type { Database } from "@/lib/supabase/database.types";
 // (owner 17.10, after the אסתטיטוקס test): no comment or pin ever leaves the
 // team's view — not after a re-approval, not after a new version, not after
 // "קיבלתי". Open ones stand out, handled ones are dimmed, none is hidden.
+// E13-9 (owner 18.10): "handled" = marked "טופל" (resolved_at). "קיבלתי" is
+// "read" — it puts the dot out but leaves the comment open: an acked comment
+// is still work to do, and still goes to the Premiere markers export.
 //
 // The source is client_review_comments (0114, append-only from the app: no
 // code path deletes a row) — never client_review_items.last_note, which is a
@@ -54,6 +57,7 @@ export type HcComment = {
   acked_at: string | null;
   acked_by: string | null;
   resolved_at: string | null;
+  resolved_by?: string | null;
   after_response: boolean;
   is_backfill: boolean;
 };
@@ -82,10 +86,14 @@ export function commentState(c: HcComment, approvals: HcApproval[]): CommentStat
 export type HistoryComment = HcComment & {
   state: CommentState;
   state_label: string;
+  /** E13-9 (owner 18.10): not marked "טופל" yet — what "פתוחות" counts and the markers export takes, acked or not */
   open: boolean;
+  /** not acked and not resolved — what keeps the red dot lit (shown as "חדשה") */
+  unread: boolean;
   version_number: number | null;
   version_file: string | null;
   acked_by_name: string | null;
+  resolved_by_name: string | null;
 };
 
 export type HistoryItem = { id: string; kind: string; reel_index: number | null; approved: boolean; label: string; comments: HistoryComment[] };
@@ -116,10 +124,12 @@ export function buildCommentHistory(input: {
             ...c,
             state,
             state_label: COMMENT_STATE_LABEL[state],
-            open: !c.acked_at && !c.resolved_at,
+            open: !c.resolved_at,
+            unread: !c.acked_at && !c.resolved_at,
             version_number: v?.number ?? null,
             version_file: v?.original_filename ?? null,
             acked_by_name: c.acked_by ? input.names[c.acked_by] ?? null : null,
+            resolved_by_name: c.resolved_by ? input.names[c.resolved_by] ?? null : null,
           };
         })
         .sort((a, b) => {
@@ -153,7 +163,7 @@ export async function loadCommentHistory(admin: SupabaseClient<Database>, produc
   const [{ data: comments, error: cErr }, { data: approvals, error: aErr }, { data: versions, error: vErr }] = await Promise.all([
     admin
       .from("client_review_comments")
-      .select("id,item_id,version_id,link_id,kind,pin_number,time_ms,body,author_kind,created_at,acked_at,acked_by,resolved_at,after_response,is_backfill")
+      .select("id,item_id,version_id,link_id,kind,pin_number,time_ms,body,author_kind,created_at,acked_at,acked_by,resolved_at,resolved_by,after_response,is_backfill")
       .in("item_id", ids),
     admin.from("client_review_approvals").select("item_id,link_id,decision,decided_at,revoked_at,revoked_reason").in("item_id", ids),
     admin.from("client_review_versions").select("id,number,original_filename").in("item_id", ids),
@@ -161,7 +171,7 @@ export async function loadCommentHistory(admin: SupabaseClient<Database>, produc
   if (cErr) throw new Error(`client_review_comments: ${cErr.message}`);
   if (aErr) throw new Error(`client_review_approvals: ${aErr.message}`);
   if (vErr) throw new Error(`client_review_versions: ${vErr.message}`);
-  const ackers = Array.from(new Set((comments ?? []).map((c) => c.acked_by).filter((x): x is string => !!x)));
+  const ackers = Array.from(new Set((comments ?? []).flatMap((c) => [c.acked_by, c.resolved_by]).filter((x): x is string => !!x)));
   const names: Record<string, string> = {};
   if (ackers.length) {
     const { data: profs } = await admin.from("profiles").select("id,name").in("id", ackers);

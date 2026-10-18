@@ -86,8 +86,8 @@ export default function MarkerExportControls({ productionId, itemId, hasComments
           onChange={(e) => setScope(e.target.value === "all" ? "all" : "open")}
           className="bg-transparent border border-[var(--rule)] rounded px-1 py-0.5"
         >
-          <option value="open">הפתוחות בגרסה האחרונה</option>
-          <option value="all">הכול (כולל שקיבלתי)</option>
+          <option value="open">שלא טופלו, בגרסה האחרונה</option>
+          <option value="all">הכול (כולל שטופלו)</option>
         </select>
         <a
           href={disabled ? undefined : href("json")}

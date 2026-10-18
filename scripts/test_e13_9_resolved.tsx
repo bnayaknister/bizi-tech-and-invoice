@@ -1,0 +1,149 @@
+/**
+ * E13-9 — "טופל" on one client comment (owner 18.10).
+ *   src/lib/review/resolveComment.ts        what a mark writes, when the dot goes out
+ *   src/lib/review/commentHistory.ts        open = not "טופל"; unread = not acked, not resolved
+ *   src/components/ClientCommentHistory.tsx the mark, who and when, the button, dimmed when handled
+ *   src/lib/review/markerExport.ts          "open" export = not "טופל", acked or not
+ *   src/app/r/[token]/ReviewPlayer.tsx      the client sees "טופל ✓"
+ *   + static checks on the route, the client's read, the window and the drawer
+ *
+ * Run:  npx tsx --tsconfig scripts/tsconfig.render.json scripts/test_e13_9_resolved.tsx
+ *
+ * ═══ F19 ═══ No database, no network.
+ */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import React from "react";
+import { renderToString } from "react-dom/server";
+import { planResolve, type ResolveRound } from "../src/lib/review/resolveComment";
+import { buildCommentHistory, type HcComment } from "../src/lib/review/commentHistory";
+import ClientCommentHistory from "../src/components/ClientCommentHistory";
+import { buildMarkers } from "../src/lib/review/markerExport";
+import ReviewPlayer, { type ClientCommentView, type ClientVersionView } from "../src/app/r/[token]/ReviewPlayer";
+import { EVENT_LABEL } from "../src/lib/events/labels";
+
+let passed = 0;
+let failed = 0;
+function check(name: string, got: unknown, want: unknown) {
+  const g = JSON.stringify(got);
+  const w = JSON.stringify(want);
+  if (g === w) {
+    passed++;
+    console.log(`  ✅ ${name}`);
+  } else {
+    failed++;
+    console.log(`  ❌ ${name}\n       got:  ${g?.slice(0, 600)}\n       want: ${w?.slice(0, 600)}`);
+  }
+}
+const ok = (name: string, cond: boolean, detail = "") => {
+  if (!cond && detail) console.log(`       ${detail.slice(0, 500)}`);
+  check(name, cond, true);
+};
+const section = (t: string) => console.log(`\n── ${t}`);
+const root = join(__dirname, "..");
+const strip = (s: string) => s.replace(/^\s*\/\/.*$/gm, "");
+
+// ══════════════════════════════════════════════════════════════════════
+section("planResolve — what a mark writes");
+const fresh = { acked_at: null, resolved_at: null };
+const ackedC = { acked_at: "2026-10-18T09:00:00Z", resolved_at: null };
+const doneC = { acked_at: "2026-10-18T09:00:00Z", resolved_at: "2026-10-18T10:00:00Z" };
+const revRound = (over: Partial<NonNullable<ResolveRound>> = {}): ResolveRound => ({ id: "R1", episode_response: null, reels_response: "revisions", episode_note: null, reels_note: null, ...over });
+const base = { otherUnread: 0, latestRound: null as ResolveRound, prodAckLinkId: null as string | null, missingDownloads: 0 };
+
+check("resolve an unread comment, nothing else waiting → stamp + ack + dot out", planResolve({ ...base, resolved: true, comment: fresh }), { kind: "resolve", ack: true, ackRound: false, clearAttention: true });
+check("resolve twice → nothing (a double click writes no second stamp)", planResolve({ ...base, resolved: true, comment: doneC }), { kind: "nothing" });
+check("unresolve a resolved comment → unresolve", planResolve({ ...base, resolved: false, comment: doneC }), { kind: "unresolve" });
+check("unresolve one that is not resolved → nothing", planResolve({ ...base, resolved: false, comment: ackedC }), { kind: "nothing" });
+check("an already-acked comment → no second ack, and the dot is NOT touched (someone may have lit it since)", planResolve({ ...base, resolved: true, comment: ackedC }), { kind: "resolve", ack: false, ackRound: false, clearAttention: false });
+check("another comment still unread → the dot stays", planResolve({ ...base, otherUnread: 1, resolved: true, comment: fresh }), { kind: "resolve", ack: true, ackRound: false, clearAttention: false });
+check("revisions round of pins only, last unread comment → the round is acked too, dot out", planResolve({ ...base, latestRound: revRound(), resolved: true, comment: fresh }), { kind: "resolve", ack: true, ackRound: true, clearAttention: true });
+check("revisions round with TYPED notes → the round still needs 'קיבלתי', dot stays", planResolve({ ...base, latestRound: revRound({ reels_note: "ריל 1: לקצר" }), resolved: true, comment: fresh }), { kind: "resolve", ack: true, ackRound: false, clearAttention: false });
+check("a note of only spaces counts as no text", planResolve({ ...base, latestRound: revRound({ episode_note: "   " }), resolved: true, comment: fresh }).kind === "resolve" && (planResolve({ ...base, latestRound: revRound({ episode_note: "   " }), resolved: true, comment: fresh }) as { ackRound: boolean }).ackRound, true);
+check("revisions round already acked → no round ack, dot out", planResolve({ ...base, latestRound: revRound(), prodAckLinkId: "R1", resolved: true, comment: fresh }), { kind: "resolve", ack: true, ackRound: false, clearAttention: true });
+check("revisions round, but other comments unread → no round ack, dot stays", planResolve({ ...base, otherUnread: 2, latestRound: revRound(), resolved: true, comment: fresh }), { kind: "resolve", ack: true, ackRound: false, clearAttention: false });
+check("an approved round → nothing to ack, dot out", planResolve({ ...base, latestRound: revRound({ reels_response: "approved" }), resolved: true, comment: fresh }), { kind: "resolve", ack: true, ackRound: false, clearAttention: true });
+check("a Drive file the client could not download → the dot stays (shared dot)", planResolve({ ...base, missingDownloads: 1, resolved: true, comment: fresh }), { kind: "resolve", ack: true, ackRound: false, clearAttention: false });
+
+// ══════════════════════════════════════════════════════════════════════
+section("buildCommentHistory — open = not 'טופל', unread = not acked and not resolved");
+const IT = "item-1";
+const V = "ver-2";
+const c = (id: string, over: Partial<HcComment> = {}): HcComment => ({
+  id, item_id: IT, version_id: V, link_id: "L1", kind: "pin", pin_number: Number(id.slice(1)), time_ms: 1000 * Number(id.slice(1)), body: `נעץ ${id}`,
+  author_kind: "client", created_at: "2026-10-18T08:00:00Z", acked_at: null, acked_by: null, resolved_at: null, resolved_by: null, after_response: false, is_backfill: false, ...over,
+});
+const comments = [
+  c("p1"),
+  c("p2", { acked_at: "2026-10-18T09:00:00Z", acked_by: "u1" }),
+  c("p3", { acked_at: "2026-10-18T09:00:00Z", acked_by: "u1", resolved_at: "2026-10-18T10:00:00Z", resolved_by: "u2" }),
+];
+const hist = buildCommentHistory({
+  items: [{ id: IT, kind: "reel", reel_index: 1, approved: false }],
+  comments,
+  approvals: [],
+  versions: [{ id: V, number: 2, original_filename: "reel01 v2.mp4" }],
+  names: { u1: "אלי", u2: "דנה" },
+});
+const rows = hist[0].comments.map((x) => [x.id, x.open, x.unread, x.acked_by_name, x.resolved_by_name]);
+check("new / acked / resolved", rows, [["p1", true, true, null, null], ["p2", true, false, "אלי", null], ["p3", false, false, "אלי", "דנה"]]);
+check("nothing filtered out — the resolved one is still in the list", hist[0].comments.length, 3);
+
+// ══════════════════════════════════════════════════════════════════════
+section("ClientCommentHistory — the mark, who and when, the button");
+const plain = renderToString(<ClientCommentHistory items={hist} />);
+ok("'✓ טופל · דנה' shown on the resolved one", plain.replace(/<!-- -->/g, "").includes("✓ טופל · דנה"), plain);
+ok("only the resolved one is dimmed", (plain.match(/opacity:0.55/g) ?? []).length === 1, plain);
+ok("'חדשה' only on the unread one", (plain.match(/>חדשה</g) ?? []).length === 1, plain);
+ok("header counts what is not resolved: 2 לא טופלו", plain.includes("2 לא טופלו"), plain);
+ok("no onResolve (the PDF page) → no buttons", !plain.includes("<button"), plain);
+const withBtn = renderToString(<ClientCommentHistory items={hist} onResolve={() => {}} busyId="p2" />);
+ok("a button per comment: '✓ טופל' on the open ones, 'בטל טופל' on the resolved", (withBtn.match(/<button/g) ?? []).length === 3 && withBtn.includes("בטל טופל") && withBtn.includes("✓ טופל</button>"), withBtn);
+ok("the busy one reads 'שומר…' and is disabled", /disabled=""[^>]*>שומר…<\/button>/.test(withBtn), withBtn);
+
+// ══════════════════════════════════════════════════════════════════════
+section("markers — 'open' = not 'טופל', acked or not (the 18.10 bug: acked pins exported 0)");
+const exp = hist[0].comments.map((x) => ({ ...x, version_id: x.version_id }));
+const mOpen = buildMarkers({ comments: exp, versionId: V, versionNumber: 2, fileName: "reel01 v2.mp4", formatDate: (s: string) => s.slice(0, 10), scope: "open", offsetFrames: 0 });
+const mAll = buildMarkers({ comments: exp, versionId: V, versionNumber: 2, fileName: "reel01 v2.mp4", formatDate: (s: string) => s.slice(0, 10), scope: "all", offsetFrames: 0 });
+check("open → the new pin AND the acked one; the resolved one is out", mOpen.map((m) => m.name.split(" ")[0]), ["#1", "#2"]);
+check("all → all three, the resolved one too", mAll.map((m) => m.name.split(" ")[0]), ["#1", "#2", "#3"]);
+const allAcked = buildCommentHistory({ items: [{ id: IT, kind: "reel", reel_index: 1, approved: true }], comments: [1, 2, 3, 4, 5, 6, 7, 8].map((n) => c(`p${n}`, { acked_at: "2026-10-18T09:00:00Z" })), approvals: [], versions: [], names: {} });
+check("אסתטיטוקס shape: 8 pins all acked, none resolved → 'open' exports 8 (was 0)", buildMarkers({ comments: allAcked[0].comments, versionId: V, versionNumber: 2, fileName: null, formatDate: (s: string) => s, scope: "open", offsetFrames: 0 }).length, 8);
+
+// ══════════════════════════════════════════════════════════════════════
+section("the client's page — 'טופל ✓' beside the comment");
+const drive: ClientVersionView = { id: V, number: 2, kind: "drive", mediaLink: "https://drive.google.com/file/d/x/view" };
+const cc = (id: string, kind: "pin" | "general", resolved?: boolean): ClientCommentView => ({ id, version_id: V, kind, pin_number: kind === "pin" ? 1 : null, time_ms: kind === "pin" ? 4442 : null, body: `הערה ${id}`, created_at: "2026-10-18T08:00:00Z", resolved });
+const page = renderToString(
+  <ReviewPlayer token="t" versions={[drive]} selectedId={V} onSelect={() => {}} renderDrive={() => <div>drive</div>} comments={[cc("a", "pin", true), cc("b", "general", true), cc("c", "general", false), cc("d", "pin")]} />
+);
+ok("two resolved → two 'טופל ✓'", (page.match(/טופל ✓/g) ?? []).length === 2, page);
+ok("all four comments still shown", ["הערה a", "הערה b", "הערה c", "הערה d"].every((t) => page.includes(t)), page);
+ok("no team names on the client's page", !page.includes("דנה") && !page.includes("אלי"), page);
+
+// ══════════════════════════════════════════════════════════════════════
+section("static: the route, the client's read, the window, the drawer, the labels");
+const route = strip(readFileSync(join(root, "src/app/api/productions/[id]/review-comments/[commentId]/resolve/route.ts"), "utf8"));
+ok("route: logged in + can_edit_stages", /status: 401/.test(route) && /can_edit_stages/.test(route) && /status: 403/.test(route));
+ok("route: the comment must belong to THIS production (through its item)", /item\.production_id !== params\.id/.test(route));
+ok("route: planResolve decides", /planResolve\(/.test(route));
+ok("route: the stamp is guarded (a race is a no-op), the ack too", /\.update\(\{ resolved_at: nowIso, resolved_by: user\.id \}\)[\s\S]{0,80}\.is\("resolved_at", null\)/.test(route) && /\.update\(\{ acked_at: nowIso, acked_by: user\.id \}\)[\s\S]{0,80}\.is\("acked_at", null\)/.test(route));
+ok("route: un-marking clears resolved_* only — never the ack", /\.update\(\{ resolved_at: null, resolved_by: null \}\)/.test(route) && !/acked_at: null/.test(route));
+ok("route: the dot only when the plan says so", /if \(plan\.clearAttention\) patch\.needs_attention = false;/.test(route));
+ok("route: nothing deleted", !/\.delete\(/.test(route));
+ok("route: reads the missing-download entries (shared dot)", /outstandingMissing\(/.test(route));
+ok("both events have Hebrew labels", !!EVENT_LABEL.client_review_comment_resolved && !!EVENT_LABEL.client_review_comment_unresolved);
+const ic = strip(readFileSync(join(root, "src/lib/review/itemComments.ts"), "utf8"));
+ok("the client's read takes resolved_at, never who resolved", /resolved_at/.test(ic) && !/resolved_by/.test(ic) && /resolved: !!r\.resolved_at/.test(ic));
+const modal = strip(readFileSync(join(root, "src/components/ClientNotesModal.tsx"), "utf8"));
+ok("window: passes onResolve, reloads after", /onResolve=\{/.test(modal) && /postResolve\(/.test(modal) && /setReloadKey/.test(modal));
+const drawer = strip(readFileSync(join(root, "src/components/EntityDrawer.tsx"), "utf8"));
+ok("drawer: onResolve only with stage edit", /onResolve=\{data\.canEditStages \? /.test(drawer));
+const rc = strip(readFileSync(join(root, "src/app/api/productions/[id]/review-current/route.ts"), "utf8"));
+ok("review-current: the 'קיבלתי' count reads UNREAD, not open", /filter\(\(c\) => c\.unread\)/.test(rc));
+const mec = readFileSync(join(root, "src/components/MarkerExportControls.tsx"), "utf8");
+ok("export picker reads 'שלא טופלו' / 'כולל שטופלו'", mec.includes("שלא טופלו") && mec.includes("כולל שטופלו"));
+
+console.log(`\n${passed} passed, ${failed} failed`);
+if (failed) process.exit(1);
