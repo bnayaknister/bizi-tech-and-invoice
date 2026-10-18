@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { LINK_LOCKED_ERROR, hasLiveBunnyVersion } from "@/lib/review/itemLinks";
 
 // Per-item media links for the client review page (0057, item-based review).
 // The drawer saves a Drive link per deliverable (episode / reel 1..n) here on
@@ -54,9 +55,21 @@ export async function PATCH(request: Request, { params }: { params: { id: string
 
   const { data: existing, error: exErr } = await admin
     .from("client_review_items")
-    .select("id,kind,reel_index")
+    .select("id,kind,reel_index,media_link")
     .eq("production_id", params.id);
   if (exErr) return NextResponse.json({ error: exErr.message }, { status: 500 });
+
+  // owner 18.10: an item with a Bunny version has ONE link — the version's
+  // Drive file, written by "שלח לביקורת". Its old field is read-only in the
+  // drawer, and here: a different value is refused, the same value is a no-op.
+  const existingIds = (existing ?? []).map((e) => e.id as string);
+  const { data: verRows, error: vErr } = existingIds.length
+    ? await admin.from("client_review_versions").select("item_id,source,bunny_status").in("item_id", existingIds)
+    : { data: [], error: null };
+  if (vErr) return NextResponse.json({ error: vErr.message }, { status: 500 });
+  const lockedIds = new Set(
+    existingIds.filter((id) => hasLiveBunnyVersion(((verRows ?? []) as { item_id: string; source: string; bunny_status: string | null }[]).filter((v) => v.item_id === id)))
+  );
 
   for (const p of patches) {
     const reelIndex = p.kind === "reel" ? Number(p.reel_index) : null;
@@ -64,6 +77,10 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     const match = (existing ?? []).find(
       (e) => e.kind === p.kind && ((e.reel_index as number | null) ?? null) === reelIndex
     );
+    if (match && lockedIds.has(match.id as string)) {
+      if (((match.media_link as string | null) ?? null) === mediaLink) continue;
+      return NextResponse.json({ error: LINK_LOCKED_ERROR, code: "link_locked" }, { status: 409 });
+    }
     if (match) {
       const { error } = await admin
         .from("client_review_items")

@@ -1,4 +1,5 @@
 import { createSign } from "node:crypto";
+import { FOLDER_LINK_ERROR, isDriveFolderLink } from "@/lib/review/itemLinks";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Google Drive, READ-ONLY, for E13 review media (plan §5.2). Server-side only.
@@ -198,6 +199,7 @@ export async function isInsideFolder(
 
 export type ReviewFileRejection =
   | "bad_link"
+  | "folder"
   | "not_visible"
   | "trashed"
   | "system_file"
@@ -231,6 +233,8 @@ const reject = (code: ReviewFileRejection, message: string): ReviewFileCheck => 
  * as 1280x720 (16.10), so width/height cannot tell.
  */
 export async function checkReviewFile(input: string, opts: { token: string; folderId?: string }): Promise<ReviewFileCheck> {
+  // owner 18.10: a folder link is the common mistake — say so, plainly
+  if (isDriveFolderLink(input)) return reject("folder", FOLDER_LINK_ERROR);
   const fileId = extractDriveFileId(input);
   if (!fileId) return reject("bad_link", "זה לא קישור לקובץ ב-Drive. העתק את הקישור של הקובץ עצמו (לא של תיקייה)");
   const folderId = opts.folderId ?? reviewFolderId();

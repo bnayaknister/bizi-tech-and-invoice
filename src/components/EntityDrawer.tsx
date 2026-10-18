@@ -34,6 +34,7 @@ import ReviewVersionsPanel, { type PanelVersion } from "@/components/ReviewVersi
 import ClientCommentHistory, { type HistoryItemView } from "@/components/ClientCommentHistory";
 import MarkerExportControls from "@/components/MarkerExportControls";
 import { eventLabel } from "@/lib/events/labels";
+import { AUTO_LINK_NOTE, hasLiveBunnyVersion } from "@/lib/review/itemLinks";
 import IconTile, { type IconAccent } from "@/components/IconTile";
 import { MILESTONE_META, type MilestoneState } from "@/lib/finance/milestone";
 import { displayDate, displayDateTime, displayLogTime } from "@/lib/dates";
@@ -489,7 +490,7 @@ function ReviewMaterials({ state }: { state: MaterialsState }) {
 // without hunting. Stage steps advance on tap (record→edit→deliver→back).
 function ProductionTrackBlock({
   icon, title, stages, note, approved, canEdit, onAdvance, tally, onSend, saving, sending, sent,
-  mediaUrl, onMediaChange, onMediaBlur, mediaFields, liveLinks = [], materials,
+  mediaUrl, onMediaChange, onMediaBlur, mediaReadOnly, mediaFields, liveLinks = [], materials,
 }: {
   icon: string;
   title: string;
@@ -509,6 +510,9 @@ function ProductionTrackBlock({
   onMediaChange: (v: string) => void;
   // persist-on-blur for the single input (0057 — saved to the review item)
   onMediaBlur?: () => void;
+  // owner 18.10: the item has a Bunny version → its link is the version's
+  // Drive file, written by "שלח לביקורת"; shown read-only with AUTO_LINK_NOTE
+  mediaReadOnly?: boolean;
   // one labelled input per deliverable (reel 1..n, 0057); replaces the single
   // input when provided — the reels block passes these. `status` (stage 1b)
   // shows what the client said about THIS deliverable: approved / pending /
@@ -519,6 +523,8 @@ function ProductionTrackBlock({
     onChange: (v: string) => void;
     onBlur: () => void;
     status?: { approved: boolean; note: string | null } | null;
+    /** owner 18.10: read-only — this reel has a Bunny version */
+    readOnly?: boolean;
   }[];
   // live links THIS button would supersede (Q7) — drives the warning line
   // only; the links themselves are listed once, above the whole send area
@@ -605,10 +611,12 @@ function ProductionTrackBlock({
                     <input
                       value={f.value}
                       onChange={(e) => f.onChange(e.target.value)}
-                      onBlur={f.onBlur}
+                      onBlur={f.readOnly ? undefined : f.onBlur}
+                      readOnly={f.readOnly}
+                      title={f.readOnly ? AUTO_LINK_NOTE : undefined}
                       placeholder="קישור דרייב לצפייה — אופציונלי"
                       dir="ltr"
-                      className="w-full text-[11px] bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-2.5 py-1.5 text-right outline-none focus:border-[var(--violet-light)]"
+                      className={`w-full text-[11px] bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-2.5 py-1.5 text-right outline-none focus:border-[var(--violet-light)] ${f.readOnly ? "opacity-60 cursor-default" : ""}`}
                     />
                     {f.status && (
                       <span
@@ -618,6 +626,7 @@ function ProductionTrackBlock({
                       </span>
                     )}
                   </div>
+                  {f.readOnly && <div className="mr-10 mt-0.5 text-[10px] text-[var(--faint)]">{AUTO_LINK_NOTE}</div>}
                   {f.status && !f.status.approved && f.status.note && (
                     <div className="mr-10 mt-0.5 text-[10px] text-rose-400">💬 {f.status.note}</div>
                   )}
@@ -626,14 +635,19 @@ function ProductionTrackBlock({
             </div>
           )}
           {!sent && !mediaFields && (
-            <input
-              value={mediaUrl}
-              onChange={(e) => onMediaChange(e.target.value)}
-              onBlur={onMediaBlur}
-              placeholder="קישור לצפייה (פרק/רילז) — אופציונלי"
-              dir="ltr"
-              className="w-full text-[11px] bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-2.5 py-1.5 text-right outline-none focus:border-[var(--violet-light)]"
-            />
+            <>
+              <input
+                value={mediaUrl}
+                onChange={(e) => onMediaChange(e.target.value)}
+                onBlur={mediaReadOnly ? undefined : onMediaBlur}
+                readOnly={mediaReadOnly}
+                title={mediaReadOnly ? AUTO_LINK_NOTE : undefined}
+                placeholder="קישור לצפייה (פרק/רילז) — אופציונלי"
+                dir="ltr"
+                className={`w-full text-[11px] bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-2.5 py-1.5 text-right outline-none focus:border-[var(--violet-light)] ${mediaReadOnly ? "opacity-60 cursor-default" : ""}`}
+              />
+              {mediaReadOnly && <div className="text-[10px] text-[var(--faint)]">{AUTO_LINK_NOTE}</div>}
+            </>
           )}
           {materials && <ReviewMaterials state={materials} />}
           <button
@@ -1022,6 +1036,18 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     }
     if (Object.keys(map).length) setReelMedia(map);
   }, [ref, data]);
+
+  // owner 18.10: an item with a Bunny version shows its link READ-ONLY, and
+  // "שלח לביקורת" rewrites it on the server — so follow every reload for
+  // those items (nothing is being typed there to clobber)
+  useEffect(() => {
+    if (!data || data.type !== "production") return;
+    for (const it of data.reviewItems ?? []) {
+      if (!it.media_link || !hasLiveBunnyVersion(it.versions ?? [])) continue;
+      if (it.kind === "episode") setEpisodeMedia(it.media_link);
+      else if (it.reel_index) setReelMedia((prev) => (prev[it.reel_index!] === it.media_link ? prev : { ...prev, [it.reel_index!]: it.media_link! }));
+    }
+  }, [data]);
 
   // 0076 — save transcript / audio onto the live round, or park them.
   //
@@ -2042,6 +2068,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           mediaUrl={episodeMedia}
                           onMediaChange={setEpisodeMedia}
                           onMediaBlur={() => void saveItemLink("episode", null, episodeMedia)}
+                          mediaReadOnly={hasLiveBunnyVersion((data.reviewItems ?? []).find((it) => it.kind === "episode")?.versions ?? [])}
                           liveLinks={liveForEpisode}
                           materials={{
                             // materials live ON the round; with no round there
@@ -2098,6 +2125,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                                     onChange: (v: string) => setReelMedia((prev) => ({ ...prev, [i]: v })),
                                     onBlur: () => void saveItemLink("reel", i, reelMedia[i] ?? ""),
                                     status: item ? { approved: item.approved, note: item.last_note } : null,
+                                    readOnly: hasLiveBunnyVersion(item?.versions ?? []),
                                   };
                                 })
                               : undefined

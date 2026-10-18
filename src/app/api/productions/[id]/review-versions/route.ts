@@ -5,6 +5,7 @@ import { sendForReview } from "@/lib/review/versions";
 import { supabaseVersionStore } from "@/lib/review/versionStore";
 import { describeError } from "@/lib/bunny/errors";
 import { resolveDownloadMissing } from "@/lib/review/downloadAttention";
+import { driveFileViewUrl } from "@/lib/review/itemLinks";
 
 // E13-4 — "שלח לביקורת": a Drive link → a Bunny review version (plan §5,
 // lib/review/versions.ts). Same permission model as review-items: an
@@ -38,8 +39,18 @@ export async function POST(request: Request, { params }: { params: { id: string 
     if (typeof sentId === "string") {
       try {
         const admin = createTypedAdminClient();
-        const { data: sent } = await admin.from("client_review_versions").select("item_id").eq("id", sentId).maybeSingle();
+        const { data: sent } = await admin.from("client_review_versions").select("item_id,drive_file_id").eq("id", sentId).maybeSingle();
         if (sent?.item_id) await resolveDownloadMissing(admin, params.id, { itemId: sent.item_id }, "new_version");
+        // owner 18.10: one link per deliverable — the item's old link (0057)
+        // follows the version just sent, so the two drawer fields never disagree
+        if (sent?.item_id && sent.drive_file_id) {
+          const { error: linkErr } = await admin
+            .from("client_review_items")
+            .update({ media_link: driveFileViewUrl(sent.drive_file_id) })
+            .eq("id", sent.item_id)
+            .eq("production_id", params.id);
+          if (linkErr) throw new Error(linkErr.message);
+        }
       } catch (e) {
         console.warn(JSON.stringify({ tag: "review_download_missing_resolve_failed", production_id: params.id, error: describeError(e) }));
       }

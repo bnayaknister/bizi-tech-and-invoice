@@ -314,7 +314,7 @@ async function main() {
   const out = await send("reel", 1, link("OUTSIDE0000000000001"));
   check("file outside BIZI PODCLUB → 422 outside_folder", [out.status, out.body.code], [422, "outside_folder"]);
   const fold = await send("reel", 1, "https://drive.google.com/drive/folders/ROOTfolder0000000001");
-  check("a folder link → 422 bad_link", [fold.status, fold.body.code], [422, "bad_link"]);
+  check("a folder link → 422 folder (owner 18.10: its own sentence)", [fold.status, fold.body.code], [422, "folder"]);
   check("no Bunny request, no item, no version after any refusal", [fetchPosts.length, items.length, vers.length], [0, 0, 0]);
 
   // ══════════════════════════════════════════════════════════════════════

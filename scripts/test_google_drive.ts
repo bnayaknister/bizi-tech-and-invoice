@@ -148,7 +148,8 @@ async function main() {
   check("folder link → null", extractDriveFileId(`https://drive.google.com/drive/folders/${ROOT}`), null);
   check("not a link → null", extractDriveFileId("פרק 8 סופי"), null);
   calls = [];
-  check("folder link refused as bad_link, zero Drive calls", [await code(`https://drive.google.com/drive/folders/${ROOT}`), calls.length], ["bad_link", 0]);
+  check("folder link refused as 'folder' (owner 18.10), zero Drive calls", [await code(`https://drive.google.com/drive/folders/${ROOT}`), calls.length], ["folder", 0]);
+  check("folder link under /drive/u/1/ refused the same way", await code(`https://drive.google.com/drive/u/1/folders/${ROOT}?usp=sharing`), "folder");
 
   // ══════════════════════════════════════════════════════════════════════
   section("accepted files — what the version row keeps");

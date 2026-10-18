@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { REFRESH_MS, versionLabel, type VersionTone } from "@/lib/review/versionLabel";
+import { FOLDER_LINK_ERROR, isDriveFolderLink } from "@/lib/review/itemLinks";
 
 // E13-4 — "שלח לביקורת" from the drawer (plan §9.2). One row per deliverable
 // (episode, reel 1..n): a Drive link field, the send button, and the item's
@@ -83,6 +84,12 @@ export default function ReviewVersionsPanel({
   async function send(row: Row) {
     const url = (links[row.key] ?? "").trim();
     if (!url) return;
+    // owner 18.10: a folder link is the common mistake — refused here at once
+    // (the server refuses it too: checkReviewFile → 'folder')
+    if (isDriveFolderLink(url)) {
+      setNotice((n) => ({ ...n, [row.key]: { text: FOLDER_LINK_ERROR, bad: true } }));
+      return;
+    }
     setBusy(row.key);
     setNotice((n) => ({ ...n, [row.key]: { text: "בודק את הקובץ ב-Drive…", bad: false } }));
     const res = await fetch(`/api/productions/${productionId}/review-versions`, {

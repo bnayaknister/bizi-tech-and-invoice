@@ -95,7 +95,12 @@ for (const [label, over] of [
   check(`v3 ${label} → not shown, the client still sees v2 as current (no notice)`, list.map((x) => x.number), [1, 2]);
 }
 const onlyHidden = clientVersionsForItem([drive1(), v({ number: 2, integrity: "mismatch" })], sign);
-check("v2 in mismatch and nothing else from Bunny → nothing changes, today's view stays", onlyHidden, []);
+// owner 18.10: "שלח לביקורת" now points the item's media_link at the NEW file at send time,
+// so a pending version falls back to the Drive HISTORY, never to media_link (decision 14)
+check("v2 in mismatch, nothing else from Bunny → the Drive history v1 (not the item's link, which now points at v2)", onlyHidden.map((x) => [x.number, x.kind]), [[1, "drive"]]);
+check("v2 still processing → the Drive history v1", clientVersionsForItem([drive1(), v({ number: 2, bunny_status: "processing", integrity: null })], sign).map((x) => [x.number, x.kind]), [[1, "drive"]]);
+check("v2 failed → as before: empty, today's view", clientVersionsForItem([drive1(), v({ number: 2, bunny_status: "failed" })], sign), []);
+check("v2 pending with NO Drive history → empty (nothing earlier to show)", clientVersionsForItem([v({ number: 2, bunny_status: "processing", integrity: null })], sign), []);
 const archived = clientVersionsForItem([drive1(), v({ number: 2, media_deleted_at: "2027-01-20T00:00:00Z", drive_file_id: "ORIG123" })], sign);
 check("v2 deleted at Bunny (E13-10) → archived: the download button, no player", archived.map((x) => x.kind), ["drive", "archived"]);
 check("the archived entry carries no Drive id or URL to the page (the route resolves it)", Object.keys(archived[1]).sort(), ["fileName", "id", "isAudio", "kind", "number"]);

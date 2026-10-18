@@ -85,7 +85,17 @@ export function clientVersionsForItem(
   sign: (guid: string) => SignedUrl = (g) => signedPlaybackUrl(g, PLAYBACK_TTL_SECONDS)
 ): ClientVersion[] {
   const sorted = [...rows].filter((r) => r.number !== null).sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
-  if (!sorted.some((r) => isPlayableBunny(r) || isArchivedBunny(r))) return [];
+  if (!sorted.some((r) => isPlayableBunny(r) || isArchivedBunny(r))) {
+    // owner 18.10: "שלח לביקורת" now writes the item's media_link to the NEW
+    // version's Drive file at send time. While that version is not shown yet
+    // (processing, unchecked, mismatch — decision 14: the client sees the
+    // previous one), media_link must not be the fallback: show the Drive
+    // history instead. No pending Bunny version, or no history → as before.
+    const pendingBunny = rows.some((r) => r.source === "bunny" && r.bunny_status !== "failed" && !isPlayableBunny(r) && !isArchivedBunny(r));
+    const history = sorted.filter((r) => r.source === "drive" && r.media_link);
+    if (!pendingBunny || !history.length) return [];
+    return history.map((r) => ({ id: r.id, number: r.number as number, kind: "drive" as const, mediaLink: r.media_link as string }));
+  }
   const out: ClientVersion[] = [];
   for (const r of sorted) {
     const n = r.number as number;
