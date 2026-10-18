@@ -15,12 +15,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import React from "react";
 import { renderToString } from "react-dom/server";
-import { planResolve, type ResolveRound } from "../src/lib/review/resolveComment";
-import { buildCommentHistory, type HcComment } from "../src/lib/review/commentHistory";
+import { planResolve, planResolveMany, type ResolveRound } from "../src/lib/review/resolveComment";
+import { buildCommentHistory, openOfLatest, type HcComment } from "../src/lib/review/commentHistory";
 import ClientCommentHistory from "../src/components/ClientCommentHistory";
 import { buildMarkers } from "../src/lib/review/markerExport";
 import ReviewPlayer, { type ClientCommentView, type ClientVersionView } from "../src/app/r/[token]/ReviewPlayer";
-import { EVENT_LABEL } from "../src/lib/events/labels";
+import { EVENT_LABEL, eventLabel } from "../src/lib/events/labels";
 
 let passed = 0;
 let failed = 0;
@@ -144,6 +144,58 @@ const rc = strip(readFileSync(join(root, "src/app/api/productions/[id]/review-cu
 ok("review-current: the 'קיבלתי' count reads UNREAD, not open", /filter\(\(c\) => c\.unread\)/.test(rc));
 const mec = readFileSync(join(root, "src/components/MarkerExportControls.tsx"), "utf8");
 ok("export picker reads 'שלא טופלו' / 'כולל שטופלו'", mec.includes("שלא טופלו") && mec.includes("כולל שטופלו"));
+
+// ══════════════════════════════════════════════════════════════════════
+section("✓ סמן הכול כטופל — the same rule over a set (owner 18.10)");
+const many = (cs: { id: string; acked_at: string | null; resolved_at: string | null }[], over: Partial<Parameters<typeof planResolveMany>[0]> = {}) =>
+  planResolveMany({ comments: cs, otherUnread: 0, latestRound: null, prodAckLinkId: null, missingDownloads: 0, ...over });
+check("three open (one unread) → all three stamped, only the unread acked, dot out",
+  many([{ id: "a", ...fresh }, { id: "b", ...ackedC }, { id: "c", ...ackedC }]),
+  { kind: "resolve", resolveIds: ["a", "b", "c"], ackIds: ["a"], ackRound: false, clearAttention: true });
+check("already-resolved ones in the set are left as they are", many([{ id: "a", ...fresh }, { id: "d", ...doneC }]).kind === "resolve" && (many([{ id: "a", ...fresh }, { id: "d", ...doneC }]) as { resolveIds: string[] }).resolveIds, ["a"]);
+check("all already resolved → nothing", many([{ id: "d", ...doneC }]), { kind: "nothing" });
+check("all acked already → stamped, the dot NOT touched (same as one mark)", many([{ id: "b", ...ackedC }]), { kind: "resolve", resolveIds: ["b"], ackIds: [], ackRound: false, clearAttention: false });
+check("unread comments outside the set → the dot stays", many([{ id: "a", ...fresh }], { otherUnread: 1 }), { kind: "resolve", resolveIds: ["a"], ackIds: ["a"], ackRound: false, clearAttention: false });
+check("pins-only revisions round, the set is the last unread → the round acked, dot out", many([{ id: "a", ...fresh }, { id: "b", ...fresh }], { latestRound: revRound() }), { kind: "resolve", resolveIds: ["a", "b"], ackIds: ["a", "b"], ackRound: true, clearAttention: true });
+check("one mark and a set of one agree", planResolve({ ...base, latestRound: revRound(), resolved: true, comment: fresh }), { kind: "resolve", ack: true, ackRound: true, clearAttention: true });
+
+section("openOfLatest — what the button counts");
+const V1 = "ver-1";
+const mixed = buildCommentHistory({
+  items: [{ id: IT, kind: "reel", reel_index: 1, approved: false }],
+  comments: [c("p1", { version_id: V1 }), c("p2"), c("p3", { acked_at: "2026-10-18T09:00:00Z" }), c("p4", { resolved_at: "2026-10-18T10:00:00Z" })],
+  approvals: [],
+  versions: [{ id: V1, item_id: IT, number: 1, original_filename: null }, { id: V, item_id: IT, number: 2, original_filename: null }],
+  names: {},
+});
+check("latest version = the highest number", mixed[0].latest_version_id, V);
+check("open of v2 only: the unread and the acked; not v1's, not the resolved one", openOfLatest(mixed[0]), ["p2", "p3"]);
+const noVer = buildCommentHistory({ items: [{ id: IT, kind: "episode", reel_index: null, approved: false }], comments: [c("p1", { version_id: null, kind: "general" })], approvals: [], versions: [], names: {} });
+check("an item with no version → its version-less open comments", [noVer[0].latest_version_id, openOfLatest(noVer[0])], [null, ["p1"]]);
+check("an older payload (no latest_version_id) → no button", openOfLatest({ comments: [{ id: "x", open: true, version_id: V }] }), []);
+
+const btnHtml = renderToString(<ClientCommentHistory items={mixed} onResolve={() => {}} onResolveAll={() => {}} />);
+ok("the button sits in the item header", (btnHtml.match(/data-resolve-all="item-1"/g) ?? []).length === 1 && btnHtml.includes("✓ סמן הכול כטופל"), btnHtml);
+const allDone = buildCommentHistory({ items: [{ id: IT, kind: "reel", reel_index: 1, approved: false }], comments: [c("p2", { resolved_at: "2026-10-18T10:00:00Z" })], approvals: [], versions: [{ id: V, item_id: IT, number: 2, original_filename: null }], names: {} });
+ok("hidden when nothing is open on the latest version", !renderToString(<ClientCommentHistory items={allDone} onResolve={() => {}} onResolveAll={() => {}} />).includes("סמן הכול"));
+ok("hidden without onResolveAll (the PDF page)", !renderToString(<ClientCommentHistory items={mixed} />).includes("סמן הכול"));
+ok("busy → 'שומר…' and disabled", /data-resolve-all="item-1" disabled=""[^>]*>שומר…</.test(renderToString(<ClientCommentHistory items={mixed} onResolveAll={() => {}} busyItemId="item-1" />)));
+
+section("one event: 'N הערות סומנו כטופלו'");
+check("the label carries the count", [eventLabel("client_review_comments_resolved_bulk", { count: 8 }), eventLabel("client_review_comments_resolved_bulk", { count: 1 }), eventLabel("client_review_comments_resolved_bulk", null)], ["8 הערות סומנו כטופלו", "הערה אחת סומנה כטופלה", "הערות סומנו כטופלו"]);
+const bulk = strip(readFileSync(join(root, "src/app/api/productions/[id]/review-items/[itemId]/resolve-all/route.ts"), "utf8"));
+ok("bulk route: logged in + can_edit_stages + the item belongs to the production", /status: 401/.test(bulk) && /can_edit_stages/.test(bulk) && /item\.production_id !== params\.id/.test(bulk));
+ok("bulk route: only the asked ids that are STILL open on the latest version", /\.in\("id", asked\)/.test(bulk) && /\.is\("resolved_at", null\)/.test(bulk) && /q\.eq\("version_id", latest\.id\)/.test(bulk));
+ok("bulk route: each stamped with who and when, guarded; ack guarded", /\.update\(\{ resolved_at: nowIso, resolved_by: user\.id \}\)[\s\S]{0,80}\.is\("resolved_at", null\)/.test(bulk) && /\.update\(\{ acked_at: nowIso, acked_by: user\.id \}\)[\s\S]{0,80}\.is\("acked_at", null\)/.test(bulk));
+ok("bulk route: planResolveMany decides the dot", /planResolveMany\(/.test(bulk) && /if \(plan\.clearAttention\) patch\.needs_attention = false;/.test(bulk));
+ok("bulk route: exactly ONE event insert, with the count", (bulk.match(/from\("events"\)\.insert/g) ?? []).length === 1 && /event_type: "client_review_comments_resolved_bulk"/.test(bulk) && /count: hitIds\.length/.test(bulk));
+ok("bulk route: nothing deleted", !/\.delete\(/.test(bulk));
+const rf = readFileSync(join(root, "src/lib/review/resolveFetch.ts"), "utf8");
+ok("confirm first: 'לסמן N הערות כטופלו?'", /window\.confirm\(/.test(rf) && rf.includes("הערות כטופלו?") && rf.indexOf("window.confirm") < rf.indexOf("resolve-all"));
+const modal2 = strip(readFileSync(join(root, "src/components/ClientNotesModal.tsx"), "utf8"));
+const drawer2 = strip(readFileSync(join(root, "src/components/EntityDrawer.tsx"), "utf8"));
+ok("window + drawer pass onResolveAll (drawer: stage edit only)", /onResolveAll=\{/.test(modal2) && /onResolveAll=\{data\.canEditStages \? /.test(drawer2));
+ok("drawer history label gets the payload", /eventLabel\(h\.event_type, h\.payload\)/.test(drawer2));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

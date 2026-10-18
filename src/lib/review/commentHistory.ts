@@ -96,7 +96,16 @@ export type HistoryComment = HcComment & {
   resolved_by_name: string | null;
 };
 
-export type HistoryItem = { id: string; kind: string; reel_index: number | null; approved: boolean; label: string; comments: HistoryComment[] };
+export type HistoryItem = {
+  id: string;
+  kind: string;
+  reel_index: number | null;
+  approved: boolean;
+  label: string;
+  /** E13-9 "סמן הכול כטופל": the item's highest-numbered version (null = none) — the button marks its open comments */
+  latest_version_id: string | null;
+  comments: HistoryComment[];
+};
 
 /**
  * Pure: comments of one production → per item, newest version first, pins by
@@ -107,7 +116,7 @@ export function buildCommentHistory(input: {
   items: { id: string; kind: string; reel_index: number | null; approved: boolean }[];
   comments: HcComment[];
   approvals: HcApproval[];
-  versions: { id: string; number: number | null; original_filename: string | null }[];
+  versions: { id: string; item_id?: string; number: number | null; original_filename: string | null }[];
   names: Record<string, string>;
 }): HistoryItem[] {
   const vById = new Map(input.versions.map((v) => [v.id, v]));
@@ -142,7 +151,18 @@ export function buildCommentHistory(input: {
           if (a.kind === "pin" && b.kind === "pin") return (a.time_ms ?? 0) - (b.time_ms ?? 0);
           return t(a.created_at) - t(b.created_at);
         });
-      return { id: it.id, kind: it.kind, reel_index: it.reel_index, approved: it.approved, label: it.kind === "episode" ? "פרק מלא" : `ריל ${it.reel_index}`, comments: list };
+      const latest = input.versions
+        .filter((v) => v.item_id === it.id && v.number !== null)
+        .sort((a, b) => (b.number ?? 0) - (a.number ?? 0))[0];
+      return {
+        id: it.id,
+        kind: it.kind,
+        reel_index: it.reel_index,
+        approved: it.approved,
+        label: it.kind === "episode" ? "פרק מלא" : `ריל ${it.reel_index}`,
+        latest_version_id: latest?.id ?? null,
+        comments: list,
+      };
     });
 }
 
@@ -166,7 +186,7 @@ export async function loadCommentHistory(admin: SupabaseClient<Database>, produc
       .select("id,item_id,version_id,link_id,kind,pin_number,time_ms,body,author_kind,created_at,acked_at,acked_by,resolved_at,resolved_by,after_response,is_backfill")
       .in("item_id", ids),
     admin.from("client_review_approvals").select("item_id,link_id,decision,decided_at,revoked_at,revoked_reason").in("item_id", ids),
-    admin.from("client_review_versions").select("id,number,original_filename").in("item_id", ids),
+    admin.from("client_review_versions").select("id,item_id,number,original_filename").in("item_id", ids),
   ]);
   if (cErr) throw new Error(`client_review_comments: ${cErr.message}`);
   if (aErr) throw new Error(`client_review_approvals: ${aErr.message}`);
@@ -178,4 +198,11 @@ export async function loadCommentHistory(admin: SupabaseClient<Database>, produc
     for (const p of profs ?? []) names[p.id] = p.name;
   }
   return buildCommentHistory({ items: items ?? [], comments: comments ?? [], approvals: approvals ?? [], versions: versions ?? [], names });
+}
+
+/** Pure: what "✓ סמן הכול כטופל" marks on one item — the open comments of its latest version (no version → the version-less ones). */
+export function openOfLatest(item: { latest_version_id?: string | null; comments: { id: string; open: boolean; version_id?: string | null }[] }): string[] {
+  if (item.latest_version_id === undefined) return [];
+  const want = item.latest_version_id ?? null;
+  return item.comments.filter((c) => c.open && (c.version_id ?? null) === want).map((c) => c.id);
 }

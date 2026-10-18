@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { displayDateTime } from "@/lib/dates";
 import ClientCommentHistory, { type HistoryItemView } from "@/components/ClientCommentHistory";
-import { postResolve } from "@/lib/review/resolveFetch";
+import { confirmAndResolveAll, postResolve } from "@/lib/review/resolveFetch";
 
 // The client's correction notes from the round they last answered, and the one
 // button that closes the loop: "קיבלתי, מטפל" (0071). Until this existed the
@@ -63,6 +63,7 @@ export default function ClientNotesModal({
   const [acking, setAcking] = useState(false);
   const [acked, setAcked] = useState(false);
   const [resolving, setResolving] = useState<string | null>(null);
+  const [resolvingItem, setResolvingItem] = useState<string | null>(null);
 
   useEffect(() => {
     // a response that lands after the modal is gone has nothing to update
@@ -133,6 +134,21 @@ export default function ClientNotesModal({
     setReloadKey((k) => k + 1);
   }
 
+  // E13-9 "✓ סמן הכול כטופל" — confirm, then the same mark on each comment
+  async function resolveAll(itemId: string, ids: string[]) {
+    setResolvingItem(itemId);
+    setError(null);
+    const err = await confirmAndResolveAll(productionId, itemId, ids);
+    setResolvingItem(null);
+    if (err === "cancelled") return;
+    if (err) {
+      setError(err);
+      return;
+    }
+    onAcked?.();
+    setReloadKey((k) => k + 1);
+  }
+
   const hasDetail = !!round && (!!round.episode || round.reels.length > 0);
   const hasComments = items.some((i) => i.comments.length > 0);
 
@@ -192,7 +208,13 @@ export default function ClientNotesModal({
             <div className="font-bold text-sm mb-2">
               כל ההערות והנעצים{unacked ? ` · ${unacked} חדשות` : ""}
             </div>
-            <ClientCommentHistory items={items} onResolve={(id, r) => void resolve(id, r)} busyId={resolving} />
+            <ClientCommentHistory
+              items={items}
+              onResolve={(id, r) => void resolve(id, r)}
+              busyId={resolving}
+              onResolveAll={(itemId, ids) => void resolveAll(itemId, ids)}
+              busyItemId={resolvingItem}
+            />
           </div>
         )}
 

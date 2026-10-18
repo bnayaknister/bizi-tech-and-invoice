@@ -13,6 +13,7 @@ export const EVENT_LABEL: Record<string, string> = {
   client_review_post_response_comment: "הלקוח הוסיף הערה אחרי התשובה",
   client_review_comment_resolved: "הערת לקוח סומנה כטופלה",
   client_review_comment_unresolved: "סימון 'טופל' בוטל בהערת לקוח",
+  client_review_comments_resolved_bulk: "הערות סומנו כטופלו",
   client_review_download: "הלקוח הוריד קובץ",
   client_review_download_missing: "הלקוח ניסה להוריד, והקובץ חסר ב-Drive",
   client_review_comments_unsent: "הלקוח השאיר הערות ולא שלח (24 שעות)",
@@ -189,6 +190,11 @@ export const EVENT_LABEL: Record<string, string> = {
 };
 
 /** The Hebrew label, or null when the type is not in the map (the caller shows "אירוע מערכת" + the code). */
-export function eventLabel(eventType: string): string | null {
+export function eventLabel(eventType: string, payload?: unknown): string | null {
+  // E13-9 (owner 18.10): one event for "סמן הכול כטופל" — "N הערות סומנו כטופלו"
+  if (eventType === "client_review_comments_resolved_bulk") {
+    const n = payload && typeof payload === "object" ? (payload as { count?: unknown }).count : undefined;
+    if (typeof n === "number" && n > 0) return n === 1 ? "הערה אחת סומנה כטופלה" : `${n} הערות סומנו כטופלו`;
+  }
   return EVENT_LABEL[eventType] ?? null;
 }

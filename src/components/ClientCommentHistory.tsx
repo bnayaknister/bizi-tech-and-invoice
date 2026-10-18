@@ -1,5 +1,5 @@
 import { displayDateTime } from "@/lib/dates";
-import type { CommentState } from "@/lib/review/commentHistory";
+import { openOfLatest, type CommentState } from "@/lib/review/commentHistory";
 
 // E13-8c — the client's comments, ALL of them (owner 17.10): every item,
 // every version, every round. Open ones stand out; handled ones are dimmed —
@@ -12,6 +12,7 @@ import type { CommentState } from "@/lib/review/commentHistory";
 
 export type HistoryCommentView = {
   id: string;
+  version_id?: string | null;
   kind: string;
   pin_number: number | null;
   time_ms: number | null;
@@ -30,7 +31,7 @@ export type HistoryCommentView = {
   resolved_by_name?: string | null;
   is_backfill: boolean;
 };
-export type HistoryItemView = { id: string; label: string; approved: boolean; comments: HistoryCommentView[] };
+export type HistoryItemView = { id: string; label: string; approved: boolean; latest_version_id?: string | null; comments: HistoryCommentView[] };
 
 /** 00:42.180 / 1:02:03.004 — exact, as E13-11 will export it. */
 export function formatPinTimeExact(ms: number): string {
@@ -59,6 +60,8 @@ export default function ClientCommentHistory({
   itemActions,
   onResolve,
   busyId = null,
+  onResolveAll,
+  busyItemId = null,
 }: {
   items: HistoryItemView[];
   emptyText?: string;
@@ -68,6 +71,9 @@ export default function ClientCommentHistory({
   onResolve?: (commentId: string, resolved: boolean) => void;
   /** the comment whose mark is being saved — its button is disabled */
   busyId?: string | null;
+  /** E13-9 "✓ סמן הכול כטופל": the open comments of the item's latest version. Absent → no button */
+  onResolveAll?: (itemId: string, commentIds: string[]) => void;
+  busyItemId?: string | null;
 }) {
   const withComments = items.filter((i) => i.comments.length);
   if (!withComments.length) return <div style={{ fontSize: 13, opacity: 0.7 }}>{emptyText}</div>;
@@ -75,6 +81,7 @@ export default function ClientCommentHistory({
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       {withComments.map((it) => {
         const open = it.comments.filter((c) => c.open).length;
+        const latestOpen = openOfLatest(it);
         return (
           <section key={it.id}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 6, fontWeight: 700, fontSize: 14 }}>
@@ -82,6 +89,28 @@ export default function ClientCommentHistory({
               <span style={{ fontSize: 12, fontWeight: 400, opacity: 0.75 }}>
                 {it.comments.length} הערות{open ? ` · ${open} לא טופלו` : ""} · {it.approved ? "מאושר ✓" : "ממתין"}
               </span>
+              {onResolveAll && latestOpen.length > 0 && (
+                <button
+                  type="button"
+                  data-resolve-all={it.id}
+                  onClick={() => onResolveAll(it.id, latestOpen)}
+                  disabled={busyItemId === it.id}
+                  style={{
+                    marginInlineStart: "auto",
+                    border: "1px solid rgba(22,163,74,0.5)",
+                    borderRadius: 8,
+                    padding: "1px 8px",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    background: "transparent",
+                    color: "#16a34a",
+                    cursor: busyItemId === it.id ? "wait" : "pointer",
+                    opacity: busyItemId === it.id ? 0.5 : 1,
+                  }}
+                >
+                  {busyItemId === it.id ? "שומר…" : "✓ סמן הכול כטופל"}
+                </button>
+              )}
             </div>
             {itemActions?.(it)}
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>

@@ -193,7 +193,7 @@ const ra = strip(readFileSync(join(root, "src/app/api/productions/[id]/review-ac
 ok("review-ack: planReviewAck decides; comments acked with acked_at/acked_by, never deleted", /planReviewAck\(/.test(ra) && /\.update\(\{ acked_at: nowIso, acked_by: user\.id \}\)/.test(ra) && !/\.delete\(/.test(ra));
 ok("review-ack: the dot goes out only when the plan says so", /if \(plan\.clearAttention\) patch\.needs_attention = false;/.test(ra));
 const modal = strip(readFileSync(join(root, "src/components/ClientNotesModal.tsx"), "utf8"));
-ok("window: renders the full history and sends up_to with 'קיבלתי'", /<ClientCommentHistory items=\{items\}/.test(modal) && /up_to: upTo/.test(modal));
+ok("window: renders the full history and sends up_to with 'קיבלתי'", /<ClientCommentHistory\s+items=\{items\}/.test(modal) && /up_to: upTo/.test(modal));
 ok("window: 'אין פירוט הערות בסבב זה' only when there are no comments either", /\{!hasDetail && !hasComments && \(/.test(modal));
 const pr = strip(readFileSync(join(root, "src/app/productions/[id]/review-notes/print/page.tsx"), "utf8"));
 const iGate = pr.indexOf("if (!profile.can_edit_stages)");
@@ -202,7 +202,7 @@ ok("PDF page: the history is read with the service role only AFTER the can_edit_
 ok("PDF page: the same component as the window", /<ClientCommentHistory items=\{history\} \/>/.test(pr));
 const dr = strip(readFileSync(join(root, "src/components/EntityDrawer.tsx"), "utf8"));
 ok("drawer: the history section, from data.commentHistory", /<ClientCommentHistory\s+items=\{data\.commentHistory\}/.test(dr));
-ok("drawer: Hebrew event names in the change history, 'אירוע מערכת' for an unknown one", /eventLabel\(h\.event_type\)/.test(dr) && dr.includes("אירוע מערכת"));
+ok("drawer: Hebrew event names in the change history, 'אירוע מערכת' for an unknown one", /eventLabel\(h\.event_type(, h\.payload)?\)/.test(dr) && dr.includes("אירוע מערכת"));
 const eg = strip(readFileSync(join(root, "src/lib/drawer/entityGet.ts"), "utf8"));
 ok("entityGet: history only with stages, only for a production, failure → null (rule 38)", /if \(!seesStages \|\| type !== "production"\) return null;/.test(eg) && /catch \{\s*return null;/.test(eg));
 const da = strip(readFileSync(join(root, "src/lib/review/downloadAttention.ts"), "utf8"));

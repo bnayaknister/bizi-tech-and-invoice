@@ -42,7 +42,7 @@ import { HOURS_STEP, MAX_HOURS, hoursError as validateHours, hoursMissing } from
 import { CreateJobButton, CreateJobModalBody } from "@/components/CreateJobBody";
 import { quotaOverNotice } from "@/lib/contracts/quota";
 import { isPerfClientOn, perfEndAfterPaint, perfNote, perfStart } from "@/lib/perf/client";
-import { postResolve } from "@/lib/review/resolveFetch";
+import { confirmAndResolveAll, postResolve } from "@/lib/review/resolveFetch";
 
 // entity type -> line icon + tile accent (no emoji, DESIGN.md §12)
 const ENTITY_ICON: Record<string, string> = {
@@ -903,6 +903,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   const [showClientNotes, setShowClientNotes] = useState(false);
   // E13-9: the comment whose "טופל" mark is being saved
   const [resolvingComment, setResolvingComment] = useState<string | null>(null);
+  const [resolvingItem, setResolvingItem] = useState<string | null>(null);
   // scope — where the sent-box renders (per-track block, or "all" = under the
   // unified button); sentScope — what the unified send ACTUALLY minted, for the
   // success label (the unified button downgrades to a single track when only
@@ -1128,6 +1129,22 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     setError(null);
     const err = await postResolve(ref.id, commentId, resolved);
     setResolvingComment(null);
+    if (err) {
+      setError(err);
+      return;
+    }
+    broadcast();
+    void load(ref, true);
+  }
+
+  // E13-9 "✓ סמן הכול כטופל" — confirm, then the same mark on each comment
+  async function resolveAllComments(itemId: string, ids: string[]) {
+    if (!ref) return;
+    setResolvingItem(itemId);
+    setError(null);
+    const err = await confirmAndResolveAll(ref.id, itemId, ids);
+    setResolvingItem(null);
+    if (err === "cancelled") return;
     if (err) {
       setError(err);
       return;
@@ -2178,6 +2195,8 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                             items={data.commentHistory}
                             onResolve={data.canEditStages ? (id, r) => void resolveComment(id, r) : undefined}
                             busyId={resolvingComment}
+                            onResolveAll={data.canEditStages ? (itemId, ids) => void resolveAllComments(itemId, ids) : undefined}
+                            busyItemId={resolvingItem}
                             // E13-11: the Premiere markers export, per item (team with stage edit only — the route checks the same)
                             itemActions={
                               data.canEditStages
@@ -2404,8 +2423,8 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                             <span>{h.actor}</span>
                             {/* E13-8c (owner 17.10): Hebrew, not deal_invoice_skipped_already_billed.
                                 An unmapped type still shows — named "אירוע מערכת", code in small print */}
-                            {eventLabel(h.event_type) ? (
-                              <span className="text-[var(--dim)]">{eventLabel(h.event_type)}</span>
+                            {eventLabel(h.event_type, h.payload) ? (
+                              <span className="text-[var(--dim)]">{eventLabel(h.event_type, h.payload)}</span>
                             ) : (
                               <span>
                                 אירוע מערכת <span dir="ltr" className="text-[10px] opacity-70">{h.event_type}</span>

@@ -47,18 +47,41 @@ export function planResolve(input: {
   // a double click, or someone else got there first — no second stamp
   if (comment.resolved_at) return { kind: "nothing" };
 
+  const plan = planResolveMany({ comments: [comment], otherUnread, latestRound, prodAckLinkId, missingDownloads });
+  return plan.kind === "resolve" ? { kind: "resolve", ack: plan.ackIds.length > 0, ackRound: plan.ackRound, clearAttention: plan.clearAttention } : plan;
+}
+
+/**
+ * E13-9 "✓ סמן הכול כטופל" (owner 18.10): the open comments of an item's
+ * latest version, marked in one go — the SAME rule as one mark, applied to the
+ * set. Each comment still gets its own stamp (resolved_by / resolved_at), and
+ * acked_* where nobody acked it. `otherUnread` counts unread comments OUTSIDE
+ * the set.
+ */
+export function planResolveMany(input: {
+  comments: { id?: string; acked_at: string | null; resolved_at: string | null }[];
+  otherUnread: number;
+  latestRound: ResolveRound;
+  prodAckLinkId: string | null;
+  missingDownloads: number;
+}): { kind: "nothing" } | { kind: "resolve"; resolveIds: string[]; ackIds: string[]; ackRound: boolean; clearAttention: boolean } {
+  const { otherUnread, latestRound, prodAckLinkId, missingDownloads } = input;
+  const targets = input.comments.filter((c) => !c.resolved_at);
+  if (!targets.length) return { kind: "nothing" };
+
   const roundRevisions = !!latestRound && (latestRound.episode_response === "revisions" || latestRound.reels_response === "revisions");
   const roundUnread = roundRevisions && prodAckLinkId !== latestRound!.id;
   const roundHasText = !!latestRound && (!!latestRound.episode_note?.trim() || !!latestRound.reels_note?.trim());
   const nothingElseUnread = otherUnread === 0;
   const ackRound = roundUnread && !roundHasText && nothingElseUnread;
-  const ack = !comment.acked_at;
+  const toAck = targets.filter((c) => !c.acked_at);
   return {
     kind: "resolve",
-    ack,
+    resolveIds: targets.map((c) => c.id ?? ""),
+    ackIds: toAck.map((c) => c.id ?? ""),
     ackRound,
-    // only when THIS mark read something: resolving an already-acked comment
+    // only when THIS mark read something: resolving already-acked comments
     // must not put out a dot someone lit by hand after that ack
-    clearAttention: (ack || ackRound) && nothingElseUnread && (!roundUnread || ackRound) && missingDownloads === 0,
+    clearAttention: (toAck.length > 0 || ackRound) && nothingElseUnread && (!roundUnread || ackRound) && missingDownloads === 0,
   };
 }
