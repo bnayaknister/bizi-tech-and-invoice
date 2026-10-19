@@ -70,6 +70,12 @@
 - **מה צריך ממך:** אישור להריץ על הייצור. נוצר משתמש אחד, ונמחק באותה ריצה.
 
 ### U1-2 — `/auth/confirm` ותבניות בעברית
+
+> ✅ **חלק א' (קוד) נבנה 19.10:** ‏`src/app/auth/confirm/page.tsx` (דף "המשך" שלא מאמת כלום בטעינה), ‏`verify/route.ts` (‏POST, ‏`verifyOtp` בלקוח השרת, הפניית 303 ל-`next`), ‏`params.ts` (רק `invite` / `recovery`; ‏`next` רק נתיב פנימי, לא `//` ולא `/\`; ברירת מחדל `/reset-password` לשני הסוגים).
+> - **שינוי מהתוכנית (הבעלים, 19.10):** בכשל **אין** כפתור "שליחה מחדש", כי ההרשמה הציבורית נסגרת ב-U1-3. קישור שפג או נוצל (‏GoTrue מחזיר `otp_expired` לשניהם) מציג "הקישור כבר לא בתוקף. בקש קישור חדש ממנהל המערכת." כל כשל אחר מציג הודעה דומה. הטוקן לא חוזר בכתובת השגיאה.
+> - **נבדק 19.10 (קריאה בלבד):** ‏Site URL = כתובת הייצור. ‏Redirect URLs כולל `https://bizi-tech-and-invoice.vercel.app/**`, ולכן אין צורך להוסיף. ‏`security_update_password_require_reauthentication = false`, ולכן `/reset-password` קובע סיסמה מהסשן בלי סיסמה נוכחית. ‏middleware לא חוסם את `/auth/*` ואת `/reset-password`.
+> - **בדיקה מקומית (‏next start):** הטופס מוצג בלי אימות; ‏`next=//evil.com` → ‏`/reset-password`; ‏`type=signup` → "הקישור אינו תקין"; טוקן מזויף → 303 ל-`?error=expired`; ‏`type=email` ב-POST → ‏`?error=invalid`.
+> - **עוד לא:** התבניות (חלק ב'), ממתינות לאישור הנוסח. עד שהן מתעדכנות, המיילים עדיין שולחים `{{ .ConfirmationURL }}` ל-`/auth/callback`.
 - **מה:** ראוט `GET /auth/confirm` שמציג דף "המשך", ו-`POST` שמריץ `verifyOtp({ token_hash, type })` דרך הלקוח של השרת (‏cookies), ומעביר ל-`next`. מותרים רק `next` פנימיים שמתחילים ב-`/`. בכשל מוצג דף ברור עם שליחה מחדש. ‏`/auth/callback` נשאר לקישורים ישנים.
 - **התבניות:** ההזמנה והאיפוס מפנים ל-`{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=invite|recovery&next=/welcome`. כותרות ותוכן בעברית, RTL. נכתבות דרך Management API (‏PATCH ל-`config/auth`), אחרי שאתה מאשר את הנוסח.
 - **בדיקה:** חוזרים על הבדיקה של U1-1 אחרי התיקון, ומצפים לטופס סיסמה. משתמש בדיקה נמחק בסוף.
