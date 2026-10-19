@@ -61,7 +61,7 @@ export function isPlayableBunny(v: VersionForClient): boolean {
 }
 
 /** Verified once, deleted since (E13-10): the client gets the Drive original instead. */
-function isArchivedBunny(v: VersionForClient): boolean {
+export function isArchivedBunny(v: VersionForClient): boolean {
   return v.source === "bunny" && !!v.media_deleted_at && INTEGRITY_OK.has(v.integrity ?? "") && !!v.drive_file_id && v.number !== null;
 }
 

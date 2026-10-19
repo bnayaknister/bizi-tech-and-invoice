@@ -14,6 +14,11 @@ export const EVENT_LABEL: Record<string, string> = {
   client_review_comment_resolved: "הערת לקוח סומנה כטופלה",
   client_review_comment_unresolved: "סימון 'טופל' בוטל בהערת לקוח",
   client_review_comments_resolved_bulk: "הערות סומנו כטופלו",
+  // E13-10 — the nightly Bunny purge
+  review_media_deleted: "קובץ הביקורת נמחק מ-Bunny (90 יום אחרי האישור). הלקוח מוריד מ-Drive",
+  review_media_delete_failed: "מחיקת קובץ הביקורת מ-Bunny נכשלה 5 פעמים",
+  review_media_purge_skipped: "קובץ הביקורת לא נמחק מ-Bunny: אין עותק תקין ב-Drive",
+  review_media_purge_run: "ריצת מחיקה לילית",
   client_review_download: "הלקוח הוריד קובץ",
   client_review_download_missing: "הלקוח ניסה להוריד, והקובץ חסר ב-Drive",
   client_review_comments_unsent: "הלקוח השאיר הערות ולא שלח (24 שעות)",

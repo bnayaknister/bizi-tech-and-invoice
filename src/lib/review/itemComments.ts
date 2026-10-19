@@ -1,6 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
-import { CLIENT_VERSION_SELECT, isPlayableBunny, latestShownVersionId, type VersionForClient } from "@/lib/review/clientVersions";
+import { CLIENT_VERSION_SELECT, isArchivedBunny, isPlayableBunny, latestShownVersionId, type VersionForClient } from "@/lib/review/clientVersions";
+
+/** E13-10: the item's media left Bunny \u2014 read-only from here on */
+export const ARCHIVED_ERROR = "\u05d4\u05e7\u05d5\u05d1\u05e5 \u05e2\u05d1\u05e8 \u05dc\u05d0\u05e8\u05db\u05d9\u05d5\u05df. \u05d0\u05e4\u05e9\u05e8 \u05dc\u05d4\u05d5\u05e8\u05d9\u05d3 \u05d0\u05d5\u05ea\u05d5, \u05d0\u05d1\u05dc \u05db\u05d1\u05e8 \u05d0\u05d9 \u05d0\u05e4\u05e9\u05e8 \u05dc\u05d4\u05d5\u05e1\u05d9\u05e3 \u05d4\u05e2\u05e8\u05d4 \u05d0\u05d5 \u05dc\u05d0\u05e9\u05e8 \u05de\u05d7\u05d3\u05e9";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // E13-8b — a client's comment / pin / re-approval on ONE item (plan §9.2
@@ -48,6 +51,11 @@ export type VersionWithDuration = VersionForClient & { duration_ms: number | nul
  */
 export function checkAgainstVersions(action: ItemAction, rows: VersionWithDuration[]): { ok: true } | { ok: false; status: number; error: string } {
   const latest = latestShownVersionId(rows);
+  // E13-10 (owner 18.10, §4b (5)): after the media left Bunny the item is an
+  // archive — the old comments and the Drive download, no new comment, no
+  // re-approval. Checked before "latest", whatever version the request names.
+  const latestRow = latest ? rows.find((r) => r.id === latest) : undefined;
+  if (latestRow && isArchivedBunny(latestRow)) return { ok: false, status: 409, error: ARCHIVED_ERROR };
   const stale = { ok: false as const, status: 409, error: "יש גרסה חדשה יותר. רעננו את הדף" };
   if (action.action === "comment") {
     if (action.versionId === null) return latest === null ? { ok: true } : stale; // only an item with no version at all

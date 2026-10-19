@@ -866,10 +866,13 @@ export default function ReviewClient({
           const onLatest = !latestId || selectedId === latestId;
           const latest = versions?.length ? versions[versions.length - 1] : null;
           const canPin = !!latest && latest.kind === "bunny" && onLatest;
+          // E13-10 (owner 18.10): the media left Bunny → an archive: the old
+          // comments and the Drive download only — no box, no re-approval
+          const archived = latest?.kind === "archived";
           const itemComments = [...(comments[it.id] ?? []), ...(addedComments[it.id] ?? [])];
-          const mayReapprove = commentsEnabled && viewOnly && !approved && (reapproveNow[it.id] ?? !!reapprovable[it.id]) && onLatest && !!currentVersion[it.id];
+          const mayReapprove = !archived && commentsEnabled && viewOnly && !approved && (reapproveNow[it.id] ?? !!reapprovable[it.id]) && onLatest && !!currentVersion[it.id];
           const revokedHere = approvedNow[it.id] === false && it.approved;
-          const box = boxOpen[it.id] ? (
+          const box = boxOpen[it.id] && !archived ? (
             <CommentBox
               pinMs={boxPinMs[it.id] ?? null}
               pinOn={!!boxPinOn[it.id]}
@@ -890,7 +893,7 @@ export default function ReviewClient({
               {!revokedHere && boxSent[it.id] && <div style={{ fontSize: 13, color: "#4ade80", textAlign: "center", marginTop: 8 }}>{boxSent[it.id]}</div>}
               {viewOnly && !onLatest && <div style={{ fontSize: 13, color: "#9a94b8", textAlign: "center", padding: "6px 0" }}>אפשר להגיב רק על הגרסה הנוכחית</div>}
               {box}
-              {commentsEnabled && !boxOpen[it.id] && viewOnly && onLatest && (
+              {commentsEnabled && !archived && !boxOpen[it.id] && viewOnly && onLatest && (
                 <div style={{ textAlign: "center", marginTop: 6 }}>
                   <button type="button" style={linkButton} onClick={() => openBox(it.id, canPin)}>
                     יש לי עוד הערה
@@ -900,7 +903,7 @@ export default function ReviewClient({
               {/* E13-8c: on a live link "✎ תיקונים" opens the pins; after one is
                   sent, this adds the next. Pins before "תיקונים" are possible
                   too (decision 1) — the first one marks the item "תיקונים" */}
-              {commentsEnabled && !boxOpen[it.id] && !viewOnly && !approved && canPin && (
+              {commentsEnabled && !archived && !boxOpen[it.id] && !viewOnly && !approved && canPin && (
                 <div style={{ textAlign: "center", marginTop: 8 }}>
                   <button type="button" style={linkButton} onClick={() => openBox(it.id, true)}>
                     {myCommentCount(it) > 0 ? "📍 הוסף עוד הערה" : "📍 הערה בנקודת זמן"}

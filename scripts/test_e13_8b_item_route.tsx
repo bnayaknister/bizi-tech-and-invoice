@@ -90,7 +90,8 @@ check("pin after the end of the file (+1s slack) → 400", checkAgainstVersions(
 check("pin exactly at the end → ok", checkAgainstVersions({ action: "pin", versionId: V2, timeMs: 61_000, body: "x" }, rows).ok, true);
 check("only Drive history: a comment names the Drive row", checkAgainstVersions({ action: "comment", versionId: V1, body: "x" }, [drive1]).ok, true);
 check("only Drive history: a pin → 400 (no playback time)", checkAgainstVersions({ action: "pin", versionId: V1, timeMs: 0, body: "x" }, [drive1]), { ok: false, status: 400, error: "בגרסה הזו אין הערה בנקודת זמן" });
-check("archived (deleted at Bunny) current → comment ok, pin 400", [checkAgainstVersions({ action: "comment", versionId: V2, body: "x" }, [drive1, ver({ media_deleted_at: "2027-01-01T00:00:00Z" })]).ok, checkAgainstVersions({ action: "pin", versionId: V2, timeMs: 0, body: "x" }, [drive1, ver({ media_deleted_at: "2027-01-01T00:00:00Z" })]).ok], [true, false]);
+// E13-10 (owner 18.10): an archive takes no new comment either (was: comment ok)
+check("archived (deleted at Bunny) current → comment refused, pin refused", [checkAgainstVersions({ action: "comment", versionId: V2, body: "x" }, [drive1, ver({ media_deleted_at: "2027-01-01T00:00:00Z" })]).ok, checkAgainstVersions({ action: "pin", versionId: V2, timeMs: 0, body: "x" }, [drive1, ver({ media_deleted_at: "2027-01-01T00:00:00Z" })]).ok], [false, false]);
 check("no versions at all: comment with null → ok; with an id → 409", [checkAgainstVersions({ action: "comment", versionId: null, body: "x" }, []).ok, checkAgainstVersions({ action: "comment", versionId: V2, body: "x" }, []).ok], [true, false]);
 check("a version exists but the comment names none → 409", checkAgainstVersions({ action: "comment", versionId: null, body: "x" }, rows).ok, false);
 check("approve on the current version → ok", checkAgainstVersions({ action: "approve", versionId: V2 }, rows).ok, true);

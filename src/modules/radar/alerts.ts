@@ -4,6 +4,7 @@ import { isAmountMissing, isPaidNoTax, isUnpaidDebt } from "@/lib/finance/state"
 import { displayDate, todayInIsrael } from "@/lib/dates";
 import { closedAccruedMonths } from "@/lib/documents/accruedMonth";
 import { contractQuotas, quotaOverNotice, type QuotaProduction } from "@/lib/contracts/quota";
+import { PURGE_ENTITY, PURGE_RUN_EVENT } from "@/lib/review/purge";
 
 /**
  * A document number is present. null and "" both mean "no number" — a blank
@@ -125,6 +126,10 @@ export type RadarData = {
 };
 
 const DAY = 86_400_000;
+
+// E13-10 + B29 — the nightly Bunny purge (lib/review/purge)
+export const PURGE_FAILED_TITLE = "מחיקת קובץ ביקורת מ-Bunny נכשלה — המערכת תנסה שוב בלילה";
+export const PURGE_DRIVE_TITLE = "קובץ ביקורת לא נמחק מ-Bunny: חסר או לא תקין ב-Drive";
 
 // Calendar boundaries are read in the business's own time zone, never UTC — a
 // monthly client's "did the month close" turns on the hour. The formatter that
@@ -882,6 +887,22 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   const recurringLabel =
     recurringNames.length <= 2 ? recurringNames.join(", ") : `${recurringNames.slice(0, 2).join(", ")} ועוד ${recurringNames.length - 2}`;
 
+  // E13-10 + B29 (owner 18.10): the nightly Bunny purge. Read from its LAST
+  // run event, like the calendar sync above: a failure or a Drive problem the
+  // next run no longer meets (deleted, fixed, or no longer due) drops out by
+  // itself — there is nothing to mark resolved. Report-mode runs count too:
+  // a Drive problem is visible before the switch is turned on.
+  const { data: lastPurge } = await supabase
+    .from("events")
+    .select("payload,created_at")
+    .eq("entity_type", PURGE_ENTITY)
+    .eq("event_type", PURGE_RUN_EVENT)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  const purgeCounts = ((lastPurge?.[0]?.payload as { counts?: { failed?: number; alerts?: number } } | null)?.counts ?? {});
+  const purgeFailed = Number(purgeCounts.failed ?? 0) || 0;
+  const purgeDriveAlerts = Number(purgeCounts.alerts ?? 0) || 0;
+
   const sum = (arr: { amount: number | null }[]) => arr.reduce((s, x) => s + num(x.amount), 0);
 
   const allAlerts: RadarAlert[] = [
@@ -918,6 +939,8 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
     { key: "duplicate_clients", severity: "yellow", title: "אותו לקוח בשמות שונים", count: duplicateClientNames, amount: null, href: "/finance" },
     { key: "stuck_stage", severity: "yellow", title: "שלב תקוע מעל 14 יום", count: stuckStageCount, amount: null, href: "/productions" },
     { key: "on_hold_long", severity: "yellow", title: "מוקפא מעל 14 יום", count: onHoldLong.length, amount: null, href: "/productions" },
+    { key: "review_purge_failed", severity: "yellow", title: PURGE_FAILED_TITLE, count: purgeFailed, amount: null, href: "/productions" },
+    { key: "review_purge_drive", severity: "yellow", title: PURGE_DRIVE_TITLE, count: purgeDriveAlerts, amount: null, href: "/productions" },
     { key: "calendar_recurring_unsynced", severity: "yellow", title: `אירוע חוזר ביומן שהמערכת לא קולטת — ${recurringLabel}. צור אירועים בודדים`, count: recurringUnsynced.length, amount: null, href: "/settings" },
   ];
   const alerts = allAlerts.filter((a) => a.count > 0);
