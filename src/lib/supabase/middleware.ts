@@ -51,9 +51,8 @@ export async function updateSession(request: NextRequest) {
     const open =
       path === "/pending" ||
       path === "/login" ||
-      // a freshly-invited (unapproved) user must reach the set-password screen
-      // before the wall bounces them to /pending
-      path === "/welcome" ||
+      // /auth/confirm (U1-2) and the set-password screen it lands on: a user
+      // whose profile is not approved must still reach them
       path.startsWith("/auth") ||
       path.startsWith("/reset-password") ||
       // public client review links + their response endpoint — account-less,
