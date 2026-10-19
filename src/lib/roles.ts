@@ -14,3 +14,15 @@ export function hasOwnerAccess(profile: WithRole): boolean {
 export function isStrictOwner(profile: WithRole): boolean {
   return profile?.role === "owner";
 }
+
+/** Hebrew role names (U1-6: the header's user menu, the users screen). */
+export const ROLE_LABELS: Record<string, string> = {
+  owner: "בעלים",
+  admin: "אדמין",
+  tech: "טכנאי",
+  bookkeeper: "חשבונאית",
+};
+
+export function roleLabel(role: string | null | undefined): string {
+  return (role && ROLE_LABELS[role]) || "ללא תפקיד";
+}

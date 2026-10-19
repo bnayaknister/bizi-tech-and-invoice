@@ -1,7 +1,7 @@
 import Link from "next/link";
 import GlobalSearch from "@/components/GlobalSearch";
 import NavMenu, { type NavItem } from "@/components/NavMenu";
-import SignOutButton from "@/components/SignOutButton";
+import UserMenu from "@/components/UserMenu";
 import type { Profile } from "@/lib/profile";
 import { MODULES } from "@/modules/registry";
 import RegistrationsPopup from "@/components/RegistrationsPopup";
@@ -67,8 +67,8 @@ export default function AppHeader({
           ייבוא
         </Link>
       )}
-      <span className="text-xs text-[var(--dim)]">{profile.name || profile.email}</span>
-      <SignOutButton />
+      {/* U1-6: name + sign-out live in the user menu now */}
+      <UserMenu name={profile.name} email={profile.email} role={profile.role} />
       {/* E17-5: once a session, studio_admin only — see the component */}
       {isStudioAdmin(profile) && <RegistrationsPopup />}
     </header>

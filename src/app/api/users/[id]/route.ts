@@ -14,6 +14,7 @@ import { isStrictOwner } from "@/lib/roles";
 // no one demotes an owner (role) or disables one (approved=false) from the
 // app. There is no delete route; deleting a user is not offered in the app.
 const ALLOWED = new Set([
+  "name",
   "approved",
   "role",
   "can_view_money",
@@ -45,6 +46,12 @@ export async function POST(request: Request, { params }: { params: { id: string 
   if (keys.length === 0) return NextResponse.json({ error: "אין שינויים" }, { status: 400 });
   const bad = keys.filter((k) => !ALLOWED.has(k));
   if (bad.length) return NextResponse.json({ error: `שדה לא מותר: ${bad.join(", ")}` }, { status: 400 });
+  if ("name" in patch) {
+    // U1-7 fix: a name for a user who has none — trimmed, 1..80 characters
+    const name = typeof patch.name === "string" ? patch.name.trim() : "";
+    if (!name || name.length > 80) return NextResponse.json({ error: "שם לא תקין" }, { status: 400 });
+    patch.name = name;
+  }
 
   const { data: target } = await supabase.from("profiles").select("role").eq("id", params.id).maybeSingle();
   if (isStrictOwner(target)) {

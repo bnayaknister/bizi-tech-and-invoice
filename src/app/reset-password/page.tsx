@@ -1,63 +1,52 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import PasswordForm from "@/components/PasswordForm";
+import { PASSWORD_MESSAGES } from "@/lib/auth/passwordErrors";
 
+// Where the invite / recovery email link lands (via /auth/confirm, U1-2) with a
+// fresh session. No current password here: Supabase exempts a recovery session
+// and a user who has no password yet (U1-7). Without a session — an old link,
+// or the URL typed by hand — it says so on load instead of failing on submit.
 export default function ResetPasswordPage() {
   const router = useRouter();
-  const supabase = createClient();
+  const [state, setState] = useState<"loading" | "no_session" | "form" | "done">("loading");
 
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    if (password.length < 8) {
-      setError("סיסמה חייבת להיות לפחות 8 תווים.");
-      return;
-    }
-    const { error } = await supabase.auth.updateUser({ password });
-    if (error) {
-      setError("שגיאה בעדכון הסיסמה.");
-      return;
-    }
-    setDone(true);
-    setTimeout(() => {
-      router.push("/");
-      router.refresh();
-    }, 1500);
-  }
+  useEffect(() => {
+    createClient()
+      .auth.getUser()
+      .then(({ data }) => setState(data.user ? "form" : "no_session"));
+  }, []);
 
   return (
     <main className="min-h-screen flex items-center justify-center p-6">
       <div className="w-full max-w-sm border border-[var(--rule)] rounded bg-[var(--panel2)] p-8">
         <h1 className="text-lg font-black mb-6 text-center">קביעת סיסמה חדשה</h1>
-        {done ? (
-          <div className="text-[var(--signal)] text-sm text-center">
-            הסיסמה עודכנה. מעביר אותך פנימה…
+        {state === "loading" ? (
+          <div className="text-center text-sm text-[var(--faint)]">טוען…</div>
+        ) : state === "no_session" ? (
+          <div className="text-center text-sm text-[var(--faint)]">
+            <p className="mb-4">{PASSWORD_MESSAGES.no_session}</p>
+            <Link href="/login" className="text-[var(--violet-light)] underline">
+              לדף ההתחברות
+            </Link>
           </div>
+        ) : state === "done" ? (
+          <div className="text-[var(--signal)] text-sm text-center">הסיסמה נשמרה. מעביר אותך פנימה…</div>
         ) : (
-          <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-            <input
-              type="password"
-              placeholder="סיסמה חדשה"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              className="bg-[var(--panel)] border border-[var(--rule)] rounded px-3 py-2 text-sm"
-              dir="ltr"
-            />
-            {error && <div className="text-[var(--peak)] text-xs">{error}</div>}
-            <button
-              type="submit"
-              className="bg-[var(--signal)] text-[var(--on-accent)] font-bold rounded px-3 py-2 text-sm mt-2"
-            >
-              שמירת סיסמה
-            </button>
-          </form>
+          <PasswordForm
+            withCurrent={false}
+            onSuccess={() => {
+              setState("done");
+              setTimeout(() => {
+                router.push("/");
+                router.refresh();
+              }, 1500);
+            }}
+          />
         )}
       </div>
     </main>

@@ -41,6 +41,8 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
   const [busyId, setBusyId] = useState<string | null>(null);
   // U1-5: a sign-in link to copy (after "העתק קישור" / "קישור חדש")
   const [linkInfo, setLinkInfo] = useState<{ email: string; url: string } | null>(null);
+  // U1-7 fix: a name for a user who has none (handle_new_user falls back to the email)
+  const [nameEdit, setNameEdit] = useState<{ id: string; draft: string } | null>(null);
 
   // router.refresh() hands new props; without this the list kept the first ones
   useEffect(() => setUsers(initial), [initial]);
@@ -96,6 +98,8 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
 
   const card = (u: UserRow) => {
     const isSelf = u.id === selfId;
+    const nameless = !u.name?.trim() || u.name === u.email;
+    const editingName = nameEdit?.id === u.id;
     return (
       <div
         key={u.id}
@@ -104,10 +108,48 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
       >
         <div className="flex flex-wrap items-center gap-3 mb-3">
           <div className="min-w-0">
-            <div className="font-bold text-sm flex items-center gap-2">
-              {u.name || u.email || "—"}
-              {isSelf && <span className="text-[10px] text-[var(--faint)]">(אתה)</span>}
-            </div>
+            {editingName ? (
+              <form
+                className="flex items-center gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const name = nameEdit.draft.trim();
+                  if (!name) return;
+                  setNameEdit(null);
+                  void patch(u.id, { name });
+                }}
+              >
+                <input
+                  autoFocus
+                  value={nameEdit.draft}
+                  onChange={(e) => setNameEdit({ id: u.id, draft: e.target.value })}
+                  placeholder="שם"
+                  maxLength={80}
+                  className="border border-[var(--rule)] rounded-xl px-2 py-1 text-sm w-40"
+                  style={{ background: "rgba(255,255,255,0.05)" }}
+                />
+                <button type="submit" disabled={!nameEdit.draft.trim()} className="text-[11px] text-[var(--violet-light)] disabled:opacity-40">
+                  שמירה
+                </button>
+                <button type="button" onClick={() => setNameEdit(null)} className="text-[11px] text-[var(--faint)]">
+                  ביטול
+                </button>
+              </form>
+            ) : (
+              <div className="font-bold text-sm flex items-center gap-2">
+                {u.name || u.email || "—"}
+                {isSelf && <span className="text-[10px] text-[var(--faint)]">(אתה)</span>}
+                {nameless && (
+                  <button
+                    onClick={() => setNameEdit({ id: u.id, draft: "" })}
+                    disabled={busyId === u.id}
+                    className="text-[11px] font-normal text-[var(--violet-light)] hover:underline disabled:opacity-40"
+                  >
+                    הוספת שם
+                  </button>
+                )}
+              </div>
+            )}
             <div className="text-[11px] text-[var(--faint)]" dir="ltr">{u.email}</div>
             {u.never_signed_in && (
               <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -147,17 +189,36 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
             </button>
           )}
           <div className="flex-1" />
-          {!isSelf &&
-            (Object.keys(PRESETS) as PresetRole[]).map((p) => (
-              <button
-                key={p}
-                onClick={() => applyPreset(u, p)}
-                disabled={busyId === u.id}
-                className="text-[11px] border border-[var(--rule)] rounded-xl px-2.5 py-1 text-[var(--dim)] hover:bg-[var(--panel3)] hover:border-[var(--rule2)] transition-colors disabled:opacity-40"
-              >
-                {PRESETS[p].label}
-              </button>
-            ))}
+          {u.role === "owner" ? (
+            // an owner's role is never changed from the app (U1-4)
+            <span
+              className="text-[11px] font-bold text-white rounded-xl px-2.5 py-1"
+              style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}
+            >
+              בעלים
+            </span>
+          ) : (
+            !isSelf &&
+            (Object.keys(PRESETS) as PresetRole[]).map((p) => {
+              const current = u.role === p;
+              return (
+                <button
+                  key={p}
+                  onClick={() => applyPreset(u, p)}
+                  disabled={busyId === u.id}
+                  aria-pressed={current}
+                  className={`text-[11px] border rounded-xl px-2.5 py-1 transition-colors disabled:opacity-40 ${
+                    current
+                      ? "border-[var(--violet-light)] text-white font-bold"
+                      : "border-[var(--rule)] text-[var(--dim)] hover:bg-[var(--panel3)] hover:border-[var(--rule2)]"
+                  }`}
+                  style={current ? { background: "rgba(139,92,246,0.35)" } : undefined}
+                >
+                  {current ? `✓ ${PRESETS[p].label}` : PRESETS[p].label}
+                </button>
+              );
+            })
+          )}
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1.5">
