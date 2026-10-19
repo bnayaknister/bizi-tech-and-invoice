@@ -11,8 +11,9 @@ import { isStrictOwner } from "@/lib/roles";
 // one changes their OWN permissions).
 //
 // Owner rows are protected HERE, by owner decision (19.10), not in the DB:
-// no one demotes an owner (role) or disables one (approved=false) from the
-// app. There is no delete route; deleting a user is not offered in the app.
+// no one demotes an owner (role), disables one (approved=false) or changes an
+// owner's can_* flags from the app. There is no delete route; deleting a user
+// is not offered in the app.
 const ALLOWED = new Set([
   "name",
   "approved",
@@ -47,7 +48,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const bad = keys.filter((k) => !ALLOWED.has(k));
   if (bad.length) return NextResponse.json({ error: `שדה לא מותר: ${bad.join(", ")}` }, { status: 400 });
   if ("name" in patch) {
-    // U1-7 fix: a name for a user who has none — trimmed, 1..80 characters
+    // the user's name (owner edits it from the card) — trimmed, 1..80 characters
     const name = typeof patch.name === "string" ? patch.name.trim() : "";
     if (!name || name.length > 80) return NextResponse.json({ error: "שם לא תקין" }, { status: 400 });
     patch.name = name;
@@ -59,6 +60,10 @@ export async function POST(request: Request, { params }: { params: { id: string 
     const disables = "approved" in patch && patch.approved !== true;
     if (demotes || disables) {
       return NextResponse.json({ error: "אי אפשר להוריד בדרגה או להשבית בעלים" }, { status: 403 });
+    }
+    // an owner has every permission, locked (owner 19.10) — only the name changes
+    if (keys.some((k) => k.startsWith("can_"))) {
+      return NextResponse.json({ error: "אי אפשר לשנות הרשאות של בעלים" }, { status: 403 });
     }
   }
 

@@ -41,7 +41,8 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
   const [busyId, setBusyId] = useState<string | null>(null);
   // U1-5: a sign-in link to copy (after "העתק קישור" / "קישור חדש")
   const [linkInfo, setLinkInfo] = useState<{ email: string; url: string } | null>(null);
-  // U1-7 fix: a name for a user who has none (handle_new_user falls back to the email)
+  // the name being edited on a card (✎). A nameless user shows the email:
+  // handle_new_user falls back to it
   const [nameEdit, setNameEdit] = useState<{ id: string; draft: string } | null>(null);
 
   // router.refresh() hands new props; without this the list kept the first ones
@@ -100,6 +101,7 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
     const isSelf = u.id === selfId;
     const nameless = !u.name?.trim() || u.name === u.email;
     const editingName = nameEdit?.id === u.id;
+    const isOwnerRow = u.role === "owner";
     return (
       <div
         key={u.id}
@@ -138,16 +140,16 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
             ) : (
               <div className="font-bold text-sm flex items-center gap-2">
                 {u.name || u.email || "—"}
-                {isSelf && <span className="text-[10px] text-[var(--faint)]">(אתה)</span>}
-                {nameless && (
-                  <button
-                    onClick={() => setNameEdit({ id: u.id, draft: "" })}
-                    disabled={busyId === u.id}
-                    className="text-[11px] font-normal text-[var(--violet-light)] hover:underline disabled:opacity-40"
-                  >
-                    הוספת שם
-                  </button>
-                )}
+                {isSelf && <span className="text-[10px] text-[var(--faint)]">(החשבון שלך)</span>}
+                <button
+                  onClick={() => setNameEdit({ id: u.id, draft: nameless ? "" : u.name ?? "" })}
+                  disabled={busyId === u.id}
+                  title={nameless ? "הוספת שם" : "עריכת שם"}
+                  aria-label={nameless ? "הוספת שם" : "עריכת שם"}
+                  className="text-[12px] font-normal text-[var(--faint)] hover:text-[var(--violet-light)] disabled:opacity-40"
+                >
+                  ✎
+                </button>
               </div>
             )}
             <div className="text-[11px] text-[var(--faint)]" dir="ltr">{u.email}</div>
@@ -174,7 +176,7 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
             )}
             {!u.approved && (
               <div className="text-[11px] text-[var(--faint)]">
-                נרשם: <span className="font-mono">{displayDateTime(u.created_at)}</span>
+                תאריך הרשמה: <span className="font-mono">{displayDateTime(u.created_at)}</span>
               </div>
             )}
           </div>
@@ -185,7 +187,7 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
               className="text-xs text-white font-bold rounded-xl px-3 py-1.5 disabled:opacity-40"
               style={{ background: "linear-gradient(135deg, var(--green), #16A34A)" }}
             >
-              אשר משתמש
+              אישור משתמש
             </button>
           )}
           <div className="flex-1" />
@@ -223,18 +225,23 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
 
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1.5">
           {PERMS.map((perm) => (
-            <label key={perm.key} className={`flex items-center gap-2 text-xs ${isSelf ? "opacity-50" : "cursor-pointer"}`}>
+            <label key={perm.key} className={`flex items-center gap-2 text-xs ${isSelf || isOwnerRow ? "opacity-50" : "cursor-pointer"}`}>
               <input
                 type="checkbox"
-                checked={u[perm.key]}
-                disabled={isSelf || busyId === u.id}
+                // an owner has every permission, locked (API refuses too)
+                checked={isOwnerRow ? true : u[perm.key]}
+                disabled={isSelf || isOwnerRow || busyId === u.id}
                 onChange={(e) => patch(u.id, { [perm.key]: e.target.checked })}
               />
               {perm.label}
             </label>
           ))}
         </div>
-        {isSelf && <div className="mt-2 text-[10px] text-[var(--faint)]">אי אפשר לשנות את ההרשאות של עצמך.</div>}
+        {isOwnerRow ? (
+          <div className="mt-2 text-[10px] text-[var(--faint)]">לבעלים יש את כל ההרשאות.</div>
+        ) : (
+          isSelf && <div className="mt-2 text-[10px] text-[var(--faint)]">אי אפשר לשנות את ההרשאות של עצמך.</div>
+        )}
       </div>
     );
   };
