@@ -7,6 +7,11 @@ import { PERF_OFF, perfTimer } from "@/lib/perf/timing";
 // runs on every request, and a log line per asset would bury the ones we want.
 const PERF_PATHS = /^\/(productions(\/|$)|api\/entity\/production\/)/;
 
+// U1-8: where a disabled user is not bounced to /login (no session needed)
+const DISABLED_MESSAGE = "החשבון הושבת. לפרטים יש לפנות למנהל המערכת.";
+const PUBLIC_PAGE = /^\/(r|b|join)\/|^\/privacy$/;
+const PUBLIC_API = /^\/api\/(r|book|join|wa|bunny|cron)\//;
+
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
   const perfPath = request.nextUrl.pathname;
@@ -37,8 +42,36 @@ export async function updateSession(request: NextRequest) {
   // touching getUser() is what actually refreshes the session cookie
   const {
     data: { user },
+    error: userError,
   } = await supabase.auth.getUser();
   perf.lap("mw_getUser");
+
+  // U1-8: a disabled user is banned in Auth (ban_duration). GoTrue then refuses
+  // GET /user with 403 user_banned EVEN for an access token issued before the
+  // ban (verified live 19.10), and refuses refresh and password sign-in too —
+  // so this one call, already made on every request, is the whole check: no
+  // column, no extra query. The session cookies are dropped and the person
+  // lands on /login with the reason. Public token links (/r, /b, /join) and
+  // webhooks need no session: there the cookies are dropped and the request
+  // goes on.
+  if (userError?.code === "user_banned") {
+    const path = request.nextUrl.pathname;
+    let out: NextResponse;
+    if (path.startsWith("/api/") && !PUBLIC_API.test(path)) {
+      out = NextResponse.json({ error: DISABLED_MESSAGE }, { status: 403 });
+    } else if (path === "/login" || PUBLIC_PAGE.test(path)) {
+      out = NextResponse.next({ request });
+    } else {
+      const url = request.nextUrl.clone();
+      url.pathname = "/login";
+      url.search = "?disabled=1";
+      out = NextResponse.redirect(url);
+    }
+    for (const c of request.cookies.getAll()) {
+      if (c.name.startsWith("sb-")) out.cookies.delete(c.name);
+    }
+    return out;
+  }
 
   // Hard wall for un-approved accounts (owner rule 2026-07-18): a signed-up
   // but not-yet-approved user may reach ONLY the waiting screen + auth. Every

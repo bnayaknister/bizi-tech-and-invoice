@@ -21,6 +21,8 @@ export type UserRow = {
   created_at: string;
   /** U1-5: no last_sign_in_at in auth.users */
   never_signed_in: boolean;
+  /** U1-8: banned in Auth (disabled, not deleted) */
+  disabled: boolean;
 };
 
 const PERMS: { key: PermKey; label: string }[] = [
@@ -94,8 +96,30 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
     else setNotice(`נשלח מייל כניסה אל ${u.email}.`);
   }
 
-  const pendingUsers = users.filter((u) => !u.approved);
-  const activeUsers = users.filter((u) => u.approved);
+  // U1-8: disable instead of delete — nothing is removed, the user just cannot sign in
+  async function setStatus(u: UserRow, action: "disable" | "enable") {
+    if (action === "disable" && !window.confirm(`להשבית את ${u.name || u.email}? החיבור ינותק מיד, וכל ההיסטוריה נשארת.`)) return;
+    setError(null);
+    setNotice(null);
+    setBusyId(u.id);
+    const res = await fetch(`/api/users/${u.id}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    setBusyId(null);
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setError(d.error ?? "הפעולה נכשלה");
+      return;
+    }
+    setUsers((us) => us.map((x) => (x.id === u.id ? { ...x, disabled: action === "disable" } : x)));
+    setNotice(action === "disable" ? `החשבון של ${u.name || u.email} הושבת.` : `החשבון של ${u.name || u.email} הופעל מחדש.`);
+  }
+
+  const pendingUsers = users.filter((u) => !u.approved && !u.disabled);
+  const activeUsers = users.filter((u) => u.approved && !u.disabled);
+  const disabledUsers = users.filter((u) => u.disabled);
 
   const card = (u: UserRow) => {
     const isSelf = u.id === selfId;
@@ -191,6 +215,30 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
             </button>
           )}
           <div className="flex-1" />
+          {u.disabled ? (
+            <>
+              <span className="text-[11px] font-bold text-[var(--peak)] border border-[var(--peak)] rounded-full px-2 py-0.5">מושבת</span>
+              <button
+                onClick={() => setStatus(u, "enable")}
+                disabled={busyId === u.id}
+                className="text-[11px] text-white font-bold rounded-xl px-2.5 py-1 disabled:opacity-40"
+                style={{ background: "linear-gradient(135deg, var(--green), #16A34A)" }}
+              >
+                הפעלה מחדש
+              </button>
+            </>
+          ) : (
+            u.role !== "owner" &&
+            !isSelf && (
+              <button
+                onClick={() => setStatus(u, "disable")}
+                disabled={busyId === u.id}
+                className="text-[11px] border border-[var(--peak)] text-[var(--peak)] rounded-xl px-2.5 py-1 hover:bg-[var(--panel3)] disabled:opacity-40"
+              >
+                השבתה
+              </button>
+            )
+          )}
           {u.role === "owner" ? (
             // an owner's role is never changed from the app (U1-4)
             <span
@@ -289,6 +337,15 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
         משתמשים פעילים ({activeUsers.length})
       </div>
       <div className="space-y-3">{activeUsers.map(card)}</div>
+
+      {disabledUsers.length > 0 && (
+        <>
+          <div className="text-[10px] uppercase tracking-wider font-semibold text-[var(--peak)] mt-6 mb-2">
+            מושבתים ({disabledUsers.length})
+          </div>
+          <div className="space-y-3 opacity-80">{disabledUsers.map(card)}</div>
+        </>
+      )}
 
       {addOpen && (
         <AddUserModal

@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import SoundWaveLogo from "@/components/SoundWaveLogo";
+
+const DISABLED_MESSAGE = "החשבון הושבת. לפרטים יש לפנות למנהל המערכת.";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -15,6 +17,12 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [resetSent, setResetSent] = useState(false);
 
+  // U1-8: the middleware sends a disabled (banned) user here with ?disabled=1.
+  // window.location, not useSearchParams: that one needs a Suspense boundary.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("disabled") === "1") setError(DISABLED_MESSAGE);
+  }, []);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -22,7 +30,7 @@ export default function LoginPage() {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
     if (error) {
-      setError("אימייל או סיסמה שגויים.");
+      setError(error.code === "user_banned" ? DISABLED_MESSAGE : "אימייל או סיסמה שגויים.");
       return;
     }
     router.push("/");

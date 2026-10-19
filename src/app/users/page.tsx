@@ -24,6 +24,16 @@ export default async function UsersPage() {
   // The studio has a handful of users; one page of 1000 covers them all.
   const { data: authList } = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
   const signedIn = new Set((authList?.users ?? []).filter((u) => u.last_sign_in_at).map((u) => u.id));
+  // U1-8: disabled = banned in Auth (banned_until in the future)
+  const now = Date.now();
+  const disabled = new Set(
+    (authList?.users ?? [])
+      .filter((u) => {
+        const until = (u as { banned_until?: string | null }).banned_until;
+        return !!until && Date.parse(until) > now;
+      })
+      .map((u) => u.id)
+  );
 
   const users: UserRow[] = (rows ?? []).map((r) => ({
     id: r.id,
@@ -40,6 +50,7 @@ export default async function UsersPage() {
     created_at: r.created_at,
     // a failed listUsers shows no one as "not signed in" rather than everyone
     never_signed_in: !!authList && !signedIn.has(r.id),
+    disabled: disabled.has(r.id),
   }));
 
   return (
