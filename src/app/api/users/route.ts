@@ -1,84 +1,81 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { getAppBaseUrl } from "@/lib/appUrl";
-import { isStrictOwner } from "@/lib/roles";
+import { PRESETS, isPresetRole } from "@/lib/users/presets";
+import { createAccessLink, linkErrorMessage } from "@/lib/users/accessLink";
+import { requireUsersOwner } from "@/lib/users/ownerGate";
 
-// Add a user — user-manager only. Two modes:
-//   invite : sends a Supabase invite email (they set their own password)
-//   manual : creates the account now with a random password; the person
-//            uses "forgot password" to set one (no secret is ever returned)
-// Either way the handle_new_user trigger creates a pending profile
-// (approved=false, no permissions); the manager grants permissions after.
+// Add a user — owner only (U1-4). The owner picks a role (admin / tech /
+// bookkeeper; owner is never offered — it is set by hand) and one of two ways
+// to send the first sign-in (U1-5):
+//   invite : Supabase sends the invite email (Hebrew template → /auth/confirm)
+//   link   : no email; we return our own /auth/confirm link for the owner to
+//            copy (see lib/users/accessLink — never Supabase's action_link)
+// Right after creation, with the service role, the new profile gets
+// approved=true, the role, the name and the role's preset flags — so the
+// person lands straight in the app, never on "ממתין לאישור". The handle_new_user
+// trigger has already created the profile row (approved=false) by then.
+// auth.uid() is null for the service role, so trg_guard_profile_permissions
+// does not apply.
 export async function POST(request: Request) {
   const supabase = createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "לא מחובר" }, { status: 401 });
+  const gate = await requireUsersOwner(supabase);
+  if ("response" in gate) return gate.response;
 
-  const { data: me } = await supabase.from("profiles").select("can_manage_users,role").eq("id", user.id).single();
-  if (!me?.can_manage_users || !isStrictOwner(me)) return NextResponse.json({ error: "רק בעלים יכולים להוסיף משתמשים" }, { status: 403 });
-
-  const body = (await request.json().catch(() => ({}))) as { email?: string; name?: string; mode?: "invite" | "manual" };
+  const body = (await request.json().catch(() => ({}))) as {
+    email?: string;
+    name?: string;
+    role?: string;
+    mode?: string;
+  };
   const email = (body.email ?? "").trim().toLowerCase();
   const name = (body.name ?? "").trim();
   if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
     return NextResponse.json({ error: "כתובת מייל לא תקינה" }, { status: 400 });
   }
+  if (!name) return NextResponse.json({ error: "חסר שם" }, { status: 400 });
+  if (!isPresetRole(body.role)) return NextResponse.json({ error: "יש לבחור תפקיד" }, { status: 400 });
+  if (body.mode !== "invite" && body.mode !== "link") {
+    return NextResponse.json({ error: "אופן שליחה לא מוכר" }, { status: 400 });
+  }
+  const preset = PRESETS[body.role];
 
   const admin = createAdminClient();
-  let newId: string | undefined;
+  let newId: string;
+  let link: string | null = null;
 
   if (body.mode === "invite") {
-    // Land the invited user straight on the set-password screen. The email
-    // link hits Supabase's verify endpoint, which redirects to redirectTo
-    // with a code; /auth/callback exchanges it for a session, then forwards
-    // to /welcome. NEXT_PUBLIC_APP_URL when set, request origin otherwise —
-    // never blindly the request host: an invite sent while the admin had a
-    // branch alias open would point the new user at a Deployment-Protected
-    // domain and land them on Vercel's SSO screen. This URL must also be in
-    // Supabase Auth → Redirect URLs.
-    const origin = getAppBaseUrl(request);
-    const { data, error } = await admin.auth.admin.inviteUserByEmail(email, {
-      data: { name },
-      redirectTo: `${origin}/auth/callback?next=/welcome`,
-    });
-    if (error) {
-      // free Supabase email quota exhausted is the common failure — name it
-      const rateLimited = (error.status === 429) || /rate limit|too many|quota/i.test(error.message);
-      const msg = rateLimited
-        ? "נשלחו יותר מדי מיילים (מכסת המייל היומית). נסה שוב בעוד שעה, או צור קישור ידני."
-        : `הזמנה נכשלה: ${error.message}`;
-      return NextResponse.json({ error: msg }, { status: rateLimited ? 429 : 400 });
+    const { data, error } = await admin.auth.admin.inviteUserByEmail(email, { data: { name } });
+    if (error || !data.user) {
+      return NextResponse.json({ error: linkErrorMessage(error?.message) }, { status: error?.status ?? 400 });
     }
-    newId = data.user?.id;
+    newId = data.user.id;
   } else {
-    const randomPassword = `Bz-${crypto.randomUUID()}`;
-    const { data, error } = await admin.auth.admin.createUser({
-      email,
-      password: randomPassword,
-      email_confirm: true,
-      user_metadata: { name },
-    });
-    if (error) return NextResponse.json({ error: `יצירת משתמש נכשלה: ${error.message}` }, { status: 400 });
-    newId = data.user?.id;
+    const res = await createAccessLink(admin, request, { email, kind: "invite", name });
+    if ("error" in res) return NextResponse.json({ error: res.error }, { status: res.status });
+    newId = res.userId;
+    link = res.url;
   }
 
-  // make sure the profile carries the given name (the trigger may have used
-  // the email as a fallback)
-  if (newId && name) {
-    await admin.from("profiles").update({ name }).eq("id", newId);
-  }
-  if (newId) {
-    await admin.from("events").insert({
-      entity_type: "profile",
-      entity_id: newId,
-      event_type: "user_added",
-      actor_id: user.id,
-      payload: { email, mode: body.mode ?? "manual" },
-    });
+  const { error: profErr } = await admin
+    .from("profiles")
+    .update({ approved: true, role: preset.role, name, ...preset.flags })
+    .eq("id", newId);
+  if (profErr) {
+    // the account exists but is still pending — say so instead of a silent half
+    return NextResponse.json(
+      { error: `המשתמש נוצר, אבל קביעת התפקיד נכשלה: ${profErr.message}. אפשר לקבוע אותו ידנית ברשימה.` },
+      { status: 500 }
+    );
   }
 
-  return NextResponse.json({ ok: true, id: newId });
+  await admin.from("events").insert({
+    entity_type: "profile",
+    entity_id: newId,
+    event_type: "user_added",
+    actor_id: gate.userId,
+    payload: { email, mode: body.mode, role: preset.role },
+  });
+
+  return NextResponse.json({ ok: true, id: newId, link });
 }

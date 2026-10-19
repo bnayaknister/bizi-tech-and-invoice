@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import IconTile from "@/components/IconTile";
 import { displayDateTime } from "@/lib/dates";
+import { PRESETS, type PermKey, type PresetRole } from "@/lib/users/presets";
 
 export type UserRow = {
   id: string;
@@ -18,15 +19,9 @@ export type UserRow = {
   can_manage_users: boolean;
   can_import: boolean;
   created_at: string;
+  /** U1-5: no last_sign_in_at in auth.users */
+  never_signed_in: boolean;
 };
-
-type PermKey =
-  | "can_view_money"
-  | "can_edit_money"
-  | "can_view_stages"
-  | "can_edit_stages"
-  | "can_manage_users"
-  | "can_import";
 
 const PERMS: { key: PermKey; label: string }[] = [
   { key: "can_view_stages", label: "צפייה בהפקות" },
@@ -37,48 +32,6 @@ const PERMS: { key: PermKey; label: string }[] = [
   { key: "can_import", label: "ייבוא" },
 ];
 
-// presets set the six flags in one click (owner spec 2026-07-18)
-const PRESETS: Record<string, { label: string; flags: Record<PermKey, boolean>; role: string }> = {
-  tech: {
-    label: "טכנאי",
-    role: "tech",
-    flags: {
-      can_view_stages: true,
-      can_edit_stages: true,
-      can_view_money: false,
-      can_edit_money: false,
-      can_manage_users: false,
-      can_import: false,
-    },
-  },
-  bookkeeper: {
-    // read-only on productions/shows, but marks paid + issues invoices
-    label: "חשבונאית",
-    role: "bookkeeper",
-    flags: {
-      can_view_stages: true,
-      can_edit_stages: false,
-      can_view_money: true,
-      can_edit_money: true,
-      can_manage_users: false,
-      can_import: false,
-    },
-  },
-  admin: {
-    // U1-4: admin = everything but managing users (that stays role=owner)
-    label: "אדמין",
-    role: "admin",
-    flags: {
-      can_view_stages: true,
-      can_edit_stages: true,
-      can_view_money: true,
-      can_edit_money: true,
-      can_manage_users: true,
-      can_import: true,
-    },
-  },
-};
-
 export default function UsersClient({ users: initial, selfId }: { users: UserRow[]; selfId: string }) {
   const router = useRouter();
   const [users, setUsers] = useState(initial);
@@ -86,6 +39,11 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
   const [notice, setNotice] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // U1-5: a sign-in link to copy (after "העתק קישור" / "קישור חדש")
+  const [linkInfo, setLinkInfo] = useState<{ email: string; url: string } | null>(null);
+
+  // router.refresh() hands new props; without this the list kept the first ones
+  useEffect(() => setUsers(initial), [initial]);
 
   const pendingCount = users.filter((u) => !u.approved).length;
 
@@ -109,9 +67,28 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
     }
   }
 
-  function applyPreset(u: UserRow, preset: keyof typeof PRESETS) {
+  function applyPreset(u: UserRow, preset: PresetRole) {
     const { flags, role } = PRESETS[preset];
     void patch(u.id, { ...flags, role });
+  }
+
+  async function resend(u: UserRow, mode: "email" | "link") {
+    setError(null);
+    setNotice(null);
+    setBusyId(u.id);
+    const res = await fetch(`/api/users/${u.id}/resend`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+    setBusyId(null);
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setError(d.error ?? "השליחה נכשלה");
+      return;
+    }
+    if (mode === "link" && d.link) setLinkInfo({ email: u.email ?? "", url: d.link });
+    else setNotice(`נשלח מייל כניסה אל ${u.email}.`);
   }
 
   const pendingUsers = users.filter((u) => !u.approved);
@@ -132,6 +109,27 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
               {isSelf && <span className="text-[10px] text-[var(--faint)]">(אתה)</span>}
             </div>
             <div className="text-[11px] text-[var(--faint)]" dir="ltr">{u.email}</div>
+            {u.never_signed_in && (
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <span className="text-[11px] text-[var(--amber)] border border-[var(--amber)] rounded-full px-2 py-0.5">
+                  הוזמן, טרם נכנס
+                </span>
+                <button
+                  onClick={() => resend(u, "email")}
+                  disabled={busyId === u.id}
+                  className="text-[11px] border border-[var(--rule)] rounded-xl px-2.5 py-0.5 text-[var(--dim)] hover:bg-[var(--panel3)] disabled:opacity-40"
+                >
+                  שלח שוב במייל
+                </button>
+                <button
+                  onClick={() => resend(u, "link")}
+                  disabled={busyId === u.id}
+                  className="text-[11px] border border-[var(--rule)] rounded-xl px-2.5 py-0.5 text-[var(--dim)] hover:bg-[var(--panel3)] disabled:opacity-40"
+                >
+                  קישור חדש
+                </button>
+              </div>
+            )}
             {!u.approved && (
               <div className="text-[11px] text-[var(--faint)]">
                 נרשם: <span className="font-mono">{displayDateTime(u.created_at)}</span>
@@ -150,7 +148,7 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
           )}
           <div className="flex-1" />
           {!isSelf &&
-            (Object.keys(PRESETS) as (keyof typeof PRESETS)[]).map((p) => (
+            (Object.keys(PRESETS) as PresetRole[]).map((p) => (
               <button
                 key={p}
                 onClick={() => applyPreset(u, p)}
@@ -227,48 +225,155 @@ export default function UsersClient({ users: initial, selfId }: { users: UserRow
       {addOpen && (
         <AddUserModal
           onClose={() => setAddOpen(false)}
-          onDone={(msg) => {
+          onDone={(msg, link) => {
             setAddOpen(false);
             setNotice(msg);
+            if (link) setLinkInfo(link);
             router.refresh();
           }}
-          onError={setError}
         />
       )}
+      {linkInfo && <LinkModal email={linkInfo.email} url={linkInfo.url} onClose={() => setLinkInfo(null)} />}
     </div>
   );
 }
 
+const ROLE_CHOICES: PresetRole[] = ["tech", "bookkeeper", "admin"];
+
+// U1-5: email, name and role. role=owner is never offered — it is set by hand.
+// The new user is created approved, with the role's preset flags.
 function AddUserModal({
   onClose,
   onDone,
-  onError,
 }: {
   onClose: () => void;
-  onDone: (msg: string) => void;
-  onError: (msg: string) => void;
+  onDone: (msg: string, link?: { email: string; url: string }) => void;
 }) {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
+  const [role, setRole] = useState<PresetRole>("tech");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  async function submit(mode: "invite" | "manual") {
+  async function submit(mode: "invite" | "link") {
     setBusy(true);
+    setError(null);
     const res = await fetch("/api/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, name, mode }),
+      body: JSON.stringify({ email, name, role, mode }),
     });
     setBusy(false);
+    const d = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const d = await res.json().catch(() => ({}));
-      onError(d.error ?? "ההוספה נכשלה");
-      onClose();
+      // stay open: the owner fixes the address or picks the other way
+      setError(d.error ?? "ההוספה נכשלה");
       return;
     }
-    onDone(mode === "invite" ? "נשלחה הזמנה במייל." : "המשתמש נוצר. אפשר לאפס סיסמה דרך 'שכחתי סיסמה'.");
+    if (mode === "invite") onDone(`נשלחה הזמנה במייל אל ${email.trim()}.`);
+    else onDone(`המשתמש נוצר (${PRESETS[role].label}).`, { email: email.trim(), url: d.link });
   }
 
+  const fieldClass = "w-full border border-[var(--rule)] rounded-xl px-3 py-2 text-sm mb-2";
+  const ready = !busy && !!email.trim() && !!name.trim();
+
+  return (
+    <Modal onClose={onClose}>
+      <h3 className="font-bold mb-3">הוספת משתמש</h3>
+      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="שם" className={fieldClass} style={{ background: "rgba(255,255,255,0.05)" }} />
+      <input
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        placeholder="אימייל"
+        dir="ltr"
+        className={fieldClass}
+        style={{ background: "rgba(255,255,255,0.05)" }}
+      />
+      <div className="flex flex-wrap gap-2 mb-3">
+        {ROLE_CHOICES.map((r) => (
+          <button
+            key={r}
+            onClick={() => setRole(r)}
+            className={`text-xs rounded-xl px-3 py-1.5 border transition-colors ${
+              role === r ? "border-[var(--violet-light)] text-white" : "border-[var(--rule)] text-[var(--dim)] hover:bg-[var(--panel3)]"
+            }`}
+            style={role === r ? { background: "rgba(139,92,246,0.25)" } : undefined}
+          >
+            {PRESETS[r].label}
+          </button>
+        ))}
+      </div>
+      <p className="text-[11px] text-[var(--faint)] mb-3">
+        ההרשאות נקבעות לפי התפקיד, ואפשר לשנות אותן אחר כך ברשימה. המשתמש ייכנס ישר למערכת, בלי המתנה לאישור.
+      </p>
+      {error && <div className="text-[var(--peak)] text-xs mb-3">{error}</div>}
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => submit("invite")}
+          disabled={!ready}
+          className="text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-40"
+          style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}
+        >
+          שלח הזמנה במייל
+        </button>
+        <button
+          onClick={() => submit("link")}
+          disabled={!ready}
+          className="border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)] hover:bg-[var(--panel3)] disabled:opacity-40 transition-colors"
+        >
+          העתק קישור
+        </button>
+        <button onClick={onClose} className="text-[var(--faint)] text-sm px-2">
+          ביטול
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// U1-5: our own /auth/confirm link (never Supabase's action_link), to send by hand
+function LinkModal({ email, url, onClose }: { email: string; url: string; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+    } catch {
+      // no clipboard permission: the field below is selectable by hand
+    }
+  }
+
+  return (
+    <Modal onClose={onClose}>
+      <h3 className="font-bold mb-1">קישור כניסה</h3>
+      <div className="text-[11px] text-[var(--faint)] mb-3" dir="ltr">{email}</div>
+      <input
+        readOnly
+        value={url}
+        dir="ltr"
+        onFocus={(e) => e.currentTarget.select()}
+        className="w-full border border-[var(--rule)] rounded-xl px-3 py-2 text-xs mb-2 font-mono"
+        style={{ background: "rgba(255,255,255,0.05)" }}
+      />
+      <p className="text-[11px] text-[var(--faint)] mb-3">הקישור בתוקף לשעה ולשימוש אחד. אפשר לשלוח אותו בוואטסאפ או במייל.</p>
+      <div className="flex gap-2">
+        <button
+          onClick={copy}
+          className="text-white font-bold rounded-xl px-4 py-2 text-sm"
+          style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}
+        >
+          {copied ? "הועתק ✓" : "העתק קישור"}
+        </button>
+        <button onClick={onClose} className="text-[var(--faint)] text-sm px-2">
+          סגירה
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function Modal({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
   return (
     <div
       className="fixed inset-0 flex items-center justify-center p-4 z-50"
@@ -280,45 +385,7 @@ function AddUserModal({
         className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl"
         style={{ background: "rgba(15,13,28,0.92)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)" }}
       >
-        <h3 className="font-bold mb-3">הוספת משתמש</h3>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="שם"
-          className="w-full border border-[var(--rule)] rounded-xl px-3 py-2 text-sm mb-2"
-          style={{ background: "rgba(255,255,255,0.05)" }}
-        />
-        <input
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="אימייל"
-          dir="ltr"
-          className="w-full border border-[var(--rule)] rounded-xl px-3 py-2 text-sm mb-4"
-          style={{ background: "rgba(255,255,255,0.05)" }}
-        />
-        <p className="text-[11px] text-[var(--faint)] mb-3">
-          המשתמש נוצר ללא הרשאות (ממתין לאישור). הגדר לו הרשאות אחרי היצירה.
-        </p>
-        <div className="flex gap-2">
-          <button
-            onClick={() => submit("invite")}
-            disabled={busy || !email}
-            className="text-white font-bold rounded-xl px-4 py-2 text-sm disabled:opacity-40"
-            style={{ background: "linear-gradient(135deg, var(--violet), var(--violet-dk))" }}
-          >
-            הזמן במייל
-          </button>
-          <button
-            onClick={() => submit("manual")}
-            disabled={busy || !email}
-            className="border border-[var(--rule)] rounded-xl px-4 py-2 text-sm text-[var(--dim)] hover:bg-[var(--panel3)] disabled:opacity-40 transition-colors"
-          >
-            הוסף ידנית
-          </button>
-          <button onClick={onClose} className="text-[var(--faint)] text-sm px-2">
-            ביטול
-          </button>
-        </div>
+        {children}
       </div>
     </div>
   );

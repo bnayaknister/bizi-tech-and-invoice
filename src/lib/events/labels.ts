@@ -160,6 +160,7 @@ export const EVENT_LABEL: Record<string, string> = {
   manual_sync_completed: "סנכרון ידני הסתיים",
   permissions_updated: "ההרשאות עודכנו",
   user_added: "משתמש נוסף",
+  user_access_resent: "נשלח שוב קישור כניסה",
   notification_skipped_template_unapproved: "התראה לא נשלחה: התבנית לא אושרה",
   notification_skipped_template_language_unmapped: "התראה לא נשלחה: אין שפה לתבנית",
   // ── added 17.10 (found by the label guard in test_e13_8c_history) ──

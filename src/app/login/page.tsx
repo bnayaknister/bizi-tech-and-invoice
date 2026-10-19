@@ -35,9 +35,8 @@ export default function LoginPage() {
       return;
     }
     setError(null);
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/auth/callback?next=/welcome`,
-    });
+    // no redirectTo (U1-5): the template links to /auth/confirm → /reset-password
+    const { error } = await supabase.auth.resetPasswordForEmail(email);
     if (error) {
       setError("שגיאה בשליחת מייל איפוס.");
       return;

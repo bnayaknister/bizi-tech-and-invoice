@@ -50,11 +50,10 @@ export default function WelcomePage() {
       return;
     }
     setResending(true);
-    // a recovery link works for an invited-but-passwordless account too — it
-    // lands back here with a live session, ready to set a password
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/auth/callback?next=/welcome`,
-    });
+    // a recovery link works for an invited-but-passwordless account too. No
+    // redirectTo (U1-5): the email template links to /auth/confirm, which
+    // lands on /reset-password with a live session
+    const { error } = await supabase.auth.resetPasswordForEmail(email);
     setResending(false);
     if (error) {
       // the free Supabase email quota is the usual culprit here (429 /

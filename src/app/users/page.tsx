@@ -20,6 +20,10 @@ export default async function UsersPage() {
     .from("profiles")
     .select("id,name,email,role,approved,can_view_money,can_edit_money,can_view_stages,can_edit_stages,can_manage_users,can_import,created_at")
     .order("created_at", { ascending: true });
+  // U1-5: "הוזמן, טרם נכנס" — whoever has no last_sign_in_at in auth.users.
+  // The studio has a handful of users; one page of 1000 covers them all.
+  const { data: authList } = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+  const signedIn = new Set((authList?.users ?? []).filter((u) => u.last_sign_in_at).map((u) => u.id));
 
   const users: UserRow[] = (rows ?? []).map((r) => ({
     id: r.id,
@@ -34,6 +38,8 @@ export default async function UsersPage() {
     can_manage_users: r.can_manage_users,
     can_import: r.can_import,
     created_at: r.created_at,
+    // a failed listUsers shows no one as "not signed in" rather than everyone
+    never_signed_in: !!authList && !signedIn.has(r.id),
   }));
 
   return (
