@@ -3,6 +3,7 @@ import { getSessionAndProfile } from "@/lib/profile";
 import { createAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
 import UsersClient, { type UserRow } from "./UsersClient";
+import { isStrictOwner } from "@/lib/roles";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +11,9 @@ export default async function UsersPage() {
   const { user, profile } = await getSessionAndProfile();
   if (!user) redirect("/login");
   if (!profile?.approved) redirect("/pending");
-  if (!profile.can_manage_users) redirect("/");
+  // U1-4: user management is the owner's alone — an admin keeps can_manage_users
+  // for the other admin actions, but not this screen
+  if (!profile.can_manage_users || !isStrictOwner(profile)) redirect("/");
 
   const admin = createAdminClient();
   const { data: rows } = await admin

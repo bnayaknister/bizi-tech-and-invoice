@@ -6,6 +6,7 @@ import { eventTitle } from "@/lib/booking/title";
 import { STUDIOS } from "@/lib/calendar/studios";
 import { calendarEventIdFor } from "@/lib/calendar/write";
 import { writeBookingCalendarEvent } from "@/lib/booking/writeCalendarEvent";
+import { hasOwnerAccess } from "@/lib/roles";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/bookings/[id]/retry-calendar — try the calendar write again,
@@ -57,7 +58,7 @@ export async function POST(_request: Request, { params }: { params: { id: string
 
   const { data: profile } = await supabase.from("profiles").select("role,approved").eq("id", user.id).single();
   if (!profile?.approved) return NextResponse.json({ error: "החשבון ממתין לאישור" }, { status: 403 });
-  if (profile.role !== "owner") {
+  if (!hasOwnerAccess(profile)) {
     return NextResponse.json({ error: "המסך הזה פתוח לבעלים בלבד" }, { status: 403 });
   }
 

@@ -1,13 +1,18 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { isStrictOwner } from "@/lib/roles";
 
-// Update a user's permission flags / role / approval. User-manager only.
-// The DB is the real wall on two counts: profiles_manager_update RLS
-// (can_manage_users) AND trg_prevent_self_permission_change, which blocks
-// anyone — manager or not — from changing their OWN permissions. So a
-// technician hitting this is refused up front (not a manager), and a
-// manager pointing it at their own row is refused by the trigger.
+// Update a user's permission flags / role / approval. Owner only (U1-4): an
+// admin keeps can_manage_users for the other admin actions, but not this.
+// The DB is the real wall: profiles_manager_update RLS (can_manage_users AND
+// is_owner_strict, 0119), trg_guard_profile_permissions (no permission change
+// by a non-owner session, 0119) and trg_prevent_self_permission_change (no
+// one changes their OWN permissions).
+//
+// Owner rows are protected HERE, by owner decision (19.10), not in the DB:
+// no one demotes an owner (role) or disables one (approved=false) from the
+// app. There is no delete route; deleting a user is not offered in the app.
 const ALLOWED = new Set([
   "approved",
   "role",
@@ -26,8 +31,8 @@ export async function POST(request: Request, { params }: { params: { id: string 
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "לא מחובר" }, { status: 401 });
 
-  const { data: me } = await supabase.from("profiles").select("can_manage_users").eq("id", user.id).single();
-  if (!me?.can_manage_users) return NextResponse.json({ error: "רק מנהל משתמשים יכול לשנות הרשאות" }, { status: 403 });
+  const { data: me } = await supabase.from("profiles").select("can_manage_users,role").eq("id", user.id).single();
+  if (!me?.can_manage_users || !isStrictOwner(me)) return NextResponse.json({ error: "רק בעלים יכולים לשנות הרשאות" }, { status: 403 });
 
   if (user.id === params.id) {
     // fast, explicit block — nobody edits their own permissions
@@ -41,6 +46,15 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const bad = keys.filter((k) => !ALLOWED.has(k));
   if (bad.length) return NextResponse.json({ error: `שדה לא מותר: ${bad.join(", ")}` }, { status: 400 });
 
+  const { data: target } = await supabase.from("profiles").select("role").eq("id", params.id).maybeSingle();
+  if (isStrictOwner(target)) {
+    const demotes = "role" in patch && patch.role !== "owner";
+    const disables = "approved" in patch && patch.approved !== true;
+    if (demotes || disables) {
+      return NextResponse.json({ error: "אי אפשר להוריד בדרגה או להשבית בעלים" }, { status: 403 });
+    }
+  }
+
   const { data: updated, error } = await supabase
     .from("profiles")
     .update(patch)
@@ -48,7 +62,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     .select("id,name,email,role,approved,can_view_money,can_edit_money,can_view_stages,can_edit_stages,can_manage_users,can_import")
     .maybeSingle();
   if (error) {
-    const denied = /הרשאות של עצמך|row-level security|permission/i.test(error.message);
+    const denied = /הרשאות של עצמך|רק בעלים|row-level security|permission/i.test(error.message);
     return NextResponse.json({ error: error.message }, { status: denied ? 403 : 400 });
   }
   if (!updated) return NextResponse.json({ error: "המשתמש לא נמצא או שאין הרשאה" }, { status: 404 });

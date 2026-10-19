@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { Profile } from "@/lib/profile";
 import { ACTIVE_CLIENT } from "@/lib/clients/status";
+import { hasOwnerAccess } from "@/lib/roles";
 
 // The AI business-question assistant's tool surface (owner spec 2026-07-21).
 //
@@ -239,7 +240,7 @@ export async function runTool(name: string, input: Record<string, unknown>, ctx:
     case "get_archive_client_revenue": {
       // archive is stricter than can_view_money — owner-only, matching the
       // real archive.* RLS (0002: archive select policies are is_owner()).
-      if (profile.role !== "owner") return { ok: false, reason: DENY_OWNER };
+      if (!hasOwnerAccess(profile)) return { ok: false, reason: DENY_OWNER };
       const clientName = String(input.client_name ?? "").trim();
       if (!clientName) return { ok: false, reason: "חסר שם לקוח" };
       const resolved = await resolveClient(supabase, clientName);

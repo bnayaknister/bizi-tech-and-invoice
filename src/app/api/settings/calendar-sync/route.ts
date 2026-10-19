@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { hasOwnerAccess } from "@/lib/roles";
 
 // Owner-only toggle for app_settings.calendar_sync_enabled (0018) — the
 // single flag that decides whether the cron/manual sync may touch the real
@@ -15,7 +16,7 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ error: "לא מחובר" }, { status: 401 });
 
   const { data: profile } = await supabase.from("profiles").select("role").eq("id", user.id).single();
-  if (profile?.role !== "owner") return NextResponse.json({ error: "רק הבעלים יכול לשנות הגדרה זו" }, { status: 403 });
+  if (!hasOwnerAccess(profile)) return NextResponse.json({ error: "רק הבעלים יכול לשנות הגדרה זו" }, { status: 403 });
 
   const body = (await request.json().catch(() => ({}))) as { enabled?: boolean };
   if (typeof body.enabled !== "boolean") {

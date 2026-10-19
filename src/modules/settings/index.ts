@@ -1,4 +1,5 @@
 import type { ModuleDef } from "@/modules/types";
+import { hasOwnerAccess } from "@/lib/roles";
 
 // Owner-only — this is where calendar_sync_enabled lives, the one setting
 // (screens-spec §11, owner decision 2026-07-17) that decides whether the
@@ -8,7 +9,7 @@ export const settingsModule: ModuleDef = {
   title: "הגדרות",
   icon: "settings",
   href: "/settings",
-  hasAccess: (profile) => profile.approved && profile.role === "owner",
+  hasAccess: (profile) => profile.approved && hasOwnerAccess(profile),
   getMetric: async (supabase) => {
     const { data } = await supabase
       .from("app_settings")

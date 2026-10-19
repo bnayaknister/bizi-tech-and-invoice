@@ -7,6 +7,7 @@ import AppHeader from "@/components/AppHeader";
 import AvailabilityClient from "./AvailabilityClient";
 import { toPickerShows, type ShowRow } from "./booking";
 import type { Show } from "./AvailabilityBody";
+import { hasOwnerAccess } from "@/lib/roles";
 
 // Stage 2 of client-booked recordings: the OWNER previews what a client would
 // see, before any client link exists (the public link is stage 3, not this).
@@ -22,7 +23,7 @@ export default async function AvailabilityPage() {
   const { user, profile } = await getSessionAndProfile();
   if (!user) redirect("/login");
   if (!profile?.approved) redirect("/pending");
-  if (profile.role !== "owner") redirect("/");
+  if (!hasOwnerAccess(profile)) redirect("/");
 
   const supabase = createClient();
   // `.eq("active", true)` is the condition the system already uses for "the

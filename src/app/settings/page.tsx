@@ -3,6 +3,7 @@ import { getSessionAndProfile } from "@/lib/profile";
 import { createClient } from "@/lib/supabase/server";
 import AppHeader from "@/components/AppHeader";
 import SettingsClient, { type LastSync } from "./SettingsClient";
+import { hasOwnerAccess } from "@/lib/roles";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +11,7 @@ export default async function SettingsPage() {
   const { user, profile } = await getSessionAndProfile();
   if (!user) redirect("/login");
   if (!profile?.approved) redirect("/pending");
-  if (profile.role !== "owner") redirect("/");
+  if (!hasOwnerAccess(profile)) redirect("/");
 
   const supabase = createClient();
   const [{ data: settings }, { data: events }] = await Promise.all([

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAppBaseUrl } from "@/lib/appUrl";
+import { isStrictOwner } from "@/lib/roles";
 
 // Add a user — user-manager only. Two modes:
 //   invite : sends a Supabase invite email (they set their own password)
@@ -16,8 +17,8 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "לא מחובר" }, { status: 401 });
 
-  const { data: me } = await supabase.from("profiles").select("can_manage_users").eq("id", user.id).single();
-  if (!me?.can_manage_users) return NextResponse.json({ error: "רק מנהל משתמשים יכול להוסיף משתמשים" }, { status: 403 });
+  const { data: me } = await supabase.from("profiles").select("can_manage_users,role").eq("id", user.id).single();
+  if (!me?.can_manage_users || !isStrictOwner(me)) return NextResponse.json({ error: "רק בעלים יכולים להוסיף משתמשים" }, { status: 403 });
 
   const body = (await request.json().catch(() => ({}))) as { email?: string; name?: string; mode?: "invite" | "manual" };
   const email = (body.email ?? "").trim().toLowerCase();

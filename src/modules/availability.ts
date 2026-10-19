@@ -1,4 +1,5 @@
 import type { ModuleDef } from "@/modules/types";
+import { hasOwnerAccess } from "@/lib/roles";
 
 // Stage 2 of client-booked recordings: the internal check the owner reads
 // BEFORE any client link exists (the public link is stage 3, and is not this).
@@ -14,7 +15,7 @@ export const availabilityModule: ModuleDef = {
   // documentsModule already borrows "finance" and projectsModule "productions".
   icon: "productions",
   href: "/calendar/availability",
-  hasAccess: (profile) => profile.approved && profile.role === "owner",
+  hasAccess: (profile) => profile.approved && hasOwnerAccess(profile),
   // Static, like archiveModule's. The real metric — how many slots are free —
   // would mean fetching and parsing the whole ICS feed on every hub load for
   // every owner, to fill one number on a card nobody navigates by. The screen

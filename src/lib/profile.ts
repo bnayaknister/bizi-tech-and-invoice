@@ -5,7 +5,7 @@ export type Profile = {
   id: string;
   name: string | null;
   email: string | null;
-  role: "owner" | "tech" | "bookkeeper" | null;
+  role: "owner" | "admin" | "tech" | "bookkeeper" | null;
   approved: boolean;
   can_view_money: boolean;
   can_edit_money: boolean;

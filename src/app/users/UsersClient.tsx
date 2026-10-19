@@ -33,7 +33,7 @@ const PERMS: { key: PermKey; label: string }[] = [
   { key: "can_edit_stages", label: "עריכת הפקות" },
   { key: "can_view_money", label: "צפייה בכספים" },
   { key: "can_edit_money", label: "עריכת כספים" },
-  { key: "can_manage_users", label: "ניהול משתמשים" },
+  { key: "can_manage_users", label: "פעולות מנהל" },
   { key: "can_import", label: "ייבוא" },
 ];
 
@@ -65,8 +65,9 @@ const PRESETS: Record<string, { label: string; flags: Record<PermKey, boolean>; 
     },
   },
   admin: {
+    // U1-4: admin = everything but managing users (that stays role=owner)
     label: "אדמין",
-    role: "owner",
+    role: "admin",
     flags: {
       can_view_stages: true,
       can_edit_stages: true,

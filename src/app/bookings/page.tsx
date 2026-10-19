@@ -7,6 +7,7 @@ import { cleanAliasFor } from "@/lib/booking/alias";
 import { splitQueue, type QueueRow } from "@/lib/booking/queue";
 import { STUDIOS } from "@/lib/calendar/studios";
 import BookingsClient from "./BookingsClient";
+import { hasOwnerAccess } from "@/lib/roles";
 
 // The owner's request queue (3ג). Owner-only through the gate that already
 // existed — the same three lines as /calendar/availability, /settings and
@@ -23,7 +24,7 @@ export default async function BookingsPage() {
   const { user, profile } = await getSessionAndProfile();
   if (!user) redirect("/login");
   if (!profile?.approved) redirect("/pending");
-  if (profile.role !== "owner") redirect("/");
+  if (!hasOwnerAccess(profile)) redirect("/");
 
   // 0099 is applied (7.10) and database.types.ts was regenerated, so the two
   // calendar_write_* columns below are known to the generated types; the

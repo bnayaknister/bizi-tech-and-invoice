@@ -1,5 +1,6 @@
 import type { Profile } from "@/lib/profile";
 import { ACTIVE_CLIENT, MERGED_CLIENT, PENDING_CLIENT } from "@/lib/clients/status";
+import { hasOwnerAccess } from "@/lib/roles";
 
 /**
  * Who may see the clients screen — owner 7.10: "owner או can_view_money בלבד.
@@ -31,7 +32,7 @@ import { ACTIVE_CLIENT, MERGED_CLIENT, PENDING_CLIENT } from "@/lib/clients/stat
  * for one that lets them write.
  */
 export function canSeeClients(profile: Profile | null | undefined): boolean {
-  return !!profile?.approved && (profile.role === "owner" || !!profile.can_view_money);
+  return !!profile?.approved && (hasOwnerAccess(profile) || !!profile.can_view_money);
 }
 
 /**

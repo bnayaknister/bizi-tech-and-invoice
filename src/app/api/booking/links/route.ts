@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createTypedAdminClient } from "@/lib/supabase/admin";
 import { ensureBookingLink } from "@/lib/booking/links";
+import { hasOwnerAccess } from "@/lib/roles";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/booking/links — the owner asks for a show's booking link.
@@ -36,7 +37,7 @@ export async function POST(request: Request) {
 
   const { data: profile } = await supabase.from("profiles").select("role,approved").eq("id", user.id).single();
   if (!profile?.approved) return NextResponse.json({ error: "החשבון ממתין לאישור" }, { status: 403 });
-  if (profile.role !== "owner") {
+  if (!hasOwnerAccess(profile)) {
     return NextResponse.json({ error: "המסך הזה פתוח לבעלים בלבד" }, { status: 403 });
   }
 

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient, createTypedClient } from "@/lib/supabase/server";
 import { loadAvailability } from "@/lib/booking/availabilityServer";
 import { validateDuration } from "@/lib/booking/duration";
+import { hasOwnerAccess } from "@/lib/roles";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET /api/calendar/availability — the internal availability check.
@@ -43,7 +44,7 @@ export async function GET(request: Request) {
 
   const { data: profile } = await supabase.from("profiles").select("role,approved").eq("id", user.id).single();
   if (!profile?.approved) return NextResponse.json({ error: "החשבון ממתין לאישור" }, { status: 403 });
-  if (profile.role !== "owner") {
+  if (!hasOwnerAccess(profile)) {
     return NextResponse.json({ error: "המסך הזה פתוח לבעלים בלבד" }, { status: 403 });
   }
 

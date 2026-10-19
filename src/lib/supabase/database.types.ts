@@ -2728,6 +2728,7 @@ export type Database = {
       insert_archive_job: { Args: { p_job: Json }; Returns: string }
       is_approved: { Args: never; Returns: boolean }
       is_owner: { Args: never; Returns: boolean }
+      is_owner_strict: { Args: never; Returns: boolean }
       is_studio_admin: { Args: never; Returns: boolean }
       move_jobs_to_archive: { Args: { job_ids: string[] }; Returns: number }
       move_productions_to_archive: {

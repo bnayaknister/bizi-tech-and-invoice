@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { hasOwnerAccess } from "@/lib/roles";
 
 // Edit the accountant / bookkeeping default recipient (owner spec 2026-07-29).
 // The value lives on the app_settings singleton (0048) and drives the document
@@ -15,7 +16,7 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "לא מחובר" }, { status: 401 });
   const { data: profile } = await supabase.from("profiles").select("role").eq("id", user.id).single();
-  if (profile?.role !== "owner") return NextResponse.json({ error: "בעל העסק בלבד" }, { status: 403 });
+  if (!hasOwnerAccess(profile)) return NextResponse.json({ error: "בעל העסק בלבד" }, { status: 403 });
 
   const body = (await request.json().catch(() => ({}))) as { email?: string };
   const email = (body.email ?? "").trim();

@@ -12,6 +12,7 @@ import { publicVersion, type PublicVersion } from "@/lib/review/versions";
 import { toVersionRow, VERSION_SELECT } from "@/lib/review/versionStore";
 import { loadCommentHistory, type HistoryItem } from "@/lib/review/commentHistory";
 import type { Database } from "@/lib/supabase/database.types";
+import { hasOwnerAccess } from "@/lib/roles";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET /api/entity/[type]/[id] — everything after authentication. T34.
@@ -340,7 +341,7 @@ export async function entityGet(deps: EntityGetDeps): Promise<{ status: number; 
 
   // change history — events RLS is owner-only; mirror that here
   const history = async (): Promise<unknown[] | null> => {
-    if (profile.role !== "owner") return null;
+    if (!hasOwnerAccess(profile)) return null;
     const { data: events } = await admin
       .from("events")
       .select("id,event_type,actor_id,payload,created_at")

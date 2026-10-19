@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createTypedAdminClient } from "@/lib/supabase/admin";
 import { calendarDayUrl } from "@/lib/booking/queue";
 import { cancelApprovedBooking } from "@/lib/booking/cancel";
+import { hasOwnerAccess } from "@/lib/roles";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/bookings/[id]/cancel — the owner cancels an APPROVED recording.
@@ -40,7 +41,7 @@ export async function POST(_request: Request, { params }: { params: { id: string
 
   const { data: profile } = await supabase.from("profiles").select("role,approved").eq("id", user.id).single();
   if (!profile?.approved) return NextResponse.json({ error: "החשבון ממתין לאישור" }, { status: 403 });
-  if (profile.role !== "owner") {
+  if (!hasOwnerAccess(profile)) {
     return NextResponse.json({ error: "המסך הזה פתוח לבעלים בלבד" }, { status: 403 });
   }
 

@@ -1,5 +1,6 @@
 import type { ModuleDef } from "@/modules/types";
 import { pendingFutureCount, type QueueRow } from "@/lib/booking/queue";
+import { hasOwnerAccess } from "@/lib/roles";
 
 // Stage 3ג of client-booked recordings: the queue the owner decides in.
 //
@@ -15,7 +16,7 @@ export const bookingsModule: ModuleDef = {
   // one subject, and the hub reads better when they look related
   icon: "productions",
   href: "/bookings",
-  hasAccess: (profile) => profile.approved && profile.role === "owner",
+  hasAccess: (profile) => profile.approved && hasOwnerAccess(profile),
   /**
    * A REAL count, unlike availabilityModule's static card — and it is cheap in
    * a way that one is not: a number from one indexed query on a small table,
