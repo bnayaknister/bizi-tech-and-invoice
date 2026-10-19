@@ -110,6 +110,26 @@
 - **מה צריך ממך:** אישור לשינוי ההגדרות.
 
 ### U1-4 — הגנה על הבעלים והפרדת "אדמין" מ"בעלים"
+
+> ✅ **U1-4 הושלם 19.10.** הכרעת הבעלים: בניה ואלי הם `owner`. שירי היא `admin`, כלומר הכול חוץ מניהול משתמשים והרשאות.
+> - **0119** (קבצים `0de0268`). נבדקה מקומית על Postgres 17. הבעלים הריץ בייצור dryrun ✅, את המיגרציה, ו-verify ✅ בכל הסעיפים, ואחר כך gen types. השינויים:
+>   - ‏`profiles_role_check` מתיר גם `admin`.
+>   - ‏`is_owner()` מחזירה true ל-owner ול-admin, עם COMMENT שמפנה ל-`is_owner_strict()`.
+>   - ‏`is_owner_strict()` (‏owner בלבד) נוספה ל-`profiles_manager_update` ול-`profiles_manager_delete`.
+>   - ‏`trg_guard_profile_permissions`: סשן שאינו owner לא משנה `role`, ‏`approved` או `can_*` בשום שורה, גם לא בשלו.
+> - **ה-verify הוכיח בסשן מדומה של שירי כ-admin:**
+>   - היא קוראת `events` ו-`app_settings` ומעדכנת את `app_settings`.
+>   - ‏UPDATE על פרופיל אחר ו-DELETE משפיעים על 0 שורות.
+>   - שינוי `role` או `can_import` שלה עצמה נדחה, ועדכון השם שלה עובד.
+>   - ‏owner עדיין משנה הרשאות.
+> - **הקוד** (`9746cff`, ה-deploy ב-Vercel הסתיים בהצלחה):
+>   - ‏`src/lib/roles.ts`: ‏`hasOwnerAccess` (‏owner או admin) ו-`isStrictOwner`. הקובץ נפרד מ-`lib/profile.ts`, כי גם רכיבי לקוח צריכים אותו, דרך התפריט.
+>   - ‏21 הבדיקות של `role === "owner"` הוחלפו: הגדרות, זמינות, הזמנות סטודיו, קישורי הזמנה, ארכיון, העוזר, הגישה לכרטיס לקוח, היסטוריה במגירה, וארבעה מודולים.
+>   - ‏`/users`, ‏`/api/users`, ‏`/api/users/[id]` ומודול המשתמשים: owner בלבד.
+>   - ‏`/api/users/[id]` מסרב להוריד בדרגה או להשבית owner (‏403). אין באפליקציה ראוט למחיקת משתמש.
+>   - הפריסט "אדמין" קובע `role='admin'`, והתווית של `can_manage_users` היא עכשיו "פעולות מנהל".
+> - **מי כותב ל-profiles עם סשן של משתמש:** רק `/api/users/[id]`, וזה owner בלבד, כך שהטריגר לא חוסם אותו. ‏`/api/users` כותב רק את השם, דרך service role (‏`auth.uid()` ריק, ולכן הטריגר לא פועל). ב-SQL רק `handle_new_user` כותב ל-profiles, והוא INSERT, בעוד שהטריגר הוא על UPDATE.
+> - **שירי עברה ל-`admin`** אחרי ה-deploy, ו-`can_manage_users` נשאר true. מצב 7 המשתמשים: בניה ואלי `owner`, שירי `admin`, ושלושה `tech` בלי `can_manage_users`. כולם `approved`.
 - **מה, במסד (מיגרציה 0119):** טריגר `BEFORE UPDATE` על `profiles`: רק משתמש עם `role='owner'` רשאי (א) לשנות שורה של משתמש שהוא `owner`, אדמין (`role='admin'`) או `can_manage_users`, (ב) להעניק `can_manage_users`, ו-(ג) לקבוע `role` כ-`owner` או `admin`. אותו כלל ל-DELETE. כש-`auth.uid()` ריק (‏SQL Editor או service role), אין הגבלה, כמו ב-`guard_studio_admin_flag`.
 - **התפקיד "אדמין":** ערך חדש `role='admin'` עם כל התיבות. **נבדק 19.10:** קיים `profiles_role_check` שמתיר רק `owner` / `tech` / `bookkeeper`, ולכן 0119 מרחיבה אותו ל-`admin`. מסכי הבעלים נשארים מוגבלים ל-`role='owner'` (הבדיקות הקיימות `role !== "owner"`), ולכן אדמין לא רואה אותם.
 - **בקוד:** הפריסט "אדמין" קובע `admin` ולא `owner`. "בעלים" מוצג רק לבעלים.
