@@ -163,6 +163,8 @@ export const EVENT_LABEL: Record<string, string> = {
   user_access_resent: "נשלח שוב קישור כניסה",
   user_disabled: "המשתמש הושבת",
   user_enabled: "המשתמש הופעל מחדש",
+  bundle_from_show_refused: "הזמנה מרוכזת נחסמה (קיימת הזמנה לתוכנית)",
+  bundle_from_show_override: "הזמנה מרוכזת נוספת אושרה כתקופה אחרת",
   notification_skipped_template_unapproved: "התראה לא נשלחה: התבנית לא אושרה",
   notification_skipped_template_language_unmapped: "התראה לא נשלחה: אין שפה לתבנית",
   // ── added 17.10 (found by the label guard in test_e13_8c_history) ──

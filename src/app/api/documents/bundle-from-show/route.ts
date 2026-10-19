@@ -8,6 +8,7 @@ import {
   type MorningDocumentRequest,
 } from "@/lib/morning/types";
 import { inactiveClientMessage, isActiveClient } from "@/lib/clients/status";
+import { BUNDLE_RECENT_DAYS, LIVE_IN_QUEUE_MESSAGE, bundleConflict, loadShowBundles } from "@/lib/documents/bundleGuard";
 
 // One work order for N episodes of a show that were edited but never entered
 // as productions. It creates the job it bills and queues the document in the
@@ -51,6 +52,8 @@ export async function POST(request: Request) {
     unitPrice?: number;
     amount?: number;
     description?: string;
+    /** B28: "this is a different period" — steps over a recent issued bundle */
+    confirmDifferentPeriod?: boolean;
   };
 
   if (!body.showId) return NextResponse.json({ error: "לא נבחרה תוכנית" }, { status: 400 });
@@ -83,6 +86,57 @@ export async function POST(request: Request) {
   // iron rule: no issuance without a Morning-mapped client
   if (!client.morning_client_id) {
     return NextResponse.json({ error: "הלקוח אינו ממופה למורנינג" }, { status: 400 });
+  }
+
+  // ---- B28: no second bundle for the same show by accident ---------------
+  // Checked before anything is written. A live one is a hard stop; a recent
+  // issued one needs the caller's explicit "different period". Every refusal
+  // and every override is an event. (Two requests in the same instant can
+  // still both pass — the human approval in the queue is the backstop.)
+  let bundles;
+  try {
+    bundles = await loadShowBundles(admin, show.id as string);
+  } catch (e) {
+    // an unreadable history must not become a silent pass on a money path
+    console.error("bundle-from-show: bundle history unreadable —", e);
+    return NextResponse.json({ error: "לא ניתן לבדוק הזמנות קודמות לתוכנית — נסו שוב" }, { status: 500 });
+  }
+  const conflict = bundleConflict(bundles, new Date());
+  const conflictFacts = conflict && {
+    pending_document_id: conflict.bundle.id,
+    status: conflict.bundle.status,
+    issued_at: conflict.bundle.issued_at,
+    number: conflict.bundle.morning_doc_number,
+    quantity: conflict.bundle.quantity,
+  };
+  const refuse = async (reason: "live_in_queue" | "recent_issued") => {
+    await admin.from("events").insert({
+      entity_type: "show",
+      entity_id: show.id,
+      event_type: "bundle_from_show_refused",
+      actor_id: user.id,
+      payload: { reason, show_name: show.name, quantity, conflict: conflictFacts },
+    });
+  };
+  if (conflict?.kind === "live_in_queue") {
+    await refuse("live_in_queue");
+    return NextResponse.json({ error: LIVE_IN_QUEUE_MESSAGE, code: "live_in_queue" }, { status: 409 });
+  }
+  const overriding = conflict?.kind === "recent_issued" && body.confirmDifferentPeriod === true;
+  if (conflict?.kind === "recent_issued" && !overriding) {
+    await refuse("recent_issued");
+    return NextResponse.json(
+      {
+        error: `לתוכנית הזו הונפקה הזמנה מרוכזת ב-${BUNDLE_RECENT_DAYS} הימים האחרונים. אם זו תקופה אחרת, יש לסמן זאת ולשלוח שוב.`,
+        code: "recent_issued",
+        recent: {
+          issued_at: conflict.bundle.issued_at,
+          quantity: conflict.bundle.quantity,
+          number: conflict.bundle.morning_doc_number,
+        },
+      },
+      { status: 409 }
+    );
   }
 
   const price = body.unitPrice ?? (show.default_rate as number | null);
@@ -182,8 +236,19 @@ export async function POST(request: Request) {
       quantity,
       unit_price: linePrice,
       amount: total,
+      ...(overriding ? { period_confirmed: true } : {}),
     },
   });
+
+  if (overriding) {
+    await admin.from("events").insert({
+      entity_type: "show",
+      entity_id: show.id,
+      event_type: "bundle_from_show_override",
+      actor_id: user.id,
+      payload: { show_name: show.name, quantity, amount: total, new_pending_document_id: inserted.id, recent: conflictFacts },
+    });
+  }
 
   return NextResponse.json({
     ok: true,

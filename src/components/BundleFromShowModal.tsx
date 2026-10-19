@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { displayStampDate } from "@/lib/dates";
 
 // "הזמנה מרוכזת מתוכנית": N episodes that were edited but never entered as
 // productions, billed as one work order. Same shape as NewDocModal — pick,
@@ -39,6 +40,10 @@ export default function BundleFromShowModal({
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // B28: the server found a bundle issued for this show in the last 30 days.
+  // Shown here, and the order goes ahead only once "זו תקופה אחרת" is ticked.
+  const [recent, setRecent] = useState<{ issued_at: string | null; quantity: number | null; number: string | null } | null>(null);
+  const [periodOk, setPeriodOk] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,6 +70,8 @@ export default function BundleFromShowModal({
 
   function choose(s: ShowHit) {
     setPicked(s);
+    setRecent(null);
+    setPeriodOk(false);
     // the show's own rate, editable — a show billed by the hour has no
     // per-episode rate to prefill, and the field stays empty rather than
     // borrowing a number from somewhere it does not belong
@@ -109,10 +116,17 @@ export default function BundleFromShowModal({
           quantity: qtyNum,
           unitPrice: priceNum,
           description: description.trim() || undefined,
+          ...(recent && periodOk ? { confirmDifferentPeriod: true } : {}),
         }),
       });
       const body = await res.json();
       if (!res.ok) {
+        if (body.code === "recent_issued" && body.recent) {
+          setRecent(body.recent);
+          setPeriodOk(false);
+          setErr(null);
+          return;
+        }
         setErr(body.error ?? "יצירת ההזמנה נכשלה");
         return;
       }
@@ -234,6 +248,19 @@ export default function BundleFromShowModal({
           </>
         )}
 
+        {recent && (
+          <div className="mt-3 rounded-xl border border-[var(--amber)] p-3 text-[11px]" style={{ background: "rgba(252,211,77,0.06)" }}>
+            <div className="font-bold text-[var(--amber)] mb-1">לתוכנית הזו כבר הונפקה הזמנה מרוכזת לאחרונה</div>
+            <div className="text-[var(--dim)]">
+              הזמנה {recent.number ?? "—"} · {recent.quantity ?? "?"} פרקים · הונפקה ב-{displayStampDate(recent.issued_at) ?? "—"}
+            </div>
+            <label className="flex items-center gap-2 mt-2 cursor-pointer">
+              <input type="checkbox" checked={periodOk} onChange={(e) => setPeriodOk(e.target.checked)} />
+              זו תקופה אחרת — הפרקים בהזמנה החדשה לא חויבו בהזמנה הקודמת
+            </label>
+          </div>
+        )}
+
         {err && <div className="text-[11px] text-[var(--red)] mt-2">{err}</div>}
 
         <div className="flex items-center justify-end gap-2 mt-4">
@@ -242,7 +269,7 @@ export default function BundleFromShowModal({
           </button>
           <button
             onClick={submit}
-            disabled={!picked || busy || !picked.client_mapped || total == null}
+            disabled={!picked || busy || !picked.client_mapped || total == null || (!!recent && !periodOk)}
             className="text-xs font-bold rounded-xl px-4 py-1.5 bg-[var(--signal)] text-white disabled:opacity-40"
           >
             {busy ? "מוסיף לתור…" : "הוסף לתור האישורים"}
