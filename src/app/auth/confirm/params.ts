@@ -2,7 +2,7 @@
 // drift on which link types are accepted or where they may forward to.
 
 export const CONFIRM_TYPES = {
-  invite: "לחץ על המשך כדי לבחור סיסמה ולהיכנס.",
+  invite: "יש ללחוץ על 'המשך' כדי לבחור סיסמה ולהיכנס.",
   recovery: "לחץ על המשך כדי לבחור סיסמה חדשה.",
 } as const;
 

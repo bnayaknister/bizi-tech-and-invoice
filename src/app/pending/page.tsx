@@ -20,7 +20,7 @@ export default async function PendingPage() {
           <p className="text-[var(--dim)] text-sm leading-relaxed mb-5">
             החשבון שלך (<span className="font-mono" dir="ltr">{profile?.email}</span>) נוצר בהצלחה, אבל עוד לא אושר.
             <br />
-            בעל המערכת יקצה לך תפקיד והרשאות, ואז תוכל להיכנס.
+            בעל המערכת יקצה לך תפקיד והרשאות, ואז אפשר יהיה להיכנס.
           </p>
           <SignOutButton />
         </div>

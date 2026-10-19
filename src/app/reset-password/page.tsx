@@ -55,7 +55,7 @@ export default function ResetPasswordPage() {
               type="submit"
               className="bg-[var(--signal)] text-[var(--on-accent)] font-bold rounded px-3 py-2 text-sm mt-2"
             >
-              שמור סיסמה
+              שמירת סיסמה
             </button>
           </form>
         )}
