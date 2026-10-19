@@ -27,11 +27,11 @@ export default function AuthConfirmPage({ searchParams }: { searchParams: Search
 
   let body: React.ReactNode;
   if (error === "expired") {
-    body = <Message text="הקישור כבר לא בתוקף. בקש קישור חדש ממנהל המערכת." />;
+    body = <Message text="הקישור כבר לא בתוקף. יש לבקש קישור חדש ממנהל המערכת." />;
   } else if (error) {
-    body = <Message text="לא הצלחנו לאמת את הקישור. בקש קישור חדש ממנהל המערכת." />;
+    body = <Message text="לא הצלחנו לאמת את הקישור. יש לבקש קישור חדש ממנהל המערכת." />;
   } else if (!tokenHash || !isConfirmType(type)) {
-    body = <Message text="הקישור אינו תקין. בקש קישור חדש ממנהל המערכת." />;
+    body = <Message text="הקישור אינו תקין. יש לבקש קישור חדש ממנהל המערכת." />;
   } else {
     const next = safeNext(one(searchParams.next), type);
     body = (

@@ -3,7 +3,7 @@
 
 export const CONFIRM_TYPES = {
   invite: "יש ללחוץ על 'המשך' כדי לבחור סיסמה ולהיכנס.",
-  recovery: "לחץ על המשך כדי לבחור סיסמה חדשה.",
+  recovery: "יש ללחוץ על 'המשך' כדי לבחור סיסמה חדשה.",
 } as const;
 
 export type ConfirmType = keyof typeof CONFIRM_TYPES;
