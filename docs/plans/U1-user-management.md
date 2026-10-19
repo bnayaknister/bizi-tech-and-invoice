@@ -87,6 +87,18 @@
 - **מה צריך ממך:** אישור נוסח התבניות, ואישור לעדכן אותן בהגדרות Auth.
 
 ### U1-3 — סגירת ההרשמה ו-8 תווים
+
+> ✅ **U1-3 הושלם 19.10 (באישור הבעלים).**
+> - **בדיקה מקדימה (קריאה בלבד):** אין בקוד `signUp`, ‏`signInWithOAuth` או `signInWithOtp`, אין דף הרשמה, ואין קישור "הרשמה" ב-`/login`. ‏`/join` הוא הרשמת **לקוחות** לטבלאות האפליקציה, ולא יוצר משתמשי Auth. הספק היחיד הוא email. ‏`/reset-password` ו-`/welcome` כבר דרשו 8 תווים בצד הלקוח. ‏`approval_requests` הוא אישור פעולות הרסניות ולא קשור להרשמה.
+> - **השינוי:** PATCH ל-`config/auth`. בקריאה חוזרת: ‏`disable_signup = true` (היה false), ‏`password_min_length = 8` (היה 6).
+> - ⚠️ **לקח:** השינוי נקלט בשרת ה-Auth רק אחרי כמה שניות. ‏signUp שרץ פחות משנייה אחרי ה-PATCH **הצליח** ויצר משתמש (‏`u1-signup-probe@bizi-test.local`, נמחק). כל בדיקה של שינוי הגדרות Auth צריכה לחכות כדקה, אחרת היא בודקת את ההגדרה הישנה.
+> - **הבדיקות החיות (אחרי שהשינוי נקלט):**
+>   - **הזמנה דרך admin API** (‏`/invite`, אותו מסלול כמו `inviteUserByEmail` של `/api/users`) ל-`bnayaknister+u1test3@gmail.com`: ‏200, נוצר משתמש.
+>   - **signUp ציבורי עם anon:** ‏`422 {"error_code":"signup_disabled","msg":"Signups not allowed for this instance"}`. נוסה פעמיים, עם `u1-signup-probe2@…` ועם `u1-signup-probe@…`, ולא נוצר משתמש.
+>   - **איפוס סיסמה (‏`/recover`) לחשבון הבעלים:** ‏200. הקישור לא נלחץ.
+>   - **‏`/join`:** מחזיר 404, וזה צפוי. אין דף `/join` עצמו, ו-`/join/[token]` מחזיר 404 בכוונה כל עוד `REGISTRATION_ENABLED` כבוי (E17-4). לא קשור ל-Auth.
+> - **ניקוי:** נמחקו u1test3 (שני ה-id, כי ההזמנה הראשונה רצה לפני שהשינוי נקלט ונעשתה מחדש), ‏`u1-signup-probe` ו-`ztestcancel_tech` (ראו U1-9). בכל אחד ‏DELETE החזיר 200 ו-GET אחריו 404. בדיקת SELECT על 51 עמודות (כל ה-FK ל-`auth.users` ול-`profiles`, ‏`refresh_tokens`, ‏`flow_state`, ‏`events.entity_id`, ומייל) החזירה 0 בכולן.
+> - **קוד:** ההודעה במסך המשתמשים שונתה ל"המשתמש נוצר. אפשר לאפס סיסמה דרך 'שכחתי סיסמה'."
 - **מה:** ‏`disable_signup = true`, ‏`password_min_length = 8`, דרך Management API.
 - **בדיקה חיה אחרי השינוי:**
   - ‏Admin invite / `generateLink` / `createUser` עובדים (משתמש בדיקה, ונמחק).
@@ -105,6 +117,10 @@
 - **מה צריך ממך:** החלת 0119, gen types, והכרעה מה עושים עם `shiri.ab@gmail.com` (היום `owner` עם ניהול משתמשים): נשארת בעלים או עוברת לאדמין? וגם `eli@bi-zi.co.il` (`owner`).
 
 ### U1-5 — מייל: תבניות בעברית ומגבלת שליחה (B31)
+
+> 📌 **נוסף ל-U1-5 (הבעלים, 19.10):**
+> - **ניקוי `redirectTo`:** ‏`/api/users` (הזמנה), ‏`/login` ו-`/welcome` (‏`resetPasswordForEmail`) עדיין שולחים `redirectTo` ל-`/auth/callback?next=/welcome`. מאז U1-2 זה לא משפיע, כי התבניות בנויות על `{{ .SiteURL }}/auth/confirm`, אבל צריך לנקות.
+> - **משתמש מוזמן נכנס ישר עם התפקיד שנקבע לו**, בלי לעבור ב"ממתין לאישור".
 
 > ✅ **19.10: ה-SMTP הוגדר על ידי הבעלים, דרך Google Workspace ולא Resend** (ה-DNS של `bi-zi.co.il` בחשבון Cloudflare של צד שלישי). **נבדק בקריאה בלבד ב-19.10:** ‏`smtp_host = smtp.gmail.com`, ‏port 465, ‏user ו-sender `bn@bi-zi.co.il`, שם "Bizi Podclub", סיסמה מוגדרת (App Password). מייל איפוס נשלח ועבד (בלוג ב-13:21–13:22 שעון ישראל: ‏`/recover` 200, ואז `/verify` 303 והתחברות ב-PKCE). **המגבלה כבר הועלתה ל-30 מיילים בשעה** (בלוג ב-13:20: "Email limiter from 2/1h to 30"). ה-SPF וה-DKIM של Google כבר קיימים בדומיין, ולכן אין צורך בשינוי DNS.
 >
@@ -151,6 +167,8 @@
 - **מה צריך ממך:** בדיקה על משתמש בדיקה.
 
 ### U1-9 — משתמשי בדיקה
+
+> ✅ **מחיקת `ztestcancel_tech-9213e99f@bizi-test.local` בוצעה 19.10** (באישור הבעלים, במסגרת U1-3). ‏id ‏`b63e4609…`. לא היו לו שורות ב-`events` או בטבלאות האפליקציה. ‏DELETE החזיר 200, ‏GET אחריו 404, ו-SELECT על 51 עמודות החזיר 0. נשארו מ-U1-9 העזר המשותף והסריקה של הסקריפטים.
 - **מה:**
   - מחיקה של `ztestcancel_tech-9213e99f@bizi-test.local`, עם בדיקה שהמחיקה הצליחה (‏404 ב-Auth, ואין שורה ב-`profiles`).
   - עזר משותף לסקריפטים שיוצרים משתמשים: מחיקה, ואז וידוא, ונכשל אם לא נמחק. מתחילים ב-`test_document_cancel.py`, שבו נוצר המשתמש שנשאר.

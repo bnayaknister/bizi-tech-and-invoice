@@ -265,7 +265,7 @@ function AddUserModal({
       onClose();
       return;
     }
-    onDone(mode === "invite" ? "נשלחה הזמנה במייל." : "המשתמש נוצר — יאפס סיסמה דרך 'שכחתי סיסמה'.");
+    onDone(mode === "invite" ? "נשלחה הזמנה במייל." : "המשתמש נוצר. אפשר לאפס סיסמה דרך 'שכחתי סיסמה'.");
   }
 
   return (
