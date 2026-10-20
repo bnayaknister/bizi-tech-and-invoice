@@ -14,6 +14,7 @@ import type { ContactShow } from "@/lib/booking/contacts";
 import type { InboundMessage } from "../webhook";
 import { copy, type Lang } from "./copy";
 import { isBilingualOn } from "../lang";
+import { toWaId, waIdFromProvider } from "../phone";
 import {
   afterCancel,
   afterForward,
@@ -84,6 +85,53 @@ export function isFreeTextOn(): boolean {
   return process.env.WHATSAPP_BOOKING_FREETEXT === "true";
 }
 
+/**
+ * E14 rollout gate (owner, 20.10): WHATSAPP_FREETEXT_ALLOWLIST, comma
+ * separated. Each entry goes through toWaId, so 0528933975, +972-52-893-3975
+ * and 972528933975 are the same number. PURE.
+ *
+ * `all: true` only when the variable is unset or blank. A variable that holds
+ * entries but none of them valid is a typo, not "everyone": it opens the layer
+ * to NOBODY (fail closed), and the refused entries are counted for the log.
+ */
+export function parseFreeTextAllowlist(
+  raw: string | null | undefined
+): { all: boolean; numbers: string[]; rejected: number } {
+  const parts = (raw ?? "").split(",").map((p) => p.trim()).filter((p) => p !== "");
+  if (parts.length === 0) return { all: true, numbers: [], rejected: 0 };
+  const numbers: string[] = [];
+  let rejected = 0;
+  for (const part of parts) {
+    const r = toWaId(part);
+    if (!r.ok) rejected++;
+    else if (!numbers.includes(r.waId)) numbers.push(r.waId);
+  }
+  return { all: false, numbers, rejected };
+}
+
+/**
+ * Is the free-language layer on FOR THIS NUMBER? The switch must be exactly
+ * "true", and then the allowlist decides (empty = everyone). Any number it
+ * says no to gets the bot exactly as it is without E14. PURE given `env`.
+ */
+export function isFreeTextOnFor(
+  waId: string,
+  env: { flag?: string; allowlist?: string } = {
+    flag: process.env.WHATSAPP_BOOKING_FREETEXT,
+    allowlist: process.env.WHATSAPP_FREETEXT_ALLOWLIST,
+  }
+): boolean {
+  if (env.flag !== "true") return false;
+  const list = parseFreeTextAllowlist(env.allowlist);
+  if (list.rejected > 0) {
+    // counted, not printed: a malformed entry is still somebody's number
+    console.error("wa/flow: WHATSAPP_FREETEXT_ALLOWLIST נדחו רשומות, nrejected=", list.rejected);
+  }
+  if (list.all) return true;
+  const id = waIdFromProvider(waId);
+  return id !== null && list.numbers.includes(id);
+}
+
 export type FlowOutcome =
   | { kind: "send"; reply: FlowReply; meta: Record<string, unknown> }
   /** send the show's booking link — the E9-3 reply, including its no-link path */
@@ -137,7 +185,7 @@ export function eventFromMessage(
   return nav;
 }
 
-const showInfo = (show: ContactShow, multiShow: boolean, linkUrl: string | null, lang: Lang) => ({
+const showInfo = (show: ContactShow, multiShow: boolean, linkUrl: string | null, lang: Lang, freeTextOn: boolean) => ({
   showId: show.showId,
   showName: show.showName,
   defaultStudio: show.defaultStudio ?? null,
@@ -146,7 +194,7 @@ const showInfo = (show: ContactShow, multiShow: boolean, linkUrl: string | null,
   linkUrl,
   lang,
   bilingualOn: isBilingualOn(),
-  freeTextOn: isFreeTextOn(),
+  freeTextOn,
 });
 
 /** A booking row -> the option "ההקלטות שלי" offers. PURE. */
@@ -209,6 +257,17 @@ async function readTarget(admin: SupabaseClient<Database>, id: string) {
 }
 
 /**
+ * The two live calls a submission makes. Injectable ONLY so the double-submit
+ * suite (test_wa_freetext_double_submit.ts) can drive this very function on
+ * an in-memory store; production always passes nothing and gets these.
+ */
+export type FlowDeps = {
+  ensureBookingLink: typeof ensureBookingLink;
+  submitBookingRequest: typeof submitBookingRequest;
+};
+const LIVE_DEPS: FlowDeps = { ensureBookingLink, submitBookingRequest };
+
+/**
  * Run one message through the conversation.
  *
  * @param pickedShowId a podcast chosen from the E9-3 list, already parsed —
@@ -232,9 +291,12 @@ export async function runFlow(
      * reach a step that reads free text as a value (the guest's name).
      */
     eventOverride?: FlowEvent;
-  }
+  },
+  deps: FlowDeps = LIVE_DEPS
 ): Promise<FlowOutcome> {
   const { waId, message, shows, now } = input;
+  // E14: switch + allowlist, read once per message like the other switches
+  const freeTextOn = isFreeTextOnFor(waId);
   const C = copy(input.lang);
   const multi = shows.length > 1;
 
@@ -258,7 +320,7 @@ export async function runFlow(
 
   const event =
     input.eventOverride ??
-    eventFromMessage(message, { now, freeTextOn: isFreeTextOn(), step: live?.step ?? "menu", lang: input.lang });
+    eventFromMessage(message, { now, freeTextOn, step: live?.step ?? "menu", lang: input.lang });
 
   /**
    * A new conversation. The link is resolved FIRST: a show that cannot get
@@ -268,9 +330,9 @@ export async function runFlow(
    * menu is rendered.
    */
   const fresh = async (show: ContactShow, notice: string | null): Promise<Transition | null> => {
-    const link = await ensureBookingLink(admin, show.showId, null);
+    const link = await deps.ensureBookingLink(admin, show.showId, null);
     if (!link.ok) return null;
-    return start(showInfo(show, multi, `${input.baseUrl}/b/${link.token}`, input.lang), notice);
+    return start(showInfo(show, multi, `${input.baseUrl}/b/${link.token}`, input.lang, freeTextOn), notice);
   };
 
   let t: Transition;
@@ -285,7 +347,7 @@ export async function runFlow(
     // once — and so is the language (E19): the saved preference wins over the
     // one the conversation started in, so a switch applies mid-conversation
     t = reduce(
-      { ...live, manageOn: isManageOn(), lang: input.lang, bilingualOn: isBilingualOn(), freeTextOn: isFreeTextOn() },
+      { ...live, manageOn: isManageOn(), lang: input.lang, bilingualOn: isBilingualOn(), freeTextOn },
       event,
       { now }
     );
@@ -441,9 +503,9 @@ export async function runFlow(
       // need not be the show the conversation started with
       const showId = s.mode === "move" && s.target ? s.target.showId : s.showId;
       const showName = s.mode === "move" && s.target ? s.target.showName : s.showName;
-      const link = await ensureBookingLink(admin, showId, null);
+      const link = await deps.ensureBookingLink(admin, showId, null);
       const result = link.ok
-        ? await submitBookingRequest(admin, {
+        ? await deps.submitBookingRequest(admin, {
             showId,
             linkId: link.linkId,
             showName,
