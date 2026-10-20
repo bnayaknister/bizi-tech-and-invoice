@@ -126,7 +126,10 @@ export const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
       // "stages" not "either": a show's name is an operational detail. The
       // bookkeeper (money, no stages) views productions/shows but edits
       // nothing there (owner rule 2026-07-21) — matching aliases/studio/etc.
-      { key: "name", label: "שם", type: "text", view: "any", edit: "stages" },
+      // owner 20.10: the NAME is read-only here — a rename goes through the
+      // shows screen (/api/shows/[id]/rename: owner/admin, duplicate check,
+      // the old name kept as an alias). A plain update here would skip all three.
+      { key: "name", label: "שם", type: "readonly", view: "any", edit: "none" },
       { key: "aliases", label: "כינויים (מופרדים בפסיק)", type: "text", view: "any", edit: "stages" },
       { key: "client_id", label: "לקוח", type: "select", view: "money", edit: "money", options: "clients" },
       {

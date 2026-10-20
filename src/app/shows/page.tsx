@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getSessionAndProfile } from "@/lib/profile";
+import { hasOwnerAccess } from "@/lib/roles";
 import { createTypedClient } from "@/lib/supabase/server";
 import { createTypedAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
@@ -284,6 +285,7 @@ export default async function ShowsPage() {
           canEditStages={profile.can_edit_stages}
           canManageUsers={profile.can_manage_users}
           canManageBookers={canManageBookingContacts(profile)}
+          canRename={hasOwnerAccess(profile)}
           pendingShowIds={pendingShowIds}
           staff={staff}
           contracts={contracts}

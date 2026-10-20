@@ -144,6 +144,7 @@ export const EVENT_LABEL: Record<string, string> = {
   client_morning_update_failed: "עדכון הלקוח ב-Morning נכשל",
   show_created: "תוכנית נוצרה",
   show_updated: "תוכנית עודכנה",
+  show_renamed: "שם התוכנית שונה",
   show_deleted: "תוכנית נמחקה",
   show_merged: "תוכניות מוזגו",
   contract_created: "חוזה נוצר",

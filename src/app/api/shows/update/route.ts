@@ -10,8 +10,12 @@ import { createAdminClient } from "@/lib/supabase/admin";
 // produces, not what it charges — enqueue still bills price_override ??
 // default_rate regardless of composition. If step 2 ever prices per
 // deliverable they become money fields and must move to the DB money guard.
+//
+// `name` is NOT here (owner, 20.10): a rename goes through
+// /api/shows/[id]/rename only — owner/admin, and the old name is kept as an
+// alias so calendar matching keeps working. Here it would skip both.
 const STAGE_FIELDS = new Set([
-  "name", "aliases", "active", "is_oneoff", "default_studio", "default_editor_id", "color",
+  "aliases", "active", "is_oneoff", "default_studio", "default_editor_id", "color",
   "camera_count", "notes", "settings", "has_episode", "reels_count",
 ]);
 // billing_mode + client_id are money classification — both guarded by DB

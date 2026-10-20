@@ -99,6 +99,7 @@ export default function ShowsClient({
   canEditStages,
   canManageUsers,
   canManageBookers = false,
+  canRename = false,
   pendingShowIds,
   staff,
   contracts: initialContracts,
@@ -113,6 +114,8 @@ export default function ShowsClient({
   canManageUsers: boolean;
   /** E22: studio_admin — "מורשים לקבוע הקלטות" on the show card */
   canManageBookers?: boolean;
+  /** owner 20.10: renaming a show is owner/admin only (the route checks again) */
+  canRename?: boolean;
   pendingShowIds: string[];
   staff: { id: string; name: string }[];
   contracts: ContractOption[];
@@ -131,6 +134,14 @@ export default function ShowsClient({
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set(pendingShowIds));
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // owner 20.10: every save from the show window says so, INSIDE the window
+  // (the page-level error line sits behind the modal)
+  const [saveFlash, setSaveFlash] = useState<SaveFlash | null>(null);
+  useEffect(() => {
+    if (!saveFlash || saveFlash.kind === "error") return;
+    const t = setTimeout(() => setSaveFlash((f) => (f && f.at === saveFlash.at ? null : f)), 4000);
+    return () => clearTimeout(t);
+  }, [saveFlash]);
 
   const canEdit = canEditStages || canEditMoney;
 
@@ -198,9 +209,33 @@ export default function ShowsClient({
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       setError(data.error ?? "שגיאה בשמירה");
+      setSaveFlash({ id, kind: "error", text: data.error ?? "שגיאה בשמירה", at: Date.now() });
       return false;
     }
     setShows((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+    setSaveFlash({ id, kind: "saved", text: "נשמר ✓", at: Date.now() });
+    return true;
+  }
+
+  async function rename(id: string, name: string): Promise<boolean> {
+    setError(null);
+    const res = await fetch(`/api/shows/${id}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setSaveFlash({ id, kind: "error", text: data.error ?? "שינוי השם נכשל", at: Date.now() });
+      return false;
+    }
+    setShows((prev) => prev.map((s) => (s.id === id ? { ...s, name: data.show.name, aliases: data.show.aliases ?? [] } : s)));
+    setSaveFlash({
+      id,
+      kind: "saved",
+      text: data.aliasAdded ? `נשמר ✓ — "${data.aliasAdded}" נוסף לכינויים, כדי שהזיהוי מהיומן ימשיך לעבוד` : "נשמר ✓",
+      at: Date.now(),
+    });
     return true;
   }
 
@@ -392,6 +427,9 @@ export default function ShowsClient({
           onClientCreated={(c) => setClients((cs) => [...cs, c].sort((a, b) => a.name.localeCompare(b.name, "he")))}
           canManageUsers={canManageUsers}
           canManageBookers={canManageBookers}
+          canRename={canRename}
+          onRename={rename}
+          saveFlash={saveFlash && saveFlash.id === open.id ? saveFlash : null}
           isPending={pendingIds.has(open.id)}
           contracts={contracts}
           contractsError={contractsError}
@@ -547,6 +585,93 @@ function AliasEditor({
   );
 }
 
+type SaveFlash = { id: string; kind: "saved" | "error"; text: string; at: number };
+
+// ============ the show's name: an explicit save, never on blur ============
+// owner 20.10 — owner/admin only. The old name becomes an alias (the route
+// does it), so the calendar keeps matching events still titled the old way.
+function ShowNameEditor({
+  show,
+  canRename,
+  onRename,
+}: {
+  show: ShowRow;
+  canRename: boolean;
+  onRename: (id: string, name: string) => Promise<boolean>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(show.name);
+  const [busy, setBusy] = useState(false);
+  const clean = draft.trim().replace(/\s+/g, " ");
+  const canSubmit = !busy && clean !== "" && clean !== show.name;
+
+  async function submit() {
+    if (!canSubmit) return;
+    setBusy(true);
+    const ok = await onRename(show.id, clean);
+    setBusy(false);
+    if (ok) setEditing(false);
+  }
+
+  if (!editing) {
+    return (
+      <h2 className="font-bold text-base flex-1 flex items-center gap-2 min-w-0">
+        <span className="truncate">{show.name}</span>
+        {canRename && (
+          <button
+            onClick={() => {
+              setDraft(show.name);
+              setEditing(true);
+            }}
+            className="text-xs font-normal text-[var(--faint)] hover:text-[var(--ink)] border border-[var(--rule)] rounded-lg px-2 py-0.5"
+            title="שינוי שם התוכנית"
+          >
+            ✎ שינוי שם
+          </button>
+        )}
+      </h2>
+    );
+  }
+
+  return (
+    <div className="flex-1 min-w-0">
+      <div className="flex items-center gap-2">
+        <input
+          autoFocus
+          value={draft}
+          maxLength={120}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void submit();
+            if (e.key === "Escape") setEditing(false);
+          }}
+          aria-label="שם התוכנית"
+          className="flex-1 min-w-0 border border-[var(--rule)] rounded-xl px-3 py-1.5 text-sm font-bold focus:border-[var(--violet-light)] outline-none"
+          style={{ background: "rgba(255,255,255,0.04)" }}
+        />
+        <button
+          onClick={() => void submit()}
+          disabled={!canSubmit}
+          className="text-xs font-bold rounded-lg px-3 py-1.5 text-white disabled:opacity-40"
+          style={{ background: "var(--violet)" }}
+        >
+          {busy ? "שומר…" : "שמירה"}
+        </button>
+        <button
+          onClick={() => setEditing(false)}
+          disabled={busy}
+          className="text-xs border border-[var(--rule)] text-[var(--dim)] rounded-lg px-3 py-1.5"
+        >
+          ביטול
+        </button>
+      </div>
+      <p className="mt-1 text-[10px] text-[var(--faint)]">
+        השם הקודם יישמר ככינוי, כדי שהזיהוי מהיומן ימשיך לעבוד. הפקות ומסמכים קיימים לא משתנים.
+      </p>
+    </div>
+  );
+}
+
 function ShowCard({
   show,
   episodes,
@@ -559,6 +684,9 @@ function ShowCard({
   onClientCreated,
   canManageUsers,
   canManageBookers = false,
+  canRename = false,
+  onRename,
+  saveFlash,
   isPending,
   contracts,
   contractsError,
@@ -576,6 +704,9 @@ function ShowCard({
   onClientCreated: (client: Client) => void;
   canManageUsers: boolean;
   canManageBookers?: boolean;
+  canRename?: boolean;
+  onRename: (id: string, name: string) => Promise<boolean>;
+  saveFlash: SaveFlash | null;
   isPending: boolean;
   contracts: ContractOption[];
   contractsError: string | null;
@@ -610,7 +741,7 @@ function ShowCard({
             className="inline-block w-3 h-3 rounded-full shrink-0"
             style={{ background: show.color ?? "var(--rule2)" }}
           />
-          <h2 className="font-bold text-base flex-1">{show.name}</h2>
+          <ShowNameEditor show={show} canRename={canRename} onRename={onRename} />
           {show.is_oneoff && <span className="text-[10px] text-[var(--faint)]">חד־פעמית</span>}
           {canEdit && (
             <button
@@ -641,6 +772,17 @@ function ShowCard({
             ✕
           </button>
         </div>
+
+        {saveFlash && (
+          <div
+            role="status"
+            className={`mb-4 text-xs rounded-xl px-3 py-2 border ${
+              saveFlash.kind === "saved" ? "text-[var(--green)] border-[var(--green)]" : "text-[var(--peak)] border-[var(--peak)]"
+            }`}
+          >
+            {saveFlash.text}
+          </div>
+        )}
 
         <div className="mb-5">
           <AliasEditor show={show} canEdit={canEdit} onSave={onSave} />
