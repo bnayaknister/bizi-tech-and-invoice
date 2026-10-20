@@ -9,6 +9,8 @@ import { hoursMissing } from "@/lib/productions/hours";
 import { ACTIVE_CLIENT } from "@/lib/clients/status";
 import { perfTimer } from "@/lib/perf/timing";
 import { isStudioAdmin } from "@/lib/clients/access";
+import { productionLabel } from "@/lib/shows/clientLabel";
+import { loadClientLabels } from "@/lib/shows/clientLabel.server";
 
 export const dynamic = "force-dynamic";
 
@@ -175,7 +177,7 @@ export default async function ProductionsPage() {
   // un-split-away row must still surface as "absorbed" on its survivor's card,
   // it just never becomes a board entry of its own (see split below).
   const admin = createAdminClient();
-  const [allProds, { data: shows }, stageRollup, logCounts, { data: profilesRows }, clientsRes] =
+  const [allProds, { data: shows }, stageRollup, logCounts, { data: profilesRows }, clientsRes, clientLabels] =
     await Promise.all([
       perf.time("q_productions", fetchProductions(supabase, prodSelect)),
       // pricing_model rides along for the missing-hours flag (F6). It is a
@@ -189,6 +191,9 @@ export default async function ProductionsPage() {
       canViewMoney
         ? perf.time("q_clients", supabase.from("clients").select("id,name").eq("status", ACTIVE_CLIENT))
         : Promise.resolve({ data: [] as { id: string; name: string }[] }),
+      // owner 20.10: client names of the shows whose label includes them —
+      // for every viewer (the owner chose it per show); no other show is read
+      perf.time("q_client_labels", loadClientLabels(createTypedAdminClient())),
     ]);
   perf.lap("wave_main");
   const prods = allProds.filter((p) => !p.merged_into);
@@ -280,6 +285,8 @@ export default async function ProductionsPage() {
       review_minor: reviewFlags.get(p.id)?.minor ?? false,
       review_unsent: reviewFlags.get(p.id)?.unsent ?? false,
       show_name: show?.name ?? "—",
+      // owner 20.10: "<client> (<show>)" for the shows that asked for it
+      display_name: productionLabel(show?.name ?? "—", p.show_id ? clientLabels.get(p.show_id) : null, !!(p.show_id && clientLabels.has(p.show_id))),
       show_color: show?.color ?? null,
       show_active: show?.active ?? true,
       client_name:

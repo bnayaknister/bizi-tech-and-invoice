@@ -145,6 +145,7 @@ export const EVENT_LABEL: Record<string, string> = {
   show_created: "תוכנית נוצרה",
   show_updated: "תוכנית עודכנה",
   show_renamed: "שם התוכנית שונה",
+  show_display_updated: "הגדרת תצוגה של תוכנית שונתה",
   storage_disk_created: "כונן נוסף לרשימה",
   storage_disk_renamed: "שם הכונן שונה",
   storage_disk_hidden: "כונן הוסתר",

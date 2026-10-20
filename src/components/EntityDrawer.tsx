@@ -1844,7 +1844,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
               <IconTile icon={ENTITY_ICON[data?.type ?? ""] ?? "search"} accent={ENTITY_ACCENT[data?.type ?? ""] ?? "violet"} size={28} iconSize={15} />
               <div className="flex-1 min-w-0">
                 <div className="text-[10px] text-[var(--faint)]">{data?.label ?? ""}</div>
-                <div className="text-sm font-bold truncate">{loading ? "טוען…" : data?.title ?? ""}</div>
+                <div className="text-sm font-bold truncate" title={loading ? undefined : data?.title ?? undefined}>{loading ? "טוען…" : data?.title ?? ""}</div>
               </div>
               <span className="text-[10px] text-[var(--faint)]">Esc סגירה · ⌘⏎ שמירה</span>
               <button onClick={close} className="text-[var(--dim)] hover:text-[var(--fg)] px-1">✕</button>

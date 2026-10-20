@@ -49,6 +49,8 @@ export type ShowRow = {
   // Only the merge modal wants this — see the warning line there for why.
   episodes_all: number;
   revenue: number | null; // null when the viewer lacks can_view_money
+  /** owner 20.10: "<client> (<show>)" in the production row and drawer title */
+  show_client_name: boolean;
 };
 
 // one-line composition label, e.g. "פרק + 5 רילז" / "רילז בלבד ×5" / "פרק בלבד"
@@ -213,6 +215,22 @@ export default function ShowsClient({
       return false;
     }
     setShows((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+    setSaveFlash({ id, kind: "saved", text: "נשמר ✓", at: Date.now() });
+    return true;
+  }
+
+  async function setClientNameLabel(id: string, on: boolean): Promise<boolean> {
+    const res = await fetch(`/api/shows/${id}/display`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ show_client_name: on }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setSaveFlash({ id, kind: "error", text: data.error ?? "השמירה נכשלה", at: Date.now() });
+      return false;
+    }
+    setShows((prev) => prev.map((s) => (s.id === id ? { ...s, show_client_name: on } : s)));
     setSaveFlash({ id, kind: "saved", text: "נשמר ✓", at: Date.now() });
     return true;
   }
@@ -429,6 +447,7 @@ export default function ShowsClient({
           canManageBookers={canManageBookers}
           canRename={canRename}
           onRename={rename}
+          onClientNameLabel={setClientNameLabel}
           saveFlash={saveFlash && saveFlash.id === open.id ? saveFlash : null}
           isPending={pendingIds.has(open.id)}
           contracts={contracts}
@@ -686,6 +705,7 @@ function ShowCard({
   canManageBookers = false,
   canRename = false,
   onRename,
+  onClientNameLabel,
   saveFlash,
   isPending,
   contracts,
@@ -706,6 +726,7 @@ function ShowCard({
   canManageBookers?: boolean;
   canRename?: boolean;
   onRename: (id: string, name: string) => Promise<boolean>;
+  onClientNameLabel: (id: string, on: boolean) => Promise<boolean>;
   saveFlash: SaveFlash | null;
   isPending: boolean;
   contracts: ContractOption[];
@@ -782,6 +803,24 @@ function ShowCard({
           >
             {saveFlash.text}
           </div>
+        )}
+
+        {/* owner 20.10 — owner/admin only (the same gate as the rename) */}
+        {canRename && (
+          <label className="flex items-start gap-2 text-xs mb-5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={show.show_client_name}
+              onChange={(e) => void onClientNameLabel(show.id, e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              הצג שם לקוח בשורת ההפקה
+              <span className="block text-[10px] text-[var(--faint)]">
+                בשורת ההפקה ובכותרת המגירה: &quot;שם לקוח (שם הפודקאסט)&quot;. בלי לקוח משויך — נשאר שם הפודקאסט.
+              </span>
+            </span>
+          </label>
         )}
 
         <div className="mb-5">
@@ -1810,6 +1849,7 @@ function NewShowModal({
       episodes: 0,
       episodes_all: 0,
       revenue: canViewMoney ? 0 : null,
+      show_client_name: false,
     });
   }
 

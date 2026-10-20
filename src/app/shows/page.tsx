@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getSessionAndProfile } from "@/lib/profile";
 import { hasOwnerAccess } from "@/lib/roles";
+import { showClientNameOn } from "@/lib/shows/clientLabel";
 import { createTypedClient } from "@/lib/supabase/server";
 import { createTypedAdminClient } from "@/lib/supabase/admin";
 import AppHeader from "@/components/AppHeader";
@@ -41,8 +42,8 @@ export default async function ShowsPage() {
   // deliberately NOT granted — it comes through the service role below, beside
   // default_rate, on the money branch only.
   const showsRes = canViewMoney
-    ? await supabase.from("shows").select("id,name,client_id,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count,pricing_model").order("name")
-    : await supabase.from("shows").select("id,name,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count,pricing_model").order("name");
+    ? await supabase.from("shows").select("id,name,client_id,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count,pricing_model,settings").order("name")
+    : await supabase.from("shows").select("id,name,aliases,default_studio,camera_count,notes,active,is_oneoff,color,billing_mode,has_episode,reels_count,pricing_model,settings").order("name");
 
   // mustRows, not `?? []`: these three ARE the screen. A failure here used to
   // render "0 פעילות · 0 חד־פעמיות" with a clean console — see lib/supabase/
@@ -240,6 +241,7 @@ export default async function ShowsPage() {
     episodes: episodeCounts[s.id as string] ?? 0,
     episodes_all: episodeCountsAll[s.id as string] ?? 0,
     revenue: canViewMoney ? (revenueByShow[s.id as string] ?? 0) : null,
+    show_client_name: showClientNameOn(s.settings),
   }));
 
   // the drawer's episode list — filtered with the SAME predicate as the column

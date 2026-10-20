@@ -1,6 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { loadDrawerLiveLinks } from "@/lib/review/drawerLiveLinks";
 import type { DiskOption } from "@/lib/disks";
+import { productionLabel } from "@/lib/shows/clientLabel";
+import { loadClientLabels } from "@/lib/shows/clientLabel.server";
 import { ENTITY_CONFIG, canEditField, canViewField, selectColumns, type EntityType } from "@/lib/entities";
 import { deriveMilestoneState } from "@/lib/finance/milestone";
 import { must, type QueryResult } from "@/lib/supabase/unwrap";
@@ -365,7 +367,21 @@ export async function entityGet(deps: EntityGetDeps): Promise<{ status: number; 
     }));
   };
 
-  const [sr, hourly, items, comments, live, ld, prodLinked, quotaOver, other, hist] = await Promise.all([
+  // owner 20.10: a production of a show with "show the client's name" ON is
+  // titled "<client> (<show>)" — the same label as its board card
+  const clientTitle = async (): Promise<string | null> => {
+    if (!isProduction) return null;
+    const { data: row } = await admin.from("productions").select("show_id").eq("id", id).maybeSingle();
+    const showId = (row?.show_id as string | null) ?? null;
+    if (!showId) return null;
+    const labels = await loadClientLabels(admin, [showId]);
+    const client = labels.get(showId);
+    if (!client) return null;
+    const { data: show } = await admin.from("shows").select("name").eq("id", showId).maybeSingle();
+    return show?.name ? productionLabel(show.name as string, client, true) : null;
+  };
+
+  const [sr, hourly, items, comments, live, ld, prodLinked, quotaOver, other, hist, labelTitle] = await Promise.all([
     perf.time("stages_reels", stagesReels()),
     perf.time("hours", hours()),
     perf.time("review_items", reviewItems()),
@@ -376,6 +392,7 @@ export async function entityGet(deps: EntityGetDeps): Promise<{ status: number; 
     perf.time("contract_quota", contractQuota()),
     perf.time("other_types", otherTypes()),
     perf.time("history", history()),
+    perf.time("client_title", clientTitle()),
   ]);
   perf.lap("wave_2");
 
@@ -389,7 +406,7 @@ export async function entityGet(deps: EntityGetDeps): Promise<{ status: number; 
       type,
       icon: config.icon,
       label: config.label,
-      title: (entity as unknown as Record<string, unknown>)[config.titleKey] ?? "—",
+      title: labelTitle ?? (entity as unknown as Record<string, unknown>)[config.titleKey] ?? "—",
       entity,
       fields,
       optionsData: { clients: clients.data ?? [], shows: shows.data ?? [] },

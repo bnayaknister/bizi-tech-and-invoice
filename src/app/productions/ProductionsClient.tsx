@@ -35,6 +35,8 @@ export type BoardProduction = {
   on_hold_since: string | null;
   needs_attention: boolean;
   show_name: string;
+  /** owner 20.10: "<client> (<show>)" when the show asks for it, else the show name */
+  display_name: string;
   show_color: string | null;
   show_active: boolean;
   client_name: string | null; // null unless can_view_money
@@ -283,6 +285,10 @@ export default function ProductionsClient({
       if (!q) return true;
       return (
         p.show_name.toLowerCase().includes(q) ||
+        // owner 20.10: the client's name finds the production — every show
+        // for a money viewer (client_name), and the shows that show it in
+        // their label for everyone (display_name)
+        p.display_name.toLowerCase().includes(q) ||
         (p.guest ?? "").toLowerCase().includes(q) ||
         (p.studio ?? "").toLowerCase().includes(q) ||
         (p.client_name ?? "").toLowerCase().includes(q)
@@ -457,7 +463,7 @@ export default function ProductionsClient({
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="חיפוש תוכנית, אורח, אולפן…"
+          placeholder="חיפוש תוכנית, לקוח, אורח, אולפן…"
           className="mr-auto w-60 max-w-full border border-[var(--rule)] rounded-xl px-3 py-1.5 text-sm focus:border-[var(--violet-light)] outline-none transition-colors"
           style={{ background: "rgba(255,255,255,0.04)", backdropFilter: "blur(8px)" }}
         />
@@ -681,7 +687,7 @@ function ProductionCard({
         {!p.needs_attention && p.review_minor && (
           <span className="w-2 h-2 rounded-full shrink-0" style={{ background: "#fb923c" }} title="אושר עם הערות" />
         )}
-        <span className="font-bold text-sm truncate flex-1">{p.show_name}</span>
+        <span className="font-bold text-sm truncate flex-1" title={p.display_name}>{p.display_name}</span>
         {p.on_hold && <span className="text-[10px] text-[var(--amber)] shrink-0">⏸ מוקפא</span>}
         {p.board_archived_at && (
           <span className="text-[10px] text-[var(--faint)] border border-[var(--rule)] rounded px-1 shrink-0" title="מאורכב — מוסתר מהטור">

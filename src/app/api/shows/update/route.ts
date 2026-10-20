@@ -14,9 +14,11 @@ import { createAdminClient } from "@/lib/supabase/admin";
 // `name` is NOT here (owner, 20.10): a rename goes through
 // /api/shows/[id]/rename only — owner/admin, and the old name is kept as an
 // alias so calendar matching keeps working. Here it would skip both.
+// `settings` is not here either (owner, 20.10): its one key today is the
+// owner/admin "show the client's name" switch — /api/shows/[id]/display.
 const STAGE_FIELDS = new Set([
   "aliases", "active", "is_oneoff", "default_studio", "default_editor_id", "color",
-  "camera_count", "notes", "settings", "has_episode", "reels_count",
+  "camera_count", "notes", "has_episode", "reels_count",
 ]);
 // billing_mode + client_id are money classification — both guarded by DB
 // triggers (0008 trg_guard_show_money, 0012 trg_guard_show_billing).
