@@ -81,7 +81,6 @@ function summaryByFreeText(): FlowState {
     if (t.kind !== "reply") throw new Error(`unexpected ${t.kind}`);
   };
   drive(text(ME, "מה פנוי ביום שלישי אחרי 13:00 בחשמונאים?"));
-  drive(tap(ME, FLOW_ID.day("2026-10-20")));
   drive(tap(ME, FLOW_ID.hour("13:00")));
   drive(text(ME, "יהודה לוי"));
   drive(tap(ME, FLOW_ID.noNote));

@@ -232,30 +232,42 @@ function main() {
   ok("…before the confirm button (the button is still there, nothing submitted)", c.offered().some((b) => b.id === FLOW_ID.confirm) && c.submits.length === 0);
 
   // ════════════════════════════════════════════════════════════════════════
-  scenario("3. עריכה בהודעה אחת: אורח + הערה עם פסיק + חדר; ואז 3 שעות");
+  scenario("3. עריכה בהודעה אחת: אורח + הערה עם פסיק + חדר; יום אחר; 3 שעות — המועד נשמר כשהוא מתאים (E14-2)");
   c.say("אורח: דנה כהן, הערה: שתי מצלמות, תאורה רכה, אולפן: גבעון גדול");
-  eq("a room change re-read availability for גבעון גדול", c.availCalls[c.availCalls.length - 1], { step: "day", duration: 90, studio: "גבעון גדול" });
-  eq("the guest and note are already saved", [c.state.guest, c.state.note], ["דנה כהן", "שתי מצלמות, תאורה רכה"]);
-  ok("the old slot was cleared — a new one must be chosen", c.state.date === null && c.state.start === null, c.state);
-  c.tap(FLOW_ID.day("2026-10-21"));
-  c.tap(FLOW_ID.hour("14:00"));
-  eq("straight back to the summary (guest not asked again)", c.state.step, "summary");
-  eq("all details kept, new slot", [c.state.guest, c.state.note, c.state.studio, c.state.date, c.state.start, c.state.end], ["דנה כהן", "שתי מצלמות, תאורה רכה", "גבעון גדול", "2026-10-21", "14:00", "15:30"]);
+  eq("a room change re-checked THE CHOSEN TIME for גבעון גדול", c.availCalls[c.availCalls.length - 1], { step: "hour", duration: 90, studio: "גבעון גדול" });
+  eq("13:00 is free there: kept, straight back to the summary", [c.state.step, c.state.guest, c.state.note, c.state.studio, c.state.date, c.state.start, c.state.end], ["summary", "דנה כהן", "שתי מצלמות, תאורה רכה", "גבעון גדול", "2026-10-20", "13:00", "14:30"]);
+  ok("…saying 'updated'", c.body().includes(HE.NOTICE.changed), c.body());
   ok("the summary shows the note whole, comma included", c.body().includes("שתי מצלמות, תאורה רכה"), c.body());
   ok("still 90 by default — still disclosed", c.body().includes(HE.SUMMARY.durationDefault));
 
+  c.say("יום רביעי");
+  eq("a day change keeps the time too (13:00 on Wednesday)", [c.state.step, c.state.date, c.state.start, c.state.end], ["summary", "2026-10-21", "13:00", "14:30"]);
+
   const callsBefore = c.availCalls.length;
   c.say("3 שעות");
-  eq("a length change re-read availability AT 180", c.availCalls.slice(callsBefore), [{ step: "day", duration: 180, studio: "גבעון גדול" }]);
-  c.tap(FLOW_ID.day("2026-10-21"));
-  const hrs3 = c.state.hours;
-  ok("the new hours are 3-hour slots", hrs3.length > 0 && hrs3.every((h) => toMin(h.end) - toMin(h.start) === 180), hrs3);
-  eq("…the last start fits the new length (18:00 ends 21:00)", hrs3[hrs3.length - 1]?.start, "18:00");
-  eq("…and the 13:00 wish still filters them", hrs3[0]?.start, "13:00");
-  c.tap(FLOW_ID.hour("14:00"));
-  eq("summary: 180 min, 14:00–17:00, guest + note kept", [c.state.step, c.state.duration, c.state.start, c.state.end, c.state.guest, c.state.note], ["summary", 180, "14:00", "17:00", "דנה כהן", "שתי מצלמות, תאורה רכה"]);
+  eq("a length change re-checked 13:00 AT 180", c.availCalls.slice(callsBefore), [{ step: "hour", duration: 180, studio: "גבעון גדול" }]);
+  eq("summary: 180 min, 13:00–16:00, guest + note kept", [c.state.step, c.state.duration, c.state.start, c.state.end, c.state.guest, c.state.note], ["summary", 180, "13:00", "16:00", "דנה כהן", "שתי מצלמות, תאורה רכה"]);
+  ok("…'updated', no 're-choose'", c.body().includes(HE.NOTICE.changed) && !c.body().includes(HE.NOTICE.changedRechoose), c.body());
   ok("no default disclosure once the client chose the length", !c.body().includes(HE.SUMMARY.durationDefault), c.body());
   eq("nothing was submitted by any of this", c.submits.length, 0);
+
+  // ── the time does NOT fit the new length: say why, offer that day's hours ──
+  const k = new Conversation("keep-fails", SHOW);
+  k.say("מה פנוי ביום שלישי אחרי 19:00 בחשמונאים?");
+  eq("one day asked + room named: straight to that day's hours (no one-day list)", [k.state.step, k.state.date, k.availCalls.length], ["hour", "2026-10-20", 1]);
+  ok("…the list says what was asked", k.body().includes("ביום ג׳ 20.10 אחרי 19:00 פנוי לשעה וחצי באולפן חשמונאים:"), k.body());
+  eq("…only hours from 19:00", hoursOf(k.offeredIds("f:hr:")), ["19:00", "19:30"]);
+  k.tap(FLOW_ID.hour("19:30"));
+  k.tap(FLOW_ID.noGuest);
+  k.tap(FLOW_ID.noNote);
+  eq("at the summary, 19:30–21:00", [k.state.step, k.state.start, k.state.end], ["summary", "19:30", "21:00"]);
+  k.say("3 שעות");
+  ok("19:30 + 3h does not fit: said, with the reason", k.body().includes("עדכנתי ✔️ אבל") && k.body().includes("19:30") && k.body().includes("3 שעות"), k.body());
+  eq("…the hours of THAT day at 180, all of them", [k.state.step, k.state.date, hoursOf(k.offeredIds("f:hr:"))[0]], ["hour", "2026-10-20", "09:00"]);
+  ok("…every stored hour is a 3-hour slot", k.state.hours.every((h) => toMin(h.end) - toMin(h.start) === 180), k.state.hours);
+  k.tap(FLOW_ID.hour("11:00"));
+  eq("a new hour -> straight back to the summary (guest and note were already answered, both skipped)", [k.state.step, k.state.start, k.state.end, k.state.duration, k.state.guest, k.state.note], ["summary", "11:00", "14:00", 180, null, null]);
+  eq("nothing submitted", k.submits.length, 0);
 
   // ════════════════════════════════════════════════════════════════════════
   scenario("4. בקשות לא ברורות — הבוט אומר מה לא הבין, לא מנחש ולא מתעלם");
@@ -265,8 +277,7 @@ function main() {
   eq("…and NOT used as a time filter", u.state.filter?.timeFrom ?? null, null);
   eq("the certain part (Tuesday) is used", u.state.filter?.dateFrom, "2026-10-20");
   u.tap(FLOW_ID.studioYes);
-  eq("only Tuesday is offered", daysOf(u.offeredIds("f:day:")), ["2026-10-20"]);
-  u.tap(FLOW_ID.day("2026-10-20"));
+  eq("one day asked, and it is free: its hours straight away (E14-2)", [u.state.step, u.state.date], ["hour", "2026-10-20"]);
   ok("hours are NOT narrowed by the unclear 4 (09:00 is offered)", u.state.hours[0]?.start === "09:00", u.state.hours[0]);
   u.tap(FLOW_ID.hour("09:00"));
   u.tap(FLOW_ID.noGuest);
@@ -307,7 +318,7 @@ function main() {
   eq("…for the room the client asked for", n.state.studio, "חשמונאים");
   const h = new Conversation("nomatch-hours", SHOW);
   h.say("מה פנוי ביום שלישי אחרי 20:00 בחשמונאים?");
-  h.tap(FLOW_ID.day("2026-10-20"));
+  eq("one day asked: straight to its hours (E14-2)", h.state.step, "hour");
   ok("hours: nothing after 20:00 is said", h.body().includes(HE.NOTICE.noMatchHours), h.body());
   eq("hours: no hour offered as if it matched", h.offeredIds("f:hr:"), []);
   const noHourReply = h.last;
@@ -331,7 +342,7 @@ function main() {
   c.tap(FLOW_ID.confirm);
   eq("the button submits exactly one MOCK request", c.submits.length, 1);
   eq("…with the summary's values", c.submits[0], {
-    showId: SHOW.showId, studio: "גבעון גדול", startIsrael: "2026-10-21 14:00", endIsrael: "17:00",
+    showId: SHOW.showId, studio: "גבעון גדול", startIsrael: "2026-10-21 13:00", endIsrael: "16:00",
     guest: "רון", note: "שתי מצלמות, תאורה רכה", durationMinutes: 180,
   });
   eq("conversation done", c.state.step, "done");

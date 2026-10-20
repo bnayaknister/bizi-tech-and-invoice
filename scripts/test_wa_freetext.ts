@@ -244,7 +244,8 @@ console.log("\n=== 5. summary edits: safe, fresh, never confirming ===");
   check("a length edit re-reads availability", e.kind, "need-availability");
   if (e.kind !== "need-availability") throw new Error("unreachable");
   check("...with the new length", e.state.duration, 180);
-  check("...the choice cleared", [e.state.date, e.state.start, e.state.end], [null, null, null]);
+  // E14-2 (owner, 20.10): the day stays, the time is to be KEPT if it fits
+  check("...the time held for re-checking, the day kept", [e.state.date, e.state.start, e.state.end, e.state.keep?.start], ["2026-10-18", null, null, "09:30"]);
   check("...no longer 'defaulted'", e.state.durationFromDefault, false);
 
   e = reduce(s, { type: "edit", edits: [{ field: "day", date: "2026-10-21", alsoConfirm: false }], dropped: [] });
@@ -252,7 +253,7 @@ console.log("\n=== 5. summary edits: safe, fresh, never confirming ===");
   if (e.kind !== "need-availability") throw new Error("unreachable");
   check("...filtered to that day", e.state.filter?.dateFrom, "2026-10-21");
   e = withAvailability(e.state, availability(NEXT_WEEK, "גבעון"));
-  check("...offering only it", e.state.days, ["2026-10-21"]);
+  check("...and the same time is free there: kept, back to the summary (E14-2)", [e.state.step, e.state.date, e.state.start], ["summary", "2026-10-21", "09:30"]);
 
   e = reduce(s, { type: "edit", edits: [{ field: "guest", value: "יהודה", alsoConfirm: false }, { field: "duration", minutes: 240, alsoConfirm: false }], dropped: [] });
   check("a TWO-FIELD message applies both", e.kind, "need-availability");
@@ -279,7 +280,7 @@ console.log("\n=== 5. summary edits: safe, fresh, never confirming ===");
   check("a partial slot change re-reads availability", e2.kind, "need-availability");
   if (e2.kind !== "need-availability") throw new Error("unreachable");
   e2 = withAvailability(e2.state, availability(NEXT_WEEK, "חשמונאים"));
-  ok("...and says 'updated what I understood'", bodyOf(e2).includes(C.NOTICE.changedPartialRechoose), bodyOf(e2));
+  ok("...and says 'updated what I understood' (time kept: E14-2)", bodyOf(e2).includes(C.NOTICE.changedPartial) && e2.state.step === "summary", bodyOf(e2));
   const e3 = reduce(s, { type: "edit", edits: [{ field: "guest", value: "יהודה", alsoConfirm: false }], dropped: [] });
   ok("a clean apply keeps the plain 'updated'", bodyOf(e3).includes(C.NOTICE.changed) && !bodyOf(e3).includes(C.NOTICE.changedPartial), bodyOf(e3));
 
@@ -295,13 +296,10 @@ console.log("\n=== 5. summary edits: safe, fresh, never confirming ===");
   check("a studio edit re-reads availability", sc.kind, "need-availability");
   if (sc.kind !== "need-availability") throw new Error("unreachable");
   sc = withAvailability(sc.state, availability(NEXT_WEEK, "גבעון גדול"));
-  sc = reduce(sc.state, { type: "day", date: "2026-10-21" });
-  sc = withAvailability(sc.state, availability(NEXT_WEEK, "גבעון גדול"));
-  sc = reduce(sc.state, { type: "hour", start: "13:00" });
   check("...straight back to the summary (not re-asked the guest)", sc.state.step, "summary");
   check("...guest preserved", sc.state.guest, "יהודה לוי");
   check("...note preserved, comma and all", sc.state.note, "שלוש מצלמות, תאורה דרמטית");
-  check("...new slot", [sc.state.date, sc.state.start, sc.state.studio], ["2026-10-21", "13:00", "גבעון גדול"]);
+  check("...same day and time, new room (E14-2: kept because it fits)", [sc.state.date, sc.state.start, sc.state.studio], ["2026-10-18", "09:30", "גבעון גדול"]);
 }
 
 console.log("\n=== 6. the layer OFF behaves exactly as before ===");
@@ -493,9 +491,7 @@ console.log("\n=== 12. zero-match HOURS: the same rule ===");
   let t = start(SHOW);
   t = reduce(t.state, { type: "query", q: { studio: "חשמונאים", duration: null, dateFrom: "2026-10-20", dateTo: "2026-10-20", timeFrom: "20:00", timeTo: null, dropped: [] } });
   if (t.kind !== "need-availability") throw new Error("unreachable");
-  t = withAvailability(t.state, availability(NEXT_WEEK));
-  t = reduce(t.state, { type: "day", date: "2026-10-20" });
-  if (t.kind !== "need-availability") throw new Error("unreachable");
+  // E14-2: one day asked and free -> straight to its hours, no day tap
   t = withAvailability(t.state, availability(NEXT_WEEK));
   const Z = t.state;
   check("the zero-match hours screen: broaden + back", [Z.step, buttonIds(t)], ["hour", [FLOW_ID.broaden, FLOW_ID.back]]);

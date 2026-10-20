@@ -156,6 +156,19 @@ export type FlowState = {
   filter: { dateFrom: string | null; dateTo: string | null; timeFrom: string | null; timeTo: string | null } | null;
   /** the length is the DEFAULT the language layer applied, not a choice — the summary says so (owner, 16.10) */
   durationFromDefault: boolean;
+  /**
+   * E14-2: a summary edit (length / room / day) that should KEEP the chosen
+   * start time if it still fits. Set only by applyEdits, consumed by the very
+   * next withAvailability — never left in a saved state. Absent = none, so a
+   * state with the layer off is byte-for-byte what it was before E14-2.
+   */
+  keep?: { start: string; tail: string } | null;
+  /**
+   * E14-2: the slot is being re-chosen FROM the summary (an edit), so the
+   * guest and note were already answered — even if both were skipped — and a
+   * new hour goes straight back to the summary. Absent = no.
+   */
+  fromSummary?: boolean;
 };
 
 export type FlowEvent =
@@ -405,6 +418,8 @@ const withNotice = (s: FlowState, body: string) => (s.notice ? `${s.notice}\n\n$
 
 /** E14: is a written day range / time-of-day narrowing the lists? */
 const dateFiltered = (s: FlowState) => !!s.filter && (!!s.filter.dateFrom || !!s.filter.dateTo);
+/** E14-2: the layer is on for this conversation (and only Hebrew is parsed) */
+const layerOn = (s: FlowState) => s.freeTextOn && s.lang === "he";
 const timeFiltered = (s: FlowState) => !!s.filter && (!!s.filter.timeFrom || !!s.filter.timeTo);
 
 /**
@@ -547,7 +562,12 @@ export function render(s: FlowState): Transition {
       const more = (s.dayPage + 1) * PAGE_SIZE < s.days.length;
       return out({
         type: "list",
-        body: body(C.DAY.body(s.studio as string, s.duration as BookingDuration)),
+        body: body(
+          // E14-2: a list narrowed by what the client wrote says so
+          layerOn(s) && s.filter
+            ? C.DAY.bodyAsked(s.studio as string, s.duration as BookingDuration, s.filter)
+            : C.DAY.body(s.studio as string, s.duration as BookingDuration)
+        ),
         button: C.DAY.button,
         sections: [
           {
@@ -578,7 +598,11 @@ export function render(s: FlowState): Transition {
       const more = (s.hourPage + 1) * PAGE_SIZE < s.hours.length;
       return out({
         type: "list",
-        body: body(C.HOUR.body(s.date as string)),
+        body: body(
+          layerOn(s) && s.filter
+            ? C.HOUR.bodyAsked(s.date as string, s.studio as string, s.duration as BookingDuration, s.filter)
+            : C.HOUR.body(s.date as string)
+        ),
         button: C.HOUR.button,
         sections: [
           {
@@ -905,8 +929,8 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
         // through questions that were already answered. ONLY with the layer on
         // and in Hebrew: off (or in English) a re-choose — e.g. after a slot
         // was taken at submission — asks the guest again, exactly as before E14
-        if (s.freeTextOn && s.lang === "he" && (s.guest !== null || s.note !== null)) {
-          return go(s, { start: h.start, end: h.end, step: "summary" });
+        if (s.freeTextOn && s.lang === "he" && (s.guest !== null || s.note !== null || s.fromSummary)) {
+          return go(s, { start: h.start, end: h.end, step: "summary", fromSummary: false });
         }
         return go(s, { start: h.start, end: h.end, step: "guest" });
       }
@@ -1093,16 +1117,34 @@ function applyEdits(s: FlowState, edits: ParsedEdit[], dropped: string[]): Trans
     filter = { dateFrom: filter?.dateFrom ?? s.date, dateTo: filter?.dateTo ?? s.date, timeFrom: timeEdit, timeTo: null };
   }
   const durationFromDefault = duration !== s.duration ? false : s.durationFromDefault;
+  // E14-2 (owner, 20.10): a length / room / day change KEEPS the chosen start
+  // time when it still fits — checked against fresh availability for the new
+  // (length, room, day) in withAvailability. A named time is a different
+  // request (re-offer from it), so it takes the path below.
+  if (slotChange && timeEdit === null && s.date && s.start) {
+    const date = dayEdit ?? s.date;
+    return {
+      kind: "need-availability",
+      state: {
+        ...s, guest, note, duration, durationFromDefault, studio,
+        filter: { dateFrom: date, dateTo: date, timeFrom: null, timeTo: null },
+        date, days: [], dayPage: 0, hours: [], hourPage: 0, start: null, end: null, step: "hour",
+        keep: { start: s.start, tail },
+        fromSummary: true,
+        notice: `${dropped.length ? C.NOTICE.changedPartial : C.NOTICE.changed}${tail}`,
+      },
+    };
+  }
   if (slotChange) {
     return {
       kind: "need-availability",
-      state: { ...s, guest, note, duration, durationFromDefault, studio, filter, date: null, hours: [], hourPage: 0, start: null, end: null, step: "day", dayPage: 0, notice: (dropped.length ? C.NOTICE.changedPartialRechoose : C.NOTICE.changedRechoose) + tail },
+      state: { ...s, guest, note, duration, durationFromDefault, studio, filter, fromSummary: true, date: null, hours: [], hourPage: 0, start: null, end: null, step: "day", dayPage: 0, notice: (dropped.length ? C.NOTICE.changedPartialRechoose : C.NOTICE.changedRechoose) + tail },
     };
   }
   if (timeChange) {
     return {
       kind: "need-availability",
-      state: { ...s, guest, note, filter, hours: [], hourPage: 0, start: null, end: null, step: "hour", notice: (dropped.length ? C.NOTICE.changedPartialRechoose : C.NOTICE.changedRechoose) + tail },
+      state: { ...s, guest, note, filter, fromSummary: true, hours: [], hourPage: 0, start: null, end: null, step: "hour", notice: (dropped.length ? C.NOTICE.changedPartialRechoose : C.NOTICE.changedRechoose) + tail },
     };
   }
   return go(s, { guest, note, duration, durationFromDefault, notice: `${dropped.length ? C.NOTICE.changedPartial : C.NOTICE.changed}${tail}` });
@@ -1139,6 +1181,11 @@ export function withAvailability(s: FlowState, pub: PublicAvailability): Transit
       const days = all.filter((d) => d >= from && d <= to);
       // zero-match: render() owns that message, so every re-render matches it
       if (days.length === 0) return render({ ...s, days: [], dayPage: 0, notice: null });
+      // E14-2 (owner, 20.10): ONE day was asked for and it is free — its
+      // hours, from this same read, instead of a one-day list to tap
+      if (layerOn(s) && f.dateFrom && f.dateFrom === f.dateTo && days.includes(f.dateFrom)) {
+        return withAvailability({ ...s, days, dayPage: 0, date: f.dateFrom, hours: [], hourPage: 0, step: "hour" }, pub);
+      }
       return render({ ...s, days, dayPage: Math.min(s.dayPage, Math.floor((days.length - 1) / PAGE_SIZE)) });
     }
     return render({ ...s, days: all, dayPage: Math.min(s.dayPage, Math.floor((all.length - 1) / PAGE_SIZE)) });
@@ -1146,6 +1193,37 @@ export function withAvailability(s: FlowState, pub: PublicAvailability): Transit
 
   if (s.step === "hour") {
     const allHours = hoursFor(pub.free, s.studio, s.date).map((h) => ({ start: h.startIsrael, end: h.endIsrael }));
+    // E14-2: a summary edit asked to keep the chosen time
+    if (s.keep) {
+      const { start: wanted, tail } = s.keep;
+      const hit = allHours.find((h) => h.start === wanted);
+      if (hit) {
+        // it still fits: the summary, updated — the notice applyEdits wrote
+        return render({ ...s, keep: null, fromSummary: false, hours: allHours, hourPage: 0, start: hit.start, end: hit.end, step: "summary" });
+      }
+      // it does not: say why, and offer the rest of that day — or other days.
+      // The filter is dropped, so the lists are every free option and "back"
+      // finds the stored days.
+      const allDays = clickableDays(pub.free, s.studio, pub.fromIsrael, pub.toIsrael);
+      if (allHours.length > 0) {
+        return render({
+          ...s, keep: null, filter: null, days: allDays, dayPage: 0, hours: allHours, hourPage: 0,
+          notice: C.NOTICE.keepNoHour(s.date as string, wanted, s.studio as string, s.duration as BookingDuration) + tail,
+        });
+      }
+      if (allDays.length === 0) {
+        return render({
+          // the slot only: the guest and note the client gave are kept
+          ...s, studio: null, days: [], dayPage: 0, date: null, hours: [], hourPage: 0, start: null, end: null,
+          keep: null, filter: null, step: "studio",
+          notice: C.NOTICE.noDays(s.studio as string, s.duration as BookingDuration),
+        });
+      }
+      return render({
+        ...s, keep: null, filter: null, step: "day", days: allDays, dayPage: 0, date: null, hours: [], hourPage: 0,
+        notice: C.NOTICE.keepNoDay(s.date as string, s.studio as string, s.duration as BookingDuration) + tail,
+      });
+    }
     // E14: the written time-of-day narrows the list (same rule as the days)
     const fh = s.filter;
     const hours =

@@ -105,6 +105,40 @@ type QueryEcho = {
   timeFrom: string | null;
   timeTo: string | null;
 };
+/** E14-2: what the client wrote, narrowing a day or hour list */
+type AskedRange = {
+  dateFrom: string | null;
+  dateTo: string | null;
+  timeFrom: string | null;
+  timeTo: string | null;
+};
+const askedTimeHe = (f: AskedRange) =>
+  [f.timeFrom ? `אחרי ${f.timeFrom}` : "", f.timeTo ? `לפני ${f.timeTo}` : ""].filter(Boolean).join(" ");
+const askedWhenHe = (f: AskedRange) => {
+  const days =
+    f.dateFrom && f.dateTo && f.dateFrom !== f.dateTo
+      ? `בין ${dayHe(f.dateFrom)} ל${dayHe(f.dateTo)}`
+      : f.dateFrom
+        ? `ב${dayHe(f.dateFrom)}`
+        : f.dateTo
+          ? `עד ${dayHe(f.dateTo)}`
+          : "";
+  return [days, askedTimeHe(f)].filter(Boolean).join(" ");
+};
+const askedTimeEn = (f: AskedRange) =>
+  [f.timeFrom ? `after ${f.timeFrom}` : "", f.timeTo ? `before ${f.timeTo}` : ""].filter(Boolean).join(" ");
+const askedWhenEn = (f: AskedRange) => {
+  const days =
+    f.dateFrom && f.dateTo && f.dateFrom !== f.dateTo
+      ? `between ${dayEn(f.dateFrom)} and ${dayEn(f.dateTo)}`
+      : f.dateFrom
+        ? `on ${dayEn(f.dateFrom)}`
+        : f.dateTo
+          ? `until ${dayEn(f.dateTo)}`
+          : "";
+  return [days, askedTimeEn(f)].filter(Boolean).join(" ");
+};
+
 type SummaryFacts = {
   showName: string;
   dateIsrael: string;
@@ -264,6 +298,9 @@ const HE = {
   DAY: {
     body: (studio: string, d: BookingDuration) =>
       `אלה הימים הקרובים שיש בהם מקום ל${DURATION_SHORT[d]} באולפן ${studioHe(studio)}:`,
+    /** E14-2: only with a written filter — the list answers what was asked */
+    bodyAsked: (studio: string, d: BookingDuration, f: AskedRange) =>
+      `${askedWhenHe(f)} יש מקום ל${DURATION_SHORT[d]} באולפן ${studioHe(studio)} בימים האלה:`.trim(),
     button: "בחירת יום",
     title: (dateIsrael: string) => dayHe(dateIsrael),
     description: (n: number) => (n === 1 ? "מועד פנוי אחד" : `${n} מועדים פנויים`),
@@ -272,6 +309,9 @@ const HE = {
 
   HOUR: {
     body: (dateIsrael: string) => `באיזו שעה ב${dayHe(dateIsrael)}?`,
+    /** E14-2: only with a written filter */
+    bodyAsked: (dateIsrael: string, studio: string, d: BookingDuration, f: AskedRange) =>
+      `${[`ב${dayHe(dateIsrael)}`, askedTimeHe(f)].filter(Boolean).join(" ")} פנוי ל${DURATION_SHORT[d]} באולפן ${studioHe(studio)}:`,
     button: "בחירת שעה",
     title: (start: string, end: string) => `${start}–${end}`,
     more: "➡️ שעות נוספות",
@@ -368,6 +408,11 @@ const HE = {
     dayFull: "היום הזה התמלא בינתיים. אלה הימים שעוד פנויים:",
     noDays: (studio: string, d: BookingDuration) =>
       `אין כרגע מקום ל${DURATION_SHORT[d]} באולפן ${studioHe(studio)} בשבועות הקרובים. אפשר לבחור אולפן אחר, או לחזור ולבחור אורך אחר:`,
+    // ── E14-2: a summary edit tried to keep the chosen time, and could not ──
+    keepNoHour: (dateIsrael: string, start: string, studio: string, d: BookingDuration) =>
+      `עדכנתי ✔️ אבל ב${dayHe(dateIsrael)} ב-${start} אין מקום ל${DURATION_SHORT[d]} באולפן ${studioHe(studio)} — בחרו שעה אחרת באותו יום:`,
+    keepNoDay: (dateIsrael: string, studio: string, d: BookingDuration) =>
+      `עדכנתי ✔️ אבל ב${dayHe(dateIsrael)} אין מקום ל${DURATION_SHORT[d]} באולפן ${studioHe(studio)} — בחרו יום אחר:`,
     submitFailed: "משהו השתבש ולא הצלחנו לשלוח את הבקשה. אפשר לנסות שוב:",
     feedFailed: "לא הצלחנו לטעון את המועדים כרגע. נסו שוב בעוד דקה 🙏",
     // ── E9-5 ──
@@ -525,6 +570,10 @@ const EN: BotCopy = {
   DAY: {
     body: (studio: string, d: BookingDuration) =>
       `These are the upcoming days with room for ${DURATION_SHORT_EN[d]} at ${studioEn(studio)} studio:`,
+    bodyAsked: (studio: string, d: BookingDuration, f: AskedRange) => {
+      const when = askedWhenEn(f);
+      return `${when ? `${when[0].toUpperCase()}${when.slice(1)}, these` : "These"} days have room for ${DURATION_SHORT_EN[d]} at ${studioEn(studio)} studio:`;
+    },
     button: "Choose day",
     title: (dateIsrael: string) => dayEn(dateIsrael),
     description: (n: number) => (n === 1 ? "1 free slot" : `${n} free slots`),
@@ -533,6 +582,8 @@ const EN: BotCopy = {
 
   HOUR: {
     body: (dateIsrael: string) => `What time on ${dayEn(dateIsrael)}?`,
+    bodyAsked: (dateIsrael: string, studio: string, d: BookingDuration, f: AskedRange) =>
+      `${[`On ${dayEn(dateIsrael)}`, askedTimeEn(f)].filter(Boolean).join(" ")}, ${studioEn(studio)} studio is free for ${DURATION_SHORT_EN[d]} at:`,
     button: "Choose time",
     title: (start: string, end: string) => `${start}–${end}`,
     more: "➡️ More times",
@@ -619,6 +670,10 @@ const EN: BotCopy = {
     dayFull: "That day just filled up. These are the days still available:",
     noDays: (studio: string, d: BookingDuration) =>
       `There's no room for ${DURATION_SHORT_EN[d]} at ${studioEn(studio)} studio in the coming weeks. You can choose another studio, or go back and choose a different length:`,
+    keepNoHour: (dateIsrael: string, start: string, studio: string, d: BookingDuration) =>
+      `Updated ✔️ but on ${dayEn(dateIsrael)} at ${start} there's no room for ${DURATION_SHORT_EN[d]} at ${studioEn(studio)} studio — please choose another time that day:`,
+    keepNoDay: (dateIsrael: string, studio: string, d: BookingDuration) =>
+      `Updated ✔️ but on ${dayEn(dateIsrael)} there's no room for ${DURATION_SHORT_EN[d]} at ${studioEn(studio)} studio — please choose another day:`,
     submitFailed: "Something went wrong and we couldn't send the request. You can try again:",
     feedFailed: "We couldn't load the available times right now. Please try again in a minute 🙏",
     noRecordings: "You have no upcoming confirmed recordings right now 🙂",

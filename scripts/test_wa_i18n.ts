@@ -136,11 +136,13 @@ const KIND: Record<string, Kind> = {
   "STUDIO.button": "listButton",
   "STUDIO.row": "rowTitle",
   "DAY.body": "body",
+  "DAY.bodyAsked": "body",
   "DAY.button": "listButton",
   "DAY.title": "rowTitle",
   "DAY.description": "rowDesc",
   "DAY.more": "rowTitle",
   "HOUR.body": "body",
+  "HOUR.bodyAsked": "body",
   "HOUR.button": "listButton",
   "HOUR.title": "rowTitle",
   "HOUR.more": "rowTitle",
@@ -178,6 +180,8 @@ const KIND: Record<string, Kind> = {
   "NOTICE.slotTaken": "body",
   "NOTICE.dayFull": "body",
   "NOTICE.noDays": "body",
+  "NOTICE.keepNoHour": "body",
+  "NOTICE.keepNoDay": "body",
   "NOTICE.submitFailed": "body",
   "NOTICE.feedFailed": "body",
   "NOTICE.noRecordings": "body",
@@ -246,9 +250,11 @@ const SAMPLES: Record<string, unknown[][]> = {
   "STUDIO_DEFAULT.yes": ROOMS.map((r) => [r]),
   "STUDIO.row": ROOMS.map((r) => [r]),
   "DAY.body": ROOMS.flatMap((r) => DURS.map((d) => [r, d])),
+  "DAY.bodyAsked": ROOMS.flatMap((r) => DURS.map((d) => [r, d, { dateFrom: "2026-12-30", dateTo: "2027-01-03", timeFrom: "23:30", timeTo: "23:59" }])),
   "DAY.title": DATES.map((d) => [d]),
   "DAY.description": Array.from({ length: 99 }, (_, i) => [i + 1]),
   "HOUR.body": DATES.map((d) => [d]),
+  "HOUR.bodyAsked": DATES.flatMap((d) => ROOMS.map((r) => [d, r, 240, { dateFrom: "2026-12-30", dateTo: "2027-01-03", timeFrom: "23:30", timeTo: "23:59" }])),
   "HOUR.title": [["23:30", "23:59"]],
   "SUMMARY.body": ROOMS.flatMap((r) =>
     DURS.map((d) => [
@@ -270,6 +276,8 @@ const SAMPLES: Record<string, unknown[][]> = {
   "OUTCOME.moved": SAMPLE_DATES.flatMap((d) => ROOMS.map((r) => [LONG_SHOW, d, "23:30", r])),
   "OUTCOME.movePending": SAMPLE_DATES.map((d) => [d, "23:30"]),
   "NOTICE.noDays": ROOMS.flatMap((r) => DURS.map((d) => [r, d])),
+  "NOTICE.keepNoHour": DATES.flatMap((dt) => ROOMS.flatMap((r) => DURS.map((d) => [dt, "23:30", r, d]))),
+  "NOTICE.keepNoDay": DATES.flatMap((dt) => ROOMS.flatMap((r) => DURS.map((d) => [dt, r, d]))),
   // E14: every field set at once, worst-case dates and room
   "QUERY.echo": [[{ studio: "גבעון גדול", duration: 240, dateFrom: "2026-12-30", dateTo: "2027-01-03", timeFrom: "23:30", timeTo: "23:59" }]],
   // the items are fragments of the CLIENT's own text; Latin sample keeps the
