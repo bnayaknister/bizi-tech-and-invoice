@@ -45,7 +45,7 @@ const FUTURE = "2099-01-01T00:00:00Z";
 function world(opts: { hang?: string[] } = {}) {
   const prod = (id: string, over: Row = {}) => ({
     id, podcast_name: "ואם נחיה לנצח", show_id: "s1", client_id: "c1", kind: "client", status: "הופץ", record_date: "2026-10-01",
-    guest: "אורחת", studio: "גבעון", storage_disk: "T7", studio_hours: null, contract_id: null, cancelled_at: null, merged_into: null,
+    guest: "אורחת", studio: "גבעון", storage_disk: "T7", storage_disk_id: "d-t7", studio_hours: null, contract_id: null, cancelled_at: null, merged_into: null,
     created_at: "2026-10-01T08:00:00Z", review_episode_approved: true, review_reels_approved: false, review_reels_required: true,
     review_episode_note: "תיקון קטן", review_reels_note: null, reels_count: 2, ...over,
   });
@@ -59,6 +59,11 @@ function world(opts: { hang?: string[] } = {}) {
         prod("p-c1", { contract_id: "k1", record_date: "2026-09-01", created_at: "2026-09-01T08:00:00Z" }),
         prod("p-c2", { contract_id: "k1", record_date: "2026-09-08", created_at: "2026-09-08T08:00:00Z" }),
         prod("p-c3", { contract_id: "k1", record_date: "2026-09-15", created_at: "2026-09-15T08:00:00Z" }),
+      ],
+      storage_disks: [
+        { id: "d-t7", name: "T7", hidden: false },
+        { id: "d-kong", name: "kong", hidden: false },
+        { id: "d-old", name: "old", hidden: true },
       ],
       shows: [
         { id: "s1", name: "ואם נחיה לנצח", pricing_model: "per_episode" },

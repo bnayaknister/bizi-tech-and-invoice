@@ -43,6 +43,7 @@ import { CreateJobButton, CreateJobModalBody } from "@/components/CreateJobBody"
 import { quotaOverNotice } from "@/lib/contracts/quota";
 import { isPerfClientOn, perfEndAfterPaint, perfNote, perfStart } from "@/lib/perf/client";
 import { confirmAndResolveAll, postResolve } from "@/lib/review/resolveFetch";
+import { diskChoices, type DiskOption } from "@/lib/disks";
 
 // entity type -> line icon + tile accent (no emoji, DESIGN.md §12)
 const ENTITY_ICON: Record<string, string> = {
@@ -162,7 +163,7 @@ type DrawerData = {
   // for hours, the server does the arithmetic.
   hourly: { pricing_model: string; studio_hours: number | null } | null;
   log: LogEntry[] | null;
-  diskOptions: string[] | null;
+  diskOptions: DiskOption[] | null;
 };
 
 const DrawerContext = createContext<{ openEntity: (ref: EntityRef) => void }>({
@@ -1255,7 +1256,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     const ok = await saveStage(stage, { status: next });
     if (!ok) return;
     if (next === "in_progress" && stage.track === "episode" && stage.step === "record") {
-      setDiskValue(String((data?.entity.storage_disk as string) ?? ""));
+      setDiskValue(String((data?.entity.storage_disk_id as string) ?? ""));
       setDiskModal(true);
     } else if (next === "done") {
       setNoteValue("");
@@ -1287,7 +1288,9 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   async function saveDisk() {
     if (!ref || diskSaving) return;
     setDiskSaving(true);
-    const res = await post({ patch: { storage_disk: diskValue.trim() || null } });
+    // B35: an id from the closed list ("" = no disk). The DB fills the name
+    // and refuses an unknown or newly-hidden disk (trg_disk_sync).
+    const res = await post({ patch: { storage_disk_id: diskValue || null } });
     setDiskSaving(false);
     if (!res.ok) return; // error already surfaced by post
     setDiskModal(false);
@@ -1682,19 +1685,27 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(3,2,10,0.7)", backdropFilter: "blur(6px)" }}>
           <div className="w-full max-w-sm border border-[var(--rule2)] rounded-2xl p-5 shadow-2xl" style={{ background: "rgba(15,13,28,0.95)", backdropFilter: "blur(24px)" }}>
             <h3 className="font-bold mb-3">💾 לאיזה דיסק הוקלט הפרק?</h3>
-            <input
+            {/* B35: a pick from the closed list only — no free text, so no
+                "wd3" beside "wd 3". The production's own disk is offered even
+                when it is hidden, so saving untouched keeps it. */}
+            <select
               value={diskValue}
               onChange={(e) => setDiskValue(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") void saveDisk(); }}
-              list="disk-options"
               autoFocus
-              dir="ltr"
-              placeholder="למשל SSD-04"
-              className="w-full text-sm font-mono bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-3 py-2 text-left outline-none focus:border-[var(--violet-light)]"
-            />
-            <datalist id="disk-options">
-              {(data?.diskOptions ?? []).map((d) => <option key={d} value={d} />)}
-            </datalist>
+              aria-label="כונן"
+              className="w-full text-sm font-mono bg-[var(--panel)] border border-[var(--rule)] rounded-lg px-3 py-2 outline-none focus:border-[var(--violet-light)]"
+            >
+              <option value="">— בלי כונן —</option>
+              {diskChoices(data?.diskOptions ?? [], {
+                id: (data?.entity.storage_disk_id as string | null) ?? null,
+                name: (data?.entity.storage_disk as string | null) ?? null,
+              }).map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-2 text-[11px] text-[var(--faint)]">לא מופיע? בקשו מבניה להוסיף.</p>
             <div className="flex gap-2 mt-4">
               <button
                 onClick={() => void saveDisk()}
@@ -1884,7 +1895,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                   const canEdit = data.canEditStages;
                   return (
                     <button
-                      onClick={() => { if (canEdit) { setDiskValue(disk); setDiskModal(true); } }}
+                      onClick={() => { if (canEdit) { setDiskValue(String((data.entity.storage_disk_id as string) ?? "")); setDiskModal(true); } }}
                       disabled={!canEdit}
                       className={`inline-flex items-center gap-1.5 text-xs rounded-full px-3 py-1 border transition-colors disabled:cursor-default ${
                         disk
@@ -1994,7 +2005,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                       (f) =>
                         !(
                           data.type === "production" &&
-                          (f.key === "status" || f.key === "storage_disk" || f.key === "billing_block_reason")
+                          (f.key === "status" || f.key === "storage_disk" || f.key === "storage_disk_id" || f.key === "billing_block_reason")
                         )
                     )}
                   entity={data.entity}

@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { loadDrawerLiveLinks } from "@/lib/review/drawerLiveLinks";
+import type { DiskOption } from "@/lib/disks";
 import { ENTITY_CONFIG, canEditField, canViewField, selectColumns, type EntityType } from "@/lib/entities";
 import { deriveMilestoneState } from "@/lib/finance/milestone";
 import { must, type QueryResult } from "@/lib/supabase/unwrap";
@@ -235,7 +236,7 @@ export async function entityGet(deps: EntityGetDeps): Promise<{ status: number; 
   // the production; author names through the admin client (profiles RLS is
   // self-or-owner, names are not sensitive)
   const logAndDisks = async () => {
-    if (!(isProduction && (profile.can_view_stages || profile.can_view_money))) return { log: null as unknown[] | null, diskOptions: null as string[] | null };
+    if (!(isProduction && (profile.can_view_stages || profile.can_view_money))) return { log: null as unknown[] | null, diskOptions: null as DiskOption[] | null };
     const [{ data: logRows }, { data: diskRows }] = await Promise.all([
       supabase
         .from("production_log")
@@ -243,7 +244,9 @@ export async function entityGet(deps: EntityGetDeps): Promise<{ status: number; 
         .eq("production_id", id)
         .order("created_at", { ascending: false })
         .limit(200),
-      supabase.from("productions").select("storage_disk").not("storage_disk", "is", null).limit(1000),
+      // B35 (0120): the closed list — visible disks only; the drawer adds the
+      // production's own disk if it is hidden (lib/disks.ts diskChoices)
+      supabase.from("storage_disks").select("id,name").eq("hidden", false).order("name"),
     ]);
     const authorIds = Array.from(new Set((logRows ?? []).map((r) => r.author_id).filter(Boolean)));
     const { data: authors } = authorIds.length
@@ -257,7 +260,7 @@ export async function entityGet(deps: EntityGetDeps): Promise<{ status: number; 
         author: r.author_id ? authorName[r.author_id] ?? "—" : null, // null = client/system
         mine: r.author_id === user.id,
       })) as unknown[],
-      diskOptions: Array.from(new Set((diskRows ?? []).map((d) => d.storage_disk as string).filter(Boolean))).sort(),
+      diskOptions: (diskRows ?? []).map((d) => ({ id: d.id as string, name: d.name as string })),
     };
   };
 

@@ -199,7 +199,7 @@ export async function legacyEntityGet(deps: {
   // session can't read other profiles' rows (profiles RLS is self-or-owner) —
   // names aren't sensitive, and the log rows themselves were already permitted.
   let log: unknown[] | null = null;
-  let diskOptions: string[] | null = null;
+  let diskOptions: { id: string; name: string }[] | null = null;
   if (type === "production" && (profile.can_view_stages || profile.can_view_money)) {
     const [{ data: logRows }, { data: diskRows }] = await Promise.all([
       supabase
@@ -208,11 +208,8 @@ export async function legacyEntityGet(deps: {
         .eq("production_id", id)
         .order("created_at", { ascending: false })
         .limit(200),
-      supabase
-        .from("productions")
-        .select("storage_disk")
-        .not("storage_disk", "is", null)
-        .limit(1000),
+      // B35 (0120): moved forward with the live route — the closed disk list
+      supabase.from("storage_disks").select("id,name").eq("hidden", false).order("name"),
     ]);
     const authorIds = Array.from(new Set((logRows ?? []).map((r) => r.author_id).filter(Boolean)));
     const { data: authors } = authorIds.length
@@ -225,9 +222,7 @@ export async function legacyEntityGet(deps: {
       author: r.author_id ? authorName[r.author_id] ?? "—" : null, // null = client/system
       mine: r.author_id === user.id,
     }));
-    diskOptions = Array.from(
-      new Set((diskRows ?? []).map((d) => (d.storage_disk as string)).filter(Boolean))
-    ).sort();
+    diskOptions = (diskRows ?? []).map((d) => ({ id: d.id as string, name: d.name as string }));
   }
   if (type === "production" && profile.can_view_money) {
     const { data: links } = await supabase

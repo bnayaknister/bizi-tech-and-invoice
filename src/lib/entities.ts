@@ -49,7 +49,12 @@ export const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
       // rendered as a fixed tag at the top of the drawer (+ its own modal), not
       // as a generic field row — filtered out of the field list like `status`.
       // Registered here so the entity PATCH accepts it under can_edit_stages.
-      { key: "storage_disk", label: "דיסק", type: "text", view: "any", edit: "stages" },
+      // B35 (0120): the disk is CHOSEN from storage_disks by id — the drawer's
+      // own modal writes storage_disk_id. The name is kept in step by the DB
+      // (trg_disk_sync) and is read-only here: a free-text write would be a
+      // way around the closed list.
+      { key: "storage_disk", label: "דיסק", type: "readonly", view: "any", edit: "none" },
+      { key: "storage_disk_id", label: "כונן", type: "readonly", view: "any", edit: "stages" },
       // derived from the 6 stages; the only manual transition (client
       // approval) gets a dedicated flow later, not a free-text edit
       { key: "status", label: "סטטוס", type: "readonly", view: "any", edit: "none" },

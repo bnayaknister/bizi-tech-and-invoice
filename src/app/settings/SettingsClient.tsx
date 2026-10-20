@@ -180,6 +180,23 @@ export default function SettingsClient({
         </div>
       </section>
 
+      <section className="glass-card-secondary mt-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-bold">כונני אחסון</h2>
+            <p className="text-xs text-[var(--faint)] mt-0.5">
+              הרשימה שהטכנאי בוחר ממנה כשמסמנים הקלטה: הוספה, שינוי שם, הסתרה ומחיקה של כונן בלי הפקות.
+            </p>
+          </div>
+          <button
+            onClick={() => router.push("/settings/disks")}
+            className="text-xs font-bold rounded-xl px-4 py-1.5 border border-[var(--rule2)] shrink-0"
+          >
+            ניהול כוננים →
+          </button>
+        </div>
+      </section>
+
       <section className="glass-card-secondary mt-4" style={{ padding: "18px 20px" }}>
         <h2 className="text-sm font-bold">מייל הנהלת חשבונות</h2>
         <p className="text-xs text-[var(--faint)] mt-0.5 mb-3">

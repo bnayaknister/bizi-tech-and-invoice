@@ -1938,6 +1938,7 @@ export type Database = {
           split_index: number | null
           status: Database["public"]["Enums"]["production_status"]
           storage_disk: string | null
+          storage_disk_id: string | null
           studio: string | null
           studio_hours: number | null
         }
@@ -1989,6 +1990,7 @@ export type Database = {
           split_index?: number | null
           status?: Database["public"]["Enums"]["production_status"]
           storage_disk?: string | null
+          storage_disk_id?: string | null
           studio?: string | null
           studio_hours?: number | null
         }
@@ -2040,6 +2042,7 @@ export type Database = {
           split_index?: number | null
           status?: Database["public"]["Enums"]["production_status"]
           storage_disk?: string | null
+          storage_disk_id?: string | null
           studio?: string | null
           studio_hours?: number | null
         }
@@ -2105,6 +2108,13 @@ export type Database = {
             columns: ["show_id"]
             isOneToOne: false
             referencedRelation: "shows"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "productions_storage_disk_id_fkey"
+            columns: ["storage_disk_id"]
+            isOneToOne: false
+            referencedRelation: "storage_disks"
             referencedColumns: ["id"]
           },
         ]
@@ -2408,6 +2418,38 @@ export type Database = {
           track?: Database["public"]["Enums"]["stage_track"] | null
         }
         Relationships: []
+      }
+      storage_disks: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          hidden: boolean
+          id: string
+          name: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          hidden?: boolean
+          id?: string
+          name: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          hidden?: boolean
+          id?: string
+          name?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "storage_disks_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       v_doc_count: {
         Row: {
@@ -2766,6 +2808,7 @@ export type Database = {
         Args: { p_item_id: string; p_link_id: string; p_version_id: string }
         Returns: Json
       }
+      storage_disk_key: { Args: { p: string }; Returns: string }
     }
     Enums: {
       billing_cadence: "per_episode" | "monthly" | "every_n"
