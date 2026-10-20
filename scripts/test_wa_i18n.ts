@@ -106,6 +106,7 @@ const KIND: Record<string, Kind> = {
   "NAV.sectionNav": "section",
   "NAV_WORDS.back": "words",
   "NAV_WORDS.restart": "words",
+  "SKIP_WORDS": "words",
   "MENU.body": "body",
   "MENU.bodyWithLink": "body",
   "MENU.go": "button",

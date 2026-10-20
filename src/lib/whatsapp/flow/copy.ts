@@ -183,6 +183,13 @@ const HE = {
     restart: ["התחלה מחדש", "מחדש", "להתחיל מחדש"],
   },
 
+  /**
+   * Typed EXACTLY (trimmed, lower-cased, trailing punctuation dropped) at the
+   * guest or the note step: "there is none" — the same as the skip button,
+   * never the stored value (owner, 20.10: "לא" was saved as a note).
+   */
+  SKIP_WORDS: ["לא", "אין", "בלי"],
+
   MENU: {
     body: (showName: string) =>
       `היי! 🎙️ רוצים לקבוע הקלטה ל${showName}?\n` +
@@ -449,6 +456,8 @@ const EN: BotCopy = {
     back: ["back"],
     restart: ["start over", "restart"],
   },
+
+  SKIP_WORDS: ["no", "none"],
 
   MENU: {
     body: (showName: string) =>

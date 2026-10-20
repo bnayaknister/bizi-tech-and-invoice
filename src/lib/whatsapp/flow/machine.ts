@@ -309,6 +309,16 @@ export function textEvent(text: string): FlowEvent {
   return { type: "text", text };
 }
 
+/**
+ * Typed text at the guest or the note step that means "none" (COPY.SKIP_WORDS,
+ * every language — a client who switched may type either). Exact word only,
+ * so a name that merely starts with one ("לאה") stays a name. PURE.
+ */
+export function isSkipWord(text: string): boolean {
+  const t = text.replace(/\s+/g, " ").trim().toLowerCase().replace(/[.!,…]+$/, "").trim();
+  return Object.values(COPY).some((c) => (c.SKIP_WORDS as readonly string[]).includes(t));
+}
+
 // ─── starting ──────────────────────────────────────────────────────────────
 
 export type ShowInfo = {
@@ -910,6 +920,8 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
     // ── owner decision 11.10 (3): ask, but never block on it ──
     case "guest":
       if (e.type === "no-guest") return go(s, { guest: null, step: "note" });
+      // owner, 20.10 (for everyone): "לא" / "אין" / "בלי" = the skip button
+      if (e.type === "text" && isSkipWord(e.text)) return go(s, { guest: null, step: "note" });
       if (e.type === "text") {
         // ANY free text here is the value — the same normaliser as the screen
         const g = normalizeGuest(e.text);
@@ -920,6 +932,7 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
 
     case "note":
       if (e.type === "no-note") return go(s, { note: null, step: "summary" });
+      if (e.type === "text" && isSkipWord(e.text)) return go(s, { note: null, step: "summary" });
       if (e.type === "text") {
         const n = normalizeNote(e.text);
         if (!n.ok) return again(s, C.NOTE.tooLong);
