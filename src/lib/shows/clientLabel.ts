@@ -2,9 +2,9 @@
 // setting, OFF by default, kept in shows.settings (jsonb, {} on every show
 // until now and read nowhere else) so no migration was needed. PURE.
 //
-// ON: the board card and the drawer title read "<client> (<show>)", e.g.
-// "קורין קיציס (שומעת רגע?)". OFF, or a show without a client: exactly the
-// show name, as before.
+// ON: the board card and the drawer title read "<show> – <client>", the show
+// first (owner, after the first test 20.10), e.g. "אסתטיטוקס – סבטלנה ניקסון".
+// OFF, or a show without a client: exactly the show name, as before.
 
 export const SHOW_CLIENT_NAME_KEY = "show_client_name";
 
@@ -15,7 +15,7 @@ export function showClientNameOn(settings: unknown): boolean {
 
 export function productionLabel(showName: string, clientName: string | null | undefined, on: boolean): string {
   const client = (clientName ?? "").trim();
-  return on && client ? `${client} (${showName})` : showName;
+  return on && client ? `${showName} – ${client}` : showName;
 }
 
 /** The settings object with the flag set — every other key kept. */

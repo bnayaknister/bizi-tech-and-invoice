@@ -285,7 +285,7 @@ export default async function ProductionsPage() {
       review_minor: reviewFlags.get(p.id)?.minor ?? false,
       review_unsent: reviewFlags.get(p.id)?.unsent ?? false,
       show_name: show?.name ?? "—",
-      // owner 20.10: "<client> (<show>)" for the shows that asked for it
+      // owner 20.10: "<show> – <client>" for the shows that asked for it
       display_name: productionLabel(show?.name ?? "—", p.show_id ? clientLabels.get(p.show_id) : null, !!(p.show_id && clientLabels.has(p.show_id))),
       show_color: show?.color ?? null,
       show_active: show?.active ?? true,

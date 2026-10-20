@@ -35,7 +35,7 @@ export type BoardProduction = {
   on_hold_since: string | null;
   needs_attention: boolean;
   show_name: string;
-  /** owner 20.10: "<client> (<show>)" when the show asks for it, else the show name */
+  /** owner 20.10: "<show> – <client>" when the show asks for it, else the show name */
   display_name: string;
   show_color: string | null;
   show_active: boolean;

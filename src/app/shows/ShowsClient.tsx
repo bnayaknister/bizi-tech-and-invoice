@@ -49,7 +49,7 @@ export type ShowRow = {
   // Only the merge modal wants this — see the warning line there for why.
   episodes_all: number;
   revenue: number | null; // null when the viewer lacks can_view_money
-  /** owner 20.10: "<client> (<show>)" in the production row and drawer title */
+  /** owner 20.10: "<show> – <client>" in the production row and drawer title */
   show_client_name: boolean;
 };
 
@@ -817,7 +817,7 @@ function ShowCard({
             <span>
               הצג שם לקוח בשורת ההפקה
               <span className="block text-[10px] text-[var(--faint)]">
-                בשורת ההפקה ובכותרת המגירה: &quot;שם לקוח (שם הפודקאסט)&quot;. בלי לקוח משויך — נשאר שם הפודקאסט.
+                בשורת ההפקה ובכותרת המגירה: &quot;שם הפודקאסט – שם לקוח&quot;. בלי לקוח משויך — נשאר שם הפודקאסט.
               </span>
             </span>
           </label>

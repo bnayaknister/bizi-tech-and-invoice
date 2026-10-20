@@ -28,7 +28,7 @@ const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8");
 
 async function main() {
   console.log("\n=== 1. the label ===");
-  check("ON + client: '<client> (<show>)'", productionLabel("שומעת רגע?", "קורין קיציס", true), "קורין קיציס (שומעת רגע?)");
+  check("ON + client: '<show> – <client>' (show first, en dash)", productionLabel("אסתטיטוקס", "סבטלנה ניקסון", true), "אסתטיטוקס – סבטלנה ניקסון");
   check("OFF: the show name, unchanged", productionLabel("שומעת רגע?", "קורין קיציס", false), "שומעת רגע?");
   check("ON but no client: the show name", productionLabel("שומעת רגע?", null, true), "שומעת רגע?");
   check("ON, blank client: the show name", productionLabel("שומעת רגע?", "  ", true), "שומעת רגע?");

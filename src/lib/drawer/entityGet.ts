@@ -368,7 +368,7 @@ export async function entityGet(deps: EntityGetDeps): Promise<{ status: number; 
   };
 
   // owner 20.10: a production of a show with "show the client's name" ON is
-  // titled "<client> (<show>)" — the same label as its board card
+  // titled "<show> – <client>" — the same label as its board card
   const clientTitle = async (): Promise<string | null> => {
     if (!isProduction) return null;
     const { data: row } = await admin.from("productions").select("show_id").eq("id", id).maybeSingle();
