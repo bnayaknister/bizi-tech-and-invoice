@@ -204,6 +204,10 @@ const KIND: Record<string, Kind> = {
   "NOTICE.slotBusyHour": "body",
   "NOTICE.slotBusyDay": "body",
   "OFFER.body": "body",
+  "HOUR_PICK.body": "body",
+  "HOUR_PICK.button": "button",
+  "HOUR_PICK.alt": "body",
+  "HOUR_PICK.altButton": "button",
   "OFFER.room": "button",
   "OFFER.other": "button",
   "JOIN.offerBody": "body",
@@ -299,6 +303,10 @@ const SAMPLES: Record<string, unknown[][]> = {
   "NOTICE.slotBusyDay": DATES.flatMap((dt) => ROOMS.flatMap((r) => DURS.map((d) => [dt, r, d]))),
   "OFFER.body": DATES.flatMap((dt) => DURS.map((d) => [dt, "23:30", ROOMS[0], d, ROOMS.slice(1)])),
   "OFFER.room": ROOMS.map((r) => [r]),
+  "HOUR_PICK.body": [["08:00", "20:00"]],
+  "HOUR_PICK.button": [["20:00"]],
+  "HOUR_PICK.alt": DATES.flatMap((dt) => ROOMS.map((r) => [dt, "08:00", "20:00", r])),
+  "HOUR_PICK.altButton": [["20:00"]],
 };
 
 /** Walk an object's leaves -> [path, value]. */

@@ -76,7 +76,8 @@ const RESIDUE_RE = new RegExp(
  * rule parser reads only "אחרי …" — so a time it did not read is leftover.
  */
 const TIME_HINT_RE = new RegExp(
-  "\\d{1,2}:\\d{2}|(?<![\\p{L}])(?:ב-?|בשעה|לשעה)\\s?\\d{1,2}(?![\\d./:])|(?<![\\p{L}])(?:ב|בשעה\\s)(?:אחת|שתיים|שלוש|ארבע|חמש|שש|שבע|שמונה|תשע|עשר)(?![\\p{L}])",
+  // E14-2c: an hour in words anywhere ("שמונה בבוקר", "רבע לשלוש") — the menu's rule parser reads none of them
+  "(?<![\\p{L}])רבע\\s+ל|(?<![\\p{L}])(?:אחת|שתיים|שלוש|ארבע|חמש|שש|שבע|שמונה|תשע|עשר|אחת עשרה|שתים עשרה)(?![\\p{L}])|\\d{1,2}:\\d{2}|(?<![\\p{L}])(?:ב-?|בשעה|לשעה)\\s?\\d{1,2}(?![\\d./:])|(?<![\\p{L}])(?:ב|בשעה\\s)(?:אחת|שתיים|שלוש|ארבע|חמש|שש|שבע|שמונה|תשע|עשר)(?![\\p{L}])",
   "u"
 );
 /** a guest or a note may be in the text */
@@ -180,7 +181,7 @@ day — ONE specific day only. A range ("בין ראשון לרביעי", "הש�
 
 time — the start time.
   hour: the number AS WRITTEN (digits or a Hebrew number word: אחת=1 … שתים עשרה=12). "16:00" -> 16. "4" -> 4 (do NOT convert to 16). "שלוש" -> 3.
-  minute: as written, else 0 ("חצי" = 30, "רבע" = 15).
+  minute: as written, else 0 ("וחצי" = 30, "ורבע" = 15, "ועשרים" = 20, "ועשרה" = 10). "רבע ל-X" ("רבע לשלוש") = a quarter BEFORE X: hour X-1, minute 45 ("רבע לשלוש" -> hour 2, minute 45). Hours in words count exactly like digits: "שמונה בבוקר" -> hour 8, daypart morning; "בתשע וחצי" -> hour 9, minute 30. A number followed by "שעות" / "שעה" is a LENGTH, not a time ("שלוש שעות" is duration 180, time null).
   daypart: a daypart WORD written next to the hour — בבוקר morning, בצהריים / אחה"צ / אחרי הצהריים afternoon, בערב evening, בלילה night — else "none".
   kind: "at" for an exact start ("ב-12", "בשעה 12", "ל-12", "12:00"); "from" for "אחרי 12" / "מ-12 והלאה"; "before" for "לפני 12" / "עד 12".
 

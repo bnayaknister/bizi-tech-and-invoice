@@ -36,6 +36,8 @@ export type ParsedAvailability = {
   timeFrom: string | null;
   /** HH:MM — only starts before this time are offered. */
   timeTo: string | null;
+  /** E14-2c: the evening range INCLUDES its last start (owner, 21.10: "ערב" = 17:00-20:00 inclusive) */
+  timeToIncl?: boolean;
   /** recognised-but-ambiguous fragments the parse deliberately did NOT use */
   dropped: string[];
 };
@@ -135,7 +137,8 @@ function resolveHour(h: number, daypart: string | null): number | null {
   return h >= 13 && h <= 23 ? h : null;
 }
 
-const DAYPART_WORDS = "בצהריים|בערב|בבוקר|בלילה";
+// E14-2c (owner, 21.10): "אחה״צ" / "אחר הצהריים" after an hour too ("שלוש אחה״צ")
+const DAYPART_WORDS = "בצהריים|בצהרים|בערב|בבוקר|בלילה|אחה[\"״']צ|אחר(?:י)?\\s+הצהר(?:י)?ים";
 
 /** Clients write hours as digits ("13:00", "1") and as words ("אחת בצהריים"). */
 const HOUR_WORDS: Record<string, number> = {
@@ -158,12 +161,23 @@ const HOUR_WORDS: Record<string, number> = {
 
 /** longest first, so "אחת עשרה" is tried before "אחת" */
 const HOUR_TOKEN = "\\d{1,2}(?::\\d{2})?|אחת עשרה|אחד עשר|שתים עשרה|אחת|אחד|שתיים|שניים|שלוש|ארבע|חמש|שש|שבע|שמונה|תשע|עשר";
-const HOUR_FRAG = `(?:${HOUR_TOKEN})(?:\\s*(?:${DAYPART_WORDS}))?`;
+/** E14-2c: minutes in words, after the hour ("עשר וחצי", "שלוש ורבע") */
+const MINUTE_WORDS: Record<string, number> = { "וחצי": 30, "ורבע": 15, "ועשרים": 20, "ועשרה": 10, "ועשר": 10, "וחמישה": 5, "וחמש": 5 };
+const MINUTE_TOKEN = "וחצי|ורבע|ועשרים|ועשרה|ועשר|וחמישה|וחמש";
+/**
+ * One spoken or written time: "10", "10:30", "עשר", "עשר וחצי", "רבע לשלוש",
+ * "שמונה בערב", "שלוש אחה״צ". ("רבע ל-X" = X-1, 45 minutes.)
+ */
+const HOUR_FRAG = `(?:רבע\\s+ל(?:פני\\s+)?-?)?(?:${HOUR_TOKEN})(?:\\s+(?:${MINUTE_TOKEN}))?(?:\\s*(?:${DAYPART_WORDS}))?`;
 
 /** One hour fragment, e.g. "אחת בצהריים" -> 13:00. */
 function hourPhrase(frag: string): { hhmm: string; ambiguous: boolean; options?: string[] } | null {
-  const m = new RegExp(`^(${HOUR_TOKEN})\\s*(${DAYPART_WORDS})?$`).exec(frag.trim());
-  if (!m) return null;
+  const full = new RegExp(`^(רבע\\s+ל(?:פני\\s+)?-?)?(${HOUR_TOKEN})(?:\\s+(${MINUTE_TOKEN}))?\\s*(${DAYPART_WORDS})?$`, "u").exec(frag.trim());
+  if (!full) return null;
+  // the daypart stays in m[2], where the rest of this function reads it
+  const m = [full[0], full[2], full[4]] as const;
+  const quarterTo = !!full[1];
+  const minuteWord = full[3];
   const tok = m[1];
   let h: number;
   let minutes = "00";
@@ -173,6 +187,16 @@ function hourPhrase(frag: string): { hhmm: string; ambiguous: boolean; options?:
     minutes = dm[2] ?? "00";
   } else {
     h = HOUR_WORDS[tok] ?? 0;
+  }
+  // "עשר וחצי" -> 10:30; "רבע לשלוש" -> 2:45 (then the daypart / opening-hours rule)
+  if (minuteWord) {
+    if (dm?.[2]) return null;
+    minutes = pad2(MINUTE_WORDS[minuteWord] ?? 0);
+  }
+  if (quarterTo) {
+    if (dm?.[2] || minuteWord) return null;
+    h = h === 1 ? 12 : h - 1;
+    minutes = "45";
   }
   if (Number(minutes) > 59) return null;
   if (!m[2] && h >= 1 && h <= 12) {
@@ -340,6 +364,7 @@ export function parseAvailabilityText(raw: string, todayIsrael: string): ParsedA
   // ── times ──
   let timeFrom: string | null = null;
   let timeTo: string | null = null;
+  let timeToIncl = false;
   // a range first: "בין 9:00 ל-10:00" / "מ-9 בבוקר עד 5 בערב" — each endpoint
   // must itself be certain, or that endpoint is named in `dropped`
   const trange = new RegExp(`(?:בין\\s*|מ-?\\s*)(?:השע(?:ה|ות)\\s+)?(${HOUR_FRAG})\\s+(?:ל|עד)-?\\s*(?:השעה\\s+)?(${HOUR_FRAG})`).exec(text);
@@ -371,6 +396,7 @@ export function parseAvailabilityText(raw: string, todayIsrael: string): ParsedA
     if (part) {
       timeFrom = part.from;
       timeTo = part.to;
+      if (part.inclusive) timeToIncl = true;
     }
   }
 
@@ -382,7 +408,7 @@ export function parseAvailabilityText(raw: string, todayIsrael: string): ParsedA
   // `dropped` alone is enough to answer: an all-null query offers the plain
   // list (no constraint invented) while SAYING what was not understood
   if (!rooms.studio && !dateFrom && !timeFrom && !timeTo && !duration && dropped.length === 0) return null;
-  return { studio: rooms.studio, duration, dateFrom, dateTo, timeFrom, timeTo, dropped };
+  return { studio: rooms.studio, duration, dateFrom, dateTo, timeFrom, timeTo, ...(timeToIncl ? { timeToIncl } : {}), dropped };
 }
 
 // ─── E14-2c: parts of the day, availability questions, yes / no ────────────
@@ -398,7 +424,7 @@ export const DAYPART_RANGES = {
   morning: { from: "09:00", to: "12:00" },
   noon: { from: "12:00", to: "15:00" },
   afternoon: { from: "14:00", to: "18:00" },
-  evening: { from: "17:00", to: "20:00" },
+  evening: { from: "17:00", to: "20:00", inclusive: true },
 } as const;
 
 const DAYPART_PATTERNS: [keyof typeof DAYPART_RANGES, RegExp][] = [
@@ -411,7 +437,7 @@ const DAYPART_PATTERNS: [keyof typeof DAYPART_RANGES, RegExp][] = [
 /** an hour right before the daypart word: then it is that hour's daypart */
 const HOUR_BEFORE_RE = new RegExp(`(?:\\d{1,2}(?::\\d{2})?|${HOUR_TOKEN.replace("\\d{1,2}(?::\\d{2})?|", "")})\\s*$`, "u");
 
-export function daypartRange(raw: string): { part: keyof typeof DAYPART_RANGES; from: string; to: string; label: string } | null {
+export function daypartRange(raw: string): { part: keyof typeof DAYPART_RANGES; from: string; to: string; inclusive?: boolean; label: string } | null {
   const text = raw.replace(/\s+/g, " ");
   for (const [part, re] of DAYPART_PATTERNS) {
     const m = re.exec(text);
@@ -451,6 +477,16 @@ export function yesNo(raw: string): "yes" | "no" | null {
     .trim();
   if (YES_WORDS.has(t)) return "yes";
   if (NO_WORDS.has(t)) return "no";
+  return null;
+}
+
+/**
+ * E14-2c: a typed answer to "08:00 או 20:00?" that names a part of the day —
+ * "בבוקר" = the earlier reading, "בערב" / "בצהריים" / "אחה״צ" = the later. PURE.
+ */
+export function earlyOrLate(raw: string): "early" | "late" | null {
+  if (/בוקר/.test(raw)) return "early";
+  if (/ערב|צהר|אחה/.test(raw)) return "late";
   return null;
 }
 
@@ -551,10 +587,18 @@ function timesIn(text: string): {
   // E14-2b (owner, 21.10): "ב3", "ב 3", "ב-3", "בשעה 3" are the same. A bare
   // "ב" before a WORD ("בשלוש") is read only at the hour step (parseStepText):
   // anywhere else "בשלוש מצלמות" is a note, not a time.
-  for (const m of Array.from(text.matchAll(new RegExp(`(?<![\\p{L}])(?:(?:בשעה|לשעה|ב-|ל-)\\s*(?:השעה\\s+)?(${HOUR_FRAG})|ב\\s*(\\d{1,2}(?::\\d{2})?(?:\\s*(?:${DAYPART_WORDS}))?))${END}`, "gu")))) {
+  // E14-2c (owner, 21.10): hours in WORDS at every step — "בשמונה בבוקר",
+  // "בתשע וחצי", "רבע לשלוש", "שלוש ורבע", "שמונה בערב". A word hour is a time
+  // when it carries minutes / a daypart / "רבע ל", or when "ב"+word is followed
+  // by a day, a room, "עם", or the end — so "בשלוש מצלמות" stays a note and
+  // "שלוש שעות" stays a length (END).
+  const WORDS = HOUR_TOKEN.replace("\\d{1,2}(?::\\d{2})?|", "");
+  const STRONG = `(?:רבע\\s+ל(?:פני\\s+)?-?(?:${WORDS})(?:\\s*(?:${DAYPART_WORDS}))?|(?:${HOUR_TOKEN})\\s+(?:${MINUTE_TOKEN})(?:\\s*(?:${DAYPART_WORDS}))?|(?:${HOUR_TOKEN})\\s*(?:${DAYPART_WORDS}))`;
+  const NEXT_OK = "(?=\\s*(?:$|[,.!?]|(?:ביום|יום|מחר|מחרתיים|היום|השבוע|בשבוע|הבא|בגבעון|גבעון|בחשמונאים|חשמונאים|עם|אם|או|בבקשה|לשעה|לשלוש|לארבע|לשעתיים|ל-?\\d)(?![\\p{L}])))";
+  for (const m of Array.from(text.matchAll(new RegExp(`(?<![\\p{L}])(?:(?:בשעה|לשעה|ב-|ל-)\\s*(?:השעה\\s+)?(${HOUR_FRAG})|ב\\s*(\\d{1,2}(?::\\d{2})?(?:\\s*(?:${DAYPART_WORDS}))?)|ב(${STRONG})|ב((?:${WORDS}))${NEXT_OK}|(?<![\\d:])(?<!(?:עד|לפני|אחרי|בין|מ-?|ל-?)\\s*)(${STRONG}))${END}`, "gu")))) {
     if (consumed.some(([a, b]) => m.index >= a && m.index < b)) continue;
     consumed.push([m.index, m.index + m[0].length]);
-    const frag = m[1] ?? m[2];
+    const frag = m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5];
     const p = hourPhrase(frag);
     if (p && !p.ambiguous) at.add(p.hhmm);
     else {
@@ -739,7 +783,7 @@ export function parseStepText(raw: string, todayIsrael: string, step: ChoiceStep
   if (step === "hour") {
     // owner, 21.10: "10", "ב10", "ב 10", "ב-10", "בעשר", "בשעה עשר" — one answer
     const bare = text.replace(/^(?:בשעה|לשעה|ב-?|ל-)\s*(?:השעה\s+)?/, "");
-    const p = new RegExp(`^(${HOUR_TOKEN})(?:\\s*(${DAYPART_WORDS}))?$`).test(bare) ? hourPhrase(bare) : null;
+    const p = new RegExp(`^(?:${HOUR_FRAG})$`, "u").test(bare) ? hourPhrase(bare) : null;
     if (p && !p.ambiguous) return { edits: [{ field: "time-at", hhmm: p.hhmm, alsoConfirm: false }], dropped: [] };
     if (p && p.ambiguous) {
       const label = `השעה "${bare}"`;

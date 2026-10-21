@@ -1,7 +1,7 @@
 {
   "model": "claude-haiku-5-5",
   "today": "2026-10-21",
-  "ranAt": "2026-10-21T19:01:17.947Z",
+  "ranAt": "2026-10-21T19:24:10.268Z",
   "answers": [
     {
       "id": 1,
@@ -47,7 +47,7 @@
           "text": "חשוב תפאורה של הפודקאסט"
         }
       },
-      "ms": 1804
+      "ms": 3737
     },
     {
       "id": 2,
@@ -89,7 +89,7 @@
         },
         "note": null
       },
-      "ms": 1440
+      "ms": 1572
     },
     {
       "id": 3,
@@ -131,7 +131,7 @@
         },
         "note": null
       },
-      "ms": 1547
+      "ms": 1923
     },
     {
       "id": 4,
@@ -140,7 +140,7 @@
         "intent": "book",
         "conditional": false,
         "day": {
-          "quote": "יום חמישי",
+          "quote": "ליום חמישי",
           "sure": true,
           "weekday": 4,
           "next_week": false,
@@ -177,7 +177,7 @@
           "text": "נצטרך שתי מצלמות"
         }
       },
-      "ms": 1545
+      "ms": 1583
     },
     {
       "id": 5,
@@ -186,7 +186,7 @@
         "intent": "book",
         "conditional": true,
         "day": {
-          "quote": "ביום ראשון ה-1.11",
+          "quote": "יום ראשון ה-1.11",
           "sure": true,
           "weekday": 0,
           "next_week": false,
@@ -219,7 +219,7 @@
         },
         "note": null
       },
-      "ms": 1739
+      "ms": 1636
     },
     {
       "id": 6,
@@ -265,7 +265,7 @@
           "text": "חשוב שיהיו מיקרופונים אלחוטיים"
         }
       },
-      "ms": 1639
+      "ms": 2419
     },
     {
       "id": 7,
@@ -296,7 +296,7 @@
           "minutes": 90
         },
         "studio": {
-          "quote": "חשמונאים",
+          "quote": "את חשמונאים",
           "sure": true,
           "room": "חשמונאים"
         },
@@ -307,7 +307,7 @@
         },
         "note": null
       },
-      "ms": 2031
+      "ms": 1452
     },
     {
       "id": 8,
@@ -353,7 +353,7 @@
           "text": "היא מגיעה עם כיסא גלגלים"
         }
       },
-      "ms": 3149
+      "ms": 1841
     },
     {
       "id": 9,
@@ -395,7 +395,7 @@
         },
         "note": null
       },
-      "ms": 2092
+      "ms": 1755
     },
     {
       "id": 10,
@@ -433,7 +433,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1396
+      "ms": 1913
     },
     {
       "id": 11,
@@ -475,7 +475,7 @@
         },
         "note": null
       },
-      "ms": 1746
+      "ms": 1432
     },
     {
       "id": 12,
@@ -521,7 +521,7 @@
           "text": "חשוב לי שתהיה תאורה רכה"
         }
       },
-      "ms": 1609
+      "ms": 1691
     },
     {
       "id": 13,
@@ -555,7 +555,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 2114
+      "ms": 1444
     },
     {
       "id": 14,
@@ -582,7 +582,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1364
+      "ms": 1237
     },
     {
       "id": 15,
@@ -601,7 +601,7 @@
         },
         "note": null
       },
-      "ms": 1623
+      "ms": 1271
     },
     {
       "id": 16,
@@ -632,7 +632,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1580
+      "ms": 1794
     },
     {
       "id": 17,
@@ -655,7 +655,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1216
+      "ms": 1154
     },
     {
       "id": 18,
@@ -685,7 +685,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1494
+      "ms": 1147
     },
     {
       "id": 19,
@@ -719,13 +719,13 @@
         },
         "note": null
       },
-      "ms": 2094
+      "ms": 1378
     },
     {
       "id": 20,
       "ok": true,
       "raw": {
-        "intent": "query",
+        "intent": "book",
         "conditional": false,
         "day": {
           "quote": "ביום ראשון",
@@ -746,7 +746,7 @@
           "text": "חשוב לנו שיהיה שולחן גבוה"
         }
       },
-      "ms": 1734
+      "ms": 1396
     },
     {
       "id": 21,
@@ -776,7 +776,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 2003
+      "ms": 1232
     },
     {
       "id": 22,
@@ -807,7 +807,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 2973
+      "ms": 1795
     },
     {
       "id": 23,
@@ -841,7 +841,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1182
+      "ms": 1327
     },
     {
       "id": 24,
@@ -860,7 +860,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 2060
+      "ms": 1063
     },
     {
       "id": 25,
@@ -894,7 +894,7 @@
         },
         "note": null
       },
-      "ms": 1267
+      "ms": 1669
     },
     {
       "id": 26,
@@ -928,7 +928,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1938
+      "ms": 1833
     },
     {
       "id": 27,
@@ -962,7 +962,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1706
+      "ms": 1882
     },
     {
       "id": 28,
@@ -971,7 +971,7 @@
         "intent": "book",
         "conditional": false,
         "day": {
-          "quote": "15.3",
+          "quote": "ל-15.3",
           "sure": true,
           "weekday": null,
           "next_week": false,
@@ -989,7 +989,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1380
+      "ms": 1173
     },
     {
       "id": 29,
@@ -1023,7 +1023,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1446
+      "ms": 1368
     },
     {
       "id": 30,
@@ -1057,7 +1057,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1216
+      "ms": 1298
     },
     {
       "id": 32,
@@ -1080,7 +1080,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1098
+      "ms": 2500
     },
     {
       "id": 34,
@@ -1095,7 +1095,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 955
+      "ms": 926
     },
     {
       "id": 35,
@@ -1105,16 +1105,12 @@
         "conditional": false,
         "day": null,
         "time": null,
-        "duration": {
-          "quote": "פרק כפול",
-          "sure": true,
-          "minutes": 180
-        },
+        "duration": null,
         "studio": null,
         "guest": null,
         "note": null
       },
-      "ms": 1761
+      "ms": 1114
     },
     {
       "id": 37,
@@ -1141,7 +1137,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1132
+      "ms": 1668
     },
     {
       "id": 38,
@@ -1175,7 +1171,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1582
+      "ms": 1380
     },
     {
       "id": 39,
@@ -1196,9 +1192,13 @@
         "duration": null,
         "studio": null,
         "guest": null,
-        "note": null
+        "note": {
+          "quote": "האורח יגיע בהמשך",
+          "sure": false,
+          "text": "האורח יגיע בהמשך"
+        }
       },
-      "ms": 1192
+      "ms": 1812
     },
     {
       "id": 41,
@@ -1236,7 +1236,7 @@
         },
         "note": null
       },
-      "ms": 1318
+      "ms": 1593
     },
     {
       "id": 42,
@@ -1274,7 +1274,7 @@
         },
         "note": null
       },
-      "ms": 1468
+      "ms": 1443
     },
     {
       "id": 43,
@@ -1305,7 +1305,7 @@
         },
         "note": null
       },
-      "ms": 1281
+      "ms": 1371
     },
     {
       "id": 44,
@@ -1339,7 +1339,7 @@
         },
         "note": null
       },
-      "ms": 1779
+      "ms": 1348
     },
     {
       "id": 45,
@@ -1377,7 +1377,7 @@
         },
         "note": null
       },
-      "ms": 2318
+      "ms": 2370
     },
     {
       "id": 46,
@@ -1404,7 +1404,7 @@
         },
         "note": null
       },
-      "ms": 1178
+      "ms": 1714
     },
     {
       "id": 47,
@@ -1442,7 +1442,7 @@
           "text": "עם 2 מצלמות"
         }
       },
-      "ms": 1432
+      "ms": 1375
     },
     {
       "id": 48,
@@ -1480,7 +1480,7 @@
           "text": "תפאורה של הפודקאסט"
         }
       },
-      "ms": 1363
+      "ms": 1321
     },
     {
       "id": 49,
@@ -1510,7 +1510,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1608
+      "ms": 1911
     },
     {
       "id": 50,
@@ -1540,7 +1540,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1278
+      "ms": 1619
     },
     {
       "id": 51,
@@ -1570,7 +1570,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1855
+      "ms": 1065
     },
     {
       "id": 52,
@@ -1600,7 +1600,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1616
+      "ms": 1200
     },
     {
       "id": 53,
@@ -1622,7 +1622,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1040
+      "ms": 1097
     },
     {
       "id": 54,
@@ -1644,7 +1644,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1004
+      "ms": 1959
     },
     {
       "id": 55,
@@ -1666,7 +1666,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1596
+      "ms": 1372
     },
     {
       "id": 56,
@@ -1696,7 +1696,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1525
+      "ms": 1551
     },
     {
       "id": 65,
@@ -1726,7 +1726,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1413
+      "ms": 1570
     },
     {
       "id": 66,
@@ -1756,7 +1756,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1325
+      "ms": 1583
     },
     {
       "id": 67,
@@ -1786,7 +1786,7 @@
         "guest": null,
         "note": null
       },
-      "ms": 1363
+      "ms": 1178
     },
     {
       "id": 68,
@@ -1816,7 +1816,168 @@
         "guest": null,
         "note": null
       },
-      "ms": 1390
+      "ms": 1215
+    },
+    {
+      "id": 69,
+      "ok": true,
+      "raw": {
+        "intent": "query",
+        "conditional": false,
+        "day": {
+          "quote": "מחר",
+          "sure": true,
+          "weekday": null,
+          "next_week": false,
+          "day_of_month": null,
+          "month": null,
+          "relative": "tomorrow"
+        },
+        "time": {
+          "quote": "בשמונה בבוקר",
+          "sure": true,
+          "hour": 8,
+          "minute": 0,
+          "daypart": "morning",
+          "kind": "at"
+        },
+        "duration": null,
+        "studio": null,
+        "guest": null,
+        "note": null
+      },
+      "ms": 1945
+    },
+    {
+      "id": 70,
+      "ok": true,
+      "raw": {
+        "intent": "query",
+        "conditional": false,
+        "day": {
+          "quote": "ביום שני",
+          "sure": true,
+          "weekday": 1,
+          "next_week": false,
+          "day_of_month": null,
+          "month": null,
+          "relative": null
+        },
+        "time": {
+          "quote": "בתשע וחצי",
+          "sure": true,
+          "hour": 9,
+          "minute": 30,
+          "daypart": "none",
+          "kind": "at"
+        },
+        "duration": null,
+        "studio": null,
+        "guest": null,
+        "note": null
+      },
+      "ms": 1938
+    },
+    {
+      "id": 71,
+      "ok": true,
+      "raw": {
+        "intent": "query",
+        "conditional": false,
+        "day": null,
+        "time": {
+          "quote": "רבע לשלוש",
+          "sure": true,
+          "hour": 2,
+          "minute": 45,
+          "daypart": "none",
+          "kind": "at"
+        },
+        "duration": null,
+        "studio": null,
+        "guest": null,
+        "note": null
+      },
+      "ms": 1688
+    },
+    {
+      "id": 72,
+      "ok": true,
+      "raw": {
+        "intent": "query",
+        "conditional": false,
+        "day": {
+          "quote": "ביום ראשון",
+          "sure": true,
+          "weekday": 0,
+          "next_week": false,
+          "day_of_month": null,
+          "month": null,
+          "relative": null
+        },
+        "time": {
+          "quote": "שלוש ורבע",
+          "sure": true,
+          "hour": 3,
+          "minute": 15,
+          "daypart": "none",
+          "kind": "at"
+        },
+        "duration": null,
+        "studio": null,
+        "guest": null,
+        "note": null
+      },
+      "ms": 1608
+    },
+    {
+      "id": 73,
+      "ok": true,
+      "raw": {
+        "intent": "query",
+        "conditional": false,
+        "day": null,
+        "time": {
+          "quote": "בשמונה בערב",
+          "sure": true,
+          "hour": 8,
+          "minute": 0,
+          "daypart": "evening",
+          "kind": "at"
+        },
+        "duration": null,
+        "studio": null,
+        "guest": null,
+        "note": null
+      },
+      "ms": 1937
+    },
+    {
+      "id": 74,
+      "ok": true,
+      "raw": {
+        "intent": "query",
+        "conditional": false,
+        "day": {
+          "quote": "ביום שני",
+          "sure": true,
+          "weekday": 1,
+          "next_week": false,
+          "day_of_month": null,
+          "month": null,
+          "relative": null
+        },
+        "time": null,
+        "duration": {
+          "quote": "שלוש שעות",
+          "sure": true,
+          "minutes": 180
+        },
+        "studio": null,
+        "guest": null,
+        "note": null
+      },
+      "ms": 1152
     }
   ]
 }

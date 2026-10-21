@@ -161,8 +161,9 @@ console.log("\n=== 2. an unsure hour: matched to the hours SHOWN, else asked (ow
   const n = new Chat(true).tap(FLOW_ID.go).tap(FLOW_ID.duration(240)).tap(FLOW_ID.studio("חשמונאים")).say("ביום ראשון");
   const before = n.at();
   n.say("ב-8");
-  eq('"ב-8" with NEITHER reading on the list: nothing changed', n.at(), before);
-  ok("…asked: not sure about 8", n.body().includes("לא בטוח שהבנתי") && n.body().includes("8"), n.body());
+  eq('"ב-8": nothing changed yet', n.at(), before);
+  // E14-2c (owner, 21.10): 08:00 and 20:00 are both opening-hours starts — two buttons
+  ok("…asked with two buttons: 08:00 / 20:00", n.body().includes("08:00 או 20:00") && n.offered().some((o) => o.id === FLOW_ID.pickHour("08:00")) && n.offered().some((o) => o.id === FLOW_ID.pickHour("20:00")), n.offered());
   // BOTH readings listed (a hand-built list): asked, never guessed
   const both = { ...n.state, hours: [{ start: "03:00", end: "07:00" }, { start: "15:00", end: "19:00" }] };
   const t = reduce(both, { type: "edit", edits: [], dropped: ['השעה "3"'], maybe: [{ label: 'השעה "3"', options: ["03:00", "15:00"] }] }, { now: NOW });

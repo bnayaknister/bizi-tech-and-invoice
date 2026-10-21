@@ -108,6 +108,8 @@ type QueryEcho = {
   timeAt?: string | null;
   /** E14-2c: the room is the show's default ("the regular room") */
   studioIsDefault?: boolean;
+  /** E14-2c: the evening range INCLUDES its last start (20:00) */
+  timeToIncl?: boolean;
 };
 /** E14-2: what the client wrote, narrowing a day or hour list */
 type AskedRange = {
@@ -115,9 +117,12 @@ type AskedRange = {
   dateTo: string | null;
   timeFrom: string | null;
   timeTo: string | null;
+  timeToIncl?: boolean;
 };
 const askedTimeHe = (f: AskedRange) =>
-  [f.timeFrom ? `אחרי ${f.timeFrom}` : "", f.timeTo ? `לפני ${f.timeTo}` : ""].filter(Boolean).join(" ");
+  f.timeFrom && f.timeTo && f.timeToIncl
+    ? `בין ${f.timeFrom} ל-${f.timeTo}`
+    : [f.timeFrom ? `אחרי ${f.timeFrom}` : "", f.timeTo ? `לפני ${f.timeTo}` : ""].filter(Boolean).join(" ");
 const askedWhenHe = (f: AskedRange) => {
   const days =
     f.dateFrom && f.dateTo && f.dateFrom !== f.dateTo
@@ -130,7 +135,9 @@ const askedWhenHe = (f: AskedRange) => {
   return [days, askedTimeHe(f)].filter(Boolean).join(" ");
 };
 const askedTimeEn = (f: AskedRange) =>
-  [f.timeFrom ? `after ${f.timeFrom}` : "", f.timeTo ? `before ${f.timeTo}` : ""].filter(Boolean).join(" ");
+  f.timeFrom && f.timeTo && f.timeToIncl
+    ? `between ${f.timeFrom} and ${f.timeTo}`
+    : [f.timeFrom ? `after ${f.timeFrom}` : "", f.timeTo ? `before ${f.timeTo}` : ""].filter(Boolean).join(" ");
 const askedWhenEn = (f: AskedRange) => {
   const days =
     f.dateFrom && f.dateTo && f.dateFrom !== f.dateTo
@@ -364,8 +371,11 @@ const HE = {
       if (q.dateFrom && q.dateTo && q.dateFrom !== q.dateTo) parts.push(`${dayHe(q.dateFrom)} עד ${dayHe(q.dateTo)}`);
       else if (q.dateFrom) parts.push(dayHe(q.dateFrom));
       if (q.timeAt) parts.push(`בשעה ${q.timeAt}`);
-      if (q.timeFrom) parts.push(`אחרי ${q.timeFrom}`);
-      if (q.timeTo) parts.push(`לפני ${q.timeTo}`);
+      if (q.timeFrom && q.timeTo && q.timeToIncl) parts.push(`בין ${q.timeFrom} ל-${q.timeTo}`);
+      else {
+        if (q.timeFrom) parts.push(`אחרי ${q.timeFrom}`);
+        if (q.timeTo) parts.push(`לפני ${q.timeTo}`);
+      }
       if (q.duration) parts.push(DURATION_SHORT[q.duration]);
       return parts.length ? `רשמתי לי: ${parts.join(" · ")}` : "";
     },
@@ -456,6 +466,16 @@ const HE = {
       `ב${dayHe(dateIsrael)} ב-${start} אולפן ${studioHe(studio)} תפוס ל${DURATION_SHORT[d]}. אלה השעות הפנויות באותו יום:`,
     slotBusyDay: (dateIsrael: string, studio: string, d: BookingDuration) =>
       `ב${dayHe(dateIsrael)} אין מקום ל${DURATION_SHORT[d]} באולפן ${studioHe(studio)}. אלה הימים הפנויים:`,
+  },
+
+  /** E14-2c (owner, 21.10): an unsure hour with BOTH readings inside the opening hours ("ב-8") — two buttons */
+  HOUR_PICK: {
+    body: (a: string, b: string) => `לא בטוח לגבי השעה — ${a} או ${b}?`,
+    button: (hhmm: string) => `🕐 ${hhmm}`,
+    /** the reading chosen is taken, the other one is free */
+    alt: (dateIsrael: string, wanted: string, alt: string, studio: string) =>
+      `ב${dayHe(dateIsrael)} ב-${wanted} אולפן ${studioHe(studio)} תפוס, אבל ${alt} פנוי — לקבוע ב-${alt}?`,
+    altButton: (hhmm: string) => `✅ ${hhmm}`,
   },
 
   /** E14-2c (owner, 21.10): the room asked for is taken, another is free at the same time — the client decides */
@@ -657,8 +677,11 @@ const EN: BotCopy = {
       if (q.dateFrom && q.dateTo && q.dateFrom !== q.dateTo) parts.push(`${dayEn(q.dateFrom)} to ${dayEn(q.dateTo)}`);
       else if (q.dateFrom) parts.push(dayEn(q.dateFrom));
       if (q.timeAt) parts.push(`at ${q.timeAt}`);
-      if (q.timeFrom) parts.push(`after ${q.timeFrom}`);
-      if (q.timeTo) parts.push(`before ${q.timeTo}`);
+      if (q.timeFrom && q.timeTo && q.timeToIncl) parts.push(`between ${q.timeFrom} and ${q.timeTo}`);
+      else {
+        if (q.timeFrom) parts.push(`after ${q.timeFrom}`);
+        if (q.timeTo) parts.push(`before ${q.timeTo}`);
+      }
       if (q.duration) parts.push(DURATION_SHORT_EN[q.duration]);
       return parts.length ? `Got it: ${parts.join(" · ")}` : "";
     },
@@ -728,6 +751,14 @@ const EN: BotCopy = {
       `On ${dayEn(dateIsrael)} at ${start}, ${studioEn(studio)} studio is taken for ${DURATION_SHORT_EN[d]}. These are the free times that day:`,
     slotBusyDay: (dateIsrael: string, studio: string, d: BookingDuration) =>
       `On ${dayEn(dateIsrael)} there's no room for ${DURATION_SHORT_EN[d]} at ${studioEn(studio)} studio. These are the free days:`,
+  },
+
+  HOUR_PICK: {
+    body: (a: string, b: string) => `Not sure about the time — ${a} or ${b}?`,
+    button: (hhmm: string) => `🕐 ${hhmm}`,
+    alt: (dateIsrael: string, wanted: string, alt: string, studio: string) =>
+      `On ${dayEn(dateIsrael)} at ${wanted}, ${studioEn(studio)} studio is taken, but ${alt} is free — book ${alt}?`,
+    altButton: (hhmm: string) => `✅ ${hhmm}`,
   },
 
   OFFER: {

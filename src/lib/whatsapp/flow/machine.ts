@@ -10,11 +10,11 @@ import { clickableDays, hoursFor } from "@/app/calendar/availability/booking";
 import type { PublicAvailability } from "@/lib/booking/publicView";
 import { bookableRoomForDefault } from "@/lib/calendar/rooms";
 import { STUDIOS } from "@/lib/calendar/studios";
-import { STUDIO_LIST_FROM } from "@/lib/calendar/bookingWindow";
+import { STUDIO_LIST_FROM, isStartInStudioHours } from "@/lib/calendar/bookingWindow";
 import type { SubmitResult } from "@/lib/booking/submit";
 import { selfServeAllowed } from "@/lib/booking/manage";
 import { COPY, copy, isLang, DEFAULT_LANG, type BotCopy, type Lang } from "./copy";
-import { stripGuestLabel, yesNo, type ParsedAvailability, type ParsedEdit } from "./freetext";
+import { earlyOrLate, stripGuestLabel, yesNo, type ParsedAvailability, type ParsedEdit } from "./freetext";
 import { langButtonId } from "../lang";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -154,7 +154,7 @@ export type FlowState = {
    * against the STORED lists — the filter only decides which of them are
    * stored as offered at all.
    */
-  filter: { dateFrom: string | null; dateTo: string | null; timeFrom: string | null; timeTo: string | null } | null;
+  filter: { dateFrom: string | null; dateTo: string | null; timeFrom: string | null; timeTo: string | null; timeToIncl?: boolean } | null;
   /** the length is the DEFAULT the language layer applied, not a choice — the summary says so (owner, 16.10) */
   durationFromDefault: boolean;
   /**
@@ -172,6 +172,8 @@ export type FlowState = {
      * whether that slot is free ("✅ … פנוי!" / "תפוס") instead of "עדכנתי".
      */
     announce?: boolean;
+    /** E14-2c: the other reading of an unsure hour — offered if this one is taken */
+    alt?: string;
   } | null;
   /**
    * E14-2c (owner, 21.10): the room asked for is taken at that time and
@@ -188,6 +190,8 @@ export type FlowState = {
     notice: string;
     /** the offer's own message, composed where the slot was found taken */
     body: string;
+    /** E14-2c: the OTHER reading of an unsure hour, free at that time (offered as a button) */
+    alt?: string;
   } | null;
   /**
    * E14-2c (owner, 21.10): a number with several podcasts wrote a request
@@ -196,6 +200,18 @@ export type FlowState = {
    */
   awaitingShow?: boolean;
   pending?: FlowEvent | null;
+  /**
+   * E14-2c (owner, 21.10): an unsure hour whose BOTH readings are opening-hours
+   * starts ("ב-8": 08:00 / 20:00) — asked with two buttons; the rest of that
+   * message waits here and is applied with the reading chosen. Absent = none.
+   */
+  pickHour?: {
+    label: string;
+    options: [string, string];
+    edits: ParsedEdit[];
+    dropped: string[];
+    via: "menu" | "step" | "summary";
+  } | null;
   /**
    * E14-2: the slot is being re-chosen FROM the summary (an edit), so the
    * guest and note were already answered — even if both were skipped — and a
@@ -239,7 +255,9 @@ export type FlowEvent =
   | { type: "broaden" }
   // E14-2c: the answer to an offer of another free room at the same time
   | { type: "switch-room"; studio: string }
-  | { type: "other-times" };
+  | { type: "other-times" }
+  // E14-2c: the answer to "08:00 או 20:00?"
+  | { type: "pick-hour"; hhmm: string };
 
 export type FlowRow = { id: string; title: string; description?: string };
 
@@ -301,6 +319,7 @@ export const FLOW_ID = {
   broaden: `${P}broaden`,
   // E14-2c
   switchRoom: (s: BookableRoom) => `${P}sw:${s}`,
+  pickHour: (hhmm: string) => `${P}ph:${hhmm}`,
   otherTimes: `${P}other-times`,
 } as const;
 
@@ -346,6 +365,7 @@ export function parseFlowId(raw: unknown): FlowEvent | null {
   if (kind === "dur" && /^\d+$/.test(value)) return { type: "duration", minutes: Number(value) };
   if (kind === "st" && value !== "") return { type: "studio", studio: value };
   if (kind === "sw" && value !== "") return { type: "switch-room", studio: value };
+  if (kind === "ph" && HHMM_RE.test(value)) return { type: "pick-hour", hhmm: value };
   if (kind === "day" && DATE_RE.test(value)) return { type: "day", date: value };
   if (kind === "hr" && HHMM_RE.test(value)) return { type: "hour", start: value };
   if (kind === "rec" && UUID_RE.test(value)) return { type: "recording", id: value };
@@ -481,8 +501,23 @@ export function render(s: FlowState): Transition {
       type: "buttons",
       body: body(o.body),
       buttons: [
-        ...o.rooms.slice(0, 2).map((r) => ({ id: FLOW_ID.switchRoom(r), title: C.OFFER.room(r) })),
+        // E14-2c: the other reading of an unsure hour first, then rooms (Meta: three buttons)
+        ...(o.alt ? [{ id: FLOW_ID.hour(o.alt), title: C.HOUR_PICK.altButton(o.alt) }] : []),
+        ...o.rooms.slice(0, o.alt ? 1 : 2).map((r) => ({ id: FLOW_ID.switchRoom(r), title: C.OFFER.room(r) })),
         { id: FLOW_ID.otherTimes, title: C.OFFER.other },
+      ],
+    });
+  }
+  // E14-2c (owner, 21.10): "ב-8" — 08:00 or 20:00? Two buttons, whatever the step
+  if (s.pickHour) {
+    const [a, b] = s.pickHour.options;
+    return out({
+      type: "buttons",
+      body: body(C.HOUR_PICK.body(a, b)),
+      buttons: [
+        { id: FLOW_ID.pickHour(a), title: C.HOUR_PICK.button(a) },
+        { id: FLOW_ID.pickHour(b), title: C.HOUR_PICK.button(b) },
+        { id: FLOW_ID.back, title: C.NAV.back },
       ],
     });
   }
@@ -838,6 +873,31 @@ function back(s: FlowState): Transition {
  */
 export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Transition {
   const C = copy(s.lang);
+  // ── E14-2c: "08:00 או 20:00?" ──
+  if (s.pickHour) {
+    const ph = s.pickHour;
+    let chosen: string | null = null;
+    if (e.type === "pick-hour") chosen = ph.options.includes(e.hhmm) ? e.hhmm : null;
+    else if (e.type === "text" && layerOn(s)) {
+      // typed: the hour itself, or which part of the day
+      const t = e.text.replace(/\s+/g, " ").trim();
+      const typed = ph.options.find((o) => t.includes(o) || t === String(Number(o.slice(0, 2))));
+      const part = earlyOrLate(t);
+      chosen = typed ?? (part === "early" ? ph.options[0] : part === "late" ? ph.options[1] : null);
+    }
+    const rest = { ...s, pickHour: null };
+    if (chosen) {
+      const alt = ph.options.find((o) => o !== chosen) as string;
+      const edits: ParsedEdit[] = [...ph.edits, { field: "time-at", hhmm: chosen, alsoConfirm: false }];
+      const dropped = ph.dropped.filter((d) => d !== ph.label);
+      return ph.via === "summary"
+        ? applyEdits(rest, edits, dropped, [], alt)
+        : applyStepEdits(rest, edits, dropped, [], { announce: ph.via === "menu", alt });
+    }
+    if (e.type === "pick-hour") return again(rest, C.NOTICE.stale);
+    // anything else: the question lapses, and the event acts on the step beneath it
+    s = rest;
+  }
   // ── E14-2c: an offer of another free room at the same time ──
   if (s.offer) {
     const o = s.offer;
@@ -856,11 +916,15 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
       };
     }
     if (e.type === "other-times") return again({ ...s, offer: null }, o.notice);
+    // the alternative hour's button: the step that was planned next (guest / note / summary)
+    if (e.type === "hour" && o.alt && e.start === o.alt) return takeAlt(s, o.alt, o.then);
     // owner, 21.10: "כן" / "לא" to "…פנוי באותה שעה — לעבור?" = the buttons
     // ("כן" picks the room only when ONE was offered; two -> the buttons again)
     if (e.type === "text" && layerOn(s)) {
       const yn = yesNo(e.text);
       if (yn === "no") return again({ ...s, offer: null }, o.notice);
+      // the other reading of an unsure hour comes first ("…אבל 20:00 פנוי — לקבוע?")
+      if (yn === "yes" && o.alt) return takeAlt(s, o.alt, o.then);
       if (yn === "yes" && o.rooms.length === 1) return reduce(s, { type: "switch-room", studio: o.rooms[0] }, ctx);
       if (yn === "yes") return render(s);
     }
@@ -1080,7 +1144,7 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
       if (e.type === "edit") {
         // the layer parses Hebrew only, and a move's summary is not editable
         if (!s.freeTextOn || s.lang !== "he" || s.mode !== "book") return pick();
-        return applyEdits(s, e.edits, e.dropped);
+        return applyEdits(s, e.edits, e.dropped, e.maybe ?? []);
       }
       if (e.type === "confirm") {
         // 🔴 THE ONLY WAY INTO "submitting". The driver persists this state
@@ -1130,7 +1194,7 @@ function menuQuery(s: FlowState, q: ParsedAvailability): Transition {
     durationFromDefault: q.duration === null,
     filter:
       q.dateFrom || q.dateTo || q.timeFrom || q.timeTo
-        ? { dateFrom: q.dateFrom, dateTo: q.dateTo, timeFrom: q.timeFrom, timeTo: q.timeTo }
+        ? { dateFrom: q.dateFrom, dateTo: q.dateTo, timeFrom: q.timeFrom, timeTo: q.timeTo, ...(q.timeToIncl ? { timeToIncl: true } : {}) }
         : null,
     notice,
   };
@@ -1239,8 +1303,42 @@ function resolveDefaultRoom(s: FlowState, edits: ParsedEdit[]): { edits: ParsedE
   return { edits: [...rest, { field: "studio", studio: room, alsoConfirm: false }], viaDefault: true, noDefault: false };
 }
 
-function applyEdits(s: FlowState, edits: ParsedEdit[], dropped: string[]): Transition {
+/**
+ * E14-2c (owner, 21.10): an unsure hour whose BOTH readings are opening-hours
+ * starts ("ב-8": 08:00 / 20:00) — asked with two buttons, the rest of the
+ * message held until the answer. Null = not that case. PURE.
+ */
+function askHourIfBoth(
+  s: FlowState,
+  edits: ParsedEdit[],
+  dropped: string[],
+  maybe: { label: string; options: string[] }[],
+  via: "menu" | "step" | "summary"
+): Transition | null {
+  if (maybe.length !== 1 || maybe[0].options.length !== 2) return null;
+  if (edits.some((e) => e.field === "time-at" || e.field === "time-from")) return null;
+  const [a, b] = maybe[0].options;
+  const open = (x: string) => HHMM_RE.test(x) && isStartInStudioHours(Number(x.slice(0, 2)), Number(x.slice(3)));
+  if (!open(a) || !open(b)) return null;
   const C = copy(s.lang);
+  const others = dropped.filter((d) => d !== maybe[0].label);
+  return render({
+    ...s,
+    pickHour: { label: maybe[0].label, options: [a, b], edits, dropped, via },
+    notice: others.length ? C.QUERY.dropped(others) : null,
+  });
+}
+
+function applyEdits(
+  s: FlowState,
+  edits: ParsedEdit[],
+  dropped: string[],
+  maybe: { label: string; options: string[] }[] = [],
+  alt?: string
+): Transition {
+  const C = copy(s.lang);
+  const ask = askHourIfBoth(s, edits, dropped, maybe, "summary");
+  if (ask) return ask;
   const rd = resolveDefaultRoom(s, edits);
   edits = rd.edits;
   const tail = (dropped.length ? `\n${C.QUERY.dropped(dropped)}` : "") +
@@ -1293,7 +1391,7 @@ function applyEdits(s: FlowState, edits: ParsedEdit[], dropped: string[]): Trans
         ...s, guest, note, duration, durationFromDefault, studio,
         filter: { dateFrom: date, dateTo: date, timeFrom: null, timeTo: null },
         date, days: [], dayPage: 0, hours: [], hourPage: 0, start: null, end: null, step: "hour",
-        keep: { start: atEdit ?? s.start, tail },
+        keep: { start: atEdit ?? s.start, tail, ...(alt ? { alt } : {}) },
         fromSummary: true,
         notice: `${dropped.length ? C.NOTICE.changedPartial : C.NOTICE.changed}${tail}`,
       },
@@ -1312,6 +1410,13 @@ function applyEdits(s: FlowState, edits: ParsedEdit[], dropped: string[]): Trans
     };
   }
   return go(s, { guest, note, duration, durationFromDefault, notice: `${dropped.length ? C.NOTICE.changedPartial : C.NOTICE.changed}${tail}` });
+}
+
+/** E14-2c: the other reading of an unsure hour, accepted — on to the step that was planned next. */
+function takeAlt(s: FlowState, alt: string, then: "guest" | "note" | "summary"): Transition {
+  const h = s.hours.find((x) => x.start === alt);
+  if (!h) return again({ ...s, offer: null }, copy(s.lang).NOTICE.stale);
+  return go(s, { offer: null, start: h.start, end: h.end, step: then, fromSummary: then === "summary" ? false : s.fromSummary });
 }
 
 /** E14-2c: where a question about free times is answered with the options */
@@ -1334,7 +1439,7 @@ function stepQuery(s: FlowState, q: ParsedAvailability): Transition {
   const patch: Partial<FlowState> = {
     duration, durationFromDefault, studio,
     filter: q.dateFrom || q.dateTo || q.timeFrom || q.timeTo
-      ? { dateFrom: q.dateFrom, dateTo: q.dateTo, timeFrom: q.timeFrom, timeTo: q.timeTo }
+      ? { dateFrom: q.dateFrom, dateTo: q.dateTo, timeFrom: q.timeFrom, timeTo: q.timeTo, ...(q.timeToIncl ? { timeToIncl: true } : {}) }
       : null,
     date: null, start: null, end: null, days: [], dayPage: 0, hours: [], hourPage: 0,
     keep: null, offer: null, notice,
@@ -1364,10 +1469,13 @@ function applyStepEdits(
   edits: ParsedEdit[],
   dropped: string[],
   maybe: { label: string; options: string[] }[] = [],
-  opts: { announce?: boolean } = {}
+  opts: { announce?: boolean; alt?: string } = {}
 ): Transition {
   const C = copy(s.lang);
   const announce = !!opts.announce;
+  // owner, 21.10: "ב-8" (08:00 and 20:00 both open) — two buttons, before anything else
+  const ask = askHourIfBoth(s, edits, dropped, maybe, announce ? "menu" : "step");
+  if (ask) return ask;
   // owner, 21.10: an unsure hour ("ב-3": 03:00 or 15:00?) WHILE a list of
   // hours is shown, and nothing else about the slot is changing: if exactly
   // one reading is on that list, that is the answer. None or both -> asked.
@@ -1457,7 +1565,7 @@ function applyStepEdits(
         ...s, ...base,
         filter: { dateFrom: date, dateTo: date, timeFrom: null, timeTo: null },
         date, days: [], dayPage: 0, hours: [], hourPage: 0, start: null, end: null, step: "hour",
-        keep: { start, tail, then, ...(announce ? { announce } : {}) },
+        keep: { start, tail, then, ...(announce ? { announce } : {}), ...(opts.alt ? { alt: opts.alt } : {}) },
       },
     };
   }
@@ -1585,6 +1693,27 @@ export function withAvailability(s: FlowState, full: PublicAvailability): Transi
           notice: (announce ? C.NOTICE.slotBusyDay(date, studio, duration) : C.NOTICE.keepNoDay(date, studio, duration)) + tail,
         };
       }
+      // E14-2c (owner, 21.10): the OTHER reading of an unsure hour ("ב-8": 20:00
+      // after 08:00 was taken) — said and offered, the client decides
+      const altWanted = s.keep.alt;
+      const altSlot = altWanted
+        ? hoursFor(full.free, studio, date).map((h) => ({ start: h.startIsrael, end: h.endIsrael })).find((h) => h.start === altWanted)
+        : undefined;
+      if (altSlot) {
+        const hours = allHours.some((h) => h.start === altSlot.start)
+          ? allHours
+          : [...allHours, altSlot].sort((x, y) => x.start.localeCompare(y.start));
+        const others = BOOKABLE_ROOM_NAMES.filter((r) => r !== studio && hoursFor(full.free, r, date).some((h) => h.startIsrael === wanted));
+        return render({
+          ...s, keep: null, filter: null, days: allDays, dayPage: 0, hours, hourPage: 0, step: "hour", notice: null,
+          offer: {
+            date, start: wanted, rooms: [...others], then,
+            notice: (announce ? C.NOTICE.slotBusyHour(date, wanted, studio, duration) : C.NOTICE.keepNoHour(date, wanted, studio, duration)) + tail,
+            body: C.HOUR_PICK.alt(date, wanted, altSlot.start, studio) + tail,
+            alt: altSlot.start,
+          },
+        });
+      }
       // E14-2c (owner, 21.10): another room free at that very time is OFFERED
       const others = layerOn(s)
         ? BOOKABLE_ROOM_NAMES.filter((r) => r !== studio && hoursFor(full.free, r, date).some((h) => h.startIsrael === wanted))
@@ -1606,7 +1735,7 @@ export function withAvailability(s: FlowState, full: PublicAvailability): Transi
     const fh = s.filter;
     const hours =
       fh && (fh.timeFrom || fh.timeTo)
-        ? allHours.filter((h) => (!fh.timeFrom || h.start >= fh.timeFrom) && (!fh.timeTo || h.start < fh.timeTo))
+        ? allHours.filter((h) => (!fh.timeFrom || h.start >= fh.timeFrom) && (!fh.timeTo || (fh.timeToIncl ? h.start <= fh.timeTo : h.start < fh.timeTo)))
         : allHours;
     if (hours.length === 0 && allHours.length > 0) {
       // E14: same rule as the days — broadening is the client's choice

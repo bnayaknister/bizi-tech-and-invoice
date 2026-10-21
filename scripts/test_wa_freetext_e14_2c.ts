@@ -36,7 +36,7 @@ import {
   type Transition,
 } from "../src/lib/whatsapp/flow/machine";
 import { COPY } from "../src/lib/whatsapp/flow/copy";
-import { daypartRange, parseAvailabilityText, yesNo, type ParsedEdit } from "../src/lib/whatsapp/flow/freetext";
+import { daypartRange, parseAvailabilityText, parseEditText, parseStepText, yesNo, type ParsedEdit } from "../src/lib/whatsapp/flow/freetext";
 import { forScreen, type PublicAvailability } from "../src/lib/booking/publicView";
 import { isStartInStudioHours } from "../src/lib/calendar/bookingWindow";
 import type { ContactShow } from "../src/lib/booking/contacts";
@@ -386,6 +386,95 @@ console.log("\n=== 7f. opening hours, option B (owner, 21.10): starts 08:00-20:0
   ok("…20:00 is shown", screen.free.some((f) => f.startIsrael === "20:00"));
   eq("…09:00 is the first", screen.free.map((f) => f.startIsrael).sort()[0], "09:00");
   eq("opening-hours starts: 07:59 no, 08:00 yes, 20:00 yes, 20:30 no", [isStartInStudioHours(7, 59), isStartInStudioHours(8, 0), isStartInStudioHours(20, 0), isStartInStudioHours(20, 30)], [false, true, true, false]);
+}
+
+console.log("\n=== 7g. 'ב-8': two buttons 08:00 / 20:00; the other offered if one is taken (owner, 21.10) ===");
+{
+  const wide = (d: number, busy: (start: string) => boolean = () => false): PublicAvailability => ({
+    fromIsrael: "2026-10-22", toIsrael: "2026-12-10", rooms: ROOMS, durationMinutes: d, refusedRooms: [],
+    free: ROOMS.flatMap((room) => {
+      const out = [];
+      for (let m = 8 * 60; m <= 20 * 60 && m + d <= 22 * 60; m += 30) if (!busy(hhmm(m))) out.push({ room, dateIsrael: "2026-10-22", startIsrael: hhmm(m), endIsrael: hhmm(m + d) });
+      return out;
+    }),
+  });
+  const run = (s0: FlowState, e: FlowEvent, busy?: (start: string) => boolean) => {
+    let t: Transition = reduce(s0, e, { now: NOW });
+    for (let g = 0; g < 5 && t.kind === "need-availability"; g++) t = withAvailability(t.state, wide(t.state.duration ?? 90, busy));
+    if (t.kind !== "reply") throw new Error(t.kind);
+    return t;
+  };
+  const ids = (t: Transition) => (t.kind === "reply" && t.reply.type === "buttons" ? t.reply.buttons.map((b) => b.id) : []);
+  const menu = new Chat().state;
+  const ask: FlowEvent = { type: "edit", edits: [E.day("2026-10-22"), E.room("גבעון"), E.guest("דני")], dropped: ['השעה "8"'], maybe: [{ label: 'השעה "8"', options: ["08:00", "20:00"] }] };
+  const q = run(menu, ask);
+  ok("the question, not a list: two hour buttons + back", JSON.stringify(ids(q)) === JSON.stringify([FLOW_ID.pickHour("08:00"), FLOW_ID.pickHour("20:00"), FLOW_ID.back]), ids(q));
+  ok("…'08:00 או 20:00?'", q.kind === "reply" && q.reply.body.includes(HE.HOUR_PICK.body("08:00", "20:00")), q);
+  eq("…nothing applied yet", [q.state.date, q.state.start, q.state.guest], [null, null, null]);
+  const p20 = run(q.state, { type: "pick-hour", hhmm: "20:00" });
+  eq("tap 20:00 -> that slot, the rest of the message applied", [p20.state.step, p20.state.date, p20.state.start, p20.state.studio, p20.state.guest], ["note", "2026-10-22", "20:00", "גבעון", "דני"]);
+  const p8 = run(q.state, { type: "pick-hour", hhmm: "08:00" });
+  eq("tap 08:00 -> 08:00 (explicitly chosen)", [p8.state.start, p8.state.end], ["08:00", "09:30"]);
+  const typed = run(q.state, { type: "text", text: "בערב" });
+  eq("typed 'בערב' -> 20:00", typed.state.start, "20:00");
+  const typed8 = run(q.state, { type: "text", text: "08:00" });
+  eq("typed '08:00' -> 08:00", typed8.state.start, "08:00");
+  const busy8 = run(q.state, { type: "pick-hour", hhmm: "08:00" }, (st) => st === "08:00");
+  ok("08:00 taken: said, and 20:00 offered", busy8.kind === "reply" && busy8.reply.body.includes(HE.HOUR_PICK.alt("2026-10-22", "08:00", "20:00", "גבעון")) && ids(busy8)[0] === FLOW_ID.hour("20:00"), busy8);
+  const yes = run(busy8.state, { type: "text", text: "כן" });
+  eq("…'כן' -> 20:00", [yes.state.start, yes.state.step], ["20:00", "note"]);
+  const tap20 = run(busy8.state, { type: "hour", start: "20:00" });
+  eq("…the button -> 20:00", tap20.state.start, "20:00");
+  const other = run(busy8.state, { type: "other-times" });
+  ok("…'other times' -> that day's hours", other.state.step === "hour" && other.state.hours.length > 0 && !other.state.offer, other.state);
+  const stale = run(q.state, { type: "pick-hour", hhmm: "13:00" });
+  ok("a pick that was not offered: stale", stale.kind === "reply" && stale.reply.body.startsWith(HE.NOTICE.stale), stale);
+  const lapse = run(q.state, { type: "back" });
+  ok("'back' at the question: it lapses", !lapse.state.pickHour, lapse.state);
+  // only when BOTH are opening-hours starts: "ב-7" is 19:00 by the rule — no question
+  const seven: FlowEvent = { type: "edit", edits: [E.day("2026-10-22"), E.room("גבעון"), E.at("19:00")], dropped: [] };
+  eq("'ב-7' (one open reading): no question", run(menu, seven).state.start, "19:00");
+}
+
+console.log("\n=== 7h. hours in words, every step (owner, 21.10) ===");
+{
+  const T = "2026-10-21";
+  const at = (t: string) => {
+    const r = parseEditText(t, T);
+    return r ? r.edits.map((e) => (e.field === "time-at" ? `at ${e.hhmm}` : e.field === "time-from" ? `from ${e.hhmm}` : e.field === "day" ? e.date : e.field === "duration" ? `${e.minutes}m` : e.field)) : null;
+  };
+  eq("'מחר בשמונה בבוקר'", at("מחר בשמונה בבוקר"), ["2026-10-22", "at 08:00"]);
+  eq("'ביום שני בתשע וחצי'", at("ביום שני בתשע וחצי"), ["2026-10-26", "at 09:30"]);
+  eq("'רבע לשלוש' -> 14:45", at("רבע לשלוש"), ["at 14:45"]);
+  eq("'שלוש ורבע ביום ראשון' -> 15:15", at("שלוש ורבע ביום ראשון"), ["2026-10-25", "at 15:15"]);
+  eq("'בשמונה בערב' -> 20:00", at("בשמונה בערב"), ["at 20:00"]);
+  eq("'שתיים בצהריים' -> 14:00", at("שתיים בצהריים"), ["at 14:00"]);
+  eq("'בעשר וחצי' -> 10:30", at("בעשר וחצי"), ["at 10:30"]);
+  eq("'באחת עשרה' -> 11:00", at("באחת עשרה"), ["at 11:00"]);
+  eq("'שלוש שעות ביום שני' = a LENGTH, no time", at("שלוש שעות ביום שני"), ["180m", "2026-10-26"]);
+  eq("'בשלוש מצלמות' is not a time", at("בשלוש מצלמות"), null);
+  eq("'עד 11 בבוקר' is not an exact start", at("עד 11 בבוקר"), []);
+  const step = (t: string) => { const r = parseStepText(t, T, "hour"); return r?.edits[0] && "hhmm" in r.edits[0] ? r.edits[0].hhmm : r; };
+  eq("[hour step] 'שמונה בבוקר'", step("שמונה בבוקר"), "08:00");
+  eq("[hour step] 'רבע לשלוש'", step("רבע לשלוש"), "14:45");
+  eq("[hour step] 'עשר וחצי'", step("עשר וחצי"), "10:30");
+}
+
+console.log("\n=== 7i. 'בערב' includes 20:00 (owner, 21.10) ===");
+{
+  const q = parseAvailabilityText("מה פנוי מחר בערב?", "2026-10-21");
+  eq("evening: 17:00 to 20:00, inclusive", [q?.timeFrom, q?.timeTo, q?.timeToIncl], ["17:00", "20:00", true]);
+  const noon = parseAvailabilityText("מה פנוי מחר בצהריים?", "2026-10-21");
+  eq("noon stays 12:00-15:00 (end not included)", [noon?.timeFrom, noon?.timeTo, noon?.timeToIncl ?? false], ["12:00", "15:00", false]);
+  const wide: PublicAvailability = {
+    fromIsrael: "2026-10-22", toIsrael: "2026-12-10", rooms: ROOMS, durationMinutes: 90, refusedRooms: [],
+    free: ["17:00", "19:30", "20:00"].map((st) => ({ room: "גבעון", dateIsrael: "2026-10-22", startIsrael: st, endIsrael: st })),
+  };
+  let t: Transition = reduce(new Chat().state, { type: "query", q: q! }, { now: NOW });
+  t = reduce((t as Extract<Transition, { kind: "reply" }>).state, { type: "studio", studio: "גבעון" }, { now: NOW });
+  for (let g = 0; g < 4 && t.kind === "need-availability"; g++) t = withAvailability(t.state, wide);
+  eq("the evening list includes 20:00", t.kind === "reply" ? t.state.hours.map((h) => h.start) : t.kind, ["17:00", "19:30", "20:00"]);
+  ok("…and says 'בין 17:00 ל-20:00'", t.kind === "reply" && t.reply.body.includes("בין 17:00 ל-20:00"), t.kind === "reply" ? t.reply.body : t);
 }
 
 console.log("\n=== 8. switch off / English: the menu exactly as before ===");

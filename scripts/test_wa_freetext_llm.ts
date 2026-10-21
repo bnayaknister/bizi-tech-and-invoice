@@ -110,7 +110,7 @@ console.log("\n=== 1. when the model is called (owner decision 21.10, 1) ===");
 console.log("\n=== 2. the 40-message set, with a CORRECT model's answers (owner decision 21.10, 7) ===");
 {
   const { today, messages } = loadFixtures();
-  eq("68 messages, today = Wed 21.10.2026", [messages.length, today], [68, TODAY]);
+  eq("74 messages, today = Wed 21.10.2026", [messages.length, today], [74, TODAY]);
   let full = 0;
   const wrong: string[] = [];
   for (const f of messages) {
