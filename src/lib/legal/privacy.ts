@@ -17,7 +17,7 @@
 export const PRIVACY_CONTACT_EMAIL = "bn@bi-zi.co.il";
 
 /** shown as "עודכן לאחרונה"; bump on every change to the wording below */
-export const PRIVACY_UPDATED_AT = "11.10.2026";
+export const PRIVACY_UPDATED_AT = "21.10.2026";
 
 export const PRIVACY_TITLE = "מדיניות פרטיות";
 
@@ -59,7 +59,9 @@ export const PRIVACY_SECTIONS: PrivacySection[] = [
     title: "למה אנחנו משתמשים במידע",
     paragraphs: [
       "המידע משמש לזיהוי הלקוח, לקביעת הקלטות ולשליחת עדכונים על ההזמנה.",
-      "אנחנו לא מוכרים את המידע ולא מעבירים אותו לצד שלישי, מלבד ספקי התשתית שמפעילים את השירות: Meta (WhatsApp), Google (יומן Google), Morning (חשבונית ירוקה) וספק האחסון של המערכת. הם מעבדים את המידע רק כדי להפעיל את השירות.",
+      "אנחנו לא מוכרים את המידע ולא מעבירים אותו לצד שלישי, מלבד ספקי התשתית שמפעילים את השירות: Meta (WhatsApp), Google (יומן Google), Morning (חשבונית ירוקה), Anthropic (הבנת הודעות טקסט שנשלחות לבוט) וספק האחסון של המערכת. הם מעבדים את המידע רק כדי להפעיל את השירות.",
+      // owner approval 21.10 (E14-2c), with the owner's addition on processing abroad
+      "כשאתם כותבים לבוט בקשת הקלטה במילים חופשיות, טקסט ההודעה, בלי מספר הטלפון ובלי שם התוכנית, נשלח ל-Anthropic כדי לזהות ממנו יום, שעה, אולפן, אורח והערה. ההזמנה נקבעת רק אחרי שאתם מאשרים אותה בכפתור. המידע מעובד גם מחוץ לישראל, בין היתר בארצות הברית.",
     ],
   },
   {

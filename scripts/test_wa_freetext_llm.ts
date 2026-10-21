@@ -35,6 +35,7 @@ import {
 } from "../src/lib/whatsapp/flow/llm";
 import { expiresAtFor, start, type FlowEvent, type FlowState } from "../src/lib/whatsapp/flow/machine";
 import type { ContactShow } from "../src/lib/booking/contacts";
+import { sendTypingIndicator, typingPayload } from "../src/lib/whatsapp/client";
 import type { InboundMessage } from "../src/lib/whatsapp/webhook";
 
 let fetchCalls = 0;
@@ -222,7 +223,12 @@ console.log("\n=== 4. what the provider receives (privacy, owner decision 21.10,
 }
 
 console.log("\n=== 5. the live call, against a network that fails: a fallback, never a crash ===");
+eq("the typing payload: Meta's documented shape (read + typing_indicator)", typingPayload("wamid.X"), {
+  messaging_product: "whatsapp", status: "read", message_id: "wamid.X", typing_indicator: { type: "text" },
+});
 async function liveCall() {
+  const dry = await sendTypingIndicator("wamid.X");
+  eq("the indicator in DRY RUN (the default): no request at all", [dry, fetchCalls], [{ ok: true, dryRun: true }, 0]);
   const saved = process.env[LLM_KEY_ENV];
   delete process.env[LLM_KEY_ENV];
   const noKey = await extractWithHaiku("שלום", TODAY);
@@ -238,13 +244,15 @@ async function liveCall() {
 // ── runFlow with an injected model ─────────────────────────────────────────
 const SHOW: ContactShow = { showId: "11111111-1111-1111-1111-111111111111", showName: "תוכנית א", contactName: "בדיקה", defaultStudio: "חשמונאים" };
 const ME = "972528933975";
+let seq = 0;
 const text = (body: string): InboundMessage =>
-  ({ wamid: `w-${Math.random()}`, waId: ME, rawFrom: ME, type: "text", body, raw: null }) as InboundMessage;
+  ({ wamid: `wamid.TEST${++seq}`, waId: ME, rawFrom: ME, type: "text", body, raw: null }) as InboundMessage;
 const GUEST_ONLY = "אני רוצה לקבוע הקלטה עם האורח אלי כהן";
 const GUEST_ANSWER = raw({ guest: { quote: "עם האורח אלי כהן", sure: true, name: "אלי כהן" } });
 
-function harness(answer: LlmCall | (() => Promise<LlmCall>), recent = 0) {
+function harness(answer: LlmCall | (() => Promise<LlmCall>), recent = 0, typingFails = false) {
   const calls: string[] = [];
+  const typed: string[] = [];
   const deps: FlowDeps = {
     ensureBookingLink: (async () => ({ ok: true, token: "tok", linkId: "link-1", created: false })) as unknown as FlowDeps["ensureBookingLink"],
     submitBookingRequest: (async () => {
@@ -255,10 +263,14 @@ function harness(answer: LlmCall | (() => Promise<LlmCall>), recent = 0) {
       return typeof answer === "function" ? answer() : answer;
     },
     recentInbound: async () => recent,
+    typing: async (wamid) => {
+      typed.push(wamid);
+      if (typingFails) throw new Error("Graph down");
+    },
   };
-  return { deps, calls };
+  return { deps, calls, typed };
 }
-const okAnswer = (r: unknown): LlmCall => ({ ok: true, raw: r, ms: 900, inputTokens: 1800, outputTokens: 180 });
+const okAnswer = (r: unknown): LlmCall => ({ ok: true, raw: r, ms: 900, inputTokens: 60, outputTokens: 180, cacheWriteTokens: 0, cacheReadTokens: 3700 });
 const store = (state?: FlowState) =>
   fakeDb(
     {
@@ -339,6 +351,24 @@ async function runFlowCases() {
       });
       const out = await go(store(), h.deps, text(GUEST_ONLY));
       ok("an extractor that THROWS: still answered (the menu)", out.kind === "send" && out.meta.flow_step === "menu", out);
+    }
+
+    console.log("\n=== 8b. 'typing…' while the model runs (owner decision 21.10) ===");
+    {
+      const h = harness(okAnswer(GUEST_ANSWER));
+      const m = text(GUEST_ONLY);
+      await go(store(), h.deps, m);
+      eq("the model called -> ONE typing indicator, for THAT inbound message", h.typed, [m.wamid]);
+      const quiet = harness(okAnswer(GUEST_ANSWER));
+      await go(store(), quiet.deps, text("שלום"));
+      eq("the model not called -> no typing indicator (and no read mark)", quiet.typed, []);
+      const failing = harness(okAnswer(GUEST_ANSWER), 0, true);
+      const db = store();
+      const out = await go(db, failing.deps, text(GUEST_ONLY));
+      ok("the indicator FAILS: the answer is exactly the same", out.kind === "send" && out.meta.flow_step === "studio-default" && rowState(db)?.guest === "אלי כהן", out);
+      const capped = harness(okAnswer(GUEST_ANSWER), LLM_HOURLY_CAP + 1);
+      await go(store(), capped.deps, text(GUEST_ONLY));
+      eq("over the cap: no indicator either", capped.typed, []);
     }
 
     console.log(`\n=== 9. runFlow: the cap (${LLM_HOURLY_CAP} per number per hour, owner decision 21.10, 6) ===`);

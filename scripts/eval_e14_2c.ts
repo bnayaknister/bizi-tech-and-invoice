@@ -3,6 +3,7 @@
  *
  *   npx tsx --tsconfig tsconfig.scripts.json scripts/eval_e14_2c.ts          # dry: no network, the plan + a cost estimate
  *   npx tsx --tsconfig tsconfig.scripts.json scripts/eval_e14_2c.ts --live   # ⚠️ calls the Anthropic API (costs cents)
+ *   … --live --no-cache   # the same without prompt caching (the "before" of owner decision 21.10)
  *
  * --live needs WHATSAPP_ANTHROPIC_API_KEY — from the environment, or from
  * .env.local (that ONE line is read; nothing else in the file is). It never
@@ -24,6 +25,10 @@ import { LLM_KEY_ENV, LLM_MODEL, LLM_OUTPUT_SCHEMA, LLM_SYSTEM_PROMPT, extractWi
 // Haiku 5.5, first-party API, prompts under 100K tokens (claude-api reference, cached 2026-10-06)
 const PRICE_IN_PER_M = 0.1;
 const PRICE_OUT_PER_M = 0.5;
+// prompt caching: a 5-minute write is 1.25x input, a read 0.1x
+const PRICE_CACHE_WRITE_PER_M = PRICE_IN_PER_M * 1.25;
+const PRICE_CACHE_READ_PER_M = PRICE_IN_PER_M * 0.1;
+const cache = !process.argv.includes("--no-cache");
 
 const live = process.argv.includes("--live");
 const { today, messages } = loadFixtures();
@@ -70,6 +75,8 @@ async function main() {
   const ms: number[] = [];
   let inTok = 0;
   let outTok = 0;
+  let cacheWrite = 0;
+  let cacheRead = 0;
   let full = 0;
   const wrong: string[] = [];
   const failures: string[] = [];
@@ -77,12 +84,14 @@ async function main() {
     const rule = pipeline(f.text, today, null);
     let model: unknown | null = null;
     if (rule.called) {
-      const call = await extractWithHaiku(f.text, today);
+      const call = await extractWithHaiku(f.text, today, { cache });
       ms.push(call.ms);
       if (call.ok) {
         model = call.raw;
         inTok += call.inputTokens;
         outTok += call.outputTokens;
+        cacheWrite += call.cacheWriteTokens;
+        cacheRead += call.cacheReadTokens;
         recorded.push({ id: f.id, ok: true, raw: call.raw, ms: call.ms });
       } else {
         failures.push(`#${f.id} ${call.outcome}${"status" in call && call.status ? ` ${call.status}` : ""}`);
@@ -98,20 +107,24 @@ async function main() {
     console.log(`  ${mark} #${f.id} [${f.cat}]${rule.called ? "" : " (rule parser only)"}${s.wrong.length ? ` wrong=${s.wrong.join(",")}` : ""}${s.missing.length ? ` missing=${s.missing.join(",")}` : ""}`);
     if (s.wrong.length || !s.full) console.log(`       applied ${JSON.stringify(a)}\n       expect  ${JSON.stringify(f.expect)}`);
   }
-  writeFileSync(join(__dirname, "fixtures", "e14_2c_recorded.json"), JSON.stringify({ model: LLM_MODEL, today, ranAt: new Date().toISOString(), answers: recorded }, null, 2) + "\n");
+  if (cache) {
+    writeFileSync(join(__dirname, "fixtures", "e14_2c_recorded.json"), JSON.stringify({ model: LLM_MODEL, today, ranAt: new Date().toISOString(), answers: recorded }, null, 2) + "\n");
+  }
 
   const sorted = [...ms].sort((a, b) => a - b);
   const pct = (q: number) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] : 0);
-  const cost = (inTok * PRICE_IN_PER_M + outTok * PRICE_OUT_PER_M) / 1e6;
+  const cost = (inTok * PRICE_IN_PER_M + outTok * PRICE_OUT_PER_M + cacheWrite * PRICE_CACHE_WRITE_PER_M + cacheRead * PRICE_CACHE_READ_PER_M) / 1e6;
+  const n = Math.max(1, ms.length - failures.length);
   const share = full / messages.length;
   const pass = wrong.length <= PASS.maxWrong && share >= PASS.minFullShare;
   console.log(`\n  wrong fields applied: ${wrong.length}${wrong.length ? ` (${wrong.join(", ")})` : ""}`);
   console.log(`  fully understood: ${full}/${messages.length} (${Math.round(share * 100)}%)`);
   console.log(`  calls: ${ms.length} · failed: ${failures.length}${failures.length ? ` (${failures.join(", ")})` : ""}`);
   console.log(`  time: p50 ${pct(0.5)} ms · p95 ${pct(0.95)} ms · max ${sorted[sorted.length - 1] ?? 0} ms`);
-  console.log(`  tokens: ${inTok} in / ${outTok} out · cost $${cost.toFixed(4)}`);
+  console.log(`  prompt caching: ${cache ? "ON" : "OFF"} · tokens: ${inTok} uncached in / ${cacheWrite} cache-write / ${cacheRead} cache-read / ${outTok} out`);
+  console.log(`  per call: ~${Math.round((inTok + cacheWrite + cacheRead) / n)} in (${Math.round(inTok / n)} uncached) / ~${Math.round(outTok / n)} out · $${(cost / n).toFixed(6)} · total $${cost.toFixed(4)}`);
   console.log(`\n  ${pass ? "✅ PASS" : "❌ FAIL"} (owner rule: 0 wrong, >= ${PASS.minFullShare * 100}% fully understood)`);
-  console.log("  answers saved: scripts/fixtures/e14_2c_recorded.json");
+  if (cache) console.log("  answers saved: scripts/fixtures/e14_2c_recorded.json");
   process.exit(pass ? 0 : 1);
 }
 

@@ -68,7 +68,7 @@ check("company name once", countOf(html, "BIZI STUDIO LTD"), 1);
 check("mailto link once", countOf(html, `href="mailto:${PRIVACY_CONTACT_EMAIL}"`), 1);
 
 console.log("\n— E17: the registration form (owner approval 11.10) —");
-check("updated-at is 11.10.2026", PRIVACY_UPDATED_AT, "11.10.2026");
+check("updated-at is 21.10.2026 (E14-2c)", PRIVACY_UPDATED_AT, "21.10.2026");
 check("intro names the registration form once", PRIVACY_INTRO.split("טופס פתיחת הלקוח").length - 1, 1);
 const reg = PRIVACY_SECTIONS.find((s) => s.id === "registration");
 check("registration section exists, titled", reg?.title, "טופס פתיחת לקוח");
@@ -81,6 +81,10 @@ check("…the list renders BEFORE the why", seen(html).indexOf(reg!.bullets![7])
 check("…30-day purge of a rejected registration", reg!.after!.join(" ").split("30 יום").length - 1, 1);
 const use = PRIVACY_SECTIONS.find((s) => s.id === "use")!;
 check("use: Morning among the service providers", use.paragraphs.join(" ").split("Morning (חשבונית ירוקה)").length - 1, 1);
+// E14-2c (owner approval 21.10): the model provider, what is sent, and processing abroad
+check("use: Anthropic among the service providers", use.paragraphs.join(" ").includes("Anthropic (הבנת הודעות טקסט שנשלחות לבוט)"), true);
+check("use: what is sent to Anthropic, and what is not", use.paragraphs.join(" ").includes("בלי מספר הטלפון ובלי שם התוכנית"), true);
+check("use: processed outside Israel, incl. the US", use.paragraphs.join(" ").includes("המידע מעובד גם מחוץ לישראל, בין היתר בארצות הברית."), true);
 
 console.log("\n— no session, no database, by construction —");
 const FORBIDDEN = /supabase|getSessionAndProfile|next\/headers|cookies\(/;

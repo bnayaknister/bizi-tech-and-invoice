@@ -405,3 +405,44 @@ export async function sendWhatsapp(payload: Record<string, unknown>): Promise<Se
 
   return { ok: true, dryRun: false, providerWamid: wamid };
 }
+
+// ─── E14-2c: the typing indicator ───────────────────────────────────────────
+
+/**
+ * Meta's typing indicator: ONE request that marks the inbound message as read
+ * AND shows "typing…" until our reply is sent, or 25 seconds — whichever comes
+ * first. `messageId` is Meta's own id of the INBOUND message (the webhook's
+ * `messages.id`, our `wa_messages.wamid`). Meta's guidance: show it only when
+ * a reply will follow — the flow always answers after the model call.
+ */
+export function typingPayload(messageId: string): Record<string, unknown> {
+  return { messaging_product: "whatsapp", status: "read", message_id: messageId, typing_indicator: { type: "text" } };
+}
+
+const TYPING_TIMEOUT_MS = 3_000;
+
+/**
+ * Best effort, and it NEVER throws: a failed indicator changes nothing about
+ * the reply. Dry run returns before the network, like every send here. Not
+ * recorded in wa_messages — it is not a message.
+ */
+export async function sendTypingIndicator(messageId: string): Promise<{ ok: boolean; dryRun?: true; error?: string }> {
+  if (isWhatsappDryRun()) return { ok: true, dryRun: true };
+  if (!messageId || messageId.startsWith("local:")) return { ok: false, error: "no Meta message id" };
+  const cfg = readConfig();
+  if (!cfg.ok) return { ok: false, error: `missing env: ${cfg.missing.join(", ")}` };
+  try {
+    const res = await fetch(`${GRAPH}/${graphVersion()}/${cfg.config.phoneNumberId}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${cfg.config.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(typingPayload(messageId)),
+      signal: AbortSignal.timeout(TYPING_TIMEOUT_MS),
+      cache: "no-store",
+    });
+    if (res.ok) return { ok: true };
+    const body = (await res.json().catch(() => null)) as unknown;
+    return { ok: false, error: describeGraphError(res.status, body) };
+  } catch (e) {
+    return { ok: false, error: (e as { name?: string })?.name ?? "error" };
+  }
+}

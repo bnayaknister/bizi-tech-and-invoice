@@ -10,6 +10,7 @@ import { durationFromRange } from "@/lib/booking/duration";
 import { israelHHMM } from "@/lib/booking/publicView";
 import { israelDateOf } from "@/lib/calendar/availability";
 import { notifyBookingChange } from "../notify";
+import { sendTypingIndicator } from "../client";
 import type { ContactShow } from "@/lib/booking/contacts";
 import type { InboundMessage } from "../webhook";
 import { copy, type Lang } from "./copy";
@@ -295,6 +296,8 @@ export type FlowDeps = {
   extract?: Extractor;
   /** E14-2c: inbound messages from this number in the last hour (the cap); absent = counted in wa_messages */
   recentInbound?: (waId: string, now: Date) => Promise<number>;
+  /** E14-2c: "typing…" while the model runs; absent = Meta's typing indicator */
+  typing?: (inboundWamid: string) => Promise<unknown>;
 };
 const LIVE_DEPS: FlowDeps = { ensureBookingLink, submitBookingRequest };
 
@@ -324,7 +327,7 @@ async function recentInboundCount(admin: SupabaseClient<Database>, waId: string,
 async function withModel(
   admin: SupabaseClient<Database>,
   deps: FlowDeps,
-  input: { waId: string; text: string; step: FlowStep; rule: FlowEvent; now: Date }
+  input: { waId: string; text: string; step: FlowStep; rule: FlowEvent; now: Date; inboundWamid: string }
 ): Promise<FlowEvent> {
   const { waId, text, step, rule, now } = input;
   const log = (o: Record<string, unknown>) => console.log("wa_llm", JSON.stringify({ step, ...o }));
@@ -334,6 +337,9 @@ async function withModel(
     return rule;
   }
   const today = israelDateOf(now);
+  // owner decision 21.10: "typing…" while the model runs — started alongside
+  // the call, never in its way (best effort; it also marks the message read)
+  const typing = (deps.typing ?? sendTypingIndicator)(input.inboundWamid).catch(() => undefined);
   let call: Awaited<ReturnType<Extractor>>;
   try {
     call = await (deps.extract ?? extractWithHaiku)(text, today);
@@ -341,6 +347,8 @@ async function withModel(
     // the live extractor never throws; a thrown one must not silence the bot either
     call = { ok: false, outcome: "error", ms: 0 };
   }
+  // awaited, so Vercel does not cut it off; it has its own 3s limit and never throws
+  await typing;
   if (!call.ok) {
     log({ outcome: call.outcome, ms: call.ms, status: call.status });
     return rule;
@@ -348,6 +356,7 @@ async function withModel(
   const r = interpretLlm(call.raw, { text, todayIsrael: today, rule, step });
   log({
     outcome: r.outcome, ms: call.ms, in: call.inputTokens, out: call.outputTokens,
+    cache_read: call.cacheReadTokens, cache_write: call.cacheWriteTokens,
     applied: r.applied, discarded: r.discarded, conflicts: r.conflicts,
   });
   return r.event ?? rule;
@@ -415,7 +424,9 @@ export async function runFlow(
   if (!input.eventOverride && freeTextOn && input.lang === "he" && message.type === "text" && isLlmOn()) {
     const step = live?.step ?? "menu";
     const text = message.body ?? "";
-    if (shouldCallLlm(text, step, event)) event = await withModel(admin, deps, { waId, text, step, rule: event, now });
+    if (shouldCallLlm(text, step, event)) {
+      event = await withModel(admin, deps, { waId, text, step, rule: event, now, inboundWamid: message.wamid });
+    }
   }
 
   // E14-2c: a request the language layer understood, read where no
