@@ -208,9 +208,10 @@ export async function POST(request: Request, { params }: { params: { id: string 
         }
       : { status: body.status };
     eventType = "production_status_changed";
+    // owner, 21.10: every status move records where it came FROM as well
     eventPayload = approvalReset
       ? { to: body.status, from: current!.status, approval_reset: true }
-      : { to: body.status };
+      : { to: body.status, from: current?.status ?? null };
   } else if (body.hold !== undefined) {
     patch = body.hold.on
       ? {

@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { useDrawer } from "@/components/EntityDrawer";
 import ClientNotesModal from "@/components/ClientNotesModal";
 import IconTile from "@/components/IconTile";
-import { STATUS_ORDER, STATUS_LABEL, IN_PROGRESS_STATES, TERMINAL_STATES } from "@/lib/productions/status";
+import { STATUS_ORDER, STATUS_LABEL, TERMINAL_STATES } from "@/lib/productions/status";
+import { skippedStagesNote, stageMismatch, stageMismatchLabel, todaySection, type TodaySection } from "@/lib/productions/todaySection";
 import { displayDate } from "@/lib/dates";
 import { perfEndAfterPaint, perfStart } from "@/lib/perf/client";
 
@@ -335,8 +336,13 @@ export default function ProductionsClient({
   }
 
   // 0112's trigger clears the archive on ANY status change — mirror it locally
-  const moveStatus = (id: string, status: string) =>
-    act(id, { status }, (p) => ({ ...p, status, board_archived_at: null }));
+  const moveStatus = (id: string, status: string) => {
+    // owner, 21.10: a manual jump past open stages is asked first
+    const row = rows.find((p) => p.id === id);
+    const note = row ? skippedStagesNote(row.status, status, row.stages_done, row.stages_total) : null;
+    if (note && !window.confirm(note)) return;
+    return act(id, { status }, (p) => ({ ...p, status, board_archived_at: null }));
+  };
 
   // Q10 — archive / restore. router.refresh(): it changes the SET of visible
   // cards, and the server re-checks eligibility, so the answer may differ from
@@ -729,6 +735,11 @@ function ProductionCard({
               {TRACK_LABEL[ip.track]} · {STEP_LABEL[ip.step]}
               {ip.assignee ? ` · ${ip.assignee}` : ""}
             </span>
+          ) : stageMismatch(p) ? (
+            // owner, 21.10: the status was moved on by hand, no stage was done
+            <span className="text-[var(--amber)]" title="הסטטוס הוזז ידנית לפני שהשלבים בוצעו">
+              ⚠ {stageMismatchLabel(p)}
+            </span>
           ) : (
             <span className="font-mono">{p.stages_done}/{p.stages_total} שלבים</span>
           )}
@@ -952,16 +963,14 @@ function TodayView({
   onUnmerge?: (id: string) => void;
 }) {
   const today = todayISO();
-  const attention = rows.filter((p) => p.needs_attention);
-  // "עתיד להתחיל" — only work that hasn't started yet. The moment any stage
-  // goes in_progress/done the production moves to "בעבודה עכשיו", so it must
-  // leave this bucket or it double-shows (owner 2026-07-24).
-  const notStarted = (p: BoardProduction) => p.stages_done === 0 && p.in_progress.length === 0;
-  const upcoming = rows.filter(
-    (p) => p.record_date === today && !TERMINAL_STATES.has(p.status) && notStarted(p)
-  );
-  const working = rows.filter((p) => IN_PROGRESS_STATES.has(p.status) && !p.on_hold);
-  const stuck = rows.filter((p) => p.on_hold || p.status === "ממתין_לתגובת_לקוח");
+  // owner, 21.10: ONE section per production (lib/productions/todaySection.ts) —
+  // the four filters used to overlap ("נשלח ללקוח" with 0/3 stages showed in
+  // both "עתיד להתחיל" and "בעבודה עכשיו")
+  const bySection = (sec: TodaySection) => rows.filter((p) => todaySection(p, today) === sec);
+  const attention = bySection("attention");
+  const upcoming = bySection("upcoming");
+  const working = bySection("working");
+  const stuck = bySection("stuck");
 
   const Section = ({ title, items, tone }: { title: string; items: BoardProduction[]; tone?: string }) => (
     <section className="mb-6">

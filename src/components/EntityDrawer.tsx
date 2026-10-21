@@ -41,6 +41,7 @@ import { displayDate, displayDateTime, displayLogTime } from "@/lib/dates";
 import { HOURS_STEP, MAX_HOURS, hoursError as validateHours, hoursMissing } from "@/lib/productions/hours";
 import { CreateJobButton, CreateJobModalBody } from "@/components/CreateJobBody";
 import { quotaOverNotice } from "@/lib/contracts/quota";
+import { skippedStagesNote } from "@/lib/productions/todaySection";
 import { isPerfClientOn, perfEndAfterPaint, perfNote, perfStart } from "@/lib/perf/client";
 import { confirmAndResolveAll, postResolve } from "@/lib/review/resolveFetch";
 import { diskChoices, type DiskOption } from "@/lib/disks";
@@ -1426,6 +1427,17 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   // and state machine the board uses; the DB trigger enforces can_edit_stages.
   async function changeProductionStatus(status: string) {
     if (!ref || savingStatus) return;
+    // owner, 21.10: a jump past open stages is asked first ("0/3 שלבים בוצעו — לקפוץ בכל זאת?")
+    if (data?.type === "production") {
+      const stages = data.stages ?? [];
+      const note = skippedStagesNote(
+        String(data.entity.status ?? ""),
+        status,
+        stages.filter((s) => s.status === "done").length,
+        stages.length
+      );
+      if (note && !window.confirm(note)) return;
+    }
     setSavingStatus(true);
     setError(null);
     const res = await fetch(`/api/productions/${ref.id}`, {
