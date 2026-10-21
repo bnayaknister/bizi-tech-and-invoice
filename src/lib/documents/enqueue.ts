@@ -842,6 +842,8 @@ export type EnqueueResult =
   | { status: "queued"; id: string }
   | { status: "accrued"; id: string }
   | { status: "exists" }
+  /** B38: a per_episode work order waits for the recording (WORK_ORDER_ON_RECORDED) */
+  | { status: "deferred" }
   | { status: "blocked"; reason: string }
   | { status: "error"; error: string };
 
@@ -860,7 +862,19 @@ export async function enqueueDocument(
   admin: SupabaseClient,
   docType: PendingDocType,
   production: ProductionForBilling,
-  opts: { jobId?: string | null; amountOverride?: number | null; forcePending?: boolean } = {}
+  opts: {
+    jobId?: string | null;
+    amountOverride?: number | null;
+    forcePending?: boolean;
+    /**
+     * B38: called at CREATION (calendar sync / manual new production) with the
+     * switch on — the eligibility gate still runs (a 🟡 still shows the same
+     * morning), but a per_episode client's work order is not queued: it is
+     * born when the recording is done (lib/documents/workOrderOnRecorded.ts).
+     * Monthly / every_n clients still accrue here, unchanged (owner decision 2).
+     */
+    deferPerEpisode?: boolean;
+  } = {}
 ): Promise<EnqueueResult> {
   const { data: show, error: showErr } = await admin
     .from("shows")
@@ -971,6 +985,20 @@ export async function enqueueDocument(
   // it does not manufacture eligibility. No call site passes it today (verified
   // across src/ and scripts/), so nothing changes — but the semantics are now
   // stated rather than emergent from statement order.
+  if (docType === "work_order" && opts.deferPerEpisode) {
+    const c = ((client as { billing_cadence?: string } | null)?.billing_cadence ?? "per_episode") as BillingCadence;
+    if (c === "per_episode") {
+      await setBlockReason(admin, production.id, null);
+      await admin.from("events").insert({
+        entity_type: "production",
+        entity_id: production.id,
+        event_type: "work_order_deferred_until_recorded",
+        payload: { doc_type: docType, amount: elig.amount },
+      });
+      return { status: "deferred" };
+    }
+  }
+
   const baseAmount = opts.amountOverride ?? elig.amount;
 
   // A deal invoice bills base package + every approved, priced add-on

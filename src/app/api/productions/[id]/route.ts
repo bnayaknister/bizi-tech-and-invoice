@@ -1,3 +1,4 @@
+import { becamePerformed, enqueueWorkOrderWhenPerformed } from "@/lib/documents/workOrderOnRecorded";
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -90,6 +91,8 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
   let patch: Record<string, unknown> = {};
   let eventType = "";
+  /** B38: the status before this request, for the "became performed" check */
+  let statusBefore: string | null = null;
   let eventPayload: Record<string, unknown> = {};
 
   if (body.status !== undefined) {
@@ -107,6 +110,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
       .select("status,review_episode_approved,review_reels_approved")
       .eq("id", id)
       .maybeSingle();
+    statusBefore = (current?.status as string | undefined) ?? null;
 
     // Only the service role can read client_review_items (RLS on, zero
     // policies), so it needs the admin client — and it is asked ONLY when the
@@ -260,6 +264,21 @@ export async function POST(request: Request, { params }: { params: { id: string 
   // bookkeeper, never issued here (owner spec 2026-07-19). The DB trigger
   // trg_on_production_approved has already created the job by this point,
   // so we look it up and attach it; the queue row is what links the two.
+  // B38: a manual move / drag INTO a performed status — the work order is born
+  // now (the database created the job in the same update). Before the deal
+  // invoice below, which builds on it. Never fails the status change.
+  let workOrder: string | null = null;
+  if (body.status && becamePerformed(statusBefore, body.status)) {
+    try {
+      workOrder = (await enqueueWorkOrderWhenPerformed(admin, id)).status;
+    } catch (e) {
+      await admin.from("events").insert({
+        entity_type: "production", entity_id: id, event_type: "work_order_on_recorded_failed",
+        payload: { detail: e instanceof Error ? e.message : String(e), source: "status" },
+      });
+    }
+  }
+
   let queued: string | null = null;
   if (body.status === 'אושר_ע"י_לקוח') {
     const { data: prod } = await admin
@@ -296,5 +315,5 @@ export async function POST(request: Request, { params }: { params: { id: string 
     }
   }
 
-  return NextResponse.json({ ok: true, production: updated, document_queued: queued });
+  return NextResponse.json({ ok: true, production: updated, document_queued: queued, work_order: workOrder });
 }

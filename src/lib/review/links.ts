@@ -1,6 +1,7 @@
 import { randomBytes } from "crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { enqueueDocument, getClientCadence, type ProductionForBilling } from "@/lib/documents/enqueue";
+import { enqueueWorkOrderWhenPerformed } from "@/lib/documents/workOrderOnRecorded";
 import { bumpReelsCountForAddons } from "@/lib/production/reels";
 import { CLIENT_VERSION_SELECT, type VersionForClient } from "@/lib/review/clientVersions";
 import { buildApprovalLedgerRows } from "@/lib/review/approvalLedger";
@@ -822,6 +823,17 @@ export async function applyResponse(
  * Never throws — the approval is already recorded; a failure leaves an event.
  */
 export async function enqueueDealInvoiceAfterApproval(admin: SupabaseClient, productionId: string): Promise<void> {
+  // B38: an approval can be the first moment a production counts as performed
+  // (a production approved without the recording ever being marked) — its
+  // work order is born before the deal invoice. Idempotent ("has-order").
+  try {
+    await enqueueWorkOrderWhenPerformed(admin, productionId);
+  } catch (e) {
+    await admin.from("events").insert({
+      entity_type: "production", entity_id: productionId, event_type: "work_order_on_recorded_failed",
+      payload: { detail: e instanceof Error ? e.message : String(e), source: "review_approval" },
+    });
+  }
   const { data: prod } = await admin
     .from("productions")
     // `guest` feeds the printed line (buildLineItemText) — omitting the

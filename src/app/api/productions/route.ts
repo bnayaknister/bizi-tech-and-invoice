@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { enqueueDocument } from "@/lib/documents/enqueue";
+import { isWorkOrderOnRecordedOn } from "@/lib/documents/workOrderOnRecorded";
 
 // Manual production creation (owner request 2026-07-21). The calendar sync
 // covers the automated path; this is the "+ הפקה חדשה" button on the board,
@@ -219,7 +220,8 @@ export async function POST(request: Request) {
     // 0067: same as the sync's create branch — an hourly show with no hours
     // yet is silence, not a flag, and this status is what says so.
     status: inserted.status,
-  });
+    // B38: with WORK_ORDER_ON_RECORDED on, a per_episode order waits for the recording
+  }, { deferPerEpisode: isWorkOrderOnRecordedOn() });
 
   return NextResponse.json({ ok: true, id: inserted.id, work_order: enq.status });
 }

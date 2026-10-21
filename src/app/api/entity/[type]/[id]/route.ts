@@ -1,3 +1,4 @@
+import { becamePerformed, enqueueWorkOrderWhenPerformed } from "@/lib/documents/workOrderOnRecorded";
 import { NextResponse } from "next/server";
 import { PERF_OFF, perfTimer } from "@/lib/perf/timing";
 import { entityGet } from "@/lib/drawer/entityGet";
@@ -121,6 +122,9 @@ export async function POST(
     );
     if (!Object.keys(stagePatch).length)
       return NextResponse.json({ error: "אין שדות מותרים בעדכון" }, { status: 400 });
+    // B38: the status BEFORE the stage moves — derive_production_status may
+    // carry the production into a performed status ('הוקלט' / 'בעריכה' …)
+    const { data: before } = await admin.from("productions").select("status").eq("id", params.id).maybeSingle();
     const { data, error } = await supabase
       .from("stages")
       .update(stagePatch)
@@ -136,6 +140,20 @@ export async function POST(
       actor_id: user.id,
       payload: { stage_id: body.stage.id, patch: stagePatch, source: "entity_drawer" },
     });
+    // B38: the recording is done -> the work order is born (with the job the
+    // database just created). Never fails the stage update: a miss is left as
+    // an event and caught by the 21:00 sweep.
+    const { data: after } = await admin.from("productions").select("status").eq("id", params.id).maybeSingle();
+    if (becamePerformed(before?.status as string | undefined, after?.status as string | undefined)) {
+      try {
+        await enqueueWorkOrderWhenPerformed(admin, params.id);
+      } catch (e) {
+        await admin.from("events").insert({
+          entity_type: "production", entity_id: params.id, event_type: "work_order_on_recorded_failed",
+          payload: { detail: e instanceof Error ? e.message : String(e), source: "stage" },
+        });
+      }
+    }
     return NextResponse.json({ ok: true, stage: data[0] });
   }
 

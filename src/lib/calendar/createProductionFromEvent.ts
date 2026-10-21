@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { enqueueDocument, type EnqueueResult } from "@/lib/documents/enqueue";
+import { isWorkOrderOnRecordedOn } from "@/lib/documents/workOrderOnRecorded";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // "Create a production from one calendar session" — extracted from
@@ -187,6 +188,7 @@ export async function createProductionFromEvent(
   // A new production owes a work order — but nothing is issued here. It is
   // QUEUED for the bookkeeper (owner spec 2026-07-19); an ineligible
   // production is not queued and gets a 🟡 with the reason instead.
+  // B38: with WORK_ORDER_ON_RECORDED on, a per_episode order waits for the recording
   const enq = await deps.enqueueDocument(admin, "work_order", {
     id: inserted.id,
     kind,
@@ -200,7 +202,7 @@ export async function createProductionFromEvent(
     // hasn't happened), and this status is what tells checkEligibility that
     // their absence is the calendar, not a fault.
     status: inserted.status,
-  });
+  }, { deferPerEpisode: isWorkOrderOnRecordedOn() });
 
   return { productionId: inserted.id, status: inserted.status, enqueue: enq };
 }

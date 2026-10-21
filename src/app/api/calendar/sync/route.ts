@@ -288,7 +288,7 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string, allEven
   const recurringUnsynced = findUnsyncedRecurring(allEvents ?? events, showsForMatch, new Date());
 
   let created = 0, updated = 0, flaggedChanged = 0, flaggedRemoved = 0, unflaggedRemoved = 0;
-  let queuedWorkOrders = 0, blockedWorkOrders = 0, accruedWorkOrders = 0, erroredWorkOrders = 0;
+  let queuedWorkOrders = 0, blockedWorkOrders = 0, accruedWorkOrders = 0, erroredWorkOrders = 0, deferredWorkOrders = 0;
 
   for (const action of plan.toCreate) {
     const show = showById.get(action.show.id);
@@ -349,6 +349,8 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string, allEven
     else if (createResult.enqueue.status === "accrued") accruedWorkOrders++;
     else if (createResult.enqueue.status === "blocked") blockedWorkOrders++;
     else if (createResult.enqueue.status === "error") erroredWorkOrders++;
+    // B38: per_episode orders that now wait for the recording
+    else if (createResult.enqueue.status === "deferred") deferredWorkOrders++;
   }
 
   for (const action of plan.toUpdate) {
@@ -413,6 +415,7 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string, allEven
     accruedWorkOrders,
     blockedWorkOrders,
     erroredWorkOrders,
+    deferredWorkOrders,
     skippedNoMatch: plan.skippedNoMatch,
     // the count rides the existing daily summary line, next to skippedNoMatch;
     // the list is what the radar renders
