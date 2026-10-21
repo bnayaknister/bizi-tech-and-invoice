@@ -11,7 +11,7 @@
  * half CSS and a test that only looked at the HTML could not see it.
  *
  * The supabase env vars below are set to junk ON PURPOSE and only if absent:
- * AppHeader renders SignOutButton, which constructs a browser supabase client
+ * AppHeader renders SignOutButton (inside the user menu since U1-6), which constructs a browser supabase client
  * at render time (SignOutButton.tsx:8). Constructing one makes no request —
  * @supabase/ssr only validates that the two strings exist — so junk keeps the
  * suite offline while still letting the real header render. `require` instead
@@ -33,7 +33,9 @@ import { join } from "node:path";
 import { PathnameContext } from "next/dist/shared/lib/hooks-client-context.shared-runtime";
 import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
 import GlobalSearch from "../src/components/GlobalSearch";
-import SignOutButton from "../src/components/SignOutButton";
+import UserMenu from "../src/components/UserMenu";
+import RegistrationsPopup from "../src/components/RegistrationsPopup";
+import { isStudioAdmin } from "../src/lib/clients/access";
 import Link from "next/link";
 import NavMenu, { activeKeyFor, type NavItem } from "../src/components/NavMenu";
 import { MODULES } from "../src/modules/registry";
@@ -219,7 +221,11 @@ console.log("\n=== closed by default on the server, links still in the DOM ===")
   // data-js is stamped on in an effect, so a server render must not carry it:
   // that is what keeps the CSS-only fallback live for a no-JS client
   check("no data-js on the server render", countOf(html, "data-js"), 0);
-  check("the trigger reports collapsed", countOf(html, 'aria-expanded="false"'), 1);
+  // two collapsed triggers since U1-6: the nav menu's and the user menu's
+  // (name / password / sign-out moved there from the header, 19.10)
+  check("the triggers report collapsed (nav + user menu)", countOf(html, 'aria-expanded="false"'), 2);
+  // the user menu comes after the nav menu in the header: everything before its trigger is the nav's
+  check("…exactly one of them is the nav menu's", countOf(html.slice(0, html.lastIndexOf('aria-haspopup="menu"')), 'aria-expanded="false"'), 1);
   check("the trigger is never expanded on the server", countOf(html, 'aria-expanded="true"'), 0);
 
   // the links are PRESENT even though the panel is closed — the whole point:
@@ -452,8 +458,9 @@ console.log("\n=== regression: the rest of the header is untouched ===");
             ייבוא
           </Link>
         )}
-        <span className="text-xs text-[var(--dim)]">{profile.name || profile.email}</span>
-        <SignOutButton />
+        {/* U1-6 (19.10): the name and sign-out moved into the user menu */}
+        <UserMenu name={profile.name} email={profile.email} role={profile.role} />
+        {isStudioAdmin(profile) && <RegistrationsPopup />}
       </header>
     );
   };
