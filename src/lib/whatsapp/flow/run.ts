@@ -9,6 +9,7 @@ import { DELETE_DETAILS, forwardedDetails, selfServeAllowed } from "@/lib/bookin
 import { durationFromRange } from "@/lib/booking/duration";
 import { israelHHMM } from "@/lib/booking/publicView";
 import { israelDateOf } from "@/lib/calendar/availability";
+import { FREETEXT_BOOKING_EVENT, FREETEXT_EVENT, classifyFreeText, replyText, type Understood } from "@/lib/whatsapp/freetextMonitor";
 import { notifyBookingChange } from "../notify";
 import { sendTypingIndicator } from "../client";
 import type { ContactShow } from "@/lib/booking/contacts";
@@ -358,13 +359,13 @@ async function withModel(
   admin: SupabaseClient<Database>,
   deps: FlowDeps,
   input: { waId: string; text: string; step: FlowStep; rule: FlowEvent; now: Date; inboundWamid: string }
-): Promise<FlowEvent> {
+): Promise<{ event: FlowEvent; outcome: string }> {
   const { waId, text, step, rule, now } = input;
   const log = (o: Record<string, unknown>) => console.log("wa_llm", JSON.stringify({ step, ...o }));
   const recent = await (deps.recentInbound ?? ((w, n) => recentInboundCount(admin, w, n)))(waId, now);
   if (recent > LLM_HOURLY_CAP) {
     log({ outcome: "cap", recent });
-    return rule;
+    return { event: rule, outcome: "cap" };
   }
   const today = israelDateOf(now);
   // owner decision 21.10: "typing…" while the model runs — started alongside
@@ -381,7 +382,7 @@ async function withModel(
   await typing;
   if (!call.ok) {
     log({ outcome: call.outcome, ms: call.ms, status: call.status });
-    return rule;
+    return { event: rule, outcome: call.outcome };
   }
   const r = interpretLlm(call.raw, { text, todayIsrael: today, rule, step });
   log({
@@ -389,7 +390,7 @@ async function withModel(
     cache_read: call.cacheReadTokens, cache_write: call.cacheWriteTokens,
     applied: r.applied, discarded: r.discarded, conflicts: r.conflicts,
   });
-  return r.event ?? rule;
+  return { event: r.event ?? rule, outcome: r.outcome };
 }
 
 /**
@@ -451,13 +452,28 @@ export async function runFlow(
 
   // E14-2c: the model, behind the rule parser — its own switch, ONLY where the
   // layer is already on for this number, in Hebrew, for typed text
-  if (!input.eventOverride && freeTextOn && input.lang === "he" && message.type === "text" && isLlmOn()) {
+  // E14-3: is this a typed message the language layer read? (the monitoring)
+  const monitored = !input.eventOverride && freeTextOn && input.lang === "he" && message.type === "text";
+  let llmOutcome: string | null = null;
+  if (monitored && isLlmOn()) {
     const step = live?.step ?? "menu";
     const text = message.body ?? "";
     if (shouldCallLlm(text, step, event)) {
-      event = await withModel(admin, deps, { waId, text, step, rule: event, now, inboundWamid: message.wamid });
+      const m = await withModel(admin, deps, { waId, text, step, rule: event, now, inboundWamid: message.wamid });
+      event = m.event;
+      llmOutcome = m.outcome;
     }
   }
+  const understood = monitored
+    ? classifyFreeText({
+        step: live?.step ?? "menu",
+        event,
+        live: !!live,
+        answeringQuestion: !!(live?.pickHour || live?.offer),
+        text: message.body ?? "",
+      })
+    : null;
+  let bookedByText = false;
 
   // E14-2c: a request the language layer understood, read where no
   // conversation is live yet (the first message) — applied at once, not
@@ -686,6 +702,7 @@ export async function runFlow(
           })
         : ({ ok: false, code: "error" } as const);
       submitted = true;
+      if (result.ok && freeTextOn) bookedByText = true;
       t = afterSubmit(s, result);
       continue;
     }
@@ -709,9 +726,52 @@ export async function runFlow(
     console.error("wa/flow: שמירת התוצאה אחרי ההגשה נכשלה", saved.kind);
   }
 
+  // E14-3: the monitoring trail — no phone number; the text and the answer
+  // only for a message that was not fully understood. Never fails the reply.
+  if (understood || bookedByText) {
+    await recordFreeText(admin, {
+      understood,
+      step: live?.step ?? "menu",
+      llmOutcome,
+      text: message.body ?? "",
+      reply: t.reply,
+      booked: bookedByText,
+    });
+  }
+
   return {
     kind: "send",
     reply: t.reply,
     meta: { flow_step: t.state.step, show_id: t.state.showId, request_id: t.state.requestId },
   };
+}
+
+async function recordFreeText(
+  admin: SupabaseClient<Database>,
+  r: { understood: Understood | null; step: string; llmOutcome: string | null; text: string; reply: FlowReply; booked: boolean }
+): Promise<void> {
+  try {
+    const rows: Database["public"]["Tables"]["events"]["Insert"][] = [];
+    if (r.understood) {
+      const missed = r.understood === "none" || r.understood === "partial";
+      rows.push({
+        entity_type: "wa_freetext",
+        entity_id: crypto.randomUUID(),
+        event_type: FREETEXT_EVENT,
+        payload: {
+          step: r.step,
+          understood: r.understood,
+          llm_called: r.llmOutcome !== null,
+          llm_outcome: r.llmOutcome,
+          ...(missed ? { text: r.text.slice(0, 1000), reply: replyText(r.reply)?.slice(0, 1000) ?? null } : {}),
+        },
+      });
+    }
+    if (r.booked) {
+      rows.push({ entity_type: "wa_freetext", entity_id: crypto.randomUUID(), event_type: FREETEXT_BOOKING_EVENT, payload: {} });
+    }
+    if (rows.length) await admin.from("events").insert(rows);
+  } catch (e) {
+    console.error("wa/flow: רישום המעקב נכשל", e instanceof Error ? e.message : String(e));
+  }
 }

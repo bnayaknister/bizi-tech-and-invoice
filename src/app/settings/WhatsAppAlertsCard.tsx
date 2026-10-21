@@ -112,6 +112,10 @@ export default function WhatsAppAlertsCard({ recipients }: { recipients: AlertRe
         {busy ? "שולח…" : "שליחת התראת בדיקה"}
       </button>
       <div className="text-[10px] text-[var(--faint)] mt-1">נשלחת רק למספר הבעלים (הראשון ברשימה), פעם בדקה לכל היותר.</div>
+      {/* E14-3: the free-text review screen */}
+      <a href="/settings/freetext" className="inline-block text-xs text-[var(--violet-light)] hover:underline mt-3">
+        טקסט חופשי בבוט — מעקב והודעות שלא הובנו ←
+      </a>
       <TestResultLine result={result} />
     </section>
   );
