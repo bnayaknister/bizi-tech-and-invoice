@@ -3,7 +3,9 @@ import { getSessionAndProfile } from "@/lib/profile";
 import { createClient } from "@/lib/supabase/server";
 import AppHeader from "@/components/AppHeader";
 import SettingsClient, { type LastSync } from "./SettingsClient";
-import { hasOwnerAccess } from "@/lib/roles";
+import { hasOwnerAccess, isStrictOwner } from "@/lib/roles";
+import WhatsAppAlertsCard from "./WhatsAppAlertsCard";
+import { alertRecipientsView } from "@/lib/whatsapp/opsTest";
 
 export const dynamic = "force-dynamic";
 
@@ -43,6 +45,14 @@ export default async function SettingsPage() {
           accountantEmail={settings?.accountant_email ?? null}
           lastSync={lastSync}
         />
+        {/* B38-7: owner only (not admin) — masked numbers, computed here */}
+        {isStrictOwner(profile) ? (
+          <div className="max-w-2xl mx-auto px-6 pb-6">
+            <WhatsAppAlertsCard
+              recipients={alertRecipientsView(process.env.WHATSAPP_NOTIFY_NUMBERS, process.env.WHATSAPP_BILLING_NOTIFY_NUMBERS)}
+            />
+          </div>
+        ) : null}
       </main>
     </div>
   );

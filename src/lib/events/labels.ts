@@ -101,6 +101,7 @@ export const EVENT_LABEL: Record<string, string> = {
   production_status_changed: "סטטוס ההפקה שונה",
   status_advanced: "הסטטוס התקדם",
   status_auto_advanced: "הסטטוס התקדם אוטומטית",
+  whatsapp_test_alert: "נשלחה התראת בדיקה בוואטסאפ",
   stages_auto_marked_by_status_jump: "שלבים סומנו אוטומטית בעקבות קפיצת סטטוס",
   status_jump_stages_failed: "סימון השלבים בקפיצת סטטוס נכשל",
   status_regression_blocked: "חזרה אחורה בסטטוס נחסמה",
