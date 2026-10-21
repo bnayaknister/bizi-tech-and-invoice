@@ -13,6 +13,11 @@ import { hasBeenPerformed } from "./status";
 //   · the corrective sweep: a billable production in the same window that IS
 //     performed and has no work order → its order is queued now (any app path
 //     that missed it is caught within the day)
+//   · B38-6, the job sweep (before the order sweep, so a new order carries its
+//     job): a billable production in the same window that is performed, or
+//     whose "פרק · הקלטה" stage is done, and has no job → ensure_job_for_production
+//     (the same function the trigger and the stage tick use; it stamps the
+//     production's existing work order and never queues one)
 
 export const UNRECORDED_LOOKBACK_DAYS = 14;
 
@@ -47,8 +52,12 @@ export function minusDays(dateIsrael: string, n: number): string {
 export function planUnrecordedCheck(
   rows: UnrecordedRow[],
   billingModeByShow: Map<string, string | null>,
-  todayIsrael: string
-): { unrecorded: UnrecordedRow[]; toSweep: UnrecordedRow[] } {
+  todayIsrael: string,
+  /** B38-6: productions whose episode "record" stage is done */
+  recordStageDone: ReadonlySet<string> = new Set(),
+  /** B38-6: productions that already have a job */
+  hasJob: ReadonlySet<string> = new Set()
+): { unrecorded: UnrecordedRow[]; toSweep: UnrecordedRow[]; toJob: UnrecordedRow[] } {
   const from = minusDays(todayIsrael, UNRECORDED_LOOKBACK_DAYS - 1);
   const inWindow = rows.filter(
     (p) => !!p.record_date && p.record_date >= from && p.record_date <= todayIsrael && isBillableProduction(p, billingModeByShow)
@@ -58,6 +67,8 @@ export function planUnrecordedCheck(
   return {
     unrecorded: inWindow.filter((p) => !hasBeenPerformed(p.status, p.cancelled_at)).sort(byDate),
     toSweep: inWindow.filter((p) => hasBeenPerformed(p.status, p.cancelled_at)),
+    // B38-6: performed (or its recording stage ticked done) and still no job
+    toJob: inWindow.filter((p) => (hasBeenPerformed(p.status, p.cancelled_at) || recordStageDone.has(p.id)) && !hasJob.has(p.id)),
   };
 }
 

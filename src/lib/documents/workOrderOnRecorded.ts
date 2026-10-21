@@ -70,7 +70,12 @@ export type EnsureJobResult =
   | { status: "created"; jobId: string }
   | { status: "skipped"; reason: "not-found" | "not-performed" | "not-billable" | "has-job" | "refused" };
 
-export async function ensureJobWhenRecorded(admin: SupabaseClient, productionId: string): Promise<EnsureJobResult> {
+export async function ensureJobWhenRecorded(
+  admin: SupabaseClient,
+  productionId: string,
+  /** lands in jobs.notes and the event's fired_by: the stage tick, or the 21:00 sweep */
+  reason: "recording_stage_done" | "sweep_21" = "recording_stage_done"
+): Promise<EnsureJobResult> {
   const { data: p } = await admin
     .from("productions")
     .select("id,kind,status,cancelled_at,merged_into")
@@ -89,7 +94,7 @@ export async function ensureJobWhenRecorded(admin: SupabaseClient, productionId:
 
   const { data: jobId, error } = await admin.rpc("ensure_job_for_production", {
     p_id: p.id,
-    p_reason: "recording_stage_done",
+    p_reason: reason,
   });
   if (error) throw new Error(error.message);
   return jobId ? { status: "created", jobId: jobId as string } : { status: "skipped", reason: "refused" };

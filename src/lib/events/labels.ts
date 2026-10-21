@@ -38,7 +38,8 @@ export const EVENT_LABEL: Record<string, string> = {
   review_original_missing: "הקובץ המקורי חסר ב-Bunny",
   review_video_missing: "הסרטון חסר ב-Bunny",
   // ── billing ──
-  client_approved_job_created: "נוצרה עבודה לחיוב אחרי אישור הלקוח",
+  // fired_by tells the moment apart: client_approved / recorded / recording_stage_done / sweep_21
+  client_approved_job_created: "נוצרה עבודה לחיוב",
   client_approved_already_billed: "אישור לקוח: כבר חויב, לא נוצרה עבודה נוספת",
   deal_invoice_skipped_already_billed: "חשבון עסקה דולג: כבר חויב",
   deal_invoice_enqueue_failed: "הוספת חשבון עסקה לתור נכשלה",
@@ -100,6 +101,8 @@ export const EVENT_LABEL: Record<string, string> = {
   production_status_changed: "סטטוס ההפקה שונה",
   status_advanced: "הסטטוס התקדם",
   status_auto_advanced: "הסטטוס התקדם אוטומטית",
+  stages_auto_marked_by_status_jump: "שלבים סומנו אוטומטית בעקבות קפיצת סטטוס",
+  status_jump_stages_failed: "סימון השלבים בקפיצת סטטוס נכשל",
   status_regression_blocked: "חזרה אחורה בסטטוס נחסמה",
   stage_updated: "שלב עודכן",
   production_attention_toggled: "סימון \"דורש טיפול\" שונה",

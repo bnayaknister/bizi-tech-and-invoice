@@ -88,6 +88,9 @@ const DOC_LABEL: Record<string, string> = { work_order: "הזמנת עבודה",
 const dm = (iso: string | null) => (iso ? `${Number(iso.slice(8, 10))}.${Number(iso.slice(5, 7))}` : "");
 
 /** "הזמנת עבודה 10357 · פודקאסט אילון לוי · 21.10 · Benny Gantz" */
+/** "מה לעשות" ({{3}} of bizi_ops_alert) for an orphaned document — owner wording 22.10 */
+export const ORPHAN_ALERT_ACTION = "לסגור את המסמך במורנינג דרך המערכת או במורנינג";
+
 export function orphanLine(o: Pick<OrphanDoc, "docType" | "number" | "showName" | "recordDate" | "guest">): string {
   return [`${DOC_LABEL[o.docType] ?? o.docType} ${o.number ?? ""}`.trim(), o.showName ?? "", dm(o.recordDate), o.guest ?? ""].filter(Boolean).join(" · ");
 }

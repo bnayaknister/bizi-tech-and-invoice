@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { planUnrecordedCheck, unrecordedLine, minusDays, UNRECORDED_LOOKBACK_DAYS, type UnrecordedRow } from "@/lib/productions/unrecorded";
-import { enqueueWorkOrderWhenPerformed } from "@/lib/documents/workOrderOnRecorded";
+import { enqueueWorkOrderWhenPerformed, ensureJobWhenRecorded } from "@/lib/documents/workOrderOnRecorded";
 import { recordBookingNotification } from "@/lib/whatsapp/notify";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -16,6 +16,10 @@ import { recordBookingNotification } from "@/lib/whatsapp/notify";
 //   1. the corrective sweep — a billable production of the last 14 days that is
 //      performed and has no work order gets one now (enqueueWorkOrderWhenPerformed:
 //      idempotent, never a second order, a rejected one is never re-queued)
+//   0. B38-6, the job sweep — the same window, performed (or the recording
+//      stage done) and no job → ensure_job_for_production('sweep_21'), which
+//      links the production's existing work order. Before step 1, so an order
+//      queued there is born carrying its job.
 //   2. the list — billable productions of today and the 13 days before it,
 //      not cancelled, not marked "הוקלט" → one WhatsApp to the owner
 //      (bizi_ops_alert; until Meta approves it the send is skipped, the event
@@ -58,7 +62,41 @@ export async function GET(request: Request) {
       : { data: [], error: null };
     if (sErr) throw new Error(sErr.message);
     const modes = new Map((shows ?? []).map((s) => [s.id as string, (s.billing_mode as string | null) ?? null]));
-    const plan = planUnrecordedCheck((rows ?? []) as UnrecordedRow[], modes, date);
+    const ids = (rows ?? []).map((r) => r.id as string);
+    const [{ data: doneStages, error: stErr }, { data: links, error: jErr }] = ids.length
+      ? await Promise.all([
+          admin.from("stages").select("production_id").in("production_id", ids).eq("track", "episode").eq("step", "record").eq("status", "done"),
+          admin.from("job_productions").select("production_id").in("production_id", ids),
+        ])
+      : [{ data: [], error: null }, { data: [], error: null }];
+    if (stErr) throw new Error(stErr.message);
+    if (jErr) throw new Error(jErr.message);
+    const plan = planUnrecordedCheck(
+      (rows ?? []) as UnrecordedRow[],
+      modes,
+      date,
+      new Set((doneStages ?? []).map((s) => s.production_id as string)),
+      new Set((links ?? []).map((l) => l.production_id as string))
+    );
+
+    // 0. the job sweep (B38-6) — one failure never stops the rest
+    const jobs: Record<string, number> = {};
+    const jobsCreated: { production_id: string; job_id: string }[] = [];
+    for (const p of plan.toJob) {
+      let k: string;
+      try {
+        const r = await ensureJobWhenRecorded(admin, p.id, "sweep_21");
+        if (r.status === "created") jobsCreated.push({ production_id: p.id, job_id: r.jobId });
+        k = r.status === "created" ? "created" : `skipped:${r.reason}`;
+      } catch (e) {
+        k = "failed";
+        await admin.from("events").insert({
+          entity_type: "production", entity_id: p.id, event_type: "work_order_on_recorded_failed",
+          payload: { detail: e instanceof Error ? e.message : String(e), source: "sweep_21_job" },
+        });
+      }
+      jobs[k] = (jobs[k] ?? 0) + 1;
+    }
 
     // 1. the sweep
     const swept: Record<string, number> = {};
@@ -90,12 +128,14 @@ export async function GET(request: Request) {
         forced: force,
         unrecorded: plan.unrecorded.length,
         unrecorded_ids: plan.unrecorded.map((p) => p.id),
+        jobs,
+        jobs_created: jobsCreated,
         swept,
         notify,
       },
     });
-    console.log(JSON.stringify({ tag: "cron_unrecorded_check", date, unrecorded: plan.unrecorded.length, swept, notify }));
-    return NextResponse.json({ ok: true, date, unrecorded: plan.unrecorded.length, swept, notify });
+    console.log(JSON.stringify({ tag: "cron_unrecorded_check", date, unrecorded: plan.unrecorded.length, jobs, swept, notify }));
+    return NextResponse.json({ ok: true, date, unrecorded: plan.unrecorded.length, jobs, jobs_created: jobsCreated, swept, notify });
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     console.warn(JSON.stringify({ tag: "cron_unrecorded_check", error: detail }));

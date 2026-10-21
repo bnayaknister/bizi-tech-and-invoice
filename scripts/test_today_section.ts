@@ -109,9 +109,9 @@ console.log("\n=== 6. the wiring (source) ===");
   ok("the 'היום' tab sorts with todaySection", /bySection\("upcoming"\)/.test(board) && board.includes("todaySection(p, today)"));
   ok("…the old overlapping filters are gone", !board.includes("const notStarted =") && !board.includes("IN_PROGRESS_STATES.has(p.status) && !p.on_hold"));
   ok("the card shows the mismatch mark", board.includes("stageMismatchLabel(p)"));
-  ok("a drag on the board asks before skipping stages", /skippedStagesNote\(row\.status, status/.test(board) && board.includes("window.confirm(note)"));
+  ok("a drag on the board asks before skipping stages", /skippedStagesNote\(row\.status, status/.test(board) && board.includes("if (note && !window.confirm(auto ? `${note}\\n${auto}` : note)) return;"));
   const drawer = read("src/components/EntityDrawer.tsx");
-  ok("the drawer's status jump asks before skipping stages", drawer.includes("skippedStagesNote(") && drawer.includes("window.confirm(note)"));
+  ok("the drawer's status jump asks before skipping stages", drawer.includes("skippedStagesNote(") && drawer.includes("if (note && !window.confirm(auto ? `${note}\\n${auto}` : note)) return;"));
   const route = read("src/app/api/productions/[id]/route.ts");
   ok("the status event records FROM and TO", route.includes("{ to: body.status, from: current?.status ?? null }"));
 }

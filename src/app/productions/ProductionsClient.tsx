@@ -6,6 +6,7 @@ import { useDrawer } from "@/components/EntityDrawer";
 import ClientNotesModal from "@/components/ClientNotesModal";
 import IconTile from "@/components/IconTile";
 import { STATUS_ORDER, STATUS_LABEL, TERMINAL_STATES } from "@/lib/productions/status";
+import { autoStagesForJump, autoStagesNote } from "@/lib/productions/statusJumpStages";
 import { skippedStagesNote, stageMismatch, stageMismatchLabel, todaySection, type TodaySection } from "@/lib/productions/todaySection";
 import { displayDate } from "@/lib/dates";
 import { perfEndAfterPaint, perfStart } from "@/lib/perf/client";
@@ -340,7 +341,10 @@ export default function ProductionsClient({
     // owner, 21.10: a manual jump past open stages is asked first
     const row = rows.find((p) => p.id === id);
     const note = row ? skippedStagesNote(row.status, status, row.stages_done, row.stages_total) : null;
-    if (note && !window.confirm(note)) return;
+    // B38-6: the board has no per-stage picture — the implied steps are named
+    // (the server marks only the ones still open)
+    const auto = row ? autoStagesNote(autoStagesForJump(row.status, status, null).steps) : null;
+    if (note && !window.confirm(auto ? `${note}\n${auto}` : note)) return;
     return act(id, { status }, (p) => ({ ...p, status, board_archived_at: null }));
   };
 

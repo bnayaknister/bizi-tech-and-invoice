@@ -42,6 +42,7 @@ import { HOURS_STEP, MAX_HOURS, hoursError as validateHours, hoursMissing } from
 import { CreateJobButton, CreateJobModalBody } from "@/components/CreateJobBody";
 import { quotaOverNotice } from "@/lib/contracts/quota";
 import { skippedStagesNote } from "@/lib/productions/todaySection";
+import { autoStagesForJump, autoStagesNote } from "@/lib/productions/statusJumpStages";
 import { isPerfClientOn, perfEndAfterPaint, perfNote, perfStart } from "@/lib/perf/client";
 import { confirmAndResolveAll, postResolve } from "@/lib/review/resolveFetch";
 import { diskChoices, type DiskOption } from "@/lib/disks";
@@ -1440,7 +1441,11 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
         stages.filter((s) => s.status === "done").length,
         stages.length
       );
-      if (note && !window.confirm(note)) return;
+      // B38-6: and which episode stages the jump will mark done
+      const auto = autoStagesNote(
+        autoStagesForJump(String(data.entity.status ?? ""), status, stages.filter((s) => s.track === "episode")).steps
+      );
+      if (note && !window.confirm(auto ? `${note}\n${auto}` : note)) return;
     }
     setSavingStatus(true);
     setError(null);

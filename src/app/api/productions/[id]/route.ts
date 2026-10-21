@@ -1,4 +1,5 @@
-import { becamePerformed, enqueueWorkOrderWhenPerformed } from "@/lib/documents/workOrderOnRecorded";
+import { becamePerformed, enqueueWorkOrderWhenPerformed, ensureJobWhenRecorded } from "@/lib/documents/workOrderOnRecorded";
+import { DERIVED_BAND, autoStagesForJump, autoStageLogNote } from "@/lib/productions/statusJumpStages";
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -75,6 +76,56 @@ const STATUSES = new Set([
 // we are waiting", which is not a reopening.
 const REOPENS_NOTES = new Set(["בעריכה", "נערך", "נשלח_ללקוח"]);
 
+type EpisodeStage = { id: string; step: string; status: string };
+
+/**
+ * B38-6: mark the episode stages a forward jump implies (statusJumpStages.ts).
+ * Through the USER client — RLS on stages is the gate, and the DB journal row
+ * (log_stage_change) carries the person who jumped. Each marked stage also
+ * gets a journal note naming the jump. Never throws: the status move is the
+ * owner's confirmed decision; a stage that would not mark is left as an event.
+ */
+async function markJumpStages(
+  supabase: ReturnType<typeof createClient>,
+  admin: ReturnType<typeof createAdminClient>,
+  args: { id: string; userId: string; stages: EpisodeStage[]; from: string | null; to: string }
+): Promise<{ marked: string[]; failed: string | null }> {
+  const { data: me } = await admin.from("profiles").select("name").eq("id", args.userId).maybeSingle();
+  const note = autoStageLogNote((me as { name?: string | null } | null)?.name);
+  const marked: string[] = [];
+  let failed: string | null = null;
+  for (const st of args.stages) {
+    const { data, error } = await supabase
+      .from("stages")
+      .update({ status: "done" })
+      .eq("id", st.id)
+      .eq("production_id", args.id)
+      .select("id");
+    if (error || !data?.length) {
+      failed = error?.message ?? "אין הרשאה לעדכן שלבים";
+      break;
+    }
+    marked.push(st.step);
+    await supabase.from("production_log").insert({
+      production_id: args.id,
+      kind: "note",
+      note,
+      stage_id: st.id,
+      track: "episode",
+      step: st.step,
+      author_id: args.userId,
+    });
+  }
+  await admin.from("events").insert({
+    entity_type: "production",
+    entity_id: args.id,
+    event_type: failed ? "status_jump_stages_failed" : "stages_auto_marked_by_status_jump",
+    actor_id: args.userId,
+    payload: { from: args.from, to: args.to, marked, ...(failed ? { detail: failed } : {}) },
+  });
+  return { marked, failed };
+}
+
 export async function POST(request: Request, { params }: { params: { id: string } }) {
   const id = params.id;
   const body = (await request.json()) as {
@@ -94,6 +145,9 @@ export async function POST(request: Request, { params }: { params: { id: string 
   /** B38: the status before this request, for the "became performed" check */
   let statusBefore: string | null = null;
   let eventPayload: Record<string, unknown> = {};
+  /** B38-6: the episode stages this forward jump marks done */
+  let jumpStages: EpisodeStage[] = [];
+  let jumpMarked: string[] = [];
 
   if (body.status !== undefined) {
     if (!STATUSES.has(body.status)) {
@@ -212,6 +266,23 @@ export async function POST(request: Request, { params }: { params: { id: string 
         }
       : { status: body.status };
     eventType = "production_status_changed";
+
+    // B38-6: a forward jump marks the episode stages it implies. Inside
+    // derive_production_status's band the stages go FIRST (the trigger would
+    // otherwise pull the jumped status back to what the stages say); past it,
+    // after the jump (see statusJumpStages.ts).
+    if (current) {
+      const { data: ep } = await supabase
+        .from("stages")
+        .select("id,step,status")
+        .eq("production_id", id)
+        .eq("track", "episode");
+      jumpStages = autoStagesForJump(statusBefore, body.status, (ep ?? []) as EpisodeStage[]).stages;
+      if (jumpStages.length && DERIVED_BAND.has(body.status)) {
+        jumpMarked = (await markJumpStages(supabase, resetAdmin, { id, userId: user.id, stages: jumpStages, from: statusBefore, to: body.status })).marked;
+        jumpStages = [];
+      }
+    }
     // owner, 21.10: every status move records where it came FROM as well
     eventPayload = approvalReset
       ? { to: body.status, from: current!.status, approval_reset: true }
@@ -257,8 +328,13 @@ export async function POST(request: Request, { params }: { params: { id: string 
     entity_id: id,
     event_type: eventType,
     actor_id: user.id,
-    payload: eventPayload,
+    payload: jumpMarked.length || jumpStages.length ? { ...eventPayload, stages_auto_marked: true } : eventPayload,
   });
+
+  // B38-6: past the derived band — the stages after the jump
+  if (jumpStages.length) {
+    jumpMarked = (await markJumpStages(supabase, admin, { id, userId: user.id, stages: jumpStages, from: statusBefore, to: body.status! })).marked;
+  }
 
   // Client approval owes a deal invoice (חשבון עסקה) — queued for the
   // bookkeeper, never issued here (owner spec 2026-07-19). The DB trigger
@@ -267,9 +343,14 @@ export async function POST(request: Request, { params }: { params: { id: string 
   // B38: a manual move / drag INTO a performed status — the work order is born
   // now (the database created the job in the same update). Before the deal
   // invoice below, which builds on it. Never fails the status change.
+  // B38-6: an auto-marked recording stage asks for the job exactly like a
+  // tick in the drawer (ensureJobWhenRecorded: no job twice, the existing
+  // order is linked), then the work-order helper (never a second order).
   let workOrder: string | null = null;
-  if (body.status && becamePerformed(statusBefore, body.status)) {
+  const recordMarked = jumpMarked.includes("record");
+  if (body.status && (recordMarked || becamePerformed(statusBefore, body.status))) {
     try {
+      if (recordMarked) await ensureJobWhenRecorded(admin, id);
       workOrder = (await enqueueWorkOrderWhenPerformed(admin, id)).status;
     } catch (e) {
       await admin.from("events").insert({
@@ -315,5 +396,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     }
   }
 
-  return NextResponse.json({ ok: true, production: updated, document_queued: queued, work_order: workOrder });
+  // the status may have been carried by the stage trigger on the way; the
+  // jump's own update is the last write, so `updated` is the final row
+  return NextResponse.json({ ok: true, production: updated, document_queued: queued, work_order: workOrder, stages_marked: jumpMarked });
 }

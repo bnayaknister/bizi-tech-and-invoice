@@ -9,7 +9,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { fakeDb } from "./_fake_db";
 import { isBillableProduction, minusDays, planUnrecordedCheck, unrecordedLine, type UnrecordedRow } from "../src/lib/productions/unrecorded";
-import { findOrphans, orphanLine } from "../src/lib/documents/orphanDocs";
+import { ORPHAN_ALERT_ACTION, findOrphans, orphanLine } from "../src/lib/documents/orphanDocs";
 import { notifyOrphanDoc } from "../src/lib/documents/orphanDocs.server";
 import { planCutover } from "../src/lib/documents/b38Cutover";
 import {
@@ -70,7 +70,24 @@ async function main() {
     eq("the list: a + b (billable clients only, owner decision 5)", plan.unrecorded.map((r) => r.id).sort(), ["a", "b"]);
     eq("…sorted by date", plan.unrecorded.map((r) => r.id), ["b", "a"]);
     eq("the sweep: the performed billable ones (e, l)", plan.toSweep.map((r) => r.id).sort(), ["e", "l"]);
+    eq("no stage/job sets -> every performed billable one needs a job (e, l)", plan.toJob.map((r) => r.id).sort(), ["e", "l"]);
     ok("isBillableProduction: a per_episode client production", isBillableProduction(row("z"), modes));
+  }
+  {
+    // B38-6: the job sweep
+    const rows = [
+      row("e", { status: "הוקלט" }),                                 // performed, no job -> job
+      row("l", { status: "נשלח_ללקוח", record_date: "2026-10-15" }),  // performed (manual jump), no job -> job
+      row("m", { status: "נשלח_ללקוח" }),                            // performed, HAS a job -> no
+      row("n", { status: "בהקלטה" }),                                // recording stage done, status lagging -> asked (the RPC decides)
+      row("o", { status: "בהקלטה" }),                                // started, stage not done -> no
+      row("p", { status: "הוקלט", kind: "internal" }),               // internal -> no
+      row("q", { status: "הוקלט", record_date: "2026-10-07" }),      // 14 days ago -> out of the window
+      row("r", { status: "הוקלט", show_id: "s-none" }),              // not billable -> no
+    ];
+    const plan = planUnrecordedCheck(rows, modes, TODAY, new Set(["n", "q", "e"]), new Set(["m"]));
+    eq("the job sweep: e, l, n", plan.toJob.map((r) => r.id).sort(), ["e", "l", "n"]);
+    eq("…the order sweep is unchanged by the job sets (e, l, m)", plan.toSweep.map((r) => r.id).sort(), ["e", "l", "m"]);
     eq("the WhatsApp line", unrecordedLine([row("a"), row("b", { podcast_name: "שומעת רגע?!", guest: null, record_date: "2026-10-08", record_time: "11:30" })]), "פודקאסט אילון לוי 21.10 16:00 (Benny Gantz) · שומעת רגע?! 8.10 11:30");
   }
 
@@ -133,7 +150,8 @@ async function main() {
     const rows = db.store.wa_messages as { wa_id: string; template_name: string; status: string; body: string }[];
     eq("billing audience = the owner (first) + the bookkeeper (WHATSAPP_BILLING_NOTIFY_NUMBERS) — not the second notify number", rows.map((r) => r.wa_id).sort(), ["972507654321", "972528933975"]);
     ok("…template bizi_ops_alert, dry_run (nothing sent)", rows.every((r) => r.template_name === "bizi_ops_alert" && r.status === "dry_run"), rows);
-    ok("…the body names the document and what to do", rows[0]?.body.includes("10357") && rows[0]?.body.includes("בטל ב-Morning"), rows[0]?.body);
+    ok("…{{3}} is the owner's wording (22.10)", rows.every((r) => r.body.includes(`מה לעשות: ${ORPHAN_ALERT_ACTION}`)), rows.map((r) => r.body));
+    ok("…the body names the document and what to do", rows[0]?.body.includes("10357") && rows[0]?.body.includes("לסגור את המסמך במורנינג"), rows[0]?.body);
     eq("…a second call for the same document sends nothing new", rows.length, 2);
     // not approved yet -> nothing recorded, no throw
     delete process.env.WHATSAPP_TEMPLATES_APPROVED;
@@ -176,6 +194,9 @@ async function main() {
     eq("vercel.json: two triggers at 18:00 / 19:00 UTC", cron.filter((c) => c.path === "/api/cron/unrecorded-check").map((c) => c.schedule), ["0 18 * * *", "0 19 * * *"]);
     const route = read("src/app/api/cron/unrecorded-check/route.ts");
     ok("the route: CRON_SECRET, the 21:00 Israel gate, the sweep, the owner alert", route.includes("CRON_SECRET") && route.includes("hour !== 21") && route.includes("enqueueWorkOrderWhenPerformed") && route.includes('audience: "owner"'));
+    ok("the route: the job sweep (sweep_21) runs BEFORE the order sweep", route.includes('ensureJobWhenRecorded(admin, p.id, "sweep_21")') && route.indexOf("ensureJobWhenRecorded(admin, p.id") < route.indexOf("enqueueWorkOrderWhenPerformed(admin, p.id)"));
+    ok("…it reads the done recording stages and the existing jobs", route.includes('.eq("step", "record").eq("status", "done")') && route.includes('from("job_productions")'));
+    ok("…and records the result in the cron event", route.includes("jobs_created: jobsCreated"));
     const radar = read("src/modules/radar/alerts.ts");
     ok("the radar card for past days", radar.includes('key: "not_marked_recorded"'));
     const cancel = read("src/app/api/productions/[id]/cancel/route.ts");

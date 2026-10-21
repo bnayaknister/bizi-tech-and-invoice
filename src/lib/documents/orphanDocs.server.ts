@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { recordBookingNotification } from "@/lib/whatsapp/notify";
-import { findOrphans, orphanLine, type OrphanDoc, type OrphanPending, type OrphanProduction, type OrphanRegistry } from "./orphanDocs";
+import { ORPHAN_ALERT_ACTION, findOrphans, orphanLine, type OrphanDoc, type OrphanPending, type OrphanProduction, type OrphanRegistry } from "./orphanDocs";
 
 // B38-3 — the server half of ./orphanDocs.ts (the reads and the WhatsApp). The
 // pure half is imported by the client card, so nothing here may reach it.
@@ -48,7 +48,8 @@ export async function notifyOrphanDoc(
       audience: "billing",
       title: o.reason === "cancelled" ? "הקלטה בוטלה אחרי שהופק מסמך במורנינג" : "אירוע נמחק מהיומן אחרי שהופק מסמך במורנינג",
       details: orphanLine(o),
-      action: "לסגור את המסמך במורנינג — במסך המסמכים לאישור יש כפתור \"בטל ב-Morning\"",
+      // owner wording 22.10 (the {{3}} of bizi_ops_alert)
+      action: ORPHAN_ALERT_ACTION,
     });
   } catch (e) {
     console.error("orphan-doc: ההתראה זרקה", e);
