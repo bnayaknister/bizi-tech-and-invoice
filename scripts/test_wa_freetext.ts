@@ -108,8 +108,8 @@ ok('"יש מקום מחר אחרי 4?" — 4 = 16:00 (04:00 is outside the openi
   const q = parseAvailabilityText("יש מקום מחר אחרי 4?", TODAY);
   return q !== null && q.dateFrom === "2026-10-17" && q.timeFrom === "16:00" && q.dropped.length === 0;
 })());
-ok('"יש מקום מחר אחרי 7?" — 07:00 and 19:00 are both outside: dropped, not guessed', (() => {
-  const q = parseAvailabilityText("יש מקום מחר אחרי 7?", TODAY);
+ok('"יש מקום מחר אחרי 8?" — 08:00 and 20:00 are BOTH opening-hours starts: dropped, not guessed', (() => {
+  const q = parseAvailabilityText("יש מקום מחר אחרי 8?", TODAY);
   return q !== null && q.dateFrom === "2026-10-17" && q.timeFrom === null && q.dropped.length === 1;
 })());
 ok('"גבעון גדול" is the large room ONLY (not also גבעון)', (() => {
@@ -167,8 +167,8 @@ ok("two different lengths -> the length is dropped, not picked", (() => {
   const r = parseEditText("3 שעות או 4 שעות", TODAY);
   return r !== null && r.edits.length === 0 && r.dropped.includes("משך ההקלטה");
 })());
-ok('a vague time is SAID, not used ("אחרי 7")', (() => {
-  const r = parseEditText("אורח: יהודה, אחרי 7", TODAY);
+ok('a vague time is SAID, not used ("אחרי 8")', (() => {
+  const r = parseEditText("אורח: יהודה, אחרי 8", TODAY);
   return r !== null && r.edits.length === 1 && r.edits[0].field === "guest" && r.dropped.length === 1;
 })());
 check("nothing certain -> null", parseEditText("זה נראה לי ממש טוב, תודה", TODAY), null);
@@ -381,9 +381,10 @@ console.log("\n=== 9. ranges parse whole — and what is not used is SAID ===");
   const q = parseAvailabilityText("מה פנוי בין 4 ל-6?", TODAY);
   check("bare 4-6: the opening-hours readings (E14-2c)", [q?.timeFrom, q?.timeTo], ["16:00", "18:00"]);
   check("...nothing dropped", q?.dropped.length, 0);
+  // owner, 21.10 (option B): starts 08:00-20:00 — 7 is 19:00, 8 is 08:00 or 20:00 (asked)
   const q2 = parseAvailabilityText("מה פנוי בין 7 ל-8?", TODAY);
-  check("bare 7-8 (neither reading open): no times used", [q2?.timeFrom, q2?.timeTo], [null, null]);
-  check("...both named", q2?.dropped.length, 2);
+  check("bare 7 -> 19:00; bare 8 (both readings open) -> not used", [q2?.timeFrom, q2?.timeTo], ["19:00", null]);
+  check("...8 named", q2?.dropped.length, 1);
 }
 {
   const q = parseAvailabilityText("מה פנוי בין 10 בבוקר ל-4 בערב?", TODAY);

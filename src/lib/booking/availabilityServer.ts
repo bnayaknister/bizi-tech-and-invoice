@@ -9,7 +9,7 @@ import {
   type ApprovedRequest,
   type AvailabilityResult,
 } from "@/lib/calendar/availability";
-import { STUDIO_CLOSE_HOUR, STUDIO_OPEN_DAYS, STUDIO_OPEN_HOUR, bookingWindowFor } from "@/lib/calendar/bookingWindow";
+import { STUDIO_CLOSE_HOUR, STUDIO_LATEST_START, STUDIO_OPEN_DAYS, STUDIO_OPEN_HOUR, bookingWindowFor } from "@/lib/calendar/bookingWindow";
 import { DEFAULT_BOOKING_DURATION, type BookingDuration } from "./duration";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -198,6 +198,8 @@ export async function loadAvailability(
     },
     approved
   );
+  // owner, 21.10: the grid runs to a 22:00 END, but no recording STARTS after 20:00
+  result.free = result.free.filter((s) => s.startIsrael <= STUDIO_LATEST_START);
 
   return {
     fromIsrael,

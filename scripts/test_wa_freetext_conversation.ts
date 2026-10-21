@@ -272,19 +272,19 @@ function main() {
   // ════════════════════════════════════════════════════════════════════════
   scenario("4. בקשות לא ברורות — הבוט אומר מה לא הבין, לא מנחש ולא מתעלם");
   const u = new Conversation("unclear", SHOW);
-  // E14-2c: "4" is now 16:00 (the opening-hours rule); "7" (07:00 / 19:00) is still unclear
-  u.say("יש מקום ביום שלישי אחרי 7?");
-  ok("the bare '7' is named as not understood", u.body().includes("לא בטוח שהבנתי") && u.body().includes("7"), u.body());
+  // E14-2c: "4" is now 16:00 (the opening-hours rule); "8" (08:00 / 20:00, both open) is still unclear
+  u.say("יש מקום ביום שלישי אחרי 8?");
+  ok("the bare '8' is named as not understood (08:00 or 20:00)", u.body().includes("לא בטוח שהבנתי") && u.body().includes("8"), u.body());
   eq("…and NOT used as a time filter", u.state.filter?.timeFrom ?? null, null);
   eq("the certain part (Tuesday) is used", u.state.filter?.dateFrom, "2026-10-20");
   u.tap(FLOW_ID.studioYes);
   eq("one day asked, and it is free: its hours straight away (E14-2)", [u.state.step, u.state.date], ["hour", "2026-10-20"]);
-  ok("hours are NOT narrowed by the unclear 7 (09:00 is offered)", u.state.hours[0]?.start === "09:00", u.state.hours[0]);
+  ok("hours are NOT narrowed by the unclear 8 (09:00 is offered)", u.state.hours[0]?.start === "09:00", u.state.hours[0]);
   u.tap(FLOW_ID.hour("09:00"));
   u.tap(FLOW_ID.noGuest);
   u.tap(FLOW_ID.noNote);
   const before4 = { ...u.state };
-  u.say("אורח: רון, אחרי 7");
+  u.say("אורח: רון, אחרי 8");
   eq("the guest is applied", u.state.guest, "רון");
   ok("…and the vague time is SAID", u.body().includes("לא בטוח שהבנתי") && u.body().includes(HE.NOTICE.changedPartial), u.body());
   eq("…the slot is untouched", [u.state.date, u.state.start], [before4.date, before4.start]);

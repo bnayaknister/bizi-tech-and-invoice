@@ -1,6 +1,7 @@
 import { israelDateOf, type AvailabilityResult, type Slot } from "@/lib/calendar/availability";
 import { dayMonth, dowHebrew } from "@/app/calendar/availability/booking";
 import { DEFAULT_BOOKING_DURATION } from "./duration";
+import { STUDIO_LIST_FROM } from "@/lib/calendar/bookingWindow";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // What a stranger holding a link is allowed to receive. PURE.
@@ -82,6 +83,15 @@ export function toPublicAvailability(
     })),
     refusedRooms: (result?.roomsRefused ?? []).map((r) => r.room),
   };
+}
+
+/**
+ * The booking-link SCREEN shows starts from STUDIO_LIST_FROM (09:00; owner,
+ * 21.10): 08:00 exists on the server for an explicit request in the bot, and
+ * is not offered on the screen. Evenings to the latest start (20:00) are.
+ */
+export function forScreen(pub: PublicAvailability): PublicAvailability {
+  return { ...pub, free: pub.free.filter((f) => f.startIsrael >= STUDIO_LIST_FROM) };
 }
 
 // ─── "הבקשות שלכם" ──────────────────────────────────────────────────────────

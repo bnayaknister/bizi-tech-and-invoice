@@ -189,7 +189,7 @@
       "expect": { "day": null, "studio": null, "time": "at 11:00", "duration": null, "guest": null, "note": null },
       "model": { "intent": "query", "time": ["ב-11", 11, 0, "none", "at"] } },
     { "id": 56, "cat": "hour", "text": "מחר ב-7",
-      "expect": { "day": "2026-10-22", "studio": null, "time": null, "duration": null, "guest": null, "note": null },
+      "expect": { "day": "2026-10-22", "studio": null, "time": "at 19:00", "duration": null, "guest": null, "note": null },
       "model": { "intent": "query", "day": ["מחר", { "rel": "tomorrow" }], "time": ["ב-7", 7, 0, "none", "at"] } },
 
     { "id": 57, "cat": "daypart", "text": "מה פנוי ביום שלישי בצהריים?",
@@ -215,6 +215,19 @@
       "model": { "intent": "query", "day": ["ביום ראשון", { "weekday": 0 }] } },
     { "id": 64, "cat": "daypart", "step": "summary", "text": "מה פנוי בערב השבוע?",
       "expect": { "day": null, "studio": null, "time": "range 17:00-20:00", "duration": null, "guest": null, "note": null },
-      "model": { "intent": "query" } }
+      "model": { "intent": "query" } },
+
+    { "id": 65, "cat": "hour", "text": "מחר ב-8",
+      "expect": { "day": "2026-10-22", "studio": null, "time": null, "duration": null, "guest": null, "note": null },
+      "model": { "intent": "query", "day": ["מחר", { "rel": "tomorrow" }], "time": ["ב-8", 8, 0, "none", "at"] } },
+    { "id": 66, "cat": "hour", "text": "מחר ב-8 בבוקר",
+      "expect": { "day": "2026-10-22", "studio": null, "time": "at 08:00", "duration": null, "guest": null, "note": null },
+      "model": { "intent": "query", "day": ["מחר", { "rel": "tomorrow" }], "time": ["ב-8 בבוקר", 8, 0, "morning", "at"] } },
+    { "id": 67, "cat": "hour", "text": "מחר ב-8 בערב",
+      "expect": { "day": "2026-10-22", "studio": null, "time": "at 20:00", "duration": null, "guest": null, "note": null },
+      "model": { "intent": "query", "day": ["מחר", { "rel": "tomorrow" }], "time": ["ב-8 בערב", 8, 0, "evening", "at"] } },
+    { "id": 68, "cat": "hour", "text": "מחר ב-8:00",
+      "expect": { "day": "2026-10-22", "studio": null, "time": "at 08:00", "duration": null, "guest": null, "note": null },
+      "model": { "intent": "query", "day": ["מחר", { "rel": "tomorrow" }], "time": ["ב-8:00", 8, 0, "none", "at"] } }
   ]
 }

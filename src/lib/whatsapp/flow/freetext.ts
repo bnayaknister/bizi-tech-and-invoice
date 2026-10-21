@@ -176,6 +176,9 @@ function hourPhrase(frag: string): { hhmm: string; ambiguous: boolean; options?:
   }
   if (Number(minutes) > 59) return null;
   if (!m[2] && h >= 1 && h <= 12) {
+    // owner, 21.10: a time WITH minutes ("8:00", "9:30") is as written when
+    // that is a start inside the opening hours; else the rule below ("4:30" -> 16:30)
+    if (dm?.[2] && isStartInStudioHours(h, Number(minutes))) return { hhmm: `${pad2(h)}:${minutes}`, ambiguous: false };
     const r = readBareHour(h, Number(minutes));
     if (r && "h" in r) return { hhmm: `${pad2(r.h)}:${minutes}`, ambiguous: false };
   }

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createTypedAdminClient } from "@/lib/supabase/admin";
 import { resolveBookingLink } from "@/lib/booking/links";
 import { loadAvailability } from "@/lib/booking/availabilityServer";
-import { toPublicAvailability, PUBLIC_SLOT_STEP_MINUTES } from "@/lib/booking/publicView";
+import { forScreen, toPublicAvailability, PUBLIC_SLOT_STEP_MINUTES } from "@/lib/booking/publicView";
 import { validateDuration } from "@/lib/booking/duration";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -79,7 +79,8 @@ export async function GET(request: Request, { params }: { params: { token: strin
       durationMinutes: duration,
     });
     return NextResponse.json(
-      toPublicAvailability(loaded.result, loaded, loaded.rooms),
+      // owner, 21.10: the screen lists from 09:00 (08:00 is for explicit bot requests only)
+      forScreen(toPublicAvailability(loaded.result, loaded, loaded.rooms)),
       { headers: HEADERS }
     );
   } catch (e) {

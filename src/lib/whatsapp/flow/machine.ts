@@ -10,6 +10,7 @@ import { clickableDays, hoursFor } from "@/app/calendar/availability/booking";
 import type { PublicAvailability } from "@/lib/booking/publicView";
 import { bookableRoomForDefault } from "@/lib/calendar/rooms";
 import { STUDIOS } from "@/lib/calendar/studios";
+import { STUDIO_LIST_FROM } from "@/lib/calendar/bookingWindow";
 import type { SubmitResult } from "@/lib/booking/submit";
 import { selfServeAllowed } from "@/lib/booking/manage";
 import { COPY, copy, isLang, DEFAULT_LANG, type BotCopy, type Lang } from "./copy";
@@ -1500,8 +1501,13 @@ function applyStepEdits(
  * SAME pure helpers the booking screen draws its grid with — clickableDays and
  * hoursFor — and render.
  */
-export function withAvailability(s: FlowState, pub: PublicAvailability): Transition {
+export function withAvailability(s: FlowState, full: PublicAvailability): Transition {
   const C = copy(s.lang);
+  // owner, 21.10: the LISTS start at 09:00 — 08:00 is checked only when it is
+  // asked for (an exact start, or a written "from" before 09:00). `full` is
+  // what the server allows (08:00-20:00 starts); `pub` is what is offered.
+  const listFrom = s.filter?.timeFrom && s.filter.timeFrom < STUDIO_LIST_FROM ? s.filter.timeFrom : STUDIO_LIST_FROM;
+  const pub: PublicAvailability = { ...full, free: full.free.filter((f) => f.startIsrael >= listFrom) };
   if (s.step === "day") {
     const all = clickableDays(pub.free, s.studio, pub.fromIsrael, pub.toIsrael);
     if (all.length === 0) {
@@ -1540,7 +1546,8 @@ export function withAvailability(s: FlowState, pub: PublicAvailability): Transit
       const { start: wanted, tail } = s.keep;
       const announce = !!s.keep.announce;
       const then = s.keep.then ?? "summary";
-      const hit = allHours.find((h) => h.start === wanted);
+      // the exact start asked for is checked against EVERYTHING the server allows (08:00 included)
+      const hit = hoursFor(full.free, s.studio, s.date).map((h) => ({ start: h.startIsrael, end: h.endIsrael })).find((h) => h.start === wanted);
       if (hit) {
         // it still fits: the summary, updated — the notice applyEdits wrote;
         // E14-2c: a one-message request is told THAT slot is free instead
@@ -1548,7 +1555,9 @@ export function withAvailability(s: FlowState, pub: PublicAvailability): Transit
           ? C.NOTICE.slotFree(s.date as string, hit.start, hit.end, s.studio as string, s.studio === s.defaultStudio) +
             tail + (then === "summary" ? `\n${C.NOTICE.notBookedYet}` : "")
           : s.notice;
-        return render({ ...s, keep: null, notice, fromSummary: then === "summary" ? false : s.fromSummary, hours: allHours, hourPage: 0, start: hit.start, end: hit.end, step: then });
+        return render({ ...s, keep: null, notice, fromSummary: then === "summary" ? false : s.fromSummary,
+          // an explicit 08:00 is not on the 09:00 list: it is added, so the stored list holds the chosen start
+          hours: allHours.some((h) => h.start === hit.start) ? allHours : [hit, ...allHours], hourPage: 0, start: hit.start, end: hit.end, step: then });
       }
       // it does not: say why, and offer the rest of that day — or other days.
       // The filter is dropped, so the lists are every free option and "back"
@@ -1578,7 +1587,7 @@ export function withAvailability(s: FlowState, pub: PublicAvailability): Transit
       }
       // E14-2c (owner, 21.10): another room free at that very time is OFFERED
       const others = layerOn(s)
-        ? BOOKABLE_ROOM_NAMES.filter((r) => r !== studio && hoursFor(pub.free, r, date).some((h) => h.startIsrael === wanted))
+        ? BOOKABLE_ROOM_NAMES.filter((r) => r !== studio && hoursFor(full.free, r, date).some((h) => h.startIsrael === wanted))
         : [];
       if (others.length > 0) {
         return render({

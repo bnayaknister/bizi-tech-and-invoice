@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { BOOKABLE_ROOM_NAMES, type BookableRoom } from "@/lib/booking/request";
 import { BOOKING_DURATIONS, type BookingDuration } from "@/lib/booking/duration";
 import { addIsraelDays } from "@/lib/calendar/availability";
-import { BOOKING_WINDOW_DAYS } from "@/lib/calendar/bookingWindow";
+import { BOOKING_WINDOW_DAYS, isStartInStudioHours } from "@/lib/calendar/bookingWindow";
 import { weekdayOf } from "@/app/calendar/availability/booking";
 import { comingWeekday, nextWeekday, readBareHour, type ParsedEdit } from "./freetext";
 import type { FlowEvent, FlowStep } from "./machine";
@@ -250,13 +250,15 @@ export function isLlmRaw(v: unknown): v is LlmRaw {
 }
 
 /** "4" + daypart -> HH, or both readings when it is not certain (the rule parser's rule). */
-function resolveHour(hour: number, daypart: string, minute = 0): { h: number } | { both: [number, number] } | null {
+function resolveHour(hour: number, daypart: string, minute = 0, colon = false): { h: number } | { both: [number, number] } | null {
   if (hour >= 13 && hour <= 23) return daypart === "morning" ? null : { h: hour };
   if (hour < 1 || hour > 12) return null;
   if (daypart === "morning") return hour === 12 ? null : { h: hour };
   if (daypart !== "none") return { h: hour === 12 ? 12 : hour + 12 };
-  // no daypart: the rule parser's own rule — the one reading inside the
+  // no daypart: the rule parser's own rule — "8:00" (written with minutes) as
+  // written if it is an opening-hours start; else the one reading inside the
   // opening hours, else asked (owner, 21.10)
+  if (colon && isStartInStudioHours(hour, minute)) return { h: hour };
   return readBareHour(hour, minute);
 }
 
@@ -402,7 +404,7 @@ export function interpretLlm(
   // ── the start time: as written + its daypart word; unsure -> asked ──
   const t = raw.time;
   if (gate("time", t)) {
-    const r = isInt(t.hour, 0, 24) && isInt(t.minute, 0, 59) ? resolveHour(t.hour, t.daypart, t.minute) : null;
+    const r = isInt(t.hour, 0, 24) && isInt(t.minute, 0, 59) ? resolveHour(t.hour, t.daypart, t.minute, /\d:\d\d/.test(t.quote)) : null;
     if (!r || t.kind === "before") {
       doubt("time", t.quote);
     } else if ("both" in r) {

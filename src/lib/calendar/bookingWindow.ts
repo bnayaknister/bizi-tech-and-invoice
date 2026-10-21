@@ -26,19 +26,32 @@ import { israelDateOf, addIsraelDays } from "./availability";
 export const BOOKING_WINDOW_DAYS = 56;
 
 /**
- * The studios' opening hours, as availability is computed (owner rules,
- * read by loadAvailability): Sunday-Thursday, starts from 09:00, every
- * recording ENDS by 19:00. ONE place: the slot grid and the bot's reading of
- * an unsure hour ("ב-4" -> 16:00, E14-2c) both read these.
+ * The studios' opening hours (owner, 21.10 — option B). ONE place: the slot
+ * grid (loadAvailability), the lists the bot and the booking screen SHOW, and
+ * the bot's reading of an unsure hour ("ב-4" -> 16:00) all read these.
+ *
+ *   Sunday-Thursday · a recording may START 08:00-20:00 · it ENDS by 22:00.
+ *   Lists (the bot's hours, the booking-link screen) start at 09:00; 08:00 is
+ *   booked only when a client asks for it explicitly in the bot ("ב-8 בבוקר",
+ *   "8:00") and it is free.
+ *
+ * Before 21.10 the grid was 09:00 to an END of 19:00.
  */
 export const STUDIO_OPEN_DAYS = [0, 1, 2, 3, 4] as const;
-export const STUDIO_OPEN_HOUR = 9;
-export const STUDIO_CLOSE_HOUR = 19;
+/** the earliest START the server accepts */
+export const STUDIO_OPEN_HOUR = 8;
+/** every recording ENDS by this hour (the grid's closing time) */
+export const STUDIO_CLOSE_HOUR = 22;
+/** the latest START, "HH:MM" */
+export const STUDIO_LATEST_START = "20:00";
+/** the earliest start a LIST shows, "HH:MM" (08:00 only on an explicit request) */
+export const STUDIO_LIST_FROM = "09:00";
 
-/** Is "HH:MM" a START inside the opening hours (09:00 <= start < 19:00)? */
+/** Is HH:MM a START inside the opening hours (08:00 <= start <= 20:00)? */
 export function isStartInStudioHours(hour: number, minute = 0): boolean {
   const m = hour * 60 + minute;
-  return m >= STUDIO_OPEN_HOUR * 60 && m < STUDIO_CLOSE_HOUR * 60;
+  const [lh, lm] = STUDIO_LATEST_START.split(":").map(Number);
+  return m >= STUDIO_OPEN_HOUR * 60 && m <= lh * 60 + lm;
 }
 
 export type BookingWindowDates = {

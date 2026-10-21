@@ -110,7 +110,7 @@ console.log("\n=== 1. when the model is called (owner decision 21.10, 1) ===");
 console.log("\n=== 2. the 40-message set, with a CORRECT model's answers (owner decision 21.10, 7) ===");
 {
   const { today, messages } = loadFixtures();
-  eq("64 messages, today = Wed 21.10.2026", [messages.length, today], [64, TODAY]);
+  eq("68 messages, today = Wed 21.10.2026", [messages.length, today], [68, TODAY]);
   let full = 0;
   const wrong: string[] = [];
   for (const f of messages) {
@@ -179,9 +179,15 @@ console.log("\n=== 3. a model that answers WRONG or MALICIOUSLY: nothing it inve
   eq("'ב-11' -> 11:00", H("ב-11", 11), "at 11:00");
   eq("'ב-12' -> 12:00", H("ב-12", 12), "at 12:00");
   eq("'ב-4:30' -> 16:30", H("ב-4:30", 4, 30), "at 16:30");
-  eq("'ב-7': 07:00 and 19:00 are both outside -> asked", H("ב-7", 7), null);
-  eq("'ב-8': 08:00 / 20:00 -> asked", H("ב-8", 8), null);
-  ok("…with BOTH readings offered to the hour step", (() => { const e = interp("מחר ב-7", raw({ time: timeOf("ב-7", 7) }), "hour").event; return e?.type === "edit" && JSON.stringify(e.maybe) === JSON.stringify([{ label: "ב-7", options: ["07:00", "19:00"] }]); })());
+  // owner, 21.10 (option B): starts 08:00-20:00
+  eq("'ב-7' -> 19:00 (07:00 is before opening)", H("ב-7", 7), "at 19:00");
+  eq("'ב-8': 08:00 / 20:00 are BOTH open -> asked", H("ב-8", 8), null);
+  eq("'ב-8 בבוקר' -> 08:00", H("ב-8 בבוקר", 8, 0, "morning"), "at 08:00");
+  eq("'ב-8 בערב' -> 20:00", H("ב-8 בערב", 8, 0, "evening"), "at 20:00");
+  eq("'8:00' (with minutes) -> 08:00 as written", H("8:00", 8), "at 08:00");
+  eq("'4:30' (with minutes, 04:30 closed) -> 16:30", H("4:30", 4, 30), "at 16:30");
+  eq("'ב-10 בערב' -> 22:00 is past the latest start: still 22:00 here, availability says 'not free'", H("ב-10 בערב", 10, 0, "evening"), "at 22:00");
+  ok("…with BOTH readings offered to the hour step", (() => { const e = interp("מחר ב-8", raw({ time: timeOf("ב-8", 8) }), "hour").event; return e?.type === "edit" && JSON.stringify(e.maybe) === JSON.stringify([{ label: "ב-8", options: ["08:00", "20:00"] }]); })());
   eq("'4 אחה\"צ' -> 16:00", H("4 אחה\"צ", 4, 0, "afternoon"), "at 16:00");
   eq("'12 בצהריים' -> 12:00", H("12 בצהריים", 12, 0, "afternoon"), "at 12:00");
   eq("'9 בבוקר' -> 09:00", H("9 בבוקר", 9, 0, "morning"), "at 09:00");

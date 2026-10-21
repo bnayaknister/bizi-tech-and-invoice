@@ -37,7 +37,8 @@ import {
 } from "../src/lib/whatsapp/flow/machine";
 import { COPY } from "../src/lib/whatsapp/flow/copy";
 import { daypartRange, parseAvailabilityText, yesNo, type ParsedEdit } from "../src/lib/whatsapp/flow/freetext";
-import type { PublicAvailability } from "../src/lib/booking/publicView";
+import { forScreen, type PublicAvailability } from "../src/lib/booking/publicView";
+import { isStartInStudioHours } from "../src/lib/calendar/bookingWindow";
 import type { ContactShow } from "../src/lib/booking/contacts";
 import type { InboundMessage } from "../src/lib/whatsapp/webhook";
 
@@ -350,6 +351,41 @@ console.log("\n=== 7e. 'כן' / 'לא' to a yes/no question = the button (owner,
   eq("'לא' -> other times in the asked room", [no.state.step, no.state.studio, !!no.state.offer], ["hour", "חשמונאים", false]);
   const two = new Chat({ busy: busyAtNoon(["חשמונאים"]) }).event(OWNER_SENTENCE).say("כן");
   ok("'כן' with TWO rooms offered: the buttons again (which one?)", two.last.type === "buttons" && two.state.studio === "חשמונאים" && !!two.state.offer, two.state);
+}
+
+console.log("\n=== 7f. opening hours, option B (owner, 21.10): starts 08:00-20:00, lists from 09:00 ===");
+{
+  // what the server now serves: starts 08:00..20:00, every 30 min, all rooms, Sun 25.10
+  const wide = (d: number): PublicAvailability => ({
+    fromIsrael: "2026-10-22", toIsrael: "2026-12-10", rooms: ROOMS, durationMinutes: d, refusedRooms: [],
+    free: ROOMS.flatMap((room) => {
+      const out = [];
+      for (let m = 8 * 60; m <= 20 * 60 && m + d <= 22 * 60; m += 30) out.push({ room, dateIsrael: "2026-10-25", startIsrael: hhmm(m), endIsrael: hhmm(m + d) });
+      return out;
+    }),
+  });
+  const drive = (s0: FlowState, e: FlowEvent) => {
+    let t: Transition = reduce(s0, e, { now: NOW });
+    for (let g = 0; g < 5 && t.kind === "need-availability"; g++) t = withAvailability(t.state, wide(t.state.duration ?? 90));
+    if (t.kind !== "reply") throw new Error(t.kind);
+    return t;
+  };
+  const s0 = new Chat().state;
+  const list = drive(s0, edit([E.day("2026-10-25"), E.room("גבעון")]));
+  eq("a day's hours: the list starts at 09:00", [list.state.step, list.state.hours[0]?.start], ["hour", "09:00"]);
+  ok("…08:00 is not offered", !list.state.hours.some((h) => h.start === "08:00"));
+  eq("…the last start offered is 20:00", list.state.hours[list.state.hours.length - 1]?.start, "20:00");
+  const eight = drive(s0, edit([E.day("2026-10-25"), E.room("גבעון"), E.at("08:00")]));
+  eq("an EXPLICIT 08:00 that is free: taken", [eight.state.step, eight.state.start, eight.state.end], ["guest", "08:00", "09:30"]);
+  const from8 = drive(s0, edit([E.day("2026-10-25"), E.room("גבעון"), { field: "time-from", hhmm: "08:00", alsoConfirm: false }]));
+  eq("'from 08:00' asked explicitly: the list starts at 08:00", from8.state.hours[0]?.start, "08:00");
+  const late = drive(s0, edit([E.day("2026-10-25"), E.room("גבעון"), E.at("20:00")]));
+  eq("20:00 (the latest start): taken, ends 21:30", [late.state.start, late.state.end], ["20:00", "21:30"]);
+  const screen = forScreen(wide(90));
+  ok("the booking SCREEN: no 08:00", !screen.free.some((f) => f.startIsrael === "08:00"), screen.free.slice(0, 2));
+  ok("…20:00 is shown", screen.free.some((f) => f.startIsrael === "20:00"));
+  eq("…09:00 is the first", screen.free.map((f) => f.startIsrael).sort()[0], "09:00");
+  eq("opening-hours starts: 07:59 no, 08:00 yes, 20:00 yes, 20:30 no", [isStartInStudioHours(7, 59), isStartInStudioHours(8, 0), isStartInStudioHours(20, 0), isStartInStudioHours(20, 30)], [false, true, true, false]);
 }
 
 console.log("\n=== 8. switch off / English: the menu exactly as before ===");
