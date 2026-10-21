@@ -104,6 +104,8 @@ type QueryEcho = {
   dateTo: string | null;
   timeFrom: string | null;
   timeTo: string | null;
+  /** E14-2b: an exact start ("ב-10") */
+  timeAt?: string | null;
 };
 /** E14-2: what the client wrote, narrowing a day or hour list */
 type AskedRange = {
@@ -357,6 +359,7 @@ const HE = {
       if (q.studio) parts.push(`אולפן ${studioHe(q.studio)}`);
       if (q.dateFrom && q.dateTo && q.dateFrom !== q.dateTo) parts.push(`${dayHe(q.dateFrom)} עד ${dayHe(q.dateTo)}`);
       else if (q.dateFrom) parts.push(dayHe(q.dateFrom));
+      if (q.timeAt) parts.push(`בשעה ${q.timeAt}`);
       if (q.timeFrom) parts.push(`אחרי ${q.timeFrom}`);
       if (q.timeTo) parts.push(`לפני ${q.timeTo}`);
       if (q.duration) parts.push(DURATION_SHORT[q.duration]);
@@ -627,6 +630,7 @@ const EN: BotCopy = {
       if (q.studio) parts.push(`${studioEn(q.studio)} studio`);
       if (q.dateFrom && q.dateTo && q.dateFrom !== q.dateTo) parts.push(`${dayEn(q.dateFrom)} to ${dayEn(q.dateTo)}`);
       else if (q.dateFrom) parts.push(dayEn(q.dateFrom));
+      if (q.timeAt) parts.push(`at ${q.timeAt}`);
       if (q.timeFrom) parts.push(`after ${q.timeFrom}`);
       if (q.timeTo) parts.push(`before ${q.timeTo}`);
       if (q.duration) parts.push(DURATION_SHORT_EN[q.duration]);

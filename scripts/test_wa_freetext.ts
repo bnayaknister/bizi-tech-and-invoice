@@ -130,7 +130,8 @@ check("mixed approve+edit -> the EDIT, flagged", parseEditText("מאשר, ותו
 check("length", parseEditText("3 שעות", TODAY), { edits: [{ field: "duration", minutes: 180, alsoConfirm: false }], dropped: [] });
 check("room", parseEditText("תשנו לגבעון גדול", TODAY), { edits: [{ field: "studio", studio: "גבעון גדול", alsoConfirm: false }], dropped: [] });
 check("day", parseEditText("יום רביעי", TODAY), { edits: [{ field: "day", date: "2026-10-21", alsoConfirm: false }], dropped: [] });
-check('bare "15:00" is a time', parseEditText("15:00", TODAY), { edits: [{ field: "time-from", hhmm: "15:00", alsoConfirm: false }], dropped: [] });
+// E14-2b (owner, 20.10): a bare time is an EXACT start; "אחרי 15:00" stays a "from"
+check('bare "15:00" is an exact start', parseEditText("15:00", TODAY), { edits: [{ field: "time-at", hhmm: "15:00", alsoConfirm: false }], dropped: [] });
 check('"כן" alone -> the confirm hint, NEVER a confirmation', parseEditText("כן", TODAY), { edits: [{ field: "confirm-hint" }], dropped: [] });
 check("guest AND length in one message -> BOTH", parseEditText("אורח: יהודה, וגם 3 שעות", TODAY), {
   edits: [
@@ -464,12 +465,15 @@ console.log("\n=== 11. zero-match DAYS: typed text never empties the screen; onl
   const Z = t.state;
   check("the zero-match screen: broaden + back", buttonIds(t), [FLOW_ID.broaden, FLOW_ID.back]);
   ok("…no invitation to type other days", !bodyOf(t).includes("לכתוב"), bodyOf(t));
-  for (const typed of ["סתם משהו", "כן", "אז אולי ביום שני?"]) {
+  for (const typed of ["סתם משהו", "כן"]) {
     const r = textAt(Z, typed);
     check(`"${typed}": the same zero-match screen again (broaden + back)`, [r.kind, buttonIds(r)], ["reply", [FLOW_ID.broaden, FLOW_ID.back]]);
     ok(`"${typed}": says nothing is free — never "these are the free days"`, bodyOf(r).includes(C.NOTICE.noMatchDates) && !bodyOf(r).includes("שיש בהם מקום"), bodyOf(r));
     check(`"${typed}": filter and (empty) list untouched`, [r.state.filter, r.state.days, r.state.step], [Z.filter, [], "day"]);
   }
+  // E14-2b: ANOTHER day typed is a new narrow request, not a broadening
+  const retyped = textAt(Z, "אז אולי ביום שני?");
+  check("another day typed: a fresh read for THAT day (E14-2b)", [retyped.kind, retyped.state.filter?.dateFrom, retyped.state.filter?.dateTo], ["need-availability", "2026-10-19", "2026-10-19"]);
   const staleDay = reduce(Z, { type: "day", date: "2026-10-20" });
   ok("a stale day tap: 'no longer active' + the zero-match screen", bodyOf(staleDay).includes(C.NOTICE.stale) && bodyOf(staleDay).includes(C.NOTICE.noMatchDates), bodyOf(staleDay));
   check("…its buttons kept", buttonIds(staleDay), [FLOW_ID.broaden, FLOW_ID.back]);
@@ -495,12 +499,15 @@ console.log("\n=== 12. zero-match HOURS: the same rule ===");
   t = withAvailability(t.state, availability(NEXT_WEEK));
   const Z = t.state;
   check("the zero-match hours screen: broaden + back", [Z.step, buttonIds(t)], ["hour", [FLOW_ID.broaden, FLOW_ID.back]]);
-  for (const typed of ["סתם משהו", "כן", "אז אולי ב-10:00?"]) {
+  for (const typed of ["סתם משהו", "כן"]) {
     const r = textAt(Z, typed);
     check(`"${typed}": the same zero-match screen again`, [r.kind, buttonIds(r)], ["reply", [FLOW_ID.broaden, FLOW_ID.back]]);
     ok(`"${typed}": says nothing is free at those times`, bodyOf(r).includes(C.NOTICE.noMatchHours), bodyOf(r));
     check(`"${typed}": filter and (empty) list untouched`, [r.state.filter, r.state.hours, r.state.date], [Z.filter, [], "2026-10-20"]);
   }
+  // E14-2b: an exact time typed is a new request for THAT slot (kept if free)
+  const retypedHour = textAt(Z, "אז אולי ב-10:00?");
+  check("an exact time typed: that slot is checked (E14-2b)", [retypedHour.kind, retypedHour.state.keep?.start], ["need-availability", "10:00"]);
   const staleHour = reduce(Z, { type: "hour", start: "13:00" });
   ok("a stale hour tap: 'no longer active' + the zero-match screen", bodyOf(staleHour).includes(C.NOTICE.stale) && bodyOf(staleHour).includes(C.NOTICE.noMatchHours), bodyOf(staleHour));
   const back = reduce(Z, { type: "back" });

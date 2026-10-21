@@ -35,7 +35,7 @@ import {
   type FlowStep,
   type Transition,
 } from "./machine";
-import { parseAvailabilityText, parseEditText } from "./freetext";
+import { hasChangeMarker, parseAvailabilityText, parseEditText, parseStepText } from "./freetext";
 import { loadConversation, saveConversation } from "./store";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -180,6 +180,18 @@ export function eventFromMessage(
     } else if (opts.step === "menu" || opts.step === undefined) {
       const q = parseAvailabilityText(body, today);
       if (q) return { type: "query", q };
+    } else if (
+      opts.step === "duration" || opts.step === "studio-default" || opts.step === "studio" ||
+      opts.step === "day" || opts.step === "hour"
+    ) {
+      // E14-2b: every choice step reads natural answers; unparsed -> the step again
+      const parsed = parseStepText(body, today, opts.step);
+      if (parsed) return { type: "edit", edits: parsed.edits, dropped: parsed.dropped };
+    } else if ((opts.step === "guest" || opts.step === "note") && hasChangeMarker(body)) {
+      // owner, 20.10: here text is the VALUE unless it says it is a change
+      // ("בעצם", "תשנה", "אורח:", "הערה:"). Marked but not understood -> said, not stored.
+      const parsed = parseStepText(body, today, opts.step);
+      return { type: "edit", edits: parsed?.edits ?? [], dropped: parsed ? parsed.dropped : [body.trim()] };
     }
   }
   return nav;

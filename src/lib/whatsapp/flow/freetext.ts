@@ -47,6 +47,8 @@ export type ParsedEdit =
   | { field: "day"; date: string; alsoConfirm: boolean }
   /** the client named a start time: re-offer that day's hours from it up */
   | { field: "time-from"; hhmm: string; alsoConfirm: boolean }
+  /** E14-2b: an EXACT start ("ב-10", "בשעה 10", "15:00") — kept if free, else that day's hours */
+  | { field: "time-at"; hhmm: string; alsoConfirm: boolean }
   /** "כן" / "מאשר" with no edit: confirmation stays with the button */
   | { field: "confirm-hint" };
 
@@ -393,32 +395,51 @@ function daysIn(text: string, todayIsrael: string): string[] {
   return Array.from(out);
 }
 
-/** Every time stated: certain HH:MM values and the fragments too vague to use. */
-function timesIn(text: string): { certain: string[]; vague: string[] } {
+/**
+ * Every time stated. E14-2b (owner, 20.10): "אחרי 10" is a FROM (re-offer the
+ * hours from it); "ב-10", "בשעה 10", "לשעה 10" and a bare "15:00" are an EXACT
+ * start. A time that is not certain ("ב-4" — morning or afternoon?) is never
+ * guessed: it is named in `vague`, and the bot says so.
+ */
+function timesIn(text: string): { certain: string[]; at: string[]; vague: string[] } {
   const certain = new Set<string>();
+  const at = new Set<string>();
   const vague: string[] = [];
   const seen = new Set<string>();
-  for (const m of Array.from(text.matchAll(new RegExp(`(?:בשעה|לשעה|אחרי|ל-)\\s*(?:השעה\\s+)?(${HOUR_FRAG})`, "g")))) {
-    const p = hourPhrase(m[1]);
-    if (p && !p.ambiguous) certain.add(p.hhmm);
-    else if (!seen.has(m[1])) {
-      seen.add(m[1]);
-      vague.push(`השעה "${m[1].trim()}"`);
+  const say = (frag: string, shown = frag.trim()) => {
+    if (!seen.has(shown)) {
+      seen.add(shown);
+      vague.push(`השעה "${shown}"`);
     }
-  }
-  // "עד 11" / "עד 11:00" asks for an END time, which a summary edit does not
-  // support — always named vague, and shielded from the colon scan below
-  const untilSpans: [number, number][] = [];
-  for (const m of Array.from(text.matchAll(new RegExp(`עד\\s+(?:השעה\\s+)?(${HOUR_FRAG})`, "g")))) {
-    untilSpans.push([m.index, m.index + m[0].length]);
-    vague.push(`השעה "עד ${m[1].trim()}"`);
-  }
-  for (const m of Array.from(text.matchAll(/(?<!\d)(\d{1,2}:\d{2})(?!\d)/g))) {
-    if (untilSpans.some(([a, b]) => m.index >= a && m.index < b)) continue;
+  };
+  // a date like "ב-21.10" is not a time: the frag may not run into ".10" / "/10"
+  const END = "(?![\\d]|[./]\\d)";
+  const consumed: [number, number][] = [];
+  for (const m of Array.from(text.matchAll(new RegExp(`אחרי\\s*(?:השעה\\s+)?(${HOUR_FRAG})${END}`, "g")))) {
+    consumed.push([m.index, m.index + m[0].length]);
     const p = hourPhrase(m[1]);
     if (p && !p.ambiguous) certain.add(p.hhmm);
+    else say(m[1]);
   }
-  return { certain: Array.from(certain), vague };
+  for (const m of Array.from(text.matchAll(new RegExp(`(?<![\\p{L}])(?:בשעה|לשעה|ב-|ל-|ב(?=\\d))\\s*(?:השעה\\s+)?(${HOUR_FRAG})${END}`, "gu")))) {
+    if (consumed.some(([a, b]) => m.index >= a && m.index < b)) continue;
+    consumed.push([m.index, m.index + m[0].length]);
+    const p = hourPhrase(m[1]);
+    if (p && !p.ambiguous) at.add(p.hhmm);
+    else say(m[1]);
+  }
+  // "עד 11" / "עד 11:00" asks for an END time, which an edit does not
+  // support — always named vague, and shielded from the colon scan below
+  for (const m of Array.from(text.matchAll(new RegExp(`עד\\s+(?:השעה\\s+)?(${HOUR_FRAG})`, "g")))) {
+    consumed.push([m.index, m.index + m[0].length]);
+    say(m[1], `עד ${m[1].trim()}`);
+  }
+  for (const m of Array.from(text.matchAll(/(?<![\d.\/])(\d{1,2}:\d{2})(?!\d)/g))) {
+    if (consumed.some(([a, b]) => m.index >= a && m.index < b)) continue;
+    const p = hourPhrase(m[1]);
+    if (p && !p.ambiguous) at.add(p.hhmm);
+  }
+  return { certain: Array.from(certain), at: Array.from(at), vague };
 }
 
 /**
@@ -439,8 +460,19 @@ function cutValueAtFieldBoundary(value: string, todayIsrael: string): string {
       studiosIn(tail).studio !== null ||
       daysIn(tail, todayIsrael).length > 0 ||
       tailTimes.certain.length > 0 ||
+      tailTimes.at.length > 0 ||
       tailTimes.vague.length > 0;
     if (fieldFollows) return value.slice(0, comma.index).trim();
+  }
+  // E14-2b: "עם אורח דני ביום ראשון ב-10" — no comma, but a day or a time
+  // clearly starts there. Cut only where the tail really parses as one.
+  const clause2 = new RegExp("\\s(?=(?:ביום|יום|בשעה|לשעה|מחר|מחרתיים|אחרי|ב-?\\d|ל-\\d))", "g");
+  for (const m of Array.from(value.matchAll(clause2))) {
+    const tail = value.slice(m.index);
+    const tt = timesIn(tail);
+    if (daysIn(tail, todayIsrael).length > 0 || tt.certain.length > 0 || tt.at.length > 0 || tt.vague.length > 0) {
+      return value.slice(0, m.index).trim();
+    }
   }
   return value.trim();
 }
@@ -467,7 +499,9 @@ export function parseEditText(raw: string, todayIsrael: string): ParsedEditSet |
   const guest =
     /^(?:אורח|אורחת|האורח|האורחת|שם\s+האורח)\s*[:\-–]?\s*(.+)$/.exec(text) ??
     /(?:^|\s)(?:אורח|אורחת)\s*:\s*(.+)$/.exec(text) ??
-    /(?:^|\s)ו?(?:להוסיף|תוסיף|תוסיפי|להזמין)\s+(?:אורח|אורחת)\s*[:\-–]?\s*(.+)$/.exec(text);
+    /(?:^|\s)ו?(?:להוסיף|תוסיף|תוסיפי|להזמין)\s+(?:אורח|אורחת)\s*[:\-–]?\s*(.+)$/.exec(text) ??
+    // E14-2b: "בעצם ביום ראשון ב-10 עם אורח דני"
+    /(?:^|\s)עם\s+(?:ה)?(?:אורח|אורחת)\s*[:\-–]?\s*(.+)$/.exec(text);
   if (guest) edits.push({ field: "guest", value: cutValueAtFieldBoundary(guest[1], todayIsrael), alsoConfirm });
   const note =
     /^(?:הערה|הערות|בקשה|בקשות)\s*[:\-–]?\s*(.+)$/.exec(text) ??
@@ -490,11 +524,64 @@ export function parseEditText(raw: string, todayIsrael: string): ParsedEditSet |
 
   const times = timesIn(text);
   dropped.push(...times.vague);
-  if (times.certain.length === 1) edits.push({ field: "time-from", hhmm: times.certain[0], alsoConfirm });
-  else if (times.certain.length > 1) dropped.push("השעה");
+  // an exact start wins over a "from"; two different values of either = asked
+  if (times.at.length === 1 && times.certain.length === 0) edits.push({ field: "time-at", hhmm: times.at[0], alsoConfirm });
+  else if (times.at.length === 0 && times.certain.length === 1) edits.push({ field: "time-from", hhmm: times.certain[0], alsoConfirm });
+  else if (times.at.length + times.certain.length > 1) dropped.push("השעה");
 
   if (edits.length === 0 && dropped.length === 0) {
     return alsoConfirm ? { edits: [{ field: "confirm-hint" }], dropped: [] } : null;
   }
   return { edits, dropped };
+}
+
+// ─── E14-2b: free text at every choice step ────────────────────────────────
+
+/** The steps where a typed answer is read by the layer (the menu and the summary have their own). */
+export type ChoiceStep = "duration" | "studio-default" | "studio" | "day" | "hour" | "guest" | "note";
+
+const CHANGE_MARKER_RE = new RegExp("^\\s*(?:בעצם|תשנה|תשני|לשנות|שנה|שני)(?![\\p{L}])\\s*[,:]?\\s*", "u");
+const FIELD_LABEL_RE = new RegExp("(?:^|\\s)(?:אורח|אורחת|הערה|הערות)\\s*:", "u");
+const POLITE_RE = new RegExp("(?<![\\p{L}])(?:בבקשה|תודה|רבה)(?![\\p{L}])", "gu");
+
+/**
+ * At the guest and note steps any text is the VALUE (owner, 20.10) — unless it
+ * says it is a change: it opens with "בעצם" / "תשנה" / "לשנות", or names a
+ * field ("אורח:", "הערה:").
+ */
+export function hasChangeMarker(raw: string): boolean {
+  return CHANGE_MARKER_RE.test(raw) || FIELD_LABEL_RE.test(raw);
+}
+
+/**
+ * Free text at a choice step -> every certain edit, or null (the step is sent
+ * again, exactly as today). The summary parser does the work; the step only
+ * adds what a bare answer means THERE (owner, 20.10):
+ *   duration — "3" / "שלוש" / "4" / "ארבע" are hours, only here
+ *   hour     — "10" / "10:30" / "עשר" is an exact start; "4" is not certain
+ * A "כן"/"מאשר" alone is not a choice: null. Confirming stays a button.
+ */
+export function parseStepText(raw: string, todayIsrael: string, step: ChoiceStep): ParsedEditSet | null {
+  const text = raw.replace(CHANGE_MARKER_RE, "").replace(POLITE_RE, " ").replace(/[!?.]+$/, "").replace(/\s+/g, " ").trim();
+  if (text === "") return null;
+
+  if (step === "duration") {
+    const bare = /^(?:(3|4|שלוש|ארבע)(?:\s*שעות)?|(שעה\s+וחצי|1\.5))$/.exec(text);
+    if (bare) {
+      const minutes = bare[2] ? 90 : bare[1] === "3" || bare[1] === "שלוש" ? 180 : 240;
+      const d = validateDuration(minutes);
+      if (d === minutes) return { edits: [{ field: "duration", minutes: d, alsoConfirm: false }], dropped: [] };
+    }
+  }
+  if (step === "hour") {
+    const p = new RegExp(`^(${HOUR_TOKEN})(?:\\s*(${DAYPART_WORDS}))?$`).test(text) ? hourPhrase(text) : null;
+    if (p && !p.ambiguous) return { edits: [{ field: "time-at", hhmm: p.hhmm, alsoConfirm: false }], dropped: [] };
+    if (p && p.ambiguous) return { edits: [], dropped: [`השעה "${text}"`] };
+  }
+
+  const parsed = parseEditText(text, todayIsrael);
+  if (!parsed) return null;
+  const edits = parsed.edits.filter((e) => e.field !== "confirm-hint");
+  if (edits.length === 0 && parsed.dropped.length === 0) return null;
+  return { edits, dropped: parsed.dropped };
 }

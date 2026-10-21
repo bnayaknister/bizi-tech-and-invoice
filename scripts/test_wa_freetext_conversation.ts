@@ -309,13 +309,16 @@ function main() {
   ok("…and the broaden choice is still offered after a typed text", n.offered().some((o) => o.id === FLOW_ID.broaden), n.offered());
   ok("…and the bot does not claim there ARE free days while listing none", !n.body().includes("שיש בהם מקום"), n.body());
   ok("the zero-match message does not invite typing other days (owner, 16.10: buttons only)", !noMatchReply.body.includes("לכתוב"), noMatchReply.body);
-  const filterBefore = n.state.filter;
-  n.say("אז אולי ביום שני?");
-  ok("another day typed: the same zero-match screen, broaden still offered", n.body().includes(HE.NOTICE.noMatchDates) && n.offered().some((o) => o.id === FLOW_ID.broaden), n.offered());
-  eq("…the filter is unchanged (no guess, no silent broaden)", n.state.filter, filterBefore);
   n.tapEarlier(noMatchReply, FLOW_ID.broaden);
   eq("after the explicit tap: all free days", daysOf(n.offeredIds("f:day:")), DAYS);
   eq("…for the room the client asked for", n.state.studio, "חשמונאים");
+  // E14-2b (owner, 20.10: free text at every step): ANOTHER day typed at the
+  // zero-match screen is a new, narrow request — not a broadening
+  const n2 = new Conversation("nomatch-retype", SHOW);
+  n2.say("מה פנוי ב-28.10 בחשמונאים?");
+  n2.say("אז אולי ביום שני?");
+  eq("another day typed on the zero-match screen: THAT day's hours", [n2.state.step, n2.state.date], ["hour", "2026-10-19"]);
+  eq("…the filter is that one day, not 'all days'", [n2.state.filter?.dateFrom, n2.state.filter?.dateTo], ["2026-10-19", "2026-10-19"]);
   const h = new Conversation("nomatch-hours", SHOW);
   h.say("מה פנוי ביום שלישי אחרי 20:00 בחשמונאים?");
   eq("one day asked: straight to its hours (E14-2)", h.state.step, "hour");

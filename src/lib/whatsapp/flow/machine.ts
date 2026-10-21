@@ -162,7 +162,7 @@ export type FlowState = {
    * next withAvailability — never left in a saved state. Absent = none, so a
    * state with the layer off is byte-for-byte what it was before E14-2.
    */
-  keep?: { start: string; tail: string } | null;
+  keep?: { start: string; tail: string; then?: "guest" | "note" | "summary" } | null;
   /**
    * E14-2: the slot is being re-chosen FROM the summary (an edit), so the
    * guest and note were already answered — even if both were skipped — and a
@@ -728,7 +728,8 @@ const leaveMove = (s: FlowState): Transition =>
 /** Choosing a studio: the days come from availability, so ask for it. */
 const chooseStudio = (s: FlowState, studio: BookableRoom): Transition => ({
   kind: "need-availability",
-  state: { ...s, ...clearFrom("day"), studio, step: "day", dayPage: 0 },
+  // E14-2b: with the layer on, a guest/note the client already wrote survives
+  state: { ...s, ...clearFrom("day"), ...(layerOn(s) ? { guest: s.guest, note: s.note } : {}), studio, step: "day", dayPage: 0 },
 });
 
 /** One step back. Inside a paged list, one page back first. */
@@ -821,8 +822,9 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
         // validateDuration maps absent to 90; an EVENT always states a value,
         // so only an exact member of the closed list is accepted
         if (d === null || d !== e.minutes) return stale();
-        return go(s, { ...clearFrom("studio"), duration: d, step: studioStep(s) });
+        return go(s, { ...clearFrom("studio"), ...(layerOn(s) ? { guest: s.guest, note: s.note } : {}), duration: d, step: studioStep(s) });
       }
+      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped) : pick();
       if (e.type === "text") return pick();
       return stale();
     }
@@ -876,6 +878,7 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
         const r = validateStudio(e.studio);
         return r ? chooseStudio(s, r) : stale();
       }
+      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped) : pick();
       if (e.type === "text") return pick();
       return stale();
 
@@ -884,6 +887,7 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
         const r = validateStudio(e.studio);
         return r ? chooseStudio(s, r) : stale();
       }
+      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped) : pick();
       if (e.type === "text") return pick();
       return stale();
     }
@@ -906,6 +910,7 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
         if ((s.dayPage + 1) * PAGE_SIZE >= s.days.length) return stale();
         return go(s, { dayPage: s.dayPage + 1 });
       }
+      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped) : pick();
       if (e.type === "text") return pick();
       return stale();
 
@@ -938,23 +943,31 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
         if ((s.hourPage + 1) * PAGE_SIZE >= s.hours.length) return stale();
         return go(s, { hourPage: s.hourPage + 1 });
       }
+      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped) : pick();
       if (e.type === "text") return pick();
       return stale();
 
     // ── owner decision 11.10 (3): ask, but never block on it ──
     case "guest":
-      if (e.type === "no-guest") return go(s, { guest: null, step: "note" });
-      // owner, 20.10 (for everyone): "לא" / "אין" / "בלי" = the skip button
-      if (e.type === "text" && isSkipWord(e.text)) return go(s, { guest: null, step: "note" });
-      if (e.type === "text") {
-        // ANY free text here is the value — the same normaliser as the screen
-        const g = normalizeGuest(e.text);
-        if (!g.ok) return again(s, C.GUEST.tooLong);
-        return go(s, { guest: g.value, step: "note" });
+      // E14-2b: only a MARKED message reaches here as an edit ("בעצם", "אורח:")
+      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped) : pick();
+      {
+        // E14-2b: a note the client already wrote ("הערה: …" earlier) is not asked again
+        const afterGuest: FlowStep = layerOn(s) && s.note !== null ? "summary" : "note";
+        if (e.type === "no-guest") return go(s, { guest: null, step: afterGuest });
+        // owner, 20.10 (for everyone): "לא" / "אין" / "בלי" = the skip button
+        if (e.type === "text" && isSkipWord(e.text)) return go(s, { guest: null, step: afterGuest });
+        if (e.type === "text") {
+          // ANY free text here is the value — the same normaliser as the screen
+          const g = normalizeGuest(e.text);
+          if (!g.ok) return again(s, C.GUEST.tooLong);
+          return go(s, { guest: g.value, step: afterGuest });
+        }
       }
       return stale();
 
     case "note":
+      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped) : pick();
       if (e.type === "no-note") return go(s, { note: null, step: "summary" });
       if (e.type === "text" && isSkipWord(e.text)) return go(s, { note: null, step: "summary" });
       if (e.type === "text") {
@@ -1038,65 +1051,97 @@ function menuQuery(s: FlowState, q: ParsedAvailability): Transition {
  * not be sure of is SAID (`dropped`). And no edit ever confirms — the
  * "✅ לקבוע" button stays the only way into "submitting".
  */
-function applyEdits(s: FlowState, edits: ParsedEdit[], dropped: string[]): Transition {
-  const C = copy(s.lang);
-  const tail = (dropped.length ? `\n${C.QUERY.dropped(dropped)}` : "") +
-    (edits.some((e) => "alsoConfirm" in e && e.alsoConfirm) ? `\n${C.NOTICE.confirmByButton}` : "");
+type ReadEdits =
+  | { bad: Transition }
+  | {
+      bad: null;
+      guest: string | null;
+      note: string | null;
+      duration: FlowState["duration"];
+      studio: FlowState["studio"];
+      dayEdit: string | null;
+      timeEdit: string | null;
+      /** E14-2b: an exact start */
+      atEdit: string | null;
+    };
 
-  // 1. validate EVERYTHING first — or change nothing at all
+/** Validate EVERY edit of one message — or change nothing at all. */
+function readEdits(s: FlowState, edits: ParsedEdit[], tail: string): ReadEdits {
+  const C = copy(s.lang);
   let guest = s.guest;
   let note = s.note;
   let duration = s.duration;
   let studio = s.studio;
   let dayEdit: string | null = null;
   let timeEdit: string | null = null;
+  let atEdit: string | null = null;
   for (const edit of edits) {
     switch (edit.field) {
       case "confirm-hint":
         break;
       case "guest": {
         const g = normalizeGuest(edit.value);
-        if (!g.ok) return again(s, C.GUEST.tooLong + tail);
+        if (!g.ok) return { bad: again(s, C.GUEST.tooLong + tail) };
         guest = g.value;
         break;
       }
       case "note": {
         const n = normalizeNote(edit.value);
-        if (!n.ok) return again(s, C.NOTE.tooLong + tail);
+        if (!n.ok) return { bad: again(s, C.NOTE.tooLong + tail) };
         note = n.value;
         break;
       }
       case "duration": {
         const d = validateDuration(edit.minutes);
-        if (d === null || d !== edit.minutes) return again(s, C.NOTICE.editUnclear);
+        if (d === null || d !== edit.minutes) return { bad: again(s, C.NOTICE.editUnclear) };
         duration = d;
         break;
       }
       case "studio": {
         const r = validateStudio(edit.studio);
-        if (!r) return again(s, C.NOTICE.editUnclear);
+        if (!r) return { bad: again(s, C.NOTICE.editUnclear) };
         studio = r;
         break;
       }
       case "day": {
-        if (!DATE_RE.test(edit.date)) return again(s, C.NOTICE.editUnclear);
+        if (!DATE_RE.test(edit.date)) return { bad: again(s, C.NOTICE.editUnclear) };
         dayEdit = edit.date;
         break;
       }
       case "time-from": {
-        if (!HHMM_RE.test(edit.hhmm)) return again(s, C.NOTICE.editUnclear);
+        if (!HHMM_RE.test(edit.hhmm)) return { bad: again(s, C.NOTICE.editUnclear) };
         timeEdit = edit.hhmm;
+        break;
+      }
+      case "time-at": {
+        if (!HHMM_RE.test(edit.hhmm)) return { bad: again(s, C.NOTICE.editUnclear) };
+        atEdit = edit.hhmm;
         break;
       }
     }
   }
+  return { bad: null, guest, note, duration, studio, dayEdit, timeEdit, atEdit };
+}
+
+function applyEdits(s: FlowState, edits: ParsedEdit[], dropped: string[]): Transition {
+  const C = copy(s.lang);
+  const tail = (dropped.length ? `\n${C.QUERY.dropped(dropped)}` : "") +
+    (edits.some((e) => "alsoConfirm" in e && e.alsoConfirm) ? `\n${C.NOTICE.confirmByButton}` : "");
+
+  // 1. validate EVERYTHING first — or change nothing at all
+  const r = readEdits(s, edits, tail);
+  if (r.bad) return r.bad;
+  const { guest, note, duration, studio, dayEdit, timeEdit, atEdit } = r;
   if (edits.length === 1 && edits[0].field === "confirm-hint") return again(s, C.NOTICE.confirmByButton);
 
   // 2. what ACTUALLY changes — measured against the chosen slot and values,
   // not against the filter: writing a value that is already set is no change
   // (owner, 16.10), and "updated" is never said about a message that changed
   // nothing
-  const slotChange = duration !== s.duration || studio !== s.studio || (dayEdit !== null && dayEdit !== s.date);
+  const slotChange =
+    duration !== s.duration || studio !== s.studio || (dayEdit !== null && dayEdit !== s.date) ||
+    // E14-2b: an exact start other than the chosen one
+    (atEdit !== null && atEdit !== s.start);
   const timeChange = !slotChange && timeEdit !== null && timeEdit !== s.start;
   const valueChange = guest !== s.guest || note !== s.note;
   if (!slotChange && !timeChange && !valueChange) {
@@ -1129,7 +1174,7 @@ function applyEdits(s: FlowState, edits: ParsedEdit[], dropped: string[]): Trans
         ...s, guest, note, duration, durationFromDefault, studio,
         filter: { dateFrom: date, dateTo: date, timeFrom: null, timeTo: null },
         date, days: [], dayPage: 0, hours: [], hourPage: 0, start: null, end: null, step: "hour",
-        keep: { start: s.start, tail },
+        keep: { start: atEdit ?? s.start, tail },
         fromSummary: true,
         notice: `${dropped.length ? C.NOTICE.changedPartial : C.NOTICE.changed}${tail}`,
       },
@@ -1148,6 +1193,122 @@ function applyEdits(s: FlowState, edits: ParsedEdit[], dropped: string[]): Trans
     };
   }
   return go(s, { guest, note, duration, durationFromDefault, notice: `${dropped.length ? C.NOTICE.changedPartial : C.NOTICE.changed}${tail}` });
+}
+
+/** E14-2b: the order a booking walks ("studio-default" is the studio step) */
+const BOOK_ORDER: FlowStep[] = ["duration", "studio", "day", "hour", "guest", "note", "summary"];
+const stepIndex = (step: FlowStep) => BOOK_ORDER.indexOf(step === "studio-default" ? "studio" : step);
+
+/**
+ * E14-2b (owner, 20.10): free text at a CHOICE step — one field or several
+ * ("בעצם ביום ראשון ב-10 עם אורח דני"). Every edit is validated first (or
+ * nothing changes), then the conversation goes to the right step for what is
+ * now known: no room -> the room question; a day and an exact start -> that
+ * very slot is checked (the E14-2a mechanism: kept if free, else that day's
+ * hours / other days, with the reason); a day without a start -> its hours
+ * (or "nothing free" for a day that is not); no day -> the day list. Guest and
+ * note are asked only if not answered yet. Never confirms: "✅ לקבוע" stays the
+ * only way into "submitting".
+ */
+function applyStepEdits(s: FlowState, edits: ParsedEdit[], dropped: string[]): Transition {
+  const C = copy(s.lang);
+  const tail = dropped.length ? `\n${C.QUERY.dropped(dropped)}` : "";
+  // nothing certain, only what was NOT understood: said, and the step again
+  if (edits.length === 0) return again(s, dropped.length ? C.QUERY.dropped(dropped) : C.NOTICE.pickFromList);
+
+  const r = readEdits(s, edits, tail);
+  if (r.bad) return r.bad;
+  const { guest, note, studio, dayEdit, timeEdit, atEdit } = r;
+  let duration = r.duration;
+  let durationFromDefault = duration !== s.duration ? false : s.durationFromDefault;
+  if (duration === null) {
+    // a choice made before the length was: the default, DISCLOSED at the summary (owner, 16.10)
+    duration = DEFAULT_BOOKING_DURATION;
+    durationFromDefault = true;
+  }
+  const date = dayEdit ?? s.date;
+  const start = atEdit ?? s.start;
+  const slotChanged = duration !== s.duration || studio !== s.studio || date !== s.date || start !== s.start;
+  const valueChanged = guest !== s.guest || note !== s.note;
+  if (!slotChanged && !valueChanged && timeEdit === null) {
+    return again(s, (dropped.length ? C.NOTICE.unchanged : C.NOTICE.alreadySet) + tail);
+  }
+
+  // guest / note: asked only if not answered — passed, given now or before, or re-choosing from the summary
+  const cur = stepIndex(s.step);
+  const guestDone = cur > stepIndex("guest") || guest !== null || !!s.fromSummary;
+  const noteDone = cur > stepIndex("note") || note !== null || !!s.fromSummary;
+  const then: "guest" | "note" | "summary" = !guestDone ? "guest" : !noteDone ? "note" : "summary";
+
+  // what was understood is SAID (the menu's line); values alone: "updated"
+  const understood = C.QUERY.echo({
+    studio: studio !== s.studio ? studio : null,
+    duration: duration !== s.duration && !durationFromDefault ? duration : null,
+    dateFrom: dayEdit,
+    dateTo: dayEdit,
+    timeFrom: timeEdit,
+    timeTo: null,
+    timeAt: atEdit,
+  });
+  const notice = (understood || (dropped.length ? C.NOTICE.changedPartial : C.NOTICE.changed)) + tail;
+  const base = { guest, note, duration, durationFromDefault, studio, notice, keep: null };
+
+  // 1. no room yet: the room question; a written day/time narrows the lists that follow
+  if (!studio) {
+    const filter =
+      dayEdit || timeEdit || atEdit
+        ? {
+            dateFrom: dayEdit ?? s.filter?.dateFrom ?? null,
+            dateTo: dayEdit ?? s.filter?.dateTo ?? null,
+            timeFrom: timeEdit ?? atEdit ?? s.filter?.timeFrom ?? null,
+            timeTo: null,
+          }
+        : s.filter;
+    return go(s, { ...base, filter, date: null, start: null, end: null, days: [], dayPage: 0, hours: [], hourPage: 0, step: studioStep(s) });
+  }
+
+  // 2. a day and an exact start: check THAT slot
+  if (date && start && slotChanged) {
+    return {
+      kind: "need-availability",
+      state: {
+        ...s, ...base,
+        filter: { dateFrom: date, dateTo: date, timeFrom: null, timeTo: null },
+        date, days: [], dayPage: 0, hours: [], hourPage: 0, start: null, end: null, step: "hour",
+        keep: { start, tail, then },
+      },
+    };
+  }
+
+  // 3. a day, no start: through the day step — a day that is not free says so,
+  // a free one goes straight to its hours (E14-2a)
+  if (date && !start && (slotChanged || timeEdit !== null)) {
+    return {
+      kind: "need-availability",
+      state: {
+        ...s, ...base,
+        filter: { dateFrom: date, dateTo: date, timeFrom: timeEdit, timeTo: null },
+        date: null, days: [], dayPage: 0, hours: [], hourPage: 0, start: null, end: null, step: "day",
+      },
+    };
+  }
+
+  // 4. no day yet: the day list; a written time narrows the hours that follow
+  if (!date && (slotChanged || timeEdit !== null || atEdit !== null)) {
+    return {
+      kind: "need-availability",
+      state: {
+        ...s, ...base,
+        filter: { dateFrom: s.filter?.dateFrom ?? null, dateTo: s.filter?.dateTo ?? null, timeFrom: timeEdit ?? atEdit ?? s.filter?.timeFrom ?? null, timeTo: null },
+        date: null, days: [], dayPage: 0, hours: [], hourPage: 0, start: null, end: null, step: "day",
+      },
+    };
+  }
+
+  // 5. the slot is as it was: values only — the next unanswered question
+  // (or this step again, saying what was updated)
+  const next: FlowStep = date && start ? then : s.step;
+  return go(s, { ...base, step: next });
 }
 
 // ─── fed by the driver (PURE) ──────────────────────────────────────────────
@@ -1199,7 +1360,8 @@ export function withAvailability(s: FlowState, pub: PublicAvailability): Transit
       const hit = allHours.find((h) => h.start === wanted);
       if (hit) {
         // it still fits: the summary, updated — the notice applyEdits wrote
-        return render({ ...s, keep: null, fromSummary: false, hours: allHours, hourPage: 0, start: hit.start, end: hit.end, step: "summary" });
+        const then = s.keep.then ?? "summary";
+        return render({ ...s, keep: null, fromSummary: then === "summary" ? false : s.fromSummary, hours: allHours, hourPage: 0, start: hit.start, end: hit.end, step: then });
       }
       // it does not: say why, and offer the rest of that day — or other days.
       // The filter is dropped, so the lists are every free option and "back"
