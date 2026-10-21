@@ -38,7 +38,16 @@ import {
   type FlowStep,
   type Transition,
 } from "./machine";
-import { hasChangeMarker, isSlotPhrase, parseAvailabilityText, parseEditText, parseStepText } from "./freetext";
+import {
+  daypartRange,
+  hasChangeMarker,
+  isAvailabilityQuestion,
+  isSlotPhrase,
+  parseAvailabilityText,
+  parseEditText,
+  parseStepText,
+  yesNo,
+} from "./freetext";
 import { loadConversation, saveConversation } from "./store";
 import {
   LLM_HOURLY_CAP,
@@ -185,7 +194,28 @@ export function eventFromMessage(
   // then re-sends the step, exactly as it does today.
   if (opts.freeTextOn && opts.now && opts.lang === "he") {
     const today = israelDateOf(opts.now);
+    // E14-2c (owner, 21.10): "כן" / "לא" to "באולפן X, כמו תמיד?" = the two buttons
+    if (opts.step === "studio-default") {
+      const yn = yesNo(body);
+      if (yn === "yes") return { type: "studio-yes" };
+      if (yn === "no") return { type: "studio-other" };
+    }
+    // E14-2c (owner, 21.10): a QUESTION about free times, at any step after
+    // the menu, shows the options instead of changing anything
+    if (opts.step && opts.step !== "menu" && isAvailabilityQuestion(body)) {
+      // "מה פנוי?" with nothing more: every free day
+      const q = parseAvailabilityText(body, today) ?? { studio: null, duration: null, dateFrom: null, dateTo: null, timeFrom: null, timeTo: null, dropped: [] };
+      return { type: "query", q };
+    }
     if (opts.step === "summary") {
+      // E14-2c: a part of the day at the summary ("ביום שלישי בצהריים") asks
+      // for the options in that range — unless a value or an exact time was written
+      const ed = parseEditText(body, today);
+      const valueOrTime = ed?.edits.some((x) => x.field === "guest" || x.field === "note" || x.field === "time-at" || x.field === "time-from");
+      if (daypartRange(body) && !valueOrTime) {
+        const q = parseAvailabilityText(body, today);
+        if (q && (q.timeFrom || q.timeTo)) return { type: "query", q };
+      }
       const parsed = parseEditText(body, today);
       if (parsed) return { type: "edit", edits: parsed.edits, dropped: parsed.dropped };
     } else if (opts.step === "menu" || opts.step === undefined) {

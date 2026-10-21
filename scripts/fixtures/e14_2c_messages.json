@@ -190,6 +190,31 @@
       "model": { "intent": "query", "time": ["ב-11", 11, 0, "none", "at"] } },
     { "id": 56, "cat": "hour", "text": "מחר ב-7",
       "expect": { "day": "2026-10-22", "studio": null, "time": null, "duration": null, "guest": null, "note": null },
-      "model": { "intent": "query", "day": ["מחר", { "rel": "tomorrow" }], "time": ["ב-7", 7, 0, "none", "at"] } }
+      "model": { "intent": "query", "day": ["מחר", { "rel": "tomorrow" }], "time": ["ב-7", 7, 0, "none", "at"] } },
+
+    { "id": 57, "cat": "daypart", "text": "מה פנוי ביום שלישי בצהריים?",
+      "expect": { "day": "2026-10-27", "studio": null, "time": "range 12:00-15:00", "duration": null, "guest": null, "note": null },
+      "model": { "intent": "query", "day": ["ביום שלישי", { "weekday": 2 }] } },
+    { "id": 58, "cat": "daypart", "text": "יש משהו מחר בבוקר?",
+      "expect": { "day": "2026-10-22", "studio": null, "time": "range 09:00-12:00", "duration": null, "guest": null, "note": null },
+      "model": { "intent": "query", "day": ["מחר", { "rel": "tomorrow" }] } },
+    { "id": 59, "cat": "daypart", "text": "ביום ראשון אחה\"צ",
+      "expect": { "day": "2026-10-25", "studio": null, "time": "range 14:00-18:00", "duration": null, "guest": null, "note": null },
+      "model": { "intent": "query", "day": ["ביום ראשון", { "weekday": 0 }] } },
+    { "id": 60, "cat": "daypart", "text": "מה פנוי בערב השבוע?",
+      "expect": { "day": null, "studio": null, "time": "range 17:00-20:00", "duration": null, "guest": null, "note": null },
+      "model": { "intent": "query" } },
+    { "id": 61, "cat": "daypart", "step": "summary", "text": "מה פנוי ביום שלישי בצהריים?",
+      "expect": { "day": "2026-10-27", "studio": null, "time": "range 12:00-15:00", "duration": null, "guest": null, "note": null },
+      "model": { "intent": "query", "day": ["ביום שלישי", { "weekday": 2 }] } },
+    { "id": 62, "cat": "daypart", "step": "summary", "text": "יש משהו מחר בבוקר?",
+      "expect": { "day": "2026-10-22", "studio": null, "time": "range 09:00-12:00", "duration": null, "guest": null, "note": null },
+      "model": { "intent": "query", "day": ["מחר", { "rel": "tomorrow" }] } },
+    { "id": 63, "cat": "daypart", "step": "summary", "text": "ביום ראשון אחה\"צ",
+      "expect": { "day": "2026-10-25", "studio": null, "time": "range 14:00-18:00", "duration": null, "guest": null, "note": null },
+      "model": { "intent": "query", "day": ["ביום ראשון", { "weekday": 0 }] } },
+    { "id": 64, "cat": "daypart", "step": "summary", "text": "מה פנוי בערב השבוע?",
+      "expect": { "day": null, "studio": null, "time": "range 17:00-20:00", "duration": null, "guest": null, "note": null },
+      "model": { "intent": "query" } }
   ]
 }

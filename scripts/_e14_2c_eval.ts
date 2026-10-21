@@ -105,6 +105,8 @@ export function appliedOf(e: FlowEvent): Applied {
     if (q.duration) a.duration = q.duration;
     if (q.dateFrom && q.dateFrom === q.dateTo) a.day = q.dateFrom;
     if (q.timeFrom && !q.timeTo) a.time = `from ${q.timeFrom}`;
+    // E14-2c: a part of the day ("בצהריים") is a range of starts
+    if (q.timeFrom && q.timeTo) a.time = `range ${q.timeFrom}-${q.timeTo}`;
   } else if (e.type === "edit") {
     for (const x of e.edits) {
       if (x.field === "studio") a.studio = x.studio;

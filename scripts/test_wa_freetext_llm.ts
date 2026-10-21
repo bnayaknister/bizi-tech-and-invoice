@@ -80,7 +80,7 @@ const appliedFrom = (e: FlowEvent | null) => (e ? appliedOf(e) : null);
 console.log("\n=== 1. when the model is called (owner decision 21.10, 1) ===");
 {
   const r = (t: string) => ruleEvent(t, TODAY);
-  const call = (t: string, step: Parameters<typeof shouldCallLlm>[1] = "menu", rule?: FlowEvent) => shouldCallLlm(t, step, rule ?? r(t));
+  const call = (t: string, step: Parameters<typeof shouldCallLlm>[1] = "menu", rule?: FlowEvent) => shouldCallLlm(t, step, rule ?? ruleEvent(t, TODAY, step));
   ok("menu, a long message (> 4 words)", call("האם יום ראשון בחדר הקבוע שלי פנוי בשעה 12"));
   ok("menu, short but with a guest", call("עם האורח דני"));
   ok("menu, short but 'my regular room'", call("בחדר הקבוע מחר"));
@@ -97,7 +97,12 @@ console.log("\n=== 1. when the model is called (owner decision 21.10, 1) ===");
   ok("hour step, a note word the rule parser did not read: called", call("ביום שני ב-10, חשוב שיהיו שתי מצלמות", "hour"));
   ok("hour step, day + hour only: NOT called", !call("ביום שני ב-10", "hour"));
   ok("choice step, the rule parser understood: NOT called", !call("בחשמונאים", "studio", { type: "edit", edits: [{ field: "studio", studio: "חשמונאים", alsoConfirm: false }], dropped: [] }));
-  for (const step of ["guest", "note", "summary", "mine", "manage", "submitting", "done"] as const) {
+  // owner finding 21.10 (21:41): the same "עם <name>" rule at the summary
+  ok("summary: '…עם נעה ארגמני…' (the rule parser reads no guest): called", call("קבע לי ביום שני עם נעה ארגמני ב9 בחשמונאים", "summary"));
+  ok("summary: a guest the rule parser DID read ('אורח: דני'): NOT called", !call("אורח: דני כהן", "summary"));
+  ok("summary: a QUESTION ('מה פנוי ביום שלישי בצהריים?'): NOT called — the options are shown", !call("מה פנוי ביום שלישי בצהריים?", "summary"));
+  ok("summary: no guest/note word: NOT called", !call("ביום שלישי ב-10", "summary"));
+  for (const step of ["guest", "note", "mine", "manage", "submitting", "done"] as const) {
     ok(`step '${step}': NEVER called`, !call("אורח: דני כהן ביום ראשון בשעה 12 בחשמונאים", step, { type: "text", text: "x" }));
   }
 }
@@ -105,7 +110,7 @@ console.log("\n=== 1. when the model is called (owner decision 21.10, 1) ===");
 console.log("\n=== 2. the 40-message set, with a CORRECT model's answers (owner decision 21.10, 7) ===");
 {
   const { today, messages } = loadFixtures();
-  eq("56 messages, today = Wed 21.10.2026", [messages.length, today], [56, TODAY]);
+  eq("64 messages, today = Wed 21.10.2026", [messages.length, today], [64, TODAY]);
   let full = 0;
   const wrong: string[] = [];
   for (const f of messages) {

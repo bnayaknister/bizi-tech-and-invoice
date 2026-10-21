@@ -22,7 +22,7 @@
  *   - switch off / English: exactly as before
  */
 import { fakeDb } from "./_fake_db";
-import { runFlow, type FlowDeps } from "../src/lib/whatsapp/flow/run";
+import { eventFromMessage, runFlow, type FlowDeps } from "../src/lib/whatsapp/flow/run";
 import {
   FLOW_ID,
   parseFlowId,
@@ -36,7 +36,7 @@ import {
   type Transition,
 } from "../src/lib/whatsapp/flow/machine";
 import { COPY } from "../src/lib/whatsapp/flow/copy";
-import type { ParsedEdit } from "../src/lib/whatsapp/flow/freetext";
+import { daypartRange, parseAvailabilityText, yesNo, type ParsedEdit } from "../src/lib/whatsapp/flow/freetext";
 import type { PublicAvailability } from "../src/lib/booking/publicView";
 import type { ContactShow } from "../src/lib/booking/contacts";
 import type { InboundMessage } from "../src/lib/whatsapp/webhook";
@@ -127,6 +127,11 @@ class Chat {
     if (!e) throw new Error(`not a flow id: ${id}`);
     if (!this.offered().some((o) => o.id === id)) throw new Error(`not offered: ${id} in ${JSON.stringify(this.offered())}`);
     return this.event(e);
+  }
+  /** typed text, read by the REAL driver seam (the layer as the state has it) */
+  say(t: string) {
+    const m = { wamid: "w", waId: "972500000000", rawFrom: "972500000000", type: "text", body: t, raw: null } as InboundMessage;
+    return this.event(eventFromMessage(m, { now: NOW, freeTextOn: this.state.freeTextOn, step: this.state.step, lang: this.state.lang }));
   }
   text(t: string) {
     return this.event({ type: "text", text: t });
@@ -277,6 +282,74 @@ console.log("\n=== 7b. the guest step: a leading 'האורחת' is not part of t
   off.event({ type: "day", date: off.state.days[0] });
   off.event({ type: "hour", start: off.state.hours[0].start });
   eq("switch OFF: the guest text exactly as typed", [off.state.step, off.text("האורחת נעה ארגמני").state.guest], ["guest", "האורחת נעה ארגמני"]);
+}
+
+console.log("\n=== 7c. parts of the day are RANGES of starts (owner, 21.10) ===");
+{
+  const T = "2026-10-21";
+  const q = (t: string) => { const x = parseAvailabilityText(t, T); return x && [x.dateFrom, x.dateTo, x.timeFrom, x.timeTo]; };
+  eq("'מה פנוי ביום שלישי בצהריים?' -> Tue 27.10, 12:00-15:00", q("מה פנוי ביום שלישי בצהריים?"), ["2026-10-27", "2026-10-27", "12:00", "15:00"]);
+  eq("'יש משהו מחר בבוקר?' -> 22.10, 09:00-12:00", q("יש משהו מחר בבוקר?"), ["2026-10-22", "2026-10-22", "09:00", "12:00"]);
+  eq("'ביום ראשון אחה\"צ' -> 25.10, 14:00-18:00", q('ביום ראשון אחה"צ'), ["2026-10-25", "2026-10-25", "14:00", "18:00"]);
+  eq("'…אחר הצהריים' -> 14:00-18:00 (not 'צהריים')", q("ביום ראשון אחר הצהריים"), ["2026-10-25", "2026-10-25", "14:00", "18:00"]);
+  eq("'מה פנוי בערב השבוע?' -> this week, 17:00-20:00", q("מה פנוי בערב השבוע?"), ["2026-10-21", "2026-10-22", "17:00", "20:00"]);
+  eq("'בשעות הצהריים' -> 12:00-15:00", q("מה פנוי ביום שלישי בשעות הצהריים ?"), ["2026-10-27", "2026-10-27", "12:00", "15:00"]);
+  eq("'אחרי 4 בצהריים' is an HOUR with its daypart, not a range", q("מחר אחרי 4 בצהריים"), ["2026-10-22", "2026-10-22", "16:00", null]);
+  eq("'בוקר טוב' is a greeting, not a range", daypartRange("בוקר טוב, אפשר לקבוע?"), null);
+  eq("'ערב טוב' is a greeting", daypartRange("ערב טוב"), null);
+}
+
+console.log("\n=== 7d. a QUESTION at the summary shows the options — no silent change (owner finding 21.10, 21:41) ===");
+{
+  const sum = () => new Chat().event(edit([E.day("2026-10-26"), E.room("גבעון"), E.at("09:00"), E.guest("נעה ארגמני")])).event({ type: "no-note" });
+  const base = sum();
+  eq("the owner's state: the summary, Mon 26.10 09:00 Givon", [base.state.step, base.state.date, base.state.start], ["summary", "2026-10-26", "09:00"]);
+  const c = sum().say("מה פנוי לי ביום שלישי בשעות הצהריים ?");
+  eq("-> Tuesday's hours, not 'updated'", [c.state.step, c.state.date, c.state.start], ["hour", "2026-10-27", null]);
+  ok("…every hour offered starts 12:00-14:30 (the noon range)", c.state.hours.length > 0 && c.state.hours.every((h) => h.start >= "12:00" && h.start < "15:00"), c.state.hours);
+  ok("…no 'עדכנתי'", !c.body().includes(HE.NOTICE.changed), c.body());
+  eq("…room, length, guest kept", [c.state.studio, c.state.duration, c.state.guest], ["גבעון", 90, "נעה ארגמני"]);
+  c.tap(FLOW_ID.hour("13:00"));
+  eq("an hour -> straight back to the summary", [c.state.step, c.state.date, c.state.start, c.state.guest], ["summary", "2026-10-27", "13:00", "נעה ארגמני"]);
+  const d = sum().say("ביום שלישי בצהריים");
+  eq("a day + a part of the day (no question words): the options too, 09:00 NOT kept", [d.state.step, d.state.date, d.state.start, d.state.hours[0]?.start], ["hour", "2026-10-27", null, "12:00"]);
+  const e = sum().say("יש משהו מחר בבוקר?");
+  eq("'יש משהו מחר בבוקר?' -> tomorrow is not in the grid: 'nothing on the days you asked'", [e.state.step, e.body().includes(HE.NOTICE.noMatchDates)], ["day", true]);
+  const f = sum().say("מה פנוי?");
+  eq("'מה פנוי?' -> every free day", [f.state.step, f.state.days.length > 0, f.state.filter], ["day", true, null]);
+  const g = sum().say("ביום שלישי");
+  eq("a plain change ('ביום שלישי') is still a change: same 09:00 kept", [g.state.step, g.state.date, g.state.start], ["summary", "2026-10-27", "09:00"]);
+  const h = new Chat().event(edit([E.day("2026-10-26"), E.room("גבעון"), E.at("09:00")])).say("מה פנוי ביום שלישי?");
+  eq("a question at the GUEST step is a question, not the guest's name", [h.state.step, h.state.date, h.state.guest], ["hour", "2026-10-27", null]);
+}
+
+console.log("\n=== 7e. 'כן' / 'לא' to a yes/no question = the button (owner, 21.10) ===");
+{
+  for (const [t, want] of [["כן", "yes"], ["כן בבקשה", "yes"], ["בטח", "yes"], ["כן!", "yes"], ["סבבה תודה", "yes"], ["לא", "no"], ["לא, אחר", "no"], ["אולפן אחר", "no"], ["כן בגבעון", null], ["לא יודע", null]] as const) {
+    eq(`yesNo('${t}')`, yesNo(t), want);
+  }
+  const at = () => new Chat().event({ type: "go" }).event({ type: "duration", minutes: 90 });
+  eq("the studio question asks 'as usual?'", at().state.step, "studio-default");
+  for (const t of ["כן", "כן בבקשה", "בטח"]) {
+    const c = at().say(t);
+    eq(`'${t}' -> the regular room, its days`, [c.state.step, c.state.studio], ["day", "חשמונאים"]);
+  }
+  for (const t of ["לא", "לא, אחר"]) {
+    const c = at().say(t);
+    eq(`'${t}' -> the room list`, [c.state.step, c.state.studio], ["studio", null]);
+  }
+  const sum = new Chat().event(OWNER_SENTENCE);
+  sum.say("כן");
+  eq("'כן' at the SUMMARY never books (the button stays the only way in)", sum.state.step, "summary");
+  // the room offer
+  const one = new Chat({ busy: busyAtNoon(["חשמונאים", "גבעון גדול"]) }).event(OWNER_SENTENCE);
+  eq("one other room free: the offer", [one.last.type, one.state.offer?.rooms], ["buttons", ["גבעון"]]);
+  one.say("כן");
+  eq("'כן' -> switched to it, the summary", [one.state.step, one.state.studio, one.state.start], ["summary", "גבעון", "12:00"]);
+  const no = new Chat({ busy: busyAtNoon(["חשמונאים"]) }).event(OWNER_SENTENCE).say("לא");
+  eq("'לא' -> other times in the asked room", [no.state.step, no.state.studio, !!no.state.offer], ["hour", "חשמונאים", false]);
+  const two = new Chat({ busy: busyAtNoon(["חשמונאים"]) }).event(OWNER_SENTENCE).say("כן");
+  ok("'כן' with TWO rooms offered: the buttons again (which one?)", two.last.type === "buttons" && two.state.studio === "חשמונאים" && !!two.state.offer, two.state);
 }
 
 console.log("\n=== 8. switch off / English: the menu exactly as before ===");

@@ -107,7 +107,14 @@ export function shouldCallLlm(text: string, step: FlowStep, rule: FlowEvent): bo
     // never asked, and the guest was lost. A guest / note word the rule
     // parser did not turn into a guest or note -> the model reads it too.
     const hasValue = rule.type === "edit" && rule.edits.some((e) => e.field === "guest" || e.field === "note");
-    return (rule.type === "edit" || rule.type === "query") && !hasValue && GUEST_NOTE_RE.test(t);
+    return rule.type === "edit" && !hasValue && GUEST_NOTE_RE.test(t);
+  }
+  // owner finding 21.10 (21:41): "…עם נעה ארגמני…" at the SUMMARY kept the old
+  // guest. The same rule there: a guest/note word the rule parser did not turn
+  // into a guest/note -> the model reads it too. A QUESTION (a query) never.
+  if (step === "summary") {
+    const hasValue = rule.type === "edit" && rule.edits.some((e) => e.field === "guest" || e.field === "note");
+    return (rule.type === "text" || rule.type === "edit") && !hasValue && GUEST_NOTE_RE.test(t);
   }
   return false;
 }

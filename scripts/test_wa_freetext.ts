@@ -330,7 +330,12 @@ check("a Hebrew query at the menu", (() => {
 })(), { studio: "חשמונאים", date: "2026-10-17" });
 check("...but not in an English conversation", eventFromMessage(msg("מה פנוי מחר בחשמונאים?"), { now: NOW, freeTextOn: true, step: "menu", lang: "en" }), { type: "text", text: "מה פנוי מחר בחשמונאים?" });
 check("...not with the layer off", eventFromMessage(msg("מה פנוי מחר בחשמונאים?"), { now: NOW, freeTextOn: false, step: "menu", lang: "he" }), { type: "text", text: "מה פנוי מחר בחשמונאים?" });
-check("...and NEVER at the guest step, where text is a value", eventFromMessage(msg("מה פנוי מחר בחשמונאים?"), { now: NOW, freeTextOn: true, step: "guest", lang: "he" }), { type: "text", text: "מה פנוי מחר בחשמונאים?" });
+// E14-2c (owner, 21.10): a QUESTION about free times at any step shows the options — the guest step too
+check("...and at the guest step a QUESTION is a question, not the guest's name (E14-2c)", (() => {
+  const e = eventFromMessage(msg("מה פנוי מחר בחשמונאים?"), { now: NOW, freeTextOn: true, step: "guest", lang: "he" });
+  return e.type === "query" ? { studio: e.q.studio, date: e.q.dateFrom } : e;
+})(), { studio: "חשמונאים", date: "2026-10-17" });
+check("...while a plain answer at the guest step is still the value", eventFromMessage(msg("דני חשמונאי"), { now: NOW, freeTextOn: true, step: "guest", lang: "he" }), { type: "text", text: "דני חשמונאי" });
 check("an edit at the summary", eventFromMessage(msg("אורח: יהודה לוי"), { now: NOW, freeTextOn: true, step: "summary", lang: "he" }), { type: "edit", edits: [{ field: "guest", value: "יהודה לוי", alsoConfirm: false }], dropped: [] });
 check('"חזרה" stays navigation, not text', eventFromMessage(msg("חזרה"), { now: NOW, freeTextOn: true, step: "summary", lang: "he" }), { type: "back" });
 

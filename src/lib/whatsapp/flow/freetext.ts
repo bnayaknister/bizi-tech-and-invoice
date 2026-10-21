@@ -361,6 +361,16 @@ export function parseAvailabilityText(raw: string, todayIsrael: string): ParsedA
     else timeTo = p.hhmm;
   }
 
+  // E14-2c (owner, 21.10): a part of the day ("בצהריים", "בבוקר", "אחה״צ",
+  // "בערב") is a RANGE of starts — only when no time was written
+  if (!trange && !after && !before) {
+    const part = daypartRange(text);
+    if (part) {
+      timeFrom = part.from;
+      timeTo = part.to;
+    }
+  }
+
   // ── room and length ──
   const rooms = studiosIn(text);
   if (rooms.ambiguous) dropped.push("האולפן");
@@ -370,6 +380,75 @@ export function parseAvailabilityText(raw: string, todayIsrael: string): ParsedA
   // list (no constraint invented) while SAYING what was not understood
   if (!rooms.studio && !dateFrom && !timeFrom && !timeTo && !duration && dropped.length === 0) return null;
   return { studio: rooms.studio, duration, dateFrom, dateTo, timeFrom, timeTo, dropped };
+}
+
+// ─── E14-2c: parts of the day, availability questions, yes / no ────────────
+
+/**
+ * Parts of the day as RANGES of start times (owner, 21.10). The end is
+ * exclusive, the same as every time filter here ("before 15:00"):
+ *   בוקר 09:00–12:00 · צהריים 12:00–15:00 · אחר הצהריים 14:00–18:00 · ערב 17:00–20:00
+ * A daypart word right after an hour ("4 בצהריים", "9 בבוקר") is that hour's
+ * daypart, not a range — the hour parser owns it.
+ */
+export const DAYPART_RANGES = {
+  morning: { from: "09:00", to: "12:00" },
+  noon: { from: "12:00", to: "15:00" },
+  afternoon: { from: "14:00", to: "18:00" },
+  evening: { from: "17:00", to: "20:00" },
+} as const;
+
+const DAYPART_PATTERNS: [keyof typeof DAYPART_RANGES, RegExp][] = [
+  // longest first: "אחר הצהריים" before "צהריים"
+  ["afternoon", new RegExp("(?<![\\p{L}])(?:ב?אחה[\"״']צ|ב?אחר(?:י)?\\s+ה?צהר(?:י)?ים)(?![\\p{L}])", "u")],
+  ["noon", new RegExp("(?<![\\p{L}])(?:ב|בשעות\\s+ה|ה)?צהר(?:י)?ים(?![\\p{L}])(?!\\s+טובים)", "u")],
+  ["morning", new RegExp("(?<![\\p{L}])(?:ב|בשעות\\s+ה|ה)?בוקר(?![\\p{L}])(?!\\s+(?:טוב|אור))", "u")],
+  ["evening", new RegExp("(?<![\\p{L}])(?:ב|בשעות\\s+ה|ה)?ערב(?![\\p{L}])(?!\\s+טוב)", "u")],
+];
+/** an hour right before the daypart word: then it is that hour's daypart */
+const HOUR_BEFORE_RE = new RegExp(`(?:\\d{1,2}(?::\\d{2})?|${HOUR_TOKEN.replace("\\d{1,2}(?::\\d{2})?|", "")})\\s*$`, "u");
+
+export function daypartRange(raw: string): { part: keyof typeof DAYPART_RANGES; from: string; to: string; label: string } | null {
+  const text = raw.replace(/\s+/g, " ");
+  for (const [part, re] of DAYPART_PATTERNS) {
+    const m = re.exec(text);
+    if (!m) continue;
+    if (HOUR_BEFORE_RE.test(text.slice(0, m.index))) return null;
+    return { part, ...DAYPART_RANGES[part], label: m[0].trim() };
+  }
+  return null;
+}
+
+/**
+ * An availability QUESTION ("מה פנוי…", "יש מקום…", "מתי אפשר…", "…פנוי?").
+ * Owner, 21.10: at any step — the summary included — a question shows the
+ * options; it never changes the booking silently.
+ */
+const QUESTION_RE = new RegExp(
+  "(?<![\\p{L}])(?:מה\\s+(?:פנוי|יש|אפשר|פתוח)|יש\\s+(?:מקום|משהו|זמן|חדר|אולפן\\s+פנוי)|מתי\\s+(?:אפשר|פנוי|יש|נוח)|איזה\\s+(?:שעות|ימים|ימי)|אילו\\s+(?:שעות|ימים))(?![\\p{L}])|פנוי(?:ה|ים)?\\s*\\?",
+  "u"
+);
+export function isAvailabilityQuestion(raw: string): boolean {
+  return QUESTION_RE.test(raw.replace(/\s+/g, " "));
+}
+
+/**
+ * "כן" / "לא" as the answer to a yes/no question (owner, 21.10) — the whole
+ * message, punctuation and "תודה"/"בבקשה" aside. Anything longer is not a
+ * yes/no (it is read by the parsers). PURE.
+ */
+const YES_WORDS = new Set(["כן", "כן כן", "בטח", "בטח שכן", "בטוח", "בסדר", "אוקיי", "אוקי", "ok", "okay", "סבבה", "נכון", "יאללה", "מעולה", "יופי", "כמו תמיד", "כרגיל", "אותו דבר", "אותו אולפן", "אותו חדר", "בדיוק"]);
+const NO_WORDS = new Set(["לא", "לא לא", "אחר", "לא אחר", "אולפן אחר", "חדר אחר", "משהו אחר", "לא שם", "לא הפעם", "לא כמו תמיד"]);
+export function yesNo(raw: string): "yes" | "no" | null {
+  const t = raw
+    .toLowerCase()
+    .replace(/[.,!?״"'׳\-–]/g, " ")
+    .replace(new RegExp("(?<![\\p{L}])(?:תודה|בבקשה|רבה)(?![\\p{L}])", "gu"), " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (YES_WORDS.has(t)) return "yes";
+  if (NO_WORDS.has(t)) return "no";
+  return null;
 }
 
 // ─── the summary parser ────────────────────────────────────────────────────

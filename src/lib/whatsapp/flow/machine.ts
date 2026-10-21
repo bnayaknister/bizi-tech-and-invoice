@@ -13,7 +13,7 @@ import { STUDIOS } from "@/lib/calendar/studios";
 import type { SubmitResult } from "@/lib/booking/submit";
 import { selfServeAllowed } from "@/lib/booking/manage";
 import { COPY, copy, isLang, DEFAULT_LANG, type BotCopy, type Lang } from "./copy";
-import { stripGuestLabel, type ParsedAvailability, type ParsedEdit } from "./freetext";
+import { stripGuestLabel, yesNo, type ParsedAvailability, type ParsedEdit } from "./freetext";
 import { langButtonId } from "../lang";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -855,6 +855,14 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
       };
     }
     if (e.type === "other-times") return again({ ...s, offer: null }, o.notice);
+    // owner, 21.10: "כן" / "לא" to "…פנוי באותה שעה — לעבור?" = the buttons
+    // ("כן" picks the room only when ONE was offered; two -> the buttons again)
+    if (e.type === "text" && layerOn(s)) {
+      const yn = yesNo(e.text);
+      if (yn === "no") return again({ ...s, offer: null }, o.notice);
+      if (yn === "yes" && o.rooms.length === 1) return reduce(s, { type: "switch-room", studio: o.rooms[0] }, ctx);
+      if (yn === "yes") return render(s);
+    }
     // anything else: the offer lapses, and the event acts on the step beneath it
     s = { ...s, offer: null };
   }
@@ -873,6 +881,13 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
     return start(showOf(s));
   }
   if (e.type === "back") return back(s);
+
+  // E14-2c (owner, 21.10): an availability QUESTION at any step of a booking —
+  // the summary included — shows the options; it never changes the booking
+  // silently. Room, length, guest and note are kept.
+  if (e.type === "query" && s.step !== "menu" && QUERY_STEPS.includes(s.step)) {
+    return layerOn(s) && s.mode === "book" ? stepQuery(s, e.q) : again(s, C.NOTICE.pickFromList);
+  }
 
   const stale = () => again(s, C.NOTICE.stale);
   // free text where a choice is expected: the current step again. This is the
@@ -1296,6 +1311,36 @@ function applyEdits(s: FlowState, edits: ParsedEdit[], dropped: string[]): Trans
     };
   }
   return go(s, { guest, note, duration, durationFromDefault, notice: `${dropped.length ? C.NOTICE.changedPartial : C.NOTICE.changed}${tail}` });
+}
+
+/** E14-2c: where a question about free times is answered with the options */
+const QUERY_STEPS: readonly FlowStep[] = ["duration", "studio-default", "studio", "day", "hour", "guest", "note", "summary"];
+
+/**
+ * E14-2c (owner, 21.10): "מה פנוי ביום שלישי בצהריים?" at the summary (or any
+ * step). The chosen slot is let go — a question is not a change to keep — and
+ * the free options for what was asked are shown: one day -> its hours inside
+ * the written range, else the days. Room / length / guest / note stay; from
+ * the summary a new hour goes straight back to it. Nothing is booked by text.
+ */
+function stepQuery(s: FlowState, q: ParsedAvailability): Transition {
+  const C = copy(s.lang);
+  const echo = C.QUERY.echo(q);
+  const notice = [echo, q.dropped.length ? C.QUERY.dropped(q.dropped) : ""].filter(Boolean).join(" ") || null;
+  const duration = q.duration ?? s.duration ?? DEFAULT_BOOKING_DURATION;
+  const durationFromDefault = q.duration ? false : s.duration ? s.durationFromDefault : true;
+  const studio = q.studio ?? s.studio;
+  const patch: Partial<FlowState> = {
+    duration, durationFromDefault, studio,
+    filter: q.dateFrom || q.dateTo || q.timeFrom || q.timeTo
+      ? { dateFrom: q.dateFrom, dateTo: q.dateTo, timeFrom: q.timeFrom, timeTo: q.timeTo }
+      : null,
+    date: null, start: null, end: null, days: [], dayPage: 0, hours: [], hourPage: 0,
+    keep: null, offer: null, notice,
+    fromSummary: s.step === "summary" || !!s.fromSummary,
+  };
+  if (!studio) return go(s, { ...patch, step: studioStep(s) });
+  return { kind: "need-availability", state: { ...s, ...patch, step: "day" } };
 }
 
 /** E14-2b: the order a booking walks ("studio-default" is the studio step) */
