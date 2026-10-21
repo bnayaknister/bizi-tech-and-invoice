@@ -1,4 +1,9 @@
-import { becamePerformed, enqueueWorkOrderWhenPerformed } from "@/lib/documents/workOrderOnRecorded";
+import {
+  becamePerformed,
+  enqueueWorkOrderWhenPerformed,
+  ensureJobWhenRecorded,
+  isRecordingStageDone,
+} from "@/lib/documents/workOrderOnRecorded";
 import { NextResponse } from "next/server";
 import { PERF_OFF, perfTimer } from "@/lib/perf/timing";
 import { entityGet } from "@/lib/drawer/entityGet";
@@ -143,9 +148,13 @@ export async function POST(
     // B38: the recording is done -> the work order is born (with the job the
     // database just created). Never fails the stage update: a miss is left as
     // an event and caught by the 21:00 sweep.
+    // B38-5: "פרק · הקלטה" ticked done on a production whose status is ALREADY
+    // past הוקלט has no transition, so the trigger made no job — ask for it.
     const { data: after } = await admin.from("productions").select("status").eq("id", params.id).maybeSingle();
-    if (becamePerformed(before?.status as string | undefined, after?.status as string | undefined)) {
+    const recordingDone = isRecordingStageDone(data[0]);
+    if (recordingDone || becamePerformed(before?.status as string | undefined, after?.status as string | undefined)) {
       try {
+        if (recordingDone) await ensureJobWhenRecorded(admin, params.id);
         await enqueueWorkOrderWhenPerformed(admin, params.id);
       } catch (e) {
         await admin.from("events").insert({

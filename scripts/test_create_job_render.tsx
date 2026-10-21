@@ -184,5 +184,19 @@ check("suggested NaN is treated as absent, never printed", () => {
 check("every field empty at once", () =>
   body({ showName: null, recordDate: null, guest: null, suggested: null, value: "" }));
 
+// B38-5: a production with an existing work order — the window says the job is linked to it
+check("no work order -> no linked line", () => {
+  if (body({ workOrder: null }).includes("linked-work-order")) throw new Error("linked line without an order");
+});
+check("a work order -> its number, and the amount is labelled as the order's", () => {
+  const html = body({ workOrder: { number: "10359", amount: 500 }, suggested: 500 });
+  if (!html.includes(CREATE_JOB_COPY.linkedWorkOrder("10359"))) throw new Error("the linked line is missing");
+  if (!html.includes(CREATE_JOB_COPY.fromWorkOrder)) throw new Error("the amount is not labelled as the order's");
+});
+check("a work order with no number -> no 'null' on screen", () => {
+  const html = body({ workOrder: { number: null, amount: null } });
+  if (html.includes("null")) throw new Error("the word null reached the screen");
+});
+
 console.log(failures === 0 ? "\nAll checks passed.\n" : `\n${failures} CHECK(S) FAILED.\n`);
 process.exit(failures === 0 ? 0 : 1);

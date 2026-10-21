@@ -959,6 +959,8 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
   const [createJobOpen, setCreateJobOpen] = useState(false);
   const [createJobAmount, setCreateJobAmount] = useState("");
   const [createJobSuggested, setCreateJobSuggested] = useState<number | null>(null);
+  // B38-5: the production's existing work order, which the new job is linked to
+  const [createJobOrder, setCreateJobOrder] = useState<{ number?: string | null; amount?: number | null } | null>(null);
   const [createJobBusy, setCreateJobBusy] = useState(false);
   const [createJobErr, setCreateJobErr] = useState<string | null>(null);
   const [createJobDone, setCreateJobDone] = useState(false);
@@ -1340,6 +1342,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     setCreateJobErr(null);
     setCreateJobDone(false);
     setCreateJobSuggested(null);
+    setCreateJobOrder(null);
     setCreateJobAmount("");
     setCreateJobOpen(true);
     const res = await fetch(`/api/productions/${ref.id}/create-job`);
@@ -1351,7 +1354,8 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
     // A pre-filled field the owner can overwrite — never a locked number. When
     // the server has nothing to offer it stays empty and the window says why.
     if (body.blocked) setCreateJobErr(body.blocked as string);
-    const s = body.suggested_amount == null ? null : Number(body.suggested_amount);
+    setCreateJobOrder(body.work_order ?? null);
+    const s =body.suggested_amount == null ? null : Number(body.suggested_amount);
     if (s != null && Number.isFinite(s)) {
       setCreateJobSuggested(s);
       setCreateJobAmount(String(s));
@@ -1594,6 +1598,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
               recordDate={(data?.entity?.record_date as string | null) ?? null}
               guest={(data?.entity?.guest as string | null) ?? null}
               suggested={createJobSuggested}
+              workOrder={createJobOrder}
               value={createJobAmount}
               busy={createJobBusy}
               error={createJobErr}

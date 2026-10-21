@@ -23,8 +23,10 @@ import { createJobGate, jobAmountError } from "@/lib/productions/createJob";
 //
 // ═══ WHY THIS CANNOT ISSUE ANYTHING — THREE STRUCTURAL REASONS ═══
 //   1. This file does not import enqueueDocument, issuePendingDocument, or the
-//      Morning client. The only writes below are `jobs`, `job_productions` and
-//      `events`. (`suggestJobAmount` is pure arithmetic over two rows.)
+//      Morning client. The only writes below are `jobs`, `job_productions`,
+//      `events`, and (B38-5) the `job_id` link column of an EXISTING work
+//      order — never an insert into pending_documents, never its status.
+//      (`suggestJobAmount` is pure arithmetic over two rows.)
 //   2. `jobs` carries no INSERT trigger that queues anything. The only one on
 //      insert is trg_compute_due_date (0002:278-281), which sets new.due_date
 //      and returns — which is also why due_date is NOT computed here.
@@ -40,14 +42,15 @@ import { createJobGate, jobAmountError } from "@/lib/productions/createJob";
 // returns null. No second job. That guard is the whole reason this route is
 // allowed to write the link at all.
 //
-// ═══ WHAT THIS DOES NOT DO, ON PURPOSE ═══
-// It does not stamp `pending_documents.job_id` on the production's open work
-// order the way ensure_job_for_production does (0077). Nothing needs it:
-// resolveParentWorkOrderLink finds the order by `production_id`
-// (parentRef.ts:168-172), never by job_id, so the consolidated deal invoice
-// resolves 10311/10312 the moment the link below exists. 0077's note 3 already
-// records that column as a known-null for orders that arrive after their job,
-// and says the fix belongs at the three enqueue sites — not here.
+// ═══ B38-5 — A PRODUCTION THAT ALREADY HAS A WORK ORDER ═══
+// A job is "the work, priced"; the work order (Morning 100) is not a charge,
+// and the deal invoice built from the job names the order as its parent. So a
+// job here never bills twice — but until B38-5 it was born DETACHED from the
+// order: priced by whatever was typed, and with `pending_documents.job_id`
+// left null. Now the route links them the way ensure_job_for_production does
+// (0077): the offered amount is the order's own, and the order is stamped with
+// the new job — the link column only, and only while it is null. Nothing is
+// queued, inserted, approved or issued.
 
 const PROD_SELECT =
   "id,kind,legacy,client_id,contract_id,show_id,podcast_name,record_date,guest,price_override,status,studio_hours,cancelled_at,merged_into";
@@ -69,6 +72,14 @@ type ProdRow = {
   merged_into: string | null;
 };
 
+type WorkOrderRow = {
+  id: string;
+  status: string;
+  amount: number | string | null;
+  job_id: string | null;
+  morning_doc_number: string | null;
+};
+
 type Admin = ReturnType<typeof createAdminClient>;
 
 /**
@@ -86,7 +97,7 @@ async function load(admin: Admin, id: string) {
   if (!prod) return { error: "ההפקה לא נמצאה", status: 404 as const };
   const p = prod as unknown as ProdRow;
 
-  const [{ data: links }, showRes] = await Promise.all([
+  const [{ data: links }, showRes, { data: orders }] = await Promise.all([
     admin.from("job_productions").select("job_id").eq("production_id", id),
     p.show_id
       ? admin
@@ -95,8 +106,18 @@ async function load(admin: Admin, id: string) {
           .eq("id", p.show_id)
           .maybeSingle()
       : Promise.resolve({ data: null }),
+    // the live work order, if any — the same statuses 0077 stamps; the unique
+    // index pending_documents_one_live_per_production allows at most one
+    admin
+      .from("pending_documents")
+      .select("id,status,amount,job_id,morning_doc_number")
+      .eq("production_id", id)
+      .eq("doc_type", "work_order")
+      .not("status", "in", "(rejected,failed,cancelled)")
+      .limit(1),
   ]);
   const show = (showRes.data ?? null) as ShowForBilling | null;
+  const workOrder = ((orders ?? [])[0] ?? null) as WorkOrderRow | null;
 
   // The production's own client wins; the show's is the fallback, which is the
   // same precedence every other creation path applies (calendar sync writes
@@ -105,7 +126,13 @@ async function load(admin: Admin, id: string) {
   // has one is still billable to that client.
   const clientId = p.client_id ?? show?.client_id ?? null;
 
-  return { prod: p, show, clientId, jobIds: (links ?? []).map((l) => l.job_id as string).filter(Boolean) };
+  return { prod: p, show, clientId, workOrder, jobIds: (links ?? []).map((l) => l.job_id as string).filter(Boolean) };
+}
+
+function orderAmount(o: WorkOrderRow | null): number | null {
+  if (!o || o.amount == null) return null;
+  const n = Number(o.amount);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 function forBilling(p: ProdRow): ProductionForBilling {
@@ -134,7 +161,7 @@ export async function GET(_request: Request, { params }: { params: { id: string 
   const admin = createAdminClient();
   const ctx = await load(admin, params.id);
   if ("error" in ctx) return NextResponse.json({ error: ctx.error }, { status: ctx.status });
-  const { prod, show, clientId, jobIds } = ctx;
+  const { prod, show, clientId, jobIds, workOrder } = ctx;
 
   const gate = createJobGate({
     hasJob: jobIds.length > 0,
@@ -149,7 +176,11 @@ export async function GET(_request: Request, { params }: { params: { id: string 
     record_date: prod.record_date,
     guest: prod.guest,
     // null = no offer. The screen leaves the field empty and says so.
-    suggested_amount: suggestJobAmount(forBilling(prod), show),
+    // B38-5: an existing work order offers its own amount — the job is that order's work
+    suggested_amount: orderAmount(workOrder) ?? suggestJobAmount(forBilling(prod), show),
+    work_order: workOrder
+      ? { number: workOrder.morning_doc_number, amount: orderAmount(workOrder), status: workOrder.status }
+      : null,
   });
 }
 
@@ -174,7 +205,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const admin = createAdminClient();
   const ctx = await load(admin, params.id);
   if ("error" in ctx) return NextResponse.json({ error: ctx.error }, { status: ctx.status });
-  const { prod, clientId, jobIds } = ctx;
+  const { prod, clientId, jobIds, workOrder } = ctx;
 
   // Re-asked here and not trusted from the GET: the three facts are about money
   // landing on a job that already exists, and the drawer's copy may be minutes
@@ -252,6 +283,22 @@ export async function POST(request: Request, { params }: { params: { id: string 
     );
   }
 
+  // ---- 2b. the existing work order (B38-5) -------------------------------
+  // The link column only, and only while it is null (0077's anti-overwrite
+  // guard). A failure here does not undo the job: the job and its link are
+  // right, the order is found by production_id anyway (parentRef.ts), and the
+  // event below says the stamp did not land.
+  let stampedOrder: string | null = null;
+  if (workOrder && !workOrder.job_id) {
+    const { data: stamped } = await admin
+      .from("pending_documents")
+      .update({ job_id: jobId })
+      .eq("id", workOrder.id)
+      .is("job_id", null)
+      .select("id");
+    stampedOrder = (stamped ?? [])[0]?.id ?? null;
+  }
+
   // ---- 3. the audit -----------------------------------------------------
   // The tax-ceiling shape (documents/tax/route.ts:184-199): entity, type,
   // actor, and a payload carrying every number the decision rested on.
@@ -275,8 +322,11 @@ export async function POST(request: Request, { params }: { params: { id: string 
       legacy: !!prod.legacy,
       production_status: prod.status,
       ...(overrode ? { suggested_amount: suggested } : {}),
+      work_order_id: workOrder?.id ?? null,
+      work_order_number: workOrder?.morning_doc_number ?? null,
+      work_order_stamped: stampedOrder,
     },
   });
 
-  return NextResponse.json({ ok: true, job_id: jobId, amount });
+  return NextResponse.json({ ok: true, job_id: jobId, amount, work_order_stamped: stampedOrder });
 }

@@ -49,6 +49,10 @@ export const CREATE_JOB_COPY = {
   amountLabel: "סכום לפני מע״מ",
   suggested: "מחושב לפי מחיר התוכנית",
   noSuggestion: "לתוכנית אין מחיר מוגדר. הזינו סכום.",
+  /** B38-5: the production already has a work order — the job is linked to it */
+  fromWorkOrder: "לפי הזמנת העבודה",
+  linkedWorkOrder: (num: string | null | undefined) =>
+    `להפקה כבר יש הזמנת עבודה${num ? ` ${num}` : ""}. העבודה תקושר אליה — לא תיווצר הזמנה חדשה ולא חיוב נוסף.`,
   note: "יצירת העבודה לא מוציאה שום מסמך. אחריה אפשר להוציא חשבון עסקה או לשייך מסמך קיים.",
   submit: "יצירה",
   cancel: "ביטול",

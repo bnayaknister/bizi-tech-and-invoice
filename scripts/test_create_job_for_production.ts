@@ -231,9 +231,23 @@ check(
 
 check("due_date is NOT computed here (trg_compute_due_date owns it)", !/due_date/.test(code));
 
+// B38-5: the route now READS the production's live work order and stamps its
+// job_id link — still no insert, no status, no amount, nothing queued.
 check(
-  "the route writes NOTHING to pending_documents",
-  !/from\(\s*["']pending_documents["']\s*\)/.test(code)
+  "the route never INSERTs into pending_documents",
+  !/from\(\s*["']pending_documents["']\s*\)\s*\.insert/.test(code)
+);
+check(
+  "its only pending_documents write is the job_id link, guarded by job_id is null",
+  (() => {
+    const writes = Array.from(code.matchAll(/from\(\s*["']pending_documents["']\s*\)\s*\.(insert|update|upsert|delete)\(([^)]*)\)/g));
+    return (
+      writes.length === 1 &&
+      writes[0][1] === "update" &&
+      /^\s*\{\s*job_id:\s*jobId\s*\}\s*$/.test(writes[0][2]) &&
+      /\.update\(\{\s*job_id:\s*jobId\s*\}\)\s*\.eq\("id",\s*workOrder\.id\)\s*\.is\("job_id",\s*null\)/.test(code)
+    );
+  })()
 );
 
 check(
@@ -242,10 +256,10 @@ check(
 );
 
 check(
-  "the only tables the route touches are productions, shows, jobs, job_productions and events",
+  "the only tables the route touches are productions, shows, jobs, job_productions, events and (B38-5) pending_documents",
   (() => {
     const tables = Array.from(code.matchAll(/\.from\(\s*["']([a-z_]+)["']\s*\)/g)).map((m) => m[1]);
-    const allowed = new Set(["productions", "shows", "job_productions", "jobs", "events"]);
+    const allowed = new Set(["productions", "shows", "job_productions", "jobs", "events", "pending_documents"]);
     return tables.length > 0 && tables.every((t) => allowed.has(t));
   })(),
   Array.from(new Set(Array.from(code.matchAll(/\.from\(\s*["']([a-z_]+)["']\s*\)/g)).map((m) => m[1]))).join(", ")

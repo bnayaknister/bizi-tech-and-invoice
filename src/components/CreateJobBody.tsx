@@ -72,6 +72,7 @@ export function CreateJobModalBody({
   recordDate,
   guest,
   suggested,
+  workOrder,
   value,
   busy,
   error,
@@ -85,6 +86,8 @@ export function CreateJobModalBody({
   guest: string | null | undefined;
   /** null/undefined = nothing to offer; the field stays empty and says why */
   suggested: number | null | undefined;
+  /** B38-5: the production's existing work order, if any (its amount is the offer) */
+  workOrder?: { number?: string | null; amount?: number | null } | null;
   value: string;
   busy: boolean;
   error: string | null;
@@ -156,9 +159,15 @@ export function CreateJobModalBody({
       />
       <div className="text-[10px] text-[var(--faint)] mb-3">
         {hasSuggestion
-          ? `${CREATE_JOB_COPY.suggested} · ${NIS.format(Number(suggested))} ₪`
+          ? `${workOrder ? CREATE_JOB_COPY.fromWorkOrder : CREATE_JOB_COPY.suggested} · ${NIS.format(Number(suggested))} ₪`
           : CREATE_JOB_COPY.noSuggestion}
       </div>
+
+      {workOrder ? (
+        <div data-create-job="linked-work-order" className="text-[10px] text-[var(--dim)] border border-[var(--rule)] rounded-xl px-2.5 py-2 mb-3 leading-relaxed">
+          {CREATE_JOB_COPY.linkedWorkOrder(workOrder.number)}
+        </div>
+      ) : null}
 
       <div className="text-[10px] text-[var(--dim)] border border-[var(--rule)] rounded-xl px-2.5 py-2 mb-4 leading-relaxed">
         {CREATE_JOB_COPY.note}

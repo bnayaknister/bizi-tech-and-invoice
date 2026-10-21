@@ -51,6 +51,50 @@ export function becamePerformed(before: string | null | undefined, after: string
   return !hasBeenPerformed(before) && hasBeenPerformed(after);
 }
 
+// ═══ B38-5 — THE RECORDING STAGE, NOT ONLY THE STATUS ═══
+// The database creates the job on a status TRANSITION (0060/0121). A
+// production whose status was already past 'הוקלט' — a manual jump, a board
+// drag before 0121 — gets no transition when "פרק · הקלטה" is ticked later, so
+// it stayed without a job (שומעת רגע?! 21.10, c517a024 / aba57ca6). Ticking the
+// recording stage done now asks ensure_job_for_production directly. The RPC
+// keeps every guard (0060 duplicate, 0061 not-recorded, cancelled/merged) and
+// stamps the production's existing work order with the new job (0077) — it
+// never queues a document.
+
+/** the stage row the drawer just wrote is "פרק · הקלטה", done. PURE. */
+export function isRecordingStageDone(stage: { track?: unknown; step?: unknown; status?: unknown } | null | undefined): boolean {
+  return !!stage && stage.track === "episode" && stage.step === "record" && stage.status === "done";
+}
+
+export type EnsureJobResult =
+  | { status: "created"; jobId: string }
+  | { status: "skipped"; reason: "not-found" | "not-performed" | "not-billable" | "has-job" | "refused" };
+
+export async function ensureJobWhenRecorded(admin: SupabaseClient, productionId: string): Promise<EnsureJobResult> {
+  const { data: p } = await admin
+    .from("productions")
+    .select("id,kind,status,cancelled_at,merged_into")
+    .eq("id", productionId)
+    .maybeSingle();
+  if (!p) return { status: "skipped", reason: "not-found" };
+  if (p.merged_into || !hasBeenPerformed(p.status as string, p.cancelled_at as string | null)) {
+    return { status: "skipped", reason: "not-performed" };
+  }
+  // the trigger pre-filters kind the same way; answered here so a tick on an
+  // internal show writes nothing (the RPC would log job_skipped_not_client)
+  if (p.kind !== "client") return { status: "skipped", reason: "not-billable" };
+
+  const { data: link } = await admin.from("job_productions").select("job_id").eq("production_id", p.id).limit(1);
+  if (link && link.length > 0) return { status: "skipped", reason: "has-job" };
+
+  const { data: jobId, error } = await admin.rpc("ensure_job_for_production", {
+    p_id: p.id,
+    p_reason: "recording_stage_done",
+  });
+  if (error) throw new Error(error.message);
+  return jobId ? { status: "created", jobId: jobId as string } : { status: "skipped", reason: "refused" };
+}
+
 export async function enqueueWorkOrderWhenPerformed(admin: SupabaseClient, productionId: string): Promise<OnRecordedResult> {
   const { data: p } = await admin
     .from("productions")
