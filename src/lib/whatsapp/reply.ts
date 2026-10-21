@@ -302,7 +302,7 @@ export async function replyToInbound(
         eventOverride,
       });
       if (flow.kind === "drop") return { sent: false, reason: "duplicate", kind: "flow" };
-      if (flow.kind === "shows") return await sendShowList(admin, waId, shows, ctx);
+      if (flow.kind === "shows") return await sendShowList(admin, waId, shows, ctx, flow.kept === true);
       if (flow.kind === "link") return await sendLink(admin, request, waId, flow.show, ctx);
       if (flow.kind === "send") {
         return await recordAndSend(admin, {
@@ -338,16 +338,19 @@ async function sendShowList(
   admin: SupabaseClient<Database>,
   waId: string,
   shows: ContactShow[],
-  ctx: Ctx
+  ctx: Ctx,
+  /** E14-2c: the request written before the choice is held — say so */
+  kept = false
 ): Promise<ReplyOutcome> {
   const C = copy(ctx.lang);
+  const body = kept ? `${C.REPLY.listKept}\n\n${C.REPLY.listBody}` : C.REPLY.listBody;
   return await recordAndSend(admin, {
     inboundWamid: ctx.replyKey,
     waId,
-    body: C.REPLY.listBody,
+    body,
     payload: listPayload({
       to: waId,
-      body: C.REPLY.listBody,
+      body,
       button: C.REPLY.listButton,
       sectionTitle: C.REPLY.listSection,
       rows: listRowsFor(shows),

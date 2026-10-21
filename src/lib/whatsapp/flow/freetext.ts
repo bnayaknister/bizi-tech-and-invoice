@@ -49,6 +49,8 @@ export type ParsedEdit =
   | { field: "time-from"; hhmm: string; alsoConfirm: boolean }
   /** E14-2b: an EXACT start ("ב-10", "בשעה 10", "15:00") — kept if free, else that day's hours */
   | { field: "time-at"; hhmm: string; alsoConfirm: boolean }
+  /** E14-2c: "החדר הקבוע שלי" / "האולפן הרגיל" — the show's default room, resolved by the machine */
+  | { field: "studio-default"; alsoConfirm: boolean }
   /** "כן" / "מאשר" with no edit: confirmation stays with the button */
   | { field: "confirm-hint" };
 

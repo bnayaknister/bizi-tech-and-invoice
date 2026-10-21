@@ -22,8 +22,10 @@ import {
   withRecordings,
   type CancelOutcome,
   type RecordingOption,
+  initialState,
   isLive,
   parseFlowId,
+  parsePendingEvent,
   reduce,
   render,
   start,
@@ -136,8 +138,8 @@ export type FlowOutcome =
   | { kind: "send"; reply: FlowReply; meta: Record<string, unknown> }
   /** send the show's booking link — the E9-3 reply, including its no-link path */
   | { kind: "link"; show: ContactShow }
-  /** send the existing podcast list */
-  | { kind: "shows" }
+  /** send the existing podcast list — E14-2c: `kept` = the request written before the choice is held */
+  | { kind: "shows"; kept?: boolean }
   /** a concurrent delivery already handled this conversation: send nothing */
   | { kind: "drop" }
   /** the conversation store is unreachable: answer exactly as E9-3 did */
@@ -328,6 +330,8 @@ export async function runFlow(
   const live: FlowState | null =
     row?.state &&
     isLive(row.expiresAt, now) &&
+    // E14-2c: a row that only holds a request awaiting the podcast choice is not a conversation
+    !row.state.awaitingShow &&
     shows.some((s) => s.showId === row.state!.showId) &&
     // E9-5: the recording being cancelled or moved may belong to ANOTHER of
     // this number's podcasts — and that permission is re-checked too
@@ -338,6 +342,16 @@ export async function runFlow(
   const event =
     input.eventOverride ??
     eventFromMessage(message, { now, freeTextOn, step: live?.step ?? "menu", lang: input.lang });
+
+  // E14-2c: a request the language layer understood, read where no
+  // conversation is live yet (the first message) — applied at once, not
+  // answered with the bare menu. Hebrew, layer on, as every E14 rule.
+  const layerRequest = freeTextOn && input.lang === "he" && (event.type === "query" || event.type === "edit");
+  // …and one held while a several-podcast number chose the podcast
+  const pending =
+    freeTextOn && input.lang === "he" && row?.state?.awaitingShow && isLive(row.expiresAt, now)
+      ? parsePendingEvent(row.state.pending)
+      : null;
 
   /**
    * A new conversation. The link is resolved FIRST: a show that cannot get
@@ -359,6 +373,8 @@ export async function runFlow(
     const f = await fresh(show, null);
     if (!f) return { kind: "link", show };
     t = f;
+    // E14-2c (owner, 21.10): the request written before the choice, now
+    if (pending && f.kind === "reply") t = reduce(f.state, pending, { now });
   } else if (live) {
     // the switches are read on every message: turning one off takes effect at
     // once — and so is the language (E19): the saved preference wins over the
@@ -370,13 +386,30 @@ export async function runFlow(
     );
   } else {
     // step 0 (owner, E9-3): several podcasts and no conversation -> the list
-    if (multi) return { kind: "shows" };
+    if (multi) {
+      // E14-2c (owner, 21.10): a request written before the podcast was
+      // chosen is HELD (the row is not a live conversation) and applied
+      // right after the choice. Held only if the write won; else the list as before.
+      if (layerRequest) {
+        const hold: FlowState = {
+          ...initialState(showInfo(shows[0], multi, null, input.lang, freeTextOn)),
+          awaitingShow: true,
+          pending: event,
+        };
+        const saved = await saveConversation(admin, waId, hold, version, now);
+        if (saved.kind === "conflict") return { kind: "drop" };
+        return { kind: "shows", kept: saved.kind === "saved" };
+      }
+      return { kind: "shows" };
+    }
     // a tap on a conversation that expired: say so once, then start over
     const tappedOld = parseFlowId(interactiveId(message)) !== null;
     const notice = event.type === "refresh" ? C.LANG.switched : tappedOld ? C.NOTICE.expired : null;
     const f = await fresh(shows[0], notice);
     if (!f) return { kind: "link", show: shows[0] };
     t = f;
+    // E14-2c: the FIRST message's request is applied at once (before, it got the menu only)
+    if (layerRequest && f.kind === "reply") t = reduce(f.state, event, { now });
   }
 
   let currentVersion = version;

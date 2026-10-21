@@ -106,6 +106,8 @@ type QueryEcho = {
   timeTo: string | null;
   /** E14-2b: an exact start ("ב-10") */
   timeAt?: string | null;
+  /** E14-2c: the room is the show's default ("the regular room") */
+  studioIsDefault?: boolean;
 };
 /** E14-2: what the client wrote, narrowing a day or hour list */
 type AskedRange = {
@@ -189,6 +191,8 @@ const HE = {
     /** Approved copy — the one-podcast reply. */
     link: (showName: string, url: string) => `היי! לקביעת הקלטה ל${showName} — בחרו מועד כאן:\n${url}`,
     listBody: "היי! לאיזה פודקאסט לקבוע הקלטה?",
+    /** E14-2c: a request written before the podcast was chosen is kept, and handled after the choice */
+    listKept: "קיבלתי את הבקשה — רק תבחרו קודם לאיזה פודקאסט 👇",
     listButton: "בחירת פודקאסט",
     listSection: "הפודקאסטים שלכם",
   },
@@ -356,7 +360,7 @@ const HE = {
   QUERY: {
     echo: (q: QueryEcho) => {
       const parts: string[] = [];
-      if (q.studio) parts.push(`אולפן ${studioHe(q.studio)}`);
+      if (q.studio) parts.push(`אולפן ${studioHe(q.studio)}${q.studioIsDefault ? " (החדר הקבוע שלכם)" : ""}`);
       if (q.dateFrom && q.dateTo && q.dateFrom !== q.dateTo) parts.push(`${dayHe(q.dateFrom)} עד ${dayHe(q.dateTo)}`);
       else if (q.dateFrom) parts.push(dayHe(q.dateFrom));
       if (q.timeAt) parts.push(`בשעה ${q.timeAt}`);
@@ -440,6 +444,27 @@ const HE = {
     alreadySet: "זה כבר מעודכן — לא היה מה לשנות.",
     editUnclear:
       "לא הבנתי מה לשנות 🤔 אפשר לכתוב למשל: \"אורח: יהודה לוי\", \"הערה: ...\", \"3 שעות\", \"גבעון גדול\", \"יום רביעי\", \"15:00\" — או ללחוץ ✅ לקבוע.",
+    // ── E14-2c: a whole request in one message ──
+    /** "החדר הקבוע שלי" for a show that has no default room */
+    noDefaultStudio: "לא מוגדר לכם אולפן קבוע, אז צריך לבחור אולפן:",
+    /** the slot the client asked for is free */
+    slotFree: (dateIsrael: string, start: string, end: string, studio: string, isDefault: boolean) =>
+      `✅ ${dayHe(dateIsrael)}, ${start}–${end}, אולפן ${studioHe(studio)}${isDefault ? " (החדר הקבוע שלכם)" : ""} — פנוי!`,
+    /** under a summary reached in one message: nothing is booked by text */
+    notBookedYet: "עוד לא נקבע — כדי לקבוע לוחצים על \"✅ לקבוע\" 👇",
+    slotBusyHour: (dateIsrael: string, start: string, studio: string, d: BookingDuration) =>
+      `ב${dayHe(dateIsrael)} ב-${start} אולפן ${studioHe(studio)} תפוס ל${DURATION_SHORT[d]}. אלה השעות הפנויות באותו יום:`,
+    slotBusyDay: (dateIsrael: string, studio: string, d: BookingDuration) =>
+      `ב${dayHe(dateIsrael)} אין מקום ל${DURATION_SHORT[d]} באולפן ${studioHe(studio)}. אלה הימים הפנויים:`,
+  },
+
+  /** E14-2c (owner, 21.10): the room asked for is taken, another is free at the same time — the client decides */
+  OFFER: {
+    body: (dateIsrael: string, start: string, studio: string, d: BookingDuration, rooms: string[]) =>
+      `אולפן ${studioHe(studio)} תפוס ב${dayHe(dateIsrael)} ב-${start} ל${DURATION_SHORT[d]}, אבל ` +
+      `${rooms.map((r) => `אולפן ${studioHe(r)}`).join(" וגם ")} ${rooms.length > 1 ? "פנויים" : "פנוי"} באותה שעה — לעבור?`,
+    room: (r: string) => `🔁 ${studioHe(r)}`,
+    other: "🕐 מועדים אחרים",
   },
 };
 
@@ -478,6 +503,7 @@ const EN: BotCopy = {
     link: (showName: string, url: string) =>
       `Hi! To book a recording for ${showName}, pick a time here${SCREEN_IS_HEBREW}:\n${url}`,
     listBody: "Hi! Which podcast would you like to book a recording for?",
+    listKept: "Got your request — just choose the podcast first 👇",
     listButton: "Choose podcast",
     listSection: "Your podcasts",
   },
@@ -627,7 +653,7 @@ const EN: BotCopy = {
   QUERY: {
     echo: (q: QueryEcho) => {
       const parts: string[] = [];
-      if (q.studio) parts.push(`${studioEn(q.studio)} studio`);
+      if (q.studio) parts.push(`${studioEn(q.studio)} studio${q.studioIsDefault ? " (your regular room)" : ""}`);
       if (q.dateFrom && q.dateTo && q.dateFrom !== q.dateTo) parts.push(`${dayEn(q.dateFrom)} to ${dayEn(q.dateTo)}`);
       else if (q.dateFrom) parts.push(dayEn(q.dateFrom));
       if (q.timeAt) parts.push(`at ${q.timeAt}`);
@@ -694,6 +720,22 @@ const EN: BotCopy = {
     alreadySet: "That's already set — nothing to change.",
     editUnclear:
       "I didn't understand what to change 🤔 You can write e.g.: \"guest: John\", \"note: ...\", \"3 hours\", \"Givon Large\", \"Wednesday\", \"15:00\" — or tap ✅ Book it.",
+    noDefaultStudio: "You don't have a regular studio set, so please choose one:",
+    slotFree: (dateIsrael: string, start: string, end: string, studio: string, isDefault: boolean) =>
+      `✅ ${dayEn(dateIsrael)}, ${start}–${end}, ${studioEn(studio)} studio${isDefault ? " (your regular room)" : ""} — it's free!`,
+    notBookedYet: "Not booked yet — to book, tap \"✅ Book it\" 👇",
+    slotBusyHour: (dateIsrael: string, start: string, studio: string, d: BookingDuration) =>
+      `On ${dayEn(dateIsrael)} at ${start}, ${studioEn(studio)} studio is taken for ${DURATION_SHORT_EN[d]}. These are the free times that day:`,
+    slotBusyDay: (dateIsrael: string, studio: string, d: BookingDuration) =>
+      `On ${dayEn(dateIsrael)} there's no room for ${DURATION_SHORT_EN[d]} at ${studioEn(studio)} studio. These are the free days:`,
+  },
+
+  OFFER: {
+    body: (dateIsrael: string, start: string, studio: string, d: BookingDuration, rooms: string[]) =>
+      `${studioEn(studio)} studio is taken on ${dayEn(dateIsrael)} at ${start} for ${DURATION_SHORT_EN[d]}, but ` +
+      `${rooms.map((r) => `${studioEn(r)} studio`).join(" and ")} ${rooms.length > 1 ? "are" : "is"} free at the same time — switch?`,
+    room: (r: string) => `🔁 ${studioEn(r)}`,
+    other: "🕐 Other times",
   },
 };
 

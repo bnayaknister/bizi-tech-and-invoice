@@ -97,6 +97,7 @@ const KIND: Record<string, Kind> = {
   "REPLY.neutral": "body",
   "REPLY.link": "body",
   "REPLY.listBody": "body",
+  "REPLY.listKept": "body",
   "REPLY.listButton": "listButton",
   "REPLY.listSection": "section",
   // NAV.back/restart are both a list row AND a button: the tighter limit
@@ -196,6 +197,15 @@ const KIND: Record<string, Kind> = {
   "NOTICE.editUnclear": "body",
   "NOTICE.unchanged": "body",
   "NOTICE.alreadySet": "body",
+  // E14-2c
+  "NOTICE.noDefaultStudio": "body",
+  "NOTICE.slotFree": "body",
+  "NOTICE.notBookedYet": "body",
+  "NOTICE.slotBusyHour": "body",
+  "NOTICE.slotBusyDay": "body",
+  "OFFER.body": "body",
+  "OFFER.room": "button",
+  "OFFER.other": "button",
   "JOIN.offerBody": "body",
   "JOIN.newClient": "button",
   "JOIN.existingClient": "button",
@@ -283,6 +293,12 @@ const SAMPLES: Record<string, unknown[][]> = {
   // the items are fragments of the CLIENT's own text; Latin sample keeps the
   // length honest without putting Hebrew into the EN dictionary's outputs
   "QUERY.dropped": [[['the time "23:30"', "the room"]]],
+  // E14-2c
+  "NOTICE.slotFree": DATES.flatMap((dt) => ROOMS.flatMap((r) => [[dt, "23:30", "23:59", r, true], [dt, "23:30", "23:59", r, false]])),
+  "NOTICE.slotBusyHour": DATES.flatMap((dt) => ROOMS.flatMap((r) => DURS.map((d) => [dt, "23:30", r, d]))),
+  "NOTICE.slotBusyDay": DATES.flatMap((dt) => ROOMS.flatMap((r) => DURS.map((d) => [dt, r, d]))),
+  "OFFER.body": DATES.flatMap((dt) => DURS.map((d) => [dt, "23:30", ROOMS[0], d, ROOMS.slice(1)])),
+  "OFFER.room": ROOMS.map((r) => [r]),
 };
 
 /** Walk an object's leaves -> [path, value]. */

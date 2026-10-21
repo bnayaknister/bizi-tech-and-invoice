@@ -162,7 +162,39 @@ export type FlowState = {
    * next withAvailability — never left in a saved state. Absent = none, so a
    * state with the layer off is byte-for-byte what it was before E14-2.
    */
-  keep?: { start: string; tail: string; then?: "guest" | "note" | "summary" } | null;
+  keep?: {
+    start: string;
+    tail: string;
+    then?: "guest" | "note" | "summary";
+    /**
+     * E14-2c: a whole request from ONE message (the menu): the answer SAYS
+     * whether that slot is free ("✅ … פנוי!" / "תפוס") instead of "עדכנתי".
+     */
+    announce?: boolean;
+  } | null;
+  /**
+   * E14-2c (owner, 21.10): the room asked for is taken at that time and
+   * another room is free then — offered as buttons, the client decides.
+   * Cleared by any other event. Absent = none.
+   */
+  offer?: {
+    date: string;
+    start: string;
+    /** the free rooms, validated: a tap on any other is stale */
+    rooms: BookableRoom[];
+    then: "guest" | "note" | "summary";
+    /** "מועדים אחרים": the step the state already holds, under this line */
+    notice: string;
+    /** the offer's own message, composed where the slot was found taken */
+    body: string;
+  } | null;
+  /**
+   * E14-2c (owner, 21.10): a number with several podcasts wrote a request
+   * before choosing one. The row then holds ONLY this — never a live
+   * conversation — and the request is applied right after the choice.
+   */
+  awaitingShow?: boolean;
+  pending?: FlowEvent | null;
   /**
    * E14-2: the slot is being re-chosen FROM the summary (an edit), so the
    * guest and note were already answered — even if both were skipped — and a
@@ -203,7 +235,10 @@ export type FlowEvent =
   // E14: …or a summary text into certain edits (nothing silently dropped)
   | { type: "edit"; edits: ParsedEdit[]; dropped: string[]; maybe?: { label: string; options: string[] }[] }
   // E14: the client chose to see EVERYTHING after a zero-match filter
-  | { type: "broaden" };
+  | { type: "broaden" }
+  // E14-2c: the answer to an offer of another free room at the same time
+  | { type: "switch-room"; studio: string }
+  | { type: "other-times" };
 
 export type FlowRow = { id: string; title: string; description?: string };
 
@@ -263,6 +298,9 @@ export const FLOW_ID = {
   confirmCancel: `${P}cxl-yes`,
   // E14
   broaden: `${P}broaden`,
+  // E14-2c
+  switchRoom: (s: BookableRoom) => `${P}sw:${s}`,
+  otherTimes: `${P}other-times`,
 } as const;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -299,12 +337,14 @@ export function parseFlowId(raw: unknown): FlowEvent | null {
     cxl: { type: "cancel-booking" },
     "cxl-yes": { type: "confirm-cancel" },
     broaden: { type: "broaden" },
+    "other-times": { type: "other-times" },
   };
   if (simple[id]) return simple[id];
   const [kind, ...rest] = id.split(":");
   const value = rest.join(":");
   if (kind === "dur" && /^\d+$/.test(value)) return { type: "duration", minutes: Number(value) };
   if (kind === "st" && value !== "") return { type: "studio", studio: value };
+  if (kind === "sw" && value !== "") return { type: "switch-room", studio: value };
   if (kind === "day" && DATE_RE.test(value)) return { type: "day", date: value };
   if (kind === "hr" && HHMM_RE.test(value)) return { type: "hour", start: value };
   if (kind === "rec" && UUID_RE.test(value)) return { type: "recording", id: value };
@@ -430,6 +470,21 @@ export function render(s: FlowState): Transition {
   const C = copy(s.lang);
   const body = (b: string) => withNotice(s, b);
   const out = (reply: FlowReply): Transition => ({ kind: "reply", state: { ...s, notice: null }, reply });
+
+  // E14-2c (owner, 21.10): the room asked for is taken and another is free at
+  // that very time — offered, never switched to by itself. "מועדים אחרים"
+  // shows the step this state already holds (that room's hours / days).
+  if (s.offer && (s.step === "hour" || s.step === "day" || s.step === "studio")) {
+    const o = s.offer;
+    return out({
+      type: "buttons",
+      body: body(o.body),
+      buttons: [
+        ...o.rooms.slice(0, 2).map((r) => ({ id: FLOW_ID.switchRoom(r), title: C.OFFER.room(r) })),
+        { id: FLOW_ID.otherTimes, title: C.OFFER.other },
+      ],
+    });
+  }
 
   switch (s.step) {
     case "menu": {
@@ -782,6 +837,27 @@ function back(s: FlowState): Transition {
  */
 export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Transition {
   const C = copy(s.lang);
+  // ── E14-2c: an offer of another free room at the same time ──
+  if (s.offer) {
+    const o = s.offer;
+    if (e.type === "switch-room") {
+      const room = validateStudio(e.studio);
+      if (!room || !o.rooms.includes(room)) return again({ ...s, offer: null }, C.NOTICE.stale);
+      // that very slot in the other room, read FRESH: kept if still free
+      return {
+        kind: "need-availability",
+        state: {
+          ...s, offer: null, studio: room, date: o.date,
+          filter: { dateFrom: o.date, dateTo: o.date, timeFrom: null, timeTo: null },
+          days: [], dayPage: 0, hours: [], hourPage: 0, start: null, end: null, step: "hour",
+          keep: { start: o.start, tail: "", then: o.then, announce: true },
+        },
+      };
+    }
+    if (e.type === "other-times") return again({ ...s, offer: null }, o.notice);
+    // anything else: the offer lapses, and the event acts on the step beneath it
+    s = { ...s, offer: null };
+  }
   // ── always available ──
   // E19: the language just changed (the driver already put the new one in
   // `s.lang`). Say so once, in the new language, over the same step — except
@@ -808,6 +884,12 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
     case "menu":
       if (e.type === "go") return go(s, { step: "duration", filter: null, durationFromDefault: false });
       if (e.type === "query") return menuQuery(s, e.q);
+      // E14-2c: a whole request in one message (day, room, start, length,
+      // guest, note) — the same validated path as an edit at any choice step,
+      // and the answer says whether THAT slot is free
+      if (e.type === "edit" && layerOn(s) && s.mode === "book") {
+        return applyStepEdits(s, e.edits, e.dropped, e.maybe, { announce: true });
+      }
       if (e.type === "mine" && s.manageOn) {
         return { kind: "need-recordings", state: { ...s, step: "mine", recordings: [], target: null } };
       }
@@ -1118,14 +1200,34 @@ function readEdits(s: FlowState, edits: ParsedEdit[], tail: string): ReadEdits {
         atEdit = edit.hhmm;
         break;
       }
+      case "studio-default":
+        // resolved by resolveDefaultRoom before this point
+        break;
     }
   }
   return { bad: null, guest, note, duration, studio, dayEdit, timeEdit, atEdit };
 }
 
+/**
+ * E14-2c: "החדר הקבוע שלי" -> the show's default room (already resolved into
+ * `defaultStudio`). A room named outright wins over it. No default set ->
+ * dropped, and `noDefault` lets the caller say so and ask the room. PURE.
+ */
+function resolveDefaultRoom(s: FlowState, edits: ParsedEdit[]): { edits: ParsedEdit[]; viaDefault: boolean; noDefault: boolean } {
+  if (!edits.some((e) => e.field === "studio-default")) return { edits, viaDefault: false, noDefault: false };
+  const rest = edits.filter((e) => e.field !== "studio-default");
+  if (rest.some((e) => e.field === "studio")) return { edits: rest, viaDefault: false, noDefault: false };
+  const room = s.mode === "book" ? s.defaultStudio : null;
+  if (!room) return { edits: rest, viaDefault: false, noDefault: true };
+  return { edits: [...rest, { field: "studio", studio: room, alsoConfirm: false }], viaDefault: true, noDefault: false };
+}
+
 function applyEdits(s: FlowState, edits: ParsedEdit[], dropped: string[]): Transition {
   const C = copy(s.lang);
+  const rd = resolveDefaultRoom(s, edits);
+  edits = rd.edits;
   const tail = (dropped.length ? `\n${C.QUERY.dropped(dropped)}` : "") +
+    (rd.noDefault ? `\n${C.NOTICE.noDefaultStudio}` : "") +
     (edits.some((e) => "alsoConfirm" in e && e.alsoConfirm) ? `\n${C.NOTICE.confirmByButton}` : "");
 
   // 1. validate EVERYTHING first — or change nothing at all
@@ -1214,9 +1316,11 @@ function applyStepEdits(
   s: FlowState,
   edits: ParsedEdit[],
   dropped: string[],
-  maybe: { label: string; options: string[] }[] = []
+  maybe: { label: string; options: string[] }[] = [],
+  opts: { announce?: boolean } = {}
 ): Transition {
   const C = copy(s.lang);
+  const announce = !!opts.announce;
   // owner, 21.10: an unsure hour ("ב-3": 03:00 or 15:00?) WHILE a list of
   // hours is shown, and nothing else about the slot is changing: if exactly
   // one reading is on that list, that is the answer. None or both -> asked.
@@ -1229,9 +1333,21 @@ function applyStepEdits(
       dropped = dropped.filter((d) => d !== maybe[0].label);
     }
   }
-  const tail = dropped.length ? `\n${C.QUERY.dropped(dropped)}` : "";
+  // E14-2c: "the regular room" is the show's default; none set -> the room is asked, saying so
+  const rd = resolveDefaultRoom(s, edits);
+  edits = rd.edits;
+  const tail = (dropped.length ? `\n${C.QUERY.dropped(dropped)}` : "") + (rd.noDefault ? `\n${C.NOTICE.noDefaultStudio}` : "");
   // nothing certain, only what was NOT understood: said, and the step again
-  if (edits.length === 0) return again(s, dropped.length ? C.QUERY.dropped(dropped) : C.NOTICE.pickFromList);
+  if (edits.length === 0) {
+    if (rd.noDefault && s.step === "menu") {
+      return go(s, {
+        ...clearFrom("duration"), duration: DEFAULT_BOOKING_DURATION, durationFromDefault: true, filter: null,
+        step: "studio", notice: C.NOTICE.noDefaultStudio,
+      });
+    }
+    if (rd.noDefault) return again(s, C.NOTICE.noDefaultStudio);
+    return again(s, dropped.length ? C.QUERY.dropped(dropped) : C.NOTICE.pickFromList);
+  }
 
   const r = readEdits(s, edits, tail);
   if (r.bad) return r.bad;
@@ -1260,6 +1376,7 @@ function applyStepEdits(
   // what was understood is SAID (the menu's line); values alone: "updated"
   const understood = C.QUERY.echo({
     studio: studio !== s.studio ? studio : null,
+    studioIsDefault: rd.viaDefault && studio !== null && studio === s.defaultStudio,
     duration: duration !== s.duration && !durationFromDefault ? duration : null,
     dateFrom: dayEdit,
     dateTo: dayEdit,
@@ -1267,7 +1384,8 @@ function applyStepEdits(
     timeTo: null,
     timeAt: atEdit,
   });
-  const notice = (understood || (dropped.length ? C.NOTICE.changedPartial : C.NOTICE.changed)) + tail;
+  // E14-2c: a one-message request has nothing "updated" — what was understood, or nothing
+  const notice = (understood || (announce ? "" : dropped.length ? C.NOTICE.changedPartial : C.NOTICE.changed)) + tail;
   const base = { guest, note, duration, durationFromDefault, studio, notice, keep: null };
 
   // 1. no room yet: the room question; a written day/time narrows the lists that follow
@@ -1292,7 +1410,7 @@ function applyStepEdits(
         ...s, ...base,
         filter: { dateFrom: date, dateTo: date, timeFrom: null, timeTo: null },
         date, days: [], dayPage: 0, hours: [], hourPage: 0, start: null, end: null, step: "hour",
-        keep: { start, tail, then },
+        keep: { start, tail, then, ...(announce ? { announce } : {}) },
       },
     };
   }
@@ -1374,34 +1492,60 @@ export function withAvailability(s: FlowState, pub: PublicAvailability): Transit
     // E14-2: a summary edit asked to keep the chosen time
     if (s.keep) {
       const { start: wanted, tail } = s.keep;
+      const announce = !!s.keep.announce;
+      const then = s.keep.then ?? "summary";
       const hit = allHours.find((h) => h.start === wanted);
       if (hit) {
-        // it still fits: the summary, updated — the notice applyEdits wrote
-        const then = s.keep.then ?? "summary";
-        return render({ ...s, keep: null, fromSummary: then === "summary" ? false : s.fromSummary, hours: allHours, hourPage: 0, start: hit.start, end: hit.end, step: then });
+        // it still fits: the summary, updated — the notice applyEdits wrote;
+        // E14-2c: a one-message request is told THAT slot is free instead
+        const notice = announce
+          ? C.NOTICE.slotFree(s.date as string, hit.start, hit.end, s.studio as string, s.studio === s.defaultStudio) +
+            tail + (then === "summary" ? `\n${C.NOTICE.notBookedYet}` : "")
+          : s.notice;
+        return render({ ...s, keep: null, notice, fromSummary: then === "summary" ? false : s.fromSummary, hours: allHours, hourPage: 0, start: hit.start, end: hit.end, step: then });
       }
       // it does not: say why, and offer the rest of that day — or other days.
       // The filter is dropped, so the lists are every free option and "back"
       // finds the stored days.
       const allDays = clickableDays(pub.free, s.studio, pub.fromIsrael, pub.toIsrael);
+      const date = s.date as string;
+      const studio = s.studio as BookableRoom;
+      const duration = s.duration as BookingDuration;
+      let miss: FlowState;
       if (allHours.length > 0) {
-        return render({
+        miss = {
           ...s, keep: null, filter: null, days: allDays, dayPage: 0, hours: allHours, hourPage: 0,
-          notice: C.NOTICE.keepNoHour(s.date as string, wanted, s.studio as string, s.duration as BookingDuration) + tail,
-        });
-      }
-      if (allDays.length === 0) {
-        return render({
+          notice: (announce ? C.NOTICE.slotBusyHour(date, wanted, studio, duration) : C.NOTICE.keepNoHour(date, wanted, studio, duration)) + tail,
+        };
+      } else if (allDays.length === 0) {
+        miss = {
           // the slot only: the guest and note the client gave are kept
           ...s, studio: null, days: [], dayPage: 0, date: null, hours: [], hourPage: 0, start: null, end: null,
           keep: null, filter: null, step: "studio",
-          notice: C.NOTICE.noDays(s.studio as string, s.duration as BookingDuration),
+          notice: C.NOTICE.noDays(studio, duration),
+        };
+      } else {
+        miss = {
+          ...s, keep: null, filter: null, step: "day", days: allDays, dayPage: 0, date: null, hours: [], hourPage: 0,
+          notice: (announce ? C.NOTICE.slotBusyDay(date, studio, duration) : C.NOTICE.keepNoDay(date, studio, duration)) + tail,
+        };
+      }
+      // E14-2c (owner, 21.10): another room free at that very time is OFFERED
+      const others = layerOn(s)
+        ? BOOKABLE_ROOM_NAMES.filter((r) => r !== studio && hoursFor(pub.free, r, date).some((h) => h.startIsrael === wanted))
+        : [];
+      if (others.length > 0) {
+        return render({
+          ...miss,
+          notice: null,
+          offer: {
+            date, start: wanted, rooms: [...others], then,
+            notice: miss.notice as string,
+            body: (announce ? "" : `${C.NOTICE.changed} `) + C.OFFER.body(date, wanted, studio, duration, [...others]) + tail,
+          },
         });
       }
-      return render({
-        ...s, keep: null, filter: null, step: "day", days: allDays, dayPage: 0, date: null, hours: [], hourPage: 0,
-        notice: C.NOTICE.keepNoDay(s.date as string, s.studio as string, s.duration as BookingDuration) + tail,
-      });
+      return render(miss);
     }
     // E14: the written time-of-day narrows the list (same rule as the days)
     const fh = s.filter;
@@ -1536,6 +1680,21 @@ export function parseFlowState(raw: unknown): FlowState | null {
     filter: s.filter ?? null,
     durationFromDefault: s.durationFromDefault ?? false,
   } as FlowState;
+}
+
+/**
+ * E14-2c: the request held while a several-podcast number chose — our own
+ * row, but read defensively like the state: only the two layer events pass,
+ * and every value in them is validated again by the machine when applied.
+ */
+export function parsePendingEvent(raw: unknown): FlowEvent | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const e = raw as { type?: unknown; q?: unknown; edits?: unknown; dropped?: unknown };
+  if (e.type === "query" && e.q && typeof e.q === "object" && Array.isArray((e.q as { dropped?: unknown }).dropped)) {
+    return raw as FlowEvent;
+  }
+  if (e.type === "edit" && Array.isArray(e.edits) && Array.isArray(e.dropped)) return raw as FlowEvent;
+  return null;
 }
 
 // ─── E9-5: fed by the driver (PURE) ────────────────────────────────────────
