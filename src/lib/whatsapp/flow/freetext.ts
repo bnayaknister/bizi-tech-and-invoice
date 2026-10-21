@@ -73,13 +73,13 @@ const WEEKDAY_WORDS: [RegExp, number][] = [
 ];
 
 /** The date of the next occurrence of `target` (0=Sunday) ON OR AFTER `fromIsrael`. */
-function nextWeekday(fromIsrael: string, target: number): string {
+export function nextWeekday(fromIsrael: string, target: number): string {
   const wd = weekdayOf(fromIsrael);
   return addIsraelDays(fromIsrael, (target - wd + 7) % 7);
 }
 
 /** The date of the next occurrence of `target` STRICTLY AFTER `fromIsrael`. */
-function comingWeekday(fromIsrael: string, target: number): string {
+export function comingWeekday(fromIsrael: string, target: number): string {
   const wd = weekdayOf(fromIsrael);
   return addIsraelDays(fromIsrael, ((target - wd + 6) % 7) + 1);
 }

@@ -39,6 +39,14 @@ import {
 } from "./machine";
 import { hasChangeMarker, isSlotPhrase, parseAvailabilityText, parseEditText, parseStepText } from "./freetext";
 import { loadConversation, saveConversation } from "./store";
+import {
+  LLM_HOURLY_CAP,
+  extractWithHaiku,
+  interpretLlm,
+  isLlmOn,
+  shouldCallLlm,
+  type Extractor,
+} from "./llm";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // The booking conversation's DRIVER — the only impure part of E9-4.
@@ -283,8 +291,67 @@ async function readTarget(admin: SupabaseClient<Database>, id: string) {
 export type FlowDeps = {
   ensureBookingLink: typeof ensureBookingLink;
   submitBookingRequest: typeof submitBookingRequest;
+  /** E14-2c: the model call; absent = the live Haiku call */
+  extract?: Extractor;
+  /** E14-2c: inbound messages from this number in the last hour (the cap); absent = counted in wa_messages */
+  recentInbound?: (waId: string, now: Date) => Promise<number>;
 };
 const LIVE_DEPS: FlowDeps = { ensureBookingLink, submitBookingRequest };
+
+/**
+ * E14-2c: this number's inbound messages in the last hour — the cap counts
+ * MESSAGES (every model call is one, so calls <= this). A failed count is
+ * Infinity: no model call, the rule parser answers (fail closed on cost).
+ */
+async function recentInboundCount(admin: SupabaseClient<Database>, waId: string, now: Date): Promise<number> {
+  const { count, error } = await admin
+    .from("wa_messages")
+    .select("id", { count: "exact", head: true })
+    .eq("wa_id", waId)
+    .eq("direction", "in")
+    .gte("created_at", new Date(now.getTime() - 60 * 60 * 1000).toISOString());
+  if (error || count === null) return Infinity;
+  return count;
+}
+
+/**
+ * E14-2c: the model, BEHIND the rule parser. Called only when shouldCallLlm
+ * says so; any failure — the cap, no key, a timeout, an error, a refusal, an
+ * answer that does not validate — returns the rule parser's event unchanged,
+ * so the client never sees a difference. One log line per call: outcome,
+ * time, tokens, field NAMES — never the message, a value or the number.
+ */
+async function withModel(
+  admin: SupabaseClient<Database>,
+  deps: FlowDeps,
+  input: { waId: string; text: string; step: FlowStep; rule: FlowEvent; now: Date }
+): Promise<FlowEvent> {
+  const { waId, text, step, rule, now } = input;
+  const log = (o: Record<string, unknown>) => console.log("wa_llm", JSON.stringify({ step, ...o }));
+  const recent = await (deps.recentInbound ?? ((w, n) => recentInboundCount(admin, w, n)))(waId, now);
+  if (recent > LLM_HOURLY_CAP) {
+    log({ outcome: "cap", recent });
+    return rule;
+  }
+  const today = israelDateOf(now);
+  let call: Awaited<ReturnType<Extractor>>;
+  try {
+    call = await (deps.extract ?? extractWithHaiku)(text, today);
+  } catch {
+    // the live extractor never throws; a thrown one must not silence the bot either
+    call = { ok: false, outcome: "error", ms: 0 };
+  }
+  if (!call.ok) {
+    log({ outcome: call.outcome, ms: call.ms, status: call.status });
+    return rule;
+  }
+  const r = interpretLlm(call.raw, { text, todayIsrael: today, rule, step });
+  log({
+    outcome: r.outcome, ms: call.ms, in: call.inputTokens, out: call.outputTokens,
+    applied: r.applied, discarded: r.discarded, conflicts: r.conflicts,
+  });
+  return r.event ?? rule;
+}
 
 /**
  * Run one message through the conversation.
@@ -339,9 +406,17 @@ export async function runFlow(
       ? row.state
       : null;
 
-  const event =
+  let event =
     input.eventOverride ??
     eventFromMessage(message, { now, freeTextOn, step: live?.step ?? "menu", lang: input.lang });
+
+  // E14-2c: the model, behind the rule parser — its own switch, ONLY where the
+  // layer is already on for this number, in Hebrew, for typed text
+  if (!input.eventOverride && freeTextOn && input.lang === "he" && message.type === "text" && isLlmOn()) {
+    const step = live?.step ?? "menu";
+    const text = message.body ?? "";
+    if (shouldCallLlm(text, step, event)) event = await withModel(admin, deps, { waId, text, step, rule: event, now });
+  }
 
   // E14-2c: a request the language layer understood, read where no
   // conversation is live yet (the first message) — applied at once, not
