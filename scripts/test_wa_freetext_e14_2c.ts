@@ -266,6 +266,19 @@ console.log("\n=== 7. what was not understood is said; an invalid value changes 
   eq("a length that is not one of the three: nothing applied", [badDur.state.step, badDur.state.duration], ["menu", null]);
 }
 
+console.log("\n=== 7b. the guest step: a leading 'האורחת' is not part of the name (owner finding 21.10) ===");
+{
+  const at = () => new Chat().event(edit([E.day("2026-10-26"), E.room("גבעון"), E.at("10:00")]));
+  for (const [typed, name] of [["האורחת נעה ארגמני", "נעה ארגמני"], ["אורח דני", "דני"], ["האורחים דנה ויואב", "דנה ויואב"], ["נעה ארגמני", "נעה ארגמני"], ["אורחת", "אורחת"]] as const) {
+    const c = at();
+    eq(`'${typed}' -> '${name}'`, [c.state.step, c.text(typed).state.guest], ["guest", name]);
+  }
+  const off = new Chat({ freeTextOn: false }).event({ type: "go" }).event({ type: "duration", minutes: 90 }).event({ type: "studio-other" }).event({ type: "studio", studio: "גבעון" });
+  off.event({ type: "day", date: off.state.days[0] });
+  off.event({ type: "hour", start: off.state.hours[0].start });
+  eq("switch OFF: the guest text exactly as typed", [off.state.step, off.text("האורחת נעה ארגמני").state.guest], ["guest", "האורחת נעה ארגמני"]);
+}
+
 console.log("\n=== 8. switch off / English: the menu exactly as before ===");
 for (const v of [{ label: "off", freeTextOn: false, lang: "he" as const }, { label: "en", freeTextOn: true, lang: "en" as const }]) {
   const c = new Chat({ freeTextOn: v.freeTextOn, lang: v.lang });

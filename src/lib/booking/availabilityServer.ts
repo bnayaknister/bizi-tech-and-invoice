@@ -9,7 +9,7 @@ import {
   type ApprovedRequest,
   type AvailabilityResult,
 } from "@/lib/calendar/availability";
-import { bookingWindowFor } from "@/lib/calendar/bookingWindow";
+import { STUDIO_CLOSE_HOUR, STUDIO_OPEN_DAYS, STUDIO_OPEN_HOUR, bookingWindowFor } from "@/lib/calendar/bookingWindow";
 import { DEFAULT_BOOKING_DURATION, type BookingDuration } from "./duration";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -190,9 +190,9 @@ export async function loadAvailability(
     {
       fromIsrael,
       toIsrael,
-      openDays: [0, 1, 2, 3, 4], // Sun–Thu; Friday and Saturday are closed
-      openHour: 9,
-      closeHour: 19,
+      openDays: [...STUDIO_OPEN_DAYS], // Sun–Thu; Friday and Saturday are closed
+      openHour: STUDIO_OPEN_HOUR,
+      closeHour: STUDIO_CLOSE_HOUR,
       slotMinutes: opts.durationMinutes ?? DEFAULT_BOOKING_DURATION,
       slotStepMinutes: opts.stepMinutes,
     },

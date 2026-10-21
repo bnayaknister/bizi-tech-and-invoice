@@ -9,7 +9,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { eventFromMessage } from "../src/lib/whatsapp/flow/run";
 import { interpretLlm, shouldCallLlm, type Interpretation, type LlmRaw, type LLM_ROOMS } from "../src/lib/whatsapp/flow/llm";
-import type { FlowEvent } from "../src/lib/whatsapp/flow/machine";
+import type { FlowEvent, FlowStep } from "../src/lib/whatsapp/flow/machine";
 import type { InboundMessage } from "../src/lib/whatsapp/webhook";
 
 export type Applied = {
@@ -34,7 +34,16 @@ type Compact = {
   note?: [string, string];
   unsure?: string[];
 };
-export type Fixture = { id: number; cat: string; text: string; expect: Applied; ignore?: Field[]; model: Compact };
+export type Fixture = {
+  id: number;
+  cat: string;
+  text: string;
+  /** the conversation step the message arrives at; absent = the menu (a first message) */
+  step?: FlowStep;
+  expect: Applied;
+  ignore?: Field[];
+  model: Compact;
+};
 
 export function loadFixtures(): { today: string; messages: Fixture[] } {
   const raw = JSON.parse(readFileSync(join(__dirname, "fixtures", "e14_2c_messages.json"), "utf-8"));
@@ -65,25 +74,25 @@ export function expandModel(c: Compact): LlmRaw {
 const textMessage = (body: string): InboundMessage =>
   ({ wamid: "w-eval", waId: "972500000000", rawFrom: "972500000000", type: "text", body, raw: null }) as InboundMessage;
 
-/** The rule parser's event at the menu, exactly as runFlow computes it (layer on, Hebrew). */
-export function ruleEvent(text: string, today: string): FlowEvent {
-  return eventFromMessage(textMessage(text), { now: new Date(`${today}T10:00:00+03:00`), freeTextOn: true, step: "menu", lang: "he" });
+/** The rule parser's event at `step`, exactly as runFlow computes it (layer on, Hebrew). */
+export function ruleEvent(text: string, today: string, step: FlowStep = "menu"): FlowEvent {
+  return eventFromMessage(textMessage(text), { now: new Date(`${today}T10:00:00+03:00`), freeTextOn: true, step, lang: "he" });
 }
 
 /**
  * The menu pipeline for one message. `model` = the model's raw answer, or
  * null when the call failed (-> the rule parser's event, as in runFlow).
  */
-export function pipeline(text: string, today: string, model: unknown | null): {
+export function pipeline(text: string, today: string, model: unknown | null, step: FlowStep = "menu"): {
   rule: FlowEvent;
   called: boolean;
   interpretation: Interpretation | null;
   event: FlowEvent;
 } {
-  const rule = ruleEvent(text, today);
-  const called = shouldCallLlm(text, "menu", rule);
+  const rule = ruleEvent(text, today, step);
+  const called = shouldCallLlm(text, step, rule);
   if (!called || model === null) return { rule, called, interpretation: null, event: rule };
-  const interpretation = interpretLlm(model, { text, todayIsrael: today, rule, step: "menu" });
+  const interpretation = interpretLlm(model, { text, todayIsrael: today, rule, step });
   return { rule, called, interpretation, event: interpretation.event ?? rule };
 }
 

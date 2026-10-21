@@ -156,12 +156,13 @@ console.log("\n=== 2. an unsure hour: matched to the hours SHOWN, else asked (ow
     const d = atDay().say("ביום ראשון").say(t);
     eq(`"${t}" = 15:00 (the only reading on the list)`, [d.state.step, d.state.start], ["guest", "15:00"]);
   }
-  // 4h on Sunday: starts 09:00..17:00 — neither 06:00 nor 18:00 is listed
+  // 4h on Sunday: starts 09:00..17:00 — neither 07:00 nor 19:00 is listed
+  // (E14-2c: "ב-6" is now 18:00 by the opening-hours rule; 7 has no open reading)
   const n = new Chat(true).tap(FLOW_ID.go).tap(FLOW_ID.duration(240)).tap(FLOW_ID.studio("חשמונאים")).say("ביום ראשון");
   const before = n.at();
-  n.say("ב-6");
-  eq('"ב-6" with NEITHER reading on the list: nothing changed', n.at(), before);
-  ok("…asked: not sure about 6", n.body().includes("לא בטוח שהבנתי") && n.body().includes("6"), n.body());
+  n.say("ב-7");
+  eq('"ב-7" with NEITHER reading on the list: nothing changed', n.at(), before);
+  ok("…asked: not sure about 7", n.body().includes("לא בטוח שהבנתי") && n.body().includes("7"), n.body());
   // BOTH readings listed (a hand-built list): asked, never guessed
   const both = { ...n.state, hours: [{ start: "03:00", end: "07:00" }, { start: "15:00", end: "19:00" }] };
   const t = reduce(both, { type: "edit", edits: [], dropped: ['השעה "3"'], maybe: [{ label: 'השעה "3"', options: ["03:00", "15:00"] }] }, { now: NOW });
@@ -169,8 +170,8 @@ console.log("\n=== 2. an unsure hour: matched to the hours SHOWN, else asked (ow
   // outside the hour step the old rule stands
   const s = atDay().say("ביום ראשון").say("ב-10").say("דני").say("לא");
   eq("at the summary", s.state.step, "summary");
-  s.say("ב-4");
-  ok('"ב-4" at the SUMMARY: asked, the slot untouched (the rule outside the hour step)', s.body().includes("לא בטוח שהבנתי") && s.state.start === "10:00", s.body());
+  s.say("ב-7");
+  ok('"ב-7" at the SUMMARY: asked, the slot untouched (no reading inside the opening hours)', s.body().includes("לא בטוח שהבנתי") && s.state.start === "10:00", s.body());
   const u = atDay().say("ביום ראשון").say("סתם משהו");
   ok("an unparsed text: 'choose from the options', as before", u.body().startsWith(HE.NOTICE.pickFromList) && u.state.step === "hour", u.body());
 }

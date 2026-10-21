@@ -32,7 +32,7 @@ const cache = !process.argv.includes("--no-cache");
 
 const live = process.argv.includes("--live");
 const { today, messages } = loadFixtures();
-const toCall = messages.filter((f) => pipeline(f.text, today, null).called);
+const toCall = messages.filter((f) => pipeline(f.text, today, null, f.step).called);
 
 function estimate() {
   // rough: ~3 characters per token for this Hebrew/English mix, + the schema
@@ -81,7 +81,7 @@ async function main() {
   const wrong: string[] = [];
   const failures: string[] = [];
   for (const f of messages) {
-    const rule = pipeline(f.text, today, null);
+    const rule = pipeline(f.text, today, null, f.step);
     let model: unknown | null = null;
     if (rule.called) {
       const call = await extractWithHaiku(f.text, today, { cache });
@@ -98,14 +98,14 @@ async function main() {
         recorded.push({ id: f.id, ok: false, outcome: call.outcome, ms: call.ms });
       }
     }
-    const p = pipeline(f.text, today, model);
+    const p = pipeline(f.text, today, model, f.step);
     const a = appliedOf(p.event);
     const s = score(f, a);
     if (s.full) full++;
     for (const w of s.wrong) wrong.push(`#${f.id} ${w}`);
     const mark = s.wrong.length ? "❌ WRONG" : s.full ? "✅" : "· partial";
-    console.log(`  ${mark} #${f.id} [${f.cat}]${rule.called ? "" : " (rule parser only)"}${s.wrong.length ? ` wrong=${s.wrong.join(",")}` : ""}${s.missing.length ? ` missing=${s.missing.join(",")}` : ""}`);
-    if (s.wrong.length || !s.full) console.log(`       applied ${JSON.stringify(a)}\n       expect  ${JSON.stringify(f.expect)}`);
+    console.log(`  ${mark} #${f.id} [${f.cat}${f.step ? ` @${f.step}` : ""}]${rule.called ? "" : " (rule parser only)"}${s.wrong.length ? ` wrong=${s.wrong.join(",")}` : ""}${s.missing.length ? ` missing=${s.missing.join(",")}` : ""}`);
+    if (s.wrong.length || !s.full) console.log(`       text    ${f.text}\n       applied ${JSON.stringify(a)}\n       expect  ${JSON.stringify(f.expect)}`);
   }
   if (cache) {
     writeFileSync(join(__dirname, "fixtures", "e14_2c_recorded.json"), JSON.stringify({ model: LLM_MODEL, today, ranAt: new Date().toISOString(), answers: recorded }, null, 2) + "\n");

@@ -25,6 +25,22 @@ import { israelDateOf, addIsraelDays } from "./availability";
 /** 8 weeks counted inclusively: `from` plus 55 more days. */
 export const BOOKING_WINDOW_DAYS = 56;
 
+/**
+ * The studios' opening hours, as availability is computed (owner rules,
+ * read by loadAvailability): Sunday-Thursday, starts from 09:00, every
+ * recording ENDS by 19:00. ONE place: the slot grid and the bot's reading of
+ * an unsure hour ("ב-4" -> 16:00, E14-2c) both read these.
+ */
+export const STUDIO_OPEN_DAYS = [0, 1, 2, 3, 4] as const;
+export const STUDIO_OPEN_HOUR = 9;
+export const STUDIO_CLOSE_HOUR = 19;
+
+/** Is "HH:MM" a START inside the opening hours (09:00 <= start < 19:00)? */
+export function isStartInStudioHours(hour: number, minute = 0): boolean {
+  const m = hour * 60 + minute;
+  return m >= STUDIO_OPEN_HOUR * 60 && m < STUDIO_CLOSE_HOUR * 60;
+}
+
 export type BookingWindowDates = {
   /** tomorrow, Israel time — "YYYY-MM-DD" */
   fromIsrael: string;

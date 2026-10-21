@@ -3,6 +3,7 @@ import { validateStudio, type BookableRoom } from "@/lib/booking/request";
 import { STUDIOS } from "@/lib/calendar/studios";
 import { addIsraelDays } from "@/lib/calendar/availability";
 import { weekdayOf } from "@/app/calendar/availability/booking";
+import { isStartInStudioHours } from "@/lib/calendar/bookingWindow";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // E14 — the free-language layer's PARSER. PURE: no fetch, no clock read
@@ -107,6 +108,22 @@ function parseExplicitDate(text: string, todayIsrael: string): string | null {
  * afternoon — exactly the guess the sharpness rule forbids), so those return
  * null and the caller names the fragment in `dropped`.
  */
+/**
+ * E14-2c (owner, 21.10) — a bare hour 1-12 with no daypart word is 0X:00 or
+ * (X+12):00. If exactly ONE of the two is a start inside the studios' opening
+ * hours (STUDIO_OPEN_HOUR..STUDIO_CLOSE_HOUR, lib/calendar/bookingWindow.ts),
+ * that is the answer ("ב-4" -> 16:00, "ב-9" -> 09:00); both or neither ("ב-7":
+ * 07:00 / 19:00) -> asked, with both readings. The answer is always SAID
+ * ("רשמתי לי: … בשעה 16:00"). Shared by the rule parser and the model's reader.
+ */
+export function readBareHour(h: number, minute: number): { h: number } | { both: [number, number] } | null {
+  if (!Number.isInteger(h) || h < 1 || h > 12 || minute < 0 || minute > 59) return null;
+  const readings = [h, h + 12].filter((x) => x <= 23);
+  const open = readings.filter((x) => isStartInStudioHours(x, minute));
+  if (open.length === 1) return { h: open[0] };
+  return { both: [h, h + 12] };
+}
+
 function resolveHour(h: number, daypart: string | null): number | null {
   if (h < 1 || h > 24) return null;
   if (daypart) {
@@ -114,7 +131,8 @@ function resolveHour(h: number, daypart: string | null): number | null {
     // צהריים/ערב/לילה: 12 stays 12, 1-11 go up
     return h === 12 ? 12 : h + 12 <= 23 ? h + 12 : null;
   }
-  return h >= 7 && h <= 23 ? h : null;
+  // 13-23 as written; 1-12: the opening-hours rule above (null = ask, with both readings)
+  return h >= 13 && h <= 23 ? h : null;
 }
 
 const DAYPART_WORDS = "בצהריים|בערב|בבוקר|בלילה";
@@ -157,6 +175,10 @@ function hourPhrase(frag: string): { hhmm: string; ambiguous: boolean; options?:
     h = HOUR_WORDS[tok] ?? 0;
   }
   if (Number(minutes) > 59) return null;
+  if (!m[2] && h >= 1 && h <= 12) {
+    const r = readBareHour(h, Number(minutes));
+    if (r && "h" in r) return { hhmm: `${pad2(r.h)}:${minutes}`, ambiguous: false };
+  }
   const resolved = resolveHour(h, m[2] ?? null);
   if (resolved === null) {
     // a daypart with an impossible hour is not an hour at all
@@ -434,7 +456,9 @@ function timesIn(text: string): {
   };
   // a date like "ב-21.10" is not a time, and "בשבוע" is not "בשבע": the frag
   // may not run into ".10" / "/10", a digit, or another letter
-  const END = "(?![\\d\\p{L}]|[./]\\d)";
+  // E14-2c: …nor a LENGTH ("ל-3 שעות", "ב-4 שעות", "90 דקות") — with the opening-hours rule
+  // a bare 3 is now read as 15:00, so a length must never reach it
+  const END = "(?![\\d\\p{L}]|[./]\\d)(?!\\s*(?:שעות|שעה|דקות|דק'))";
   const consumed: [number, number][] = [];
   for (const m of Array.from(text.matchAll(new RegExp(`אחרי\\s*(?:השעה\\s+)?(${HOUR_FRAG})${END}`, "gu")))) {
     consumed.push([m.index, m.index + m[0].length]);
@@ -581,6 +605,17 @@ const POLITE_RE = new RegExp("(?<![\\p{L}])(?:בבקשה|תודה|רבה)(?![\\p
  * says it is a change: it opens with "בעצם" / "תשנה" / "לשנות", or names a
  * field ("אורח:", "הערה:").
  */
+/**
+ * E14-2c (owner finding 21.10): at the GUEST step "האורחת נעה ארגמני" was
+ * stored with the word "האורחת". A leading guest label is not part of the
+ * name: "האורח/האורחת/אורח/אורחת/האורחים[:]" + a name -> the name. A label
+ * alone stays as it is (the machine's normaliser decides). PURE.
+ */
+export function stripGuestLabel(raw: string): string {
+  const m = new RegExp("^\\s*(?:ה)?(?:אורח|אורחת|אורחים|אורחות)(?![\\p{L}])\\s*:?\\s*(.+)$", "su").exec(raw);
+  return m && m[1].trim() !== "" ? m[1].trim() : raw;
+}
+
 export function hasChangeMarker(raw: string): boolean {
   return CHANGE_MARKER_RE.test(raw) || FIELD_LABEL_RE.test(raw);
 }

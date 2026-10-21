@@ -13,7 +13,7 @@ import { STUDIOS } from "@/lib/calendar/studios";
 import type { SubmitResult } from "@/lib/booking/submit";
 import { selfServeAllowed } from "@/lib/booking/manage";
 import { COPY, copy, isLang, DEFAULT_LANG, type BotCopy, type Lang } from "./copy";
-import type { ParsedAvailability, ParsedEdit } from "./freetext";
+import { stripGuestLabel, type ParsedAvailability, type ParsedEdit } from "./freetext";
 import { langButtonId } from "../lang";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1040,8 +1040,9 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
         // owner, 20.10 (for everyone): "לא" / "אין" / "בלי" = the skip button
         if (e.type === "text" && isSkipWord(e.text)) return go(s, { guest: null, step: afterGuest });
         if (e.type === "text") {
-          // ANY free text here is the value — the same normaliser as the screen
-          const g = normalizeGuest(e.text);
+          // ANY free text here is the value — the same normaliser as the screen;
+          // E14-2c: with the layer on, a leading "האורחת" is not part of the name
+          const g = normalizeGuest(layerOn(s) ? stripGuestLabel(e.text) : e.text);
           if (!g.ok) return again(s, C.GUEST.tooLong);
           return go(s, { guest: g.value, step: afterGuest });
         }

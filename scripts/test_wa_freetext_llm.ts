@@ -92,6 +92,10 @@ console.log("\n=== 1. when the model is called (owner decision 21.10, 1) ===");
   ok("menu, 'before 4' (timeTo) read by the rule parser: NOT called", !call("יש מקום מחר לפני 16:00 עם האורח דני"));
   ok("menu, a nav word: NOT called", !call("חזרה", "menu", { type: "back" }));
   ok("choice step, the rule parser understood NOTHING: called", call("מה שנוח לכם בצהריים", "hour", { type: "text", text: "x" }));
+  // owner finding 21.10: the guest was lost at the HOUR step
+  ok("hour step, the rule parser read day/hour/room but NOT the 'עם <name>': called", call("קבע לי ביום שני עם נעה ארגמני ב9 בגבעון", "hour"));
+  ok("hour step, a note word the rule parser did not read: called", call("ביום שני ב-10, חשוב שיהיו שתי מצלמות", "hour"));
+  ok("hour step, day + hour only: NOT called", !call("ביום שני ב-10", "hour"));
   ok("choice step, the rule parser understood: NOT called", !call("בחשמונאים", "studio", { type: "edit", edits: [{ field: "studio", studio: "חשמונאים", alsoConfirm: false }], dropped: [] }));
   for (const step of ["guest", "note", "summary", "mine", "manage", "submitting", "done"] as const) {
     ok(`step '${step}': NEVER called`, !call("אורח: דני כהן ביום ראשון בשעה 12 בחשמונאים", step, { type: "text", text: "x" }));
@@ -101,19 +105,19 @@ console.log("\n=== 1. when the model is called (owner decision 21.10, 1) ===");
 console.log("\n=== 2. the 40-message set, with a CORRECT model's answers (owner decision 21.10, 7) ===");
 {
   const { today, messages } = loadFixtures();
-  eq("40 messages, today = Wed 21.10.2026", [messages.length, today], [40, TODAY]);
+  eq("56 messages, today = Wed 21.10.2026", [messages.length, today], [56, TODAY]);
   let full = 0;
   const wrong: string[] = [];
   for (const f of messages) {
-    const p = pipeline(f.text, today, expandModel(f.model));
+    const p = pipeline(f.text, today, expandModel(f.model), f.step);
     const s = score(f, appliedOf(p.event));
     if (s.full) full++;
     for (const w of s.wrong) wrong.push(`#${f.id} ${w}`);
     if (!s.full) console.log(`     #${f.id} not full: wrong=${s.wrong} missing=${s.missing}`);
   }
   eq("0 wrong fields applied", wrong, []);
-  ok(`>= ${PASS.minFullShare * 100}% fully understood (${full}/40)`, full / messages.length >= PASS.minFullShare, full);
-  const notCalled = messages.filter((f) => ["full", "partial", "attack"].includes(f.cat) && f.cat !== "attack" && !pipeline(f.text, today, null).called);
+  ok(`>= ${PASS.minFullShare * 100}% fully understood (${full}/${messages.length})`, full / messages.length >= PASS.minFullShare, full);
+  const notCalled = messages.filter((f) => ["full", "partial", "attack"].includes(f.cat) && f.cat !== "attack" && !pipeline(f.text, today, null, f.step).called);
   eq("every full / partial request reaches the model", notCalled.map((f) => f.id), []);
   const owner = messages[0];
   const p = pipeline(owner.text, today, expandModel(owner.model));
@@ -121,12 +125,12 @@ console.log("\n=== 2. the 40-message set, with a CORRECT model's answers (owner 
     day: "2026-10-25", studio: "default", time: "at 12:00", duration: 180, guest: "דוד כהן", note: "חשוב תפאורה של הפודקאסט",
   });
   ok("…and no 'confirm' in any event the set produces", messages.every((f) => {
-    const e = pipeline(f.text, today, expandModel(f.model)).event;
+    const e = pipeline(f.text, today, expandModel(f.model), f.step).event;
     return e.type !== "confirm" && !(e.type === "edit" && e.edits.some((x) => x.field === "confirm-hint" || ("alsoConfirm" in x && x.alsoConfirm)));
   }));
   // the model failed (null): exactly the rule parser's event, for every message
   ok("model failed -> the rule parser's own event, for all 40", messages.every((f) => {
-    const p2 = pipeline(f.text, today, null);
+    const p2 = pipeline(f.text, today, null, f.step);
     return JSON.stringify(p2.event) === JSON.stringify(p2.rule);
   }));
 }
@@ -163,8 +167,16 @@ console.log("\n=== 3. a model that answers WRONG or MALICIOUSLY: nothing it inve
   // times
   const H = (q: string, h: number, m = 0, dp: NonNullable<LlmRaw["time"]>["daypart"] = "none", kind: NonNullable<LlmRaw["time"]>["kind"] = "at") =>
     appliedFrom(interp(`מחר ${q}`, raw({ time: timeOf(q, h, m, dp, kind) }), "hour").event)?.time ?? null;
-  eq("'ב-4', no daypart: asked (04:00 or 16:00?)", H("ב-4", 4), null);
-  ok("…with BOTH readings offered to the hour step", (() => { const e = interp("מחר ב-4", raw({ time: timeOf("ב-4", 4) }), "hour").event; return e?.type === "edit" && JSON.stringify(e.maybe) === JSON.stringify([{ label: "ב-4", options: ["04:00", "16:00"] }]); })());
+  // E14-2c (owner, 21.10): the ONE reading inside the opening hours (09:00-19:00), said; else asked
+  eq("'ב-4' -> 16:00 (04:00 is outside the opening hours)", H("ב-4", 4), "at 16:00");
+  eq("'ב-3' -> 15:00", H("ב-3", 3), "at 15:00");
+  eq("'ב-9' -> 09:00 (21:00 is outside)", H("ב-9", 9), "at 09:00");
+  eq("'ב-11' -> 11:00", H("ב-11", 11), "at 11:00");
+  eq("'ב-12' -> 12:00", H("ב-12", 12), "at 12:00");
+  eq("'ב-4:30' -> 16:30", H("ב-4:30", 4, 30), "at 16:30");
+  eq("'ב-7': 07:00 and 19:00 are both outside -> asked", H("ב-7", 7), null);
+  eq("'ב-8': 08:00 / 20:00 -> asked", H("ב-8", 8), null);
+  ok("…with BOTH readings offered to the hour step", (() => { const e = interp("מחר ב-7", raw({ time: timeOf("ב-7", 7) }), "hour").event; return e?.type === "edit" && JSON.stringify(e.maybe) === JSON.stringify([{ label: "ב-7", options: ["07:00", "19:00"] }]); })());
   eq("'4 אחה\"צ' -> 16:00", H("4 אחה\"צ", 4, 0, "afternoon"), "at 16:00");
   eq("'12 בצהריים' -> 12:00", H("12 בצהריים", 12, 0, "afternoon"), "at 12:00");
   eq("'9 בבוקר' -> 09:00", H("9 בבוקר", 9, 0, "morning"), "at 09:00");
