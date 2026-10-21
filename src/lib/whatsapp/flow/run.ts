@@ -35,7 +35,7 @@ import {
   type FlowStep,
   type Transition,
 } from "./machine";
-import { hasChangeMarker, parseAvailabilityText, parseEditText, parseStepText } from "./freetext";
+import { hasChangeMarker, isSlotPhrase, parseAvailabilityText, parseEditText, parseStepText } from "./freetext";
 import { loadConversation, saveConversation } from "./store";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -186,8 +186,13 @@ export function eventFromMessage(
     ) {
       // E14-2b: every choice step reads natural answers; unparsed -> the step again
       const parsed = parseStepText(body, today, opts.step);
-      if (parsed) return { type: "edit", edits: parsed.edits, dropped: parsed.dropped };
-    } else if ((opts.step === "guest" || opts.step === "note") && hasChangeMarker(body)) {
+      if (parsed) return { type: "edit", edits: parsed.edits, dropped: parsed.dropped, maybe: parsed.maybe };
+    } else if (
+      (opts.step === "guest" || opts.step === "note") &&
+      // owner, 21.10: at the GUEST step a day/time phrase ("ביום שני", "בשעה
+      // 10", "26.10") is a change even unmarked; a single word is the name
+      (hasChangeMarker(body) || (opts.step === "guest" && isSlotPhrase(body)))
+    ) {
       // owner, 20.10: here text is the VALUE unless it says it is a change
       // ("בעצם", "תשנה", "אורח:", "הערה:"). Marked but not understood -> said, not stored.
       const parsed = parseStepText(body, today, opts.step);

@@ -201,7 +201,7 @@ export type FlowEvent =
   // E14: the language layer parsed a menu text into certain constraints
   | { type: "query"; q: ParsedAvailability }
   // E14: …or a summary text into certain edits (nothing silently dropped)
-  | { type: "edit"; edits: ParsedEdit[]; dropped: string[] }
+  | { type: "edit"; edits: ParsedEdit[]; dropped: string[]; maybe?: { label: string; options: string[] }[] }
   // E14: the client chose to see EVERYTHING after a zero-match filter
   | { type: "broaden" };
 
@@ -824,7 +824,7 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
         if (d === null || d !== e.minutes) return stale();
         return go(s, { ...clearFrom("studio"), ...(layerOn(s) ? { guest: s.guest, note: s.note } : {}), duration: d, step: studioStep(s) });
       }
-      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped) : pick();
+      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped, e.maybe) : pick();
       if (e.type === "text") return pick();
       return stale();
     }
@@ -878,7 +878,7 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
         const r = validateStudio(e.studio);
         return r ? chooseStudio(s, r) : stale();
       }
-      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped) : pick();
+      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped, e.maybe) : pick();
       if (e.type === "text") return pick();
       return stale();
 
@@ -887,7 +887,7 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
         const r = validateStudio(e.studio);
         return r ? chooseStudio(s, r) : stale();
       }
-      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped) : pick();
+      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped, e.maybe) : pick();
       if (e.type === "text") return pick();
       return stale();
     }
@@ -910,7 +910,7 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
         if ((s.dayPage + 1) * PAGE_SIZE >= s.days.length) return stale();
         return go(s, { dayPage: s.dayPage + 1 });
       }
-      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped) : pick();
+      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped, e.maybe) : pick();
       if (e.type === "text") return pick();
       return stale();
 
@@ -943,14 +943,14 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
         if ((s.hourPage + 1) * PAGE_SIZE >= s.hours.length) return stale();
         return go(s, { hourPage: s.hourPage + 1 });
       }
-      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped) : pick();
+      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped, e.maybe) : pick();
       if (e.type === "text") return pick();
       return stale();
 
     // ── owner decision 11.10 (3): ask, but never block on it ──
     case "guest":
       // E14-2b: only a MARKED message reaches here as an edit ("בעצם", "אורח:")
-      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped) : pick();
+      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped, e.maybe) : pick();
       {
         // E14-2b: a note the client already wrote ("הערה: …" earlier) is not asked again
         const afterGuest: FlowStep = layerOn(s) && s.note !== null ? "summary" : "note";
@@ -967,7 +967,7 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
       return stale();
 
     case "note":
-      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped) : pick();
+      if (e.type === "edit") return layerOn(s) && s.mode === "book" ? applyStepEdits(s, e.edits, e.dropped, e.maybe) : pick();
       if (e.type === "no-note") return go(s, { note: null, step: "summary" });
       if (e.type === "text" && isSkipWord(e.text)) return go(s, { note: null, step: "summary" });
       if (e.type === "text") {
@@ -1210,8 +1210,25 @@ const stepIndex = (step: FlowStep) => BOOK_ORDER.indexOf(step === "studio-defaul
  * note are asked only if not answered yet. Never confirms: "✅ לקבוע" stays the
  * only way into "submitting".
  */
-function applyStepEdits(s: FlowState, edits: ParsedEdit[], dropped: string[]): Transition {
+function applyStepEdits(
+  s: FlowState,
+  edits: ParsedEdit[],
+  dropped: string[],
+  maybe: { label: string; options: string[] }[] = []
+): Transition {
   const C = copy(s.lang);
+  // owner, 21.10: an unsure hour ("ב-3": 03:00 or 15:00?) WHILE a list of
+  // hours is shown, and nothing else about the slot is changing: if exactly
+  // one reading is on that list, that is the answer. None or both -> asked.
+  if (s.step === "hour" && maybe.length === 1 &&
+      !edits.some((e) => e.field === "day" || e.field === "studio" || e.field === "duration" || e.field === "time-at" || e.field === "time-from")) {
+    const listed = new Set(s.hours.map((h) => h.start));
+    const hits = maybe[0].options.filter((o) => listed.has(o));
+    if (hits.length === 1) {
+      edits = [...edits, { field: "time-at", hhmm: hits[0], alsoConfirm: false }];
+      dropped = dropped.filter((d) => d !== maybe[0].label);
+    }
+  }
   const tail = dropped.length ? `\n${C.QUERY.dropped(dropped)}` : "";
   // nothing certain, only what was NOT understood: said, and the step again
   if (edits.length === 0) return again(s, dropped.length ? C.QUERY.dropped(dropped) : C.NOTICE.pickFromList);

@@ -145,17 +145,34 @@ console.log("\n=== 1. natural answers, one per step ===");
   eq('a bare "10" at the HOUR step = 10:00', [c6.state.step, c6.state.start], ["guest", "10:00"]);
 }
 
-console.log("\n=== 2. an unclear time is ASKED about, never guessed ===");
+console.log("\n=== 2. an unsure hour: matched to the hours SHOWN, else asked (owner, 21.10) ===");
 {
+  // Sunday at 1.5h: hours 09:00..19:30 are listed — 04:00 is not, 16:00 is
   const c = atDay().say("ביום ראשון");
-  const before = c.at();
   c.say("ב-4");
-  eq('"ב-4": nothing changed, still the hours', c.at(), before);
-  ok('…and the bot says it is not sure about "4"', c.body().includes("לא בטוח שהבנתי") && c.body().includes("4"), c.body());
-  c.say("4");
-  ok('a bare "4" at the hour step: the same question', c.body().includes("לא בטוח שהבנתי") && c.state.start === null, c.body());
-  c.say("סתם משהו");
-  ok("an unparsed text: 'choose from the options', as before", c.body().startsWith(HE.NOTICE.pickFromList) && c.state.step === "hour", c.body());
+  eq('"ב-4" while the hours are shown: only 16:00 is on the list -> taken', [c.state.step, c.state.start, c.state.end], ["guest", "16:00", "17:30"]);
+  ok("…and said", c.body().includes("בשעה 16:00"), c.body());
+  for (const t of ["ב3", "ב 3", "ב-3", "בשלוש", "בשעה שלוש", "3"]) {
+    const d = atDay().say("ביום ראשון").say(t);
+    eq(`"${t}" = 15:00 (the only reading on the list)`, [d.state.step, d.state.start], ["guest", "15:00"]);
+  }
+  // 4h on Sunday: starts 09:00..17:00 — neither 06:00 nor 18:00 is listed
+  const n = new Chat(true).tap(FLOW_ID.go).tap(FLOW_ID.duration(240)).tap(FLOW_ID.studio("חשמונאים")).say("ביום ראשון");
+  const before = n.at();
+  n.say("ב-6");
+  eq('"ב-6" with NEITHER reading on the list: nothing changed', n.at(), before);
+  ok("…asked: not sure about 6", n.body().includes("לא בטוח שהבנתי") && n.body().includes("6"), n.body());
+  // BOTH readings listed (a hand-built list): asked, never guessed
+  const both = { ...n.state, hours: [{ start: "03:00", end: "07:00" }, { start: "15:00", end: "19:00" }] };
+  const t = reduce(both, { type: "edit", edits: [], dropped: ['השעה "3"'], maybe: [{ label: 'השעה "3"', options: ["03:00", "15:00"] }] }, { now: NOW });
+  ok("BOTH readings on the list: asked", t.kind === "reply" && t.state.start === null && t.reply.body.includes("לא בטוח שהבנתי"), t);
+  // outside the hour step the old rule stands
+  const s = atDay().say("ביום ראשון").say("ב-10").say("דני").say("לא");
+  eq("at the summary", s.state.step, "summary");
+  s.say("ב-4");
+  ok('"ב-4" at the SUMMARY: asked, the slot untouched (the rule outside the hour step)', s.body().includes("לא בטוח שהבנתי") && s.state.start === "10:00", s.body());
+  const u = atDay().say("ביום ראשון").say("סתם משהו");
+  ok("an unparsed text: 'choose from the options', as before", u.body().startsWith(HE.NOTICE.pickFromList) && u.state.step === "hour", u.body());
 }
 
 console.log("\n=== 3. several fields at once, from any step ===");
@@ -187,8 +204,22 @@ console.log("\n=== 5. guest / note: the value, unless MARKED ===");
 {
   const c = atDay().say("ביום ראשון").say("ב-10");
   eq("at the guest step", c.state.step, "guest");
+  // owner, 21.10: at the GUEST step a day/time PHRASE is a change even unmarked;
+  // a single word or a bare number is the guest
   const g = atDay().say("ביום ראשון").say("ב-10").say("ביום שני");
-  eq("UNMARKED 'ביום שני' at the guest step is the guest's name", [g.state.guest, g.state.step, g.state.date], ["ביום שני", "note", "2026-10-25"]);
+  eq("UNMARKED 'ביום שני' at the guest step = a change of day (same 10:00)", [g.state.step, g.state.date, g.state.start, g.state.guest], ["guest", "2026-10-26", "10:00", null]);
+  const g2 = atDay().say("ביום ראשון").say("ב-10").say("יום שני");
+  eq("'יום שני' too", [g2.state.date, g2.state.guest], ["2026-10-26", null]);
+  const g3 = atDay().say("ביום ראשון").say("ב-10").say("26.10");
+  eq("an explicit date too", [g3.state.date, g3.state.guest], ["2026-10-26", null]);
+  const g4 = atDay().say("ביום ראשון").say("ב-10").say("בשעה 11");
+  eq("'בשעה 11' = a change of time", [g4.state.step, g4.state.start, g4.state.guest], ["guest", "11:00", null]);
+  const g5 = atDay().say("ביום ראשון").say("ב-10").say("שני");
+  eq("a single word 'שני' = the guest's name", [g5.state.guest, g5.state.step, g5.state.date], ["שני", "note", "2026-10-25"]);
+  const g6 = atDay().say("ביום ראשון").say("ב-10").say("10");
+  eq("a bare '10' = the value", [g6.state.guest, g6.state.step, g6.state.start], ["10", "note", "10:00"]);
+  const g7 = atDay().say("ביום ראשון").say("ב-10").say("דני").say("ביום שני נגיע מוקדם");
+  eq("at the NOTE step an unmarked day phrase stays the note (marker-only there)", [g7.state.note, g7.state.step, g7.state.date], ["ביום שני נגיע מוקדם", "summary", "2026-10-25"]);
   c.say("בעצם ביום שני");
   eq("MARKED 'בעצם ביום שני': Monday at the same 10:00, back to the guest question", [c.state.step, c.state.date, c.state.start, c.state.guest], ["guest", "2026-10-26", "10:00", null]);
   c.say("אורח: רון");

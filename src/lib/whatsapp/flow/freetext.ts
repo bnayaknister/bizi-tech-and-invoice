@@ -141,7 +141,7 @@ const HOUR_TOKEN = "\\d{1,2}(?::\\d{2})?|אחת עשרה|אחד עשר|שתים 
 const HOUR_FRAG = `(?:${HOUR_TOKEN})(?:\\s*(?:${DAYPART_WORDS}))?`;
 
 /** One hour fragment, e.g. "אחת בצהריים" -> 13:00. */
-function hourPhrase(frag: string): { hhmm: string; ambiguous: boolean } | null {
+function hourPhrase(frag: string): { hhmm: string; ambiguous: boolean; options?: string[] } | null {
   const m = new RegExp(`^(${HOUR_TOKEN})\\s*(${DAYPART_WORDS})?$`).exec(frag.trim());
   if (!m) return null;
   const tok = m[1];
@@ -159,7 +159,8 @@ function hourPhrase(frag: string): { hhmm: string; ambiguous: boolean } | null {
   if (resolved === null) {
     // a daypart with an impossible hour is not an hour at all
     if (m[2] || h < 1 || h > 24) return null;
-    return { hhmm: "", ambiguous: true };
+    // E14-2b: both readings, so a step that SHOWS hours can match its list
+    return { hhmm: "", ambiguous: true, options: [`${pad2(h)}:${minutes}`, `${pad2(h + 12)}:${minutes}`] };
   }
   return { hhmm: `${pad2(resolved)}:${minutes}`, ambiguous: false };
 }
@@ -354,7 +355,16 @@ const CONFIRM_WORD_RE = /(^|\s)(כן|מאשר|לאשר|אשר|סבבה|מעול�
 /** What the summary parser made of one message: EVERY certain edit, and every
  *  fragment it recognised but could not be certain of. Nothing is silently
  *  dropped — `dropped` is said out loud by the machine. */
-export type ParsedEditSet = { edits: ParsedEdit[]; dropped: string[] };
+export type ParsedEditSet = {
+  edits: ParsedEdit[];
+  dropped: string[];
+  /**
+   * E14-2b (owner, 21.10): an exact start that is not certain ("ב-4": 04:00 or
+   * 16:00?). Still named in `dropped`; the HOUR step resolves it against the
+   * hours it shows — one match is taken, none or both are asked.
+   */
+  maybe?: { label: string; options: string[] }[];
+};
 
 /** Every duration value stated, distinct. Two different ones -> the caller asks. */
 function durationsIn(text: string): BookingDuration[] {
@@ -401,32 +411,48 @@ function daysIn(text: string, todayIsrael: string): string[] {
  * start. A time that is not certain ("ב-4" — morning or afternoon?) is never
  * guessed: it is named in `vague`, and the bot says so.
  */
-function timesIn(text: string): { certain: string[]; at: string[]; vague: string[] } {
+function timesIn(text: string): {
+  certain: string[];
+  at: string[];
+  vague: string[];
+  maybe: { label: string; options: string[] }[];
+} {
   const certain = new Set<string>();
   const at = new Set<string>();
   const vague: string[] = [];
+  const maybe: { label: string; options: string[] }[] = [];
   const seen = new Set<string>();
   const say = (frag: string, shown = frag.trim()) => {
+    const label = `השעה "${shown}"`;
     if (!seen.has(shown)) {
       seen.add(shown);
-      vague.push(`השעה "${shown}"`);
+      vague.push(label);
     }
+    return label;
   };
-  // a date like "ב-21.10" is not a time: the frag may not run into ".10" / "/10"
-  const END = "(?![\\d]|[./]\\d)";
+  // a date like "ב-21.10" is not a time, and "בשבוע" is not "בשבע": the frag
+  // may not run into ".10" / "/10", a digit, or another letter
+  const END = "(?![\\d\\p{L}]|[./]\\d)";
   const consumed: [number, number][] = [];
-  for (const m of Array.from(text.matchAll(new RegExp(`אחרי\\s*(?:השעה\\s+)?(${HOUR_FRAG})${END}`, "g")))) {
+  for (const m of Array.from(text.matchAll(new RegExp(`אחרי\\s*(?:השעה\\s+)?(${HOUR_FRAG})${END}`, "gu")))) {
     consumed.push([m.index, m.index + m[0].length]);
     const p = hourPhrase(m[1]);
     if (p && !p.ambiguous) certain.add(p.hhmm);
     else say(m[1]);
   }
-  for (const m of Array.from(text.matchAll(new RegExp(`(?<![\\p{L}])(?:בשעה|לשעה|ב-|ל-|ב(?=\\d))\\s*(?:השעה\\s+)?(${HOUR_FRAG})${END}`, "gu")))) {
+  // E14-2b (owner, 21.10): "ב3", "ב 3", "ב-3", "בשעה 3" are the same. A bare
+  // "ב" before a WORD ("בשלוש") is read only at the hour step (parseStepText):
+  // anywhere else "בשלוש מצלמות" is a note, not a time.
+  for (const m of Array.from(text.matchAll(new RegExp(`(?<![\\p{L}])(?:(?:בשעה|לשעה|ב-|ל-)\\s*(?:השעה\\s+)?(${HOUR_FRAG})|ב\\s*(\\d{1,2}(?::\\d{2})?(?:\\s*(?:${DAYPART_WORDS}))?))${END}`, "gu")))) {
     if (consumed.some(([a, b]) => m.index >= a && m.index < b)) continue;
     consumed.push([m.index, m.index + m[0].length]);
-    const p = hourPhrase(m[1]);
+    const frag = m[1] ?? m[2];
+    const p = hourPhrase(frag);
     if (p && !p.ambiguous) at.add(p.hhmm);
-    else say(m[1]);
+    else {
+      const label = say(frag);
+      if (p?.options && !maybe.some((x) => x.label === label)) maybe.push({ label, options: p.options });
+    }
   }
   // "עד 11" / "עד 11:00" asks for an END time, which an edit does not
   // support — always named vague, and shielded from the colon scan below
@@ -438,8 +464,12 @@ function timesIn(text: string): { certain: string[]; at: string[]; vague: string
     if (consumed.some(([a, b]) => m.index >= a && m.index < b)) continue;
     const p = hourPhrase(m[1]);
     if (p && !p.ambiguous) at.add(p.hhmm);
+    else if (p?.options) {
+      const label = say(m[1]);
+      if (!maybe.some((x) => x.label === label)) maybe.push({ label, options: p.options });
+    }
   }
-  return { certain: Array.from(certain), at: Array.from(at), vague };
+  return { certain: Array.from(certain), at: Array.from(at), vague, maybe };
 }
 
 /**
@@ -532,7 +562,7 @@ export function parseEditText(raw: string, todayIsrael: string): ParsedEditSet |
   if (edits.length === 0 && dropped.length === 0) {
     return alsoConfirm ? { edits: [{ field: "confirm-hint" }], dropped: [] } : null;
   }
-  return { edits, dropped };
+  return times.maybe.length ? { edits, dropped, maybe: times.maybe } : { edits, dropped };
 }
 
 // ─── E14-2b: free text at every choice step ────────────────────────────────
@@ -540,7 +570,7 @@ export function parseEditText(raw: string, todayIsrael: string): ParsedEditSet |
 /** The steps where a typed answer is read by the layer (the menu and the summary have their own). */
 export type ChoiceStep = "duration" | "studio-default" | "studio" | "day" | "hour" | "guest" | "note";
 
-const CHANGE_MARKER_RE = new RegExp("^\\s*(?:בעצם|תשנה|תשני|לשנות|שנה|שני)(?![\\p{L}])\\s*[,:]?\\s*", "u");
+const CHANGE_MARKER_RE = new RegExp("^\\s*(?:בעצם|תשנה|תשני|לשנות)(?![\\p{L}])\\s*[,:]?\\s*", "u");
 const FIELD_LABEL_RE = new RegExp("(?:^|\\s)(?:אורח|אורחת|הערה|הערות)\\s*:", "u");
 const POLITE_RE = new RegExp("(?<![\\p{L}])(?:בבקשה|תודה|רבה)(?![\\p{L}])", "gu");
 
@@ -551,6 +581,20 @@ const POLITE_RE = new RegExp("(?<![\\p{L}])(?:בבקשה|תודה|רבה)(?![\\p
  */
 export function hasChangeMarker(raw: string): boolean {
   return CHANGE_MARKER_RE.test(raw) || FIELD_LABEL_RE.test(raw);
+}
+
+const DAY_PHRASE_RE = new RegExp(`(?<![\\p{L}])ב?יום\\s+(?:${WEEKDAY_TOKEN})(?![\\p{L}])`, "u");
+const EXPLICIT_DATE_RE = /(?<!\d)\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?(?!\d)/;
+const TIME_PHRASE_RE = new RegExp(`(?<![\\p{L}])(?:(?:בשעה|לשעה)\\s*(?:${HOUR_TOKEN})|ב-?\\s*\\d)`, "u");
+
+/**
+ * Owner, 21.10 — at the GUEST step a day or time PHRASE is a change even
+ * without "בעצם": "ביום שני" / "יום שני" / "26.10" / "בשעה 10" / "ב-10". A
+ * single word ("שני", "ראשון") or a bare "10" stays the guest's name. The
+ * note step keeps the marker-only rule: a note may well mention a day.
+ */
+export function isSlotPhrase(raw: string): boolean {
+  return DAY_PHRASE_RE.test(raw) || EXPLICIT_DATE_RE.test(raw) || TIME_PHRASE_RE.test(raw);
 }
 
 /**
@@ -574,14 +618,19 @@ export function parseStepText(raw: string, todayIsrael: string, step: ChoiceStep
     }
   }
   if (step === "hour") {
-    const p = new RegExp(`^(${HOUR_TOKEN})(?:\\s*(${DAYPART_WORDS}))?$`).test(text) ? hourPhrase(text) : null;
+    // owner, 21.10: "10", "ב10", "ב 10", "ב-10", "בעשר", "בשעה עשר" — one answer
+    const bare = text.replace(/^(?:בשעה|לשעה|ב-?|ל-)\s*(?:השעה\s+)?/, "");
+    const p = new RegExp(`^(${HOUR_TOKEN})(?:\\s*(${DAYPART_WORDS}))?$`).test(bare) ? hourPhrase(bare) : null;
     if (p && !p.ambiguous) return { edits: [{ field: "time-at", hhmm: p.hhmm, alsoConfirm: false }], dropped: [] };
-    if (p && p.ambiguous) return { edits: [], dropped: [`השעה "${text}"`] };
+    if (p && p.ambiguous) {
+      const label = `השעה "${bare}"`;
+      return { edits: [], dropped: [label], ...(p.options ? { maybe: [{ label, options: p.options }] } : {}) };
+    }
   }
 
   const parsed = parseEditText(text, todayIsrael);
   if (!parsed) return null;
   const edits = parsed.edits.filter((e) => e.field !== "confirm-hint");
   if (edits.length === 0 && parsed.dropped.length === 0) return null;
-  return { edits, dropped: parsed.dropped };
+  return parsed.maybe ? { edits, dropped: parsed.dropped, maybe: parsed.maybe } : { edits, dropped: parsed.dropped };
 }
