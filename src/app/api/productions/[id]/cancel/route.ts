@@ -1,3 +1,4 @@
+import { notifyOrphanDoc } from "@/lib/documents/orphanDocs.server";
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -39,7 +40,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const admin = createAdminClient();
   const { data: prod } = await admin
     .from("productions")
-    .select("id,status,podcast_name,record_date,cancelled_at")
+    .select("id,status,podcast_name,record_date,cancelled_at,guest")
     .eq("id", id)
     .maybeSingle();
   if (!prod) return NextResponse.json({ error: "ההפקה לא נמצאה" }, { status: 404 });
@@ -129,6 +130,12 @@ export async function POST(request: Request, { params }: { params: { id: string 
       event_type: "issued_document_orphaned_by_cancel",
       actor_id: user.id,
       payload: { doc_type: d.doc_type, morning_doc_number: d.morning_doc_number, production_id: id },
+    });
+    // B38-3: the owner + the bookkeeper hear about it now, not from the radar later
+    await notifyOrphanDoc(admin, {
+      pendingId: d.id, docType: d.doc_type, number: d.morning_doc_number,
+      showName: prod.podcast_name, recordDate: prod.record_date, guest: (prod as { guest?: string | null }).guest ?? null,
+      reason: "cancelled",
     });
   }
 

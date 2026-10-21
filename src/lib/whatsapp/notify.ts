@@ -1,3 +1,4 @@
+import { toWaId } from "./phone";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/supabase/database.types";
 import { isWhatsappDryRun, sendWhatsapp, templatePayload } from "./client";
@@ -80,6 +81,7 @@ export const TEMPLATE_REGISTERED_LANGUAGE: Record<string, "he" | "en" | "client"
   bizi_client_registration: "he",
   bizi_unknown_contact: "en",
   bizi_client_approved: "client",
+  bizi_ops_alert: "he",
 };
 
 /** The language code to send `name` in, or null when the map does not know it. */
@@ -216,7 +218,8 @@ export type NotificationKind =
   | "unknown-contact"
   | "booking-change"
   | "client-registration"
-  | "client-approved";
+  | "client-approved"
+  | "ops-alert";
 
 // ─── E17-4: the registration notice, and which templates Meta approved ──────
 
@@ -269,6 +272,9 @@ export const TEMPLATE_META_APPROVED: Record<string, boolean> = {
   bizi_booking_change: true,
   bizi_client_registration: true,
   bizi_client_approved: false,
+  // B38 (21.10): submitted to Meta by the owner; turned on WITHOUT a code change
+  // by listing it in WHATSAPP_TEMPLATES_APPROVED once Meta approves it
+  bizi_ops_alert: false,
 };
 
 /**
@@ -291,7 +297,35 @@ export const TEMPLATE_CLIENT_APPROVED_TEXT: Record<"he" | "en", string> = {
 };
 
 export function isTemplateApproved(name: string): boolean {
-  return TEMPLATE_META_APPROVED[name] === true;
+  if (TEMPLATE_META_APPROVED[name] === true) return true;
+  // B38: a template Meta approved after the code shipped is turned on from the
+  // environment — comma-separated names, exact match (no code change needed)
+  const extra = (process.env.WHATSAPP_TEMPLATES_APPROVED ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+  return name in TEMPLATE_META_APPROVED && extra.includes(name);
+}
+
+/**
+ * Utility — an operational alert to the owner (and, for billing alerts, to the
+ * bookkeeper), B38 (21.10). ONE template for every such alert, the alert itself
+ * being `{{1}}`: the 21:00 "recordings not marked" list, and an issued document
+ * left on a cancelled production. TO BE SUBMITTED to Meta (Hebrew, UTILITY);
+ * until it is approved a send is skipped and the radar / the queue card carry
+ * the alert. Meta's rules: no newline in a parameter, none at the very start
+ * or end of the text, no two parameters side by side.
+ */
+export const TEMPLATE_OPS_ALERT = "bizi_ops_alert";
+export const TEMPLATE_OPS_ALERT_VARS = ["title", "details", "action"] as const;
+export const TEMPLATE_OPS_ALERT_TEXT =
+  "התראה ממערכת ביזי: {{1}}.\n" +
+  "פרטים: {{2}}\n" +
+  "מה לעשות: {{3}}\n" +
+  "את ההמשך מטפלים במערכת.";
+/** a parameter is one line and bounded (Meta: no newline; the whole message ≤ 1024) */
+export const OPS_ALERT_PARAM_MAX = 300;
+export function opsAlertParam(text: string): string {
+  const one = text.replace(/\s+/g, " ").trim() || "—";
+  const chars = Array.from(one);
+  return chars.length <= OPS_ALERT_PARAM_MAX ? one : chars.slice(0, OPS_ALERT_PARAM_MAX - 1).join("") + "…";
 }
 
 /** The registration template's named variables — never an empty value. */
@@ -331,6 +365,22 @@ export function parseNotifyNumbers(raw: string | null | undefined): string[] {
     // the same test, character for character, as whatsappNumberFrom
     if (!/^\d{6,15}$/.test(v)) continue;
     if (!out.includes(v)) out.push(v);
+  }
+  return out;
+}
+
+/**
+ * B38: WHATSAPP_BILLING_NOTIFY_NUMBERS — the bookkeeper's number(s), filled in
+ * by the owner without a code change. Normalised with toWaId (the allowlist's
+ * rule): "0501234567", "+972-50-123-4567" and "972501234567" are one number;
+ * an entry toWaId refuses is dropped. A local "05…" passed through as-is would
+ * be refused by Meta.
+ */
+export function parseBillingNotifyNumbers(raw: string | null | undefined): string[] {
+  const out: string[] = [];
+  for (const part of (raw ?? "").split(",")) {
+    const r = toWaId(part.trim());
+    if (r.ok && !out.includes(r.waId)) out.push(r.waId);
   }
   return out;
 }
@@ -594,6 +644,19 @@ type NotifyInput =
       podcast: string | null;
       waId: string;
       details: string;
+    }
+  | {
+      /**
+       * B38: an operational alert. "owner" = the first WHATSAPP_NOTIFY_NUMBERS
+       * entry; "billing" = the owner + WHATSAPP_BILLING_NOTIFY_NUMBERS (the
+       * bookkeeper — a setting, no code change to add her number).
+       */
+      kind: "ops-alert";
+      subjectId: string;
+      audience: "owner" | "billing";
+      title: string;
+      details: string;
+      action: string;
     };
 
 /** The template name, the positional params, the named variables and the body. */
@@ -603,6 +666,11 @@ function renderNotification(input: NotifyInput): {
   variables: Record<string, string>;
   body: string;
 } {
+  if (input.kind === "ops-alert") {
+    const variables = { title: opsAlertParam(input.title), details: opsAlertParam(input.details), action: opsAlertParam(input.action) };
+    const params = TEMPLATE_OPS_ALERT_VARS.map((k) => variables[k]);
+    return { templateName: TEMPLATE_OPS_ALERT, params, variables, body: fillTemplate(TEMPLATE_OPS_ALERT_TEXT, params) };
+  }
   if (input.kind === "unknown-contact") {
     const excerpt = excerptParam(input.excerpt);
     return {
@@ -694,7 +762,17 @@ export async function recordBookingNotification(
   const all = parseNotifyNumbers(raw);
   const rejected = rejectedNotifyNumbers(raw);
   // E17-5: the approval notice goes to the CLIENT, never to the notify list
-  const recipients = input.kind === "client-approved" ? [input.to] : input.onlyOwner ? all.slice(0, 1) : all;
+  const recipients =
+    input.kind === "client-approved"
+      ? [input.to]
+      : input.kind === "ops-alert"
+        ? input.audience === "billing"
+          ? // B38: the owner + the bookkeeper(s) — WHATSAPP_BILLING_NOTIFY_NUMBERS, deduplicated
+            Array.from(new Set([...all.slice(0, 1), ...parseBillingNotifyNumbers(process.env.WHATSAPP_BILLING_NOTIFY_NUMBERS)]))
+          : all.slice(0, 1)
+        : input.onlyOwner
+          ? all.slice(0, 1)
+          : all;
 
   if (rejected.length > 0) {
     // Counted, not printed: a malformed entry is still somebody's number. The

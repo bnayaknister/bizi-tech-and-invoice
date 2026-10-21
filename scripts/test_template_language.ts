@@ -66,6 +66,8 @@ async function main() {
     bizi_client_registration: "he",
     bizi_unknown_contact: "en",
     bizi_client_approved: "client",
+    // B38 (21.10): the operational alert — to be registered in WhatsApp Manager as Hebrew
+    bizi_ops_alert: "he",
   });
   check("bizi_unknown_contact -> en", templateSendLanguage("bizi_unknown_contact"), "en");
   check("bizi_booking_approved -> he", templateSendLanguage("bizi_booking_approved"), "he");
@@ -85,7 +87,7 @@ async function main() {
     Array.from(readFileSync(f, "utf8").matchAll(/"(bizi_[a-z_]+)"/g)).forEach((m) => literals.add(m[1]));
   }
   const sent = Array.from(new Set(exported.concat(Array.from(literals)))).sort();
-  check("found the six templates", sent.length, 6);
+  check("found the seven templates (B38: + bizi_ops_alert)", sent.length, 7);
   check("every one of them has a language in the map", sent.filter((t) => !(t in TEMPLATE_REGISTERED_LANGUAGE)), []);
   check("…and the map has nothing the code does not send", Object.keys(TEMPLATE_REGISTERED_LANGUAGE).filter((t) => !sent.includes(t)), []);
 

@@ -1,3 +1,4 @@
+import { notifyOrphanDoc } from "@/lib/documents/orphanDocs.server";
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -396,6 +397,23 @@ async function runSync(events: CalendarEvent[], todayIsraelDate: string, allEven
       event_type: "calendar_flagged_removed",
       payload: {},
     });
+    // B38-3: a document already issued for it -> the owner + the bookkeeper now
+    const { data: issued } = await admin
+      .from("pending_documents")
+      .select("id,doc_type,morning_doc_number")
+      .eq("production_id", id)
+      .eq("status", "issued")
+      .in("doc_type", ["work_order", "deal_invoice"]);
+    if (issued && issued.length) {
+      const { data: pr } = await admin.from("productions").select("podcast_name,record_date,guest").eq("id", id).maybeSingle();
+      for (const d of issued) {
+        await notifyOrphanDoc(admin, {
+          pendingId: d.id as string, docType: d.doc_type as string, number: (d.morning_doc_number as string | null) ?? null,
+          showName: (pr?.podcast_name as string | null) ?? null, recordDate: (pr?.record_date as string | null) ?? null,
+          guest: (pr?.guest as string | null) ?? null, reason: "calendar_removed",
+        });
+      }
+    }
   }
 
   const unflaggedIds = new Set(plan.toUnflagRemoved.flatMap((id) => expandToSiblings(id)));

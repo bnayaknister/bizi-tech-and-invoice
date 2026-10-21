@@ -13,6 +13,8 @@ export async function loadClientLabels(admin: SupabaseClient<Database>, showIds?
   const { data: shows } = await q;
   const on = (shows ?? []).filter((s) => showClientNameOn(s.settings) && s.client_id);
   if (on.length === 0) return new Map();
+  // A merge moves the show to the surviving client (B24), so this is the client
+  // clients-status: by id — the one a show already points to, not a list to choose from
   const { data: clients } = await admin
     .from("clients")
     .select("id,name")

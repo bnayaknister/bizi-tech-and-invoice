@@ -5,6 +5,7 @@ import { displayDate, todayInIsrael } from "@/lib/dates";
 import { closedAccruedMonths } from "@/lib/documents/accruedMonth";
 import { contractQuotas, quotaOverNotice, type QuotaProduction } from "@/lib/contracts/quota";
 import { PURGE_ENTITY, PURGE_RUN_EVENT } from "@/lib/review/purge";
+import { planUnrecordedCheck } from "@/lib/productions/unrecorded";
 
 /**
  * A document number is present. null and "" both mean "no number" — a blank
@@ -354,6 +355,15 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
   // job_productions link AND the show doesn't bill_mode='none'. active is
   // irrelevant — a closed show still owes (the Cinematheque precedent).
   const billingModeByShow = new Map(shows.map((s) => [s.id, s.billing_mode]));
+  // ---- 🟡 B38-2: a past recording never marked "הוקלט" has no work order ----
+  // The same window and rule as the 21:00 check (lib/productions/unrecorded.ts),
+  // past days only: today's sessions are still under way.
+  const todayIl = todayInIsrael();
+  const notMarkedRecorded = planUnrecordedCheck(
+    productions.map((p) => ({ ...p, legacy: false })),
+    billingModeByShow as Map<string, string | null>,
+    todayIl
+  ).unrecorded.filter((p) => (p.record_date ?? "") < todayIl);
   const linkedProductions = new Set(jobProds.map((jp) => jp.production_id));
   const rollupByProd = new Map(stageRollup.map((r) => [r.production_id, r]));
   const producedNotBilled = productions.filter((p) => {
@@ -923,6 +933,7 @@ export async function computeRadar(supabase: SupabaseClient): Promise<RadarData>
       href: "/contracts",
     })),
     { key: "open_commitment", severity: "blue", title: "התחייבות פתוחה", count: openMilestones.length, amount: openCommitment, href: "/contracts" },
+    { key: "not_marked_recorded", severity: "yellow", title: "הקלטה מהימים האחרונים לא סומנה \"הוקלט\" — אין לה הזמנת עבודה", count: notMarkedRecorded.length, amount: null, href: "/productions" },
     { key: "billing_blocked", severity: "yellow", title: "הפקת לקוח חסומה לחיוב", count: billingBlocked.length, amount: null, href: "/productions" },
     { key: "cancelled_with_work_order", severity: "yellow", title: "הפקה בוטלה אחרי שהונפקה הזמנת עבודה — לסגור במורנינג", count: cancelledWithWorkOrder.length, amount: null, href: "/productions" },
     { key: "cancelled_misc_with_work_order", severity: "yellow", title: "עבודת רדיו/שונות בוטלה אחרי שהונפקה הזמנת עבודה — לסגור במורנינג", count: cancelledMiscWithWorkOrder.length, amount: null, href: "/misc" },

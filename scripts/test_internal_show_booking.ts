@@ -179,6 +179,10 @@ async function main() {
     const r = await autoApproveNewRequest(w.client, {
       bookingId: pending, showId: "s-int", showName: SHOW_INTERNAL.name, dateIsrael: "2026-10-20", startIsrael: "10:00", endIsrael: "11:30",
       studio: "גבעון", guest: null, durationTag: null,
+      // a FIXED clock before the request (the morning of 20.10): without it the
+      // suite read the real time, and from 20.10 10:00 on the request was in the
+      // past and rightly refused ("past") — a stale test, not a bug (21.10)
+      now: new Date("2026-10-19T09:00:00Z"),
     });
     delete process.env.BOOKING_AUTO_APPROVE;
     check("approved automatically — like an existing client", [r.approved, w.store.booking_requests[0].status], [true, "approved"]);

@@ -4,6 +4,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { findCancelledWork } from "@/lib/documents/cancelledWork";
 import AppHeader from "@/components/AppHeader";
 import DocumentsClient, { type PendingDocRow } from "./DocumentsClient";
+import OrphanDocsCard from "./OrphanDocsCard";
+import { loadOrphanDocs } from "@/lib/documents/orphanDocs.server";
 import { isDryRun, morningEnv } from "@/lib/morning/client";
 import { DOC_TYPE_TO_MORNING_CODE, requiresPayment, type PendingDocType } from "@/lib/morning/types";
 import { sumParentGross } from "@/lib/documents/parentGross";
@@ -258,9 +260,13 @@ export default async function DocumentsPage() {
     };
   });
 
+  const orphans = await loadOrphanDocs(admin);
+
   return (
     <div className="min-h-screen">
       <AppHeader profile={profile} />
+      {/* B38-3: documents issued for recordings that did not happen, still open in Morning */}
+      <OrphanDocsCard orphans={orphans} canAct={!!profile.can_edit_money} />
       <DocumentsClient
         rows={rows}
         canApprove={!!profile.can_edit_money}
