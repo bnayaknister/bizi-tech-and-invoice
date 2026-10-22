@@ -121,6 +121,13 @@ const KIND: Record<string, Kind> = {
   "MANAGE.body": "body",
   "MANAGE.move": "button",
   "MANAGE.cancel": "button",
+  // E9-6: team recordings (hand-written in the calendar)
+  "MINE.descriptionTeam": "rowDesc",
+  "MANAGE.teamBody": "body",
+  "MANAGE.teamCancel": "button",
+  "MANAGE.teamMove": "button",
+  "MANAGE.teamMoveAsk": "body",
+  "OUTCOME.teamForwarded": "body",
   "CANCEL_CONFIRM.body": "body",
   "CANCEL_CONFIRM.yes": "button",
   "MOVE_SUMMARY.body": "body",
@@ -247,6 +254,8 @@ const SAMPLES: Record<string, unknown[][]> = {
   "MINE.title": DATES.map((d) => [d, "23:30"]),
   "MINE.description": ROOMS.map((r) => [LONG_SHOW, r]),
   "MANAGE.body": ROOMS.map((r) => [rec("2026-12-30", r)]),
+  "MINE.descriptionTeam": [...ROOMS, ""].flatMap((r) => [60, 90, 210, 245].map((m) => [m, r])),
+  "MANAGE.teamBody": [...ROOMS, ""].map((r) => [{ ...rec("2026-12-30", r), durationMinutes: 210 }]),
   "CANCEL_CONFIRM.body": ROOMS.map((r) => [rec("2026-12-30", r)]),
   "MOVE_SUMMARY.body": [
     [

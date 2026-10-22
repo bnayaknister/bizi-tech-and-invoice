@@ -5,7 +5,8 @@ import { PUBLIC_SLOT_STEP_MINUTES, toPublicAvailability } from "@/lib/booking/pu
 import { ensureBookingLink } from "@/lib/booking/links";
 import { submitBookingRequest } from "@/lib/booking/submit";
 import { cancelApprovedBooking, factsOf } from "@/lib/booking/cancel";
-import { DELETE_DETAILS, forwardedDetails, selfServeAllowed } from "@/lib/booking/manage";
+import { DELETE_DETAILS, TEAM_STUDIO_UNKNOWN, forwardedDetails, selfServeAllowed, teamRequestDetails } from "@/lib/booking/manage";
+import { loadTeamRecordings, uuidFromUid, type TeamRecording } from "@/lib/booking/teamCalendar";
 import { durationFromRange } from "@/lib/booking/duration";
 import { israelHHMM } from "@/lib/booking/publicView";
 import { israelDateOf } from "@/lib/calendar/availability";
@@ -20,6 +21,7 @@ import { toWaId, waIdFromProvider } from "../phone";
 import {
   afterCancel,
   afterForward,
+  afterTeamForward,
   afterSubmit,
   withRecordings,
   type CancelOutcome,
@@ -283,8 +285,54 @@ export function toRecordingOption(r: {
   };
 }
 
-/** The upcoming APPROVED recordings of this number's own podcasts, soonest first. */
+/** E9-6: a team recording (hand-written in the calendar) -> an option. No title, no guest. PURE. */
+export function teamRecordingOption(r: TeamRecording, showName: string): RecordingOption {
+  return {
+    id: uuidFromUid(r.uid),
+    showId: r.showId,
+    showName,
+    studio: r.room ?? "",
+    date: israelDateOf(r.start),
+    start: israelHHMM(r.start),
+    end: israelHHMM(r.end),
+    startIso: r.start.toISOString(),
+    durationMinutes: Math.round((r.end.getTime() - r.start.getTime()) / 60_000),
+    guest: null,
+    note: null,
+    source: "calendar",
+  };
+}
+
+/** how far ahead "ההקלטות שלי" looks for team recordings — the booking window */
+const TEAM_LOOKAHEAD_MS = 60 * 86_400_000;
+
+/**
+ * The upcoming recordings of this number's own podcasts, soonest first: the
+ * APPROVED requests, and (E9-6) the team's hand-written calendar events. A
+ * feed that cannot be read leaves the requests alone on the list — the list
+ * is never refused for it.
+ */
 async function loadRecordings(
+  admin: SupabaseClient<Database>,
+  showIds: string[],
+  showNames: Map<string, string>,
+  now: Date,
+  deps: FlowDeps
+): Promise<RecordingOption[] | null> {
+  const own = await loadRequestRecordings(admin, showIds, showNames, now);
+  if (own === null) return null;
+  let team: RecordingOption[] = [];
+  try {
+    const rows = await (deps.teamRecordings ?? ((ids, n) => loadTeamRecordings(admin, { from: n, to: new Date(n.getTime() + TEAM_LOOKAHEAD_MS), showIds: ids })))(showIds, now);
+    team = rows.map((r) => teamRecordingOption(r, showNames.get(r.showId) ?? ""));
+  } catch (e) {
+    console.error("wa/flow: קריאת הקלטות הצוות מהיומן נכשלה", e instanceof Error ? e.message : String(e));
+  }
+  return [...own, ...team].sort((a, b) => Date.parse(a.startIso) - Date.parse(b.startIso));
+}
+
+/** The upcoming APPROVED requests of this number's own podcasts, soonest first. */
+async function loadRequestRecordings(
   admin: SupabaseClient<Database>,
   showIds: string[],
   showNames: Map<string, string>,
@@ -327,6 +375,8 @@ export type FlowDeps = {
   extract?: Extractor;
   /** E14-2c: inbound messages from this number in the last hour (the cap); absent = counted in wa_messages */
   recentInbound?: (waId: string, now: Date) => Promise<number>;
+  /** E9-6: the team's calendar recordings of these shows; absent = the live feed */
+  teamRecordings?: (showIds: string[], now: Date) => Promise<TeamRecording[]>;
   /** E14-2c: "typing…" while the model runs; absent = Meta's typing indicator */
   typing?: (inboundWamid: string) => Promise<unknown>;
 };
@@ -588,7 +638,8 @@ export async function runFlow(
         admin,
         shows.map((s) => s.showId),
         new Map(shows.map((s) => [s.showId, s.showName])),
-        now
+        now,
+        deps
       );
       if (recs === null) {
         return { kind: "send", reply: { type: "text", body: C.NOTICE.manageFailed }, meta: { flow_error: "recordings" } };
@@ -606,6 +657,30 @@ export async function runFlow(
       submitted = true;
 
       const target = t.state.target as RecordingOption;
+
+      // E9-6: a team recording — no request row; the bot only passes it on,
+      // to the owner and Eli (WHATSAPP_NOTIFY_NUMBERS — never the billing list)
+      if (target.source === "calendar") {
+        const kind = t.kind === "forward" && t.change === "move-request" ? "move" : "cancel";
+        await notifyBookingChange(admin, {
+          change: kind === "move" ? "team-move-request" : "team-cancel-request",
+          // once per recording per kind per day: a second tap the same day pages nobody twice
+          bookingId: `${target.id}:${israelDateOf(now)}`,
+          facts: {
+            showName: target.showName,
+            dateIsrael: target.date,
+            startIsrael: target.start,
+            endIsrael: target.end,
+            studio: target.studio || TEAM_STUDIO_UNKNOWN,
+            durationTag: null,
+            guest: null,
+          },
+          details: teamRequestDetails(waId, kind, t.kind === "forward" ? t.requestText : null),
+        });
+        t = afterTeamForward(t.state);
+        continue;
+      }
+
       const row = await readTarget(admin, target.id);
       if (!row || row.status !== "approved") {
         t = afterCancel(t.state, "not-active");

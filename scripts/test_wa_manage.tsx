@@ -250,7 +250,8 @@ async function run() {
     "פרטים: האירוע נמחק מהיומן אוטומטית",
     "את כל הפרטים אפשר לראות במסך הבקשות במערכת.",
   ].join("\n"));
-  check("five change labels, none empty", (Object.keys(BOOKING_CHANGE_LABEL) as BookingChange[]).map((k) => BOOKING_CHANGE_LABEL[k].length > 0), [true, true, true, true, true]);
+  // E9-6 added the two team-recording requests
+  check("seven change labels, none empty", (Object.keys(BOOKING_CHANGE_LABEL) as BookingChange[]).map((k) => BOOKING_CHANGE_LABEL[k].length > 0), [true, true, true, true, true, true, true]);
   check("forwarded details carry the client's number", forwardedDetails("972501234567", "cancel").includes("972501234567"), true);
   check("moved details name the new slot", movedDetails({ dateIsrael: "2026-10-15", startIsrael: "13:00", endIsrael: "14:30", studio: "חשמונאים" }), "המועד החדש: יום ה׳ 15.10, 13:00–14:30, אולפן חשמונאים");
 

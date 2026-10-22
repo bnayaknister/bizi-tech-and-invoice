@@ -88,6 +88,20 @@ export function forwardedDetails(waId: string, kind: "cancel" | "move"): string 
     : `הבוט לא הזיז, הבקשה ממתינה לצוות. מספר הלקוח: ${waId}`;
 }
 
+/** E9-6: `{{4}}` of a team recording whose title names no room */
+export const TEAM_STUDIO_UNKNOWN = "לא צוין";
+
+/**
+ * E9-6: `{{5}}` for a request about a team recording — the bot touched
+ * nothing; the client's own words for a move travel as written (one line).
+ */
+export function teamRequestDetails(waId: string, kind: "cancel" | "move", wanted?: string | null): string {
+  const w = (wanted ?? "").replace(/\s+/g, " ").trim();
+  return kind === "cancel"
+    ? `הבוט לא ביטל — ההקלטה נקבעה ידנית ביומן. מספר הלקוח: ${waId}`
+    : `המועד המבוקש: "${w || "לא צוין"}". הבוט לא הזיז — ההקלטה נקבעה ידנית ביומן. מספר הלקוח: ${waId}`;
+}
+
 /** `{{5}}` for a move the bot carried out. */
 export function movedDetails(n: { dateIsrael: string; startIsrael: string; endIsrael: string; studio: string }): string {
   return `המועד החדש: יום ${dowHebrew(n.dateIsrael)} ${dayMonth(n.dateIsrael)}, ${n.startIsrael}–${n.endIsrael}, אולפן ${n.studio}`;

@@ -7,7 +7,8 @@ import { cleanAliasFor } from "./alias";
 import { eventTitle } from "./title";
 import { durationFromRange, durationTag, type BookingDuration } from "./duration";
 import { STUDIOS } from "@/lib/calendar/studios";
-import { israelDateOf } from "@/lib/calendar/availability";
+import { israelDateOf, israelInstant } from "@/lib/calendar/availability";
+import { loadTeamRecordings } from "./teamCalendar";
 import { calendarEventIdFor } from "@/lib/calendar/write";
 import { writeBookingCalendarEvent } from "./writeCalendarEvent";
 import { notifyBookingChange, recordBookingNotification, type PendingReason } from "@/lib/whatsapp/notify";
@@ -146,6 +147,11 @@ export function approvedSameDayCount(
     if (israelDateOf(new Date(t)) === dateIsrael) n++;
   }
   return n;
+}
+
+/** E9-6: the team's hand-written recordings on that Israeli date (the caller scopes by show). PURE. */
+export function teamSameDayCount(team: { start: Date }[] | null | undefined, dateIsrael: string): number {
+  return (team ?? []).filter((r) => israelDateOf(r.start) === dateIsrael).length;
 }
 
 export type AutoApproveVerdict =
@@ -683,6 +689,27 @@ export async function autoApproveNewRequest(
         return { approved: false, reason: "error" };
       }
       approvedSameDay = approvedSameDayCount(data, input.dateIsrael, input.replacesId);
+
+      // E9-6 (owner, 22.10): the team's own recordings of this podcast that
+      // day — written by hand in the calendar, never a request — count too.
+      // Only when the requests alone did not already decide it (one feed read
+      // saved). A feed or a read that fails cannot prove the day is free of a
+      // recording -> not approved, the queue (the safe side, as above).
+      if (approvedSameDay === 0) {
+        try {
+          const from = israelInstant(input.dateIsrael, 0, 0);
+          const team = await loadTeamRecordings(admin, {
+            from,
+            // 30h then the Israeli date decides: a DST day is 23 or 25 hours
+            to: new Date(from.getTime() + 30 * 3600_000),
+            showIds: [input.showId],
+          });
+          approvedSameDay += teamSameDayCount(team, input.dateIsrael);
+        } catch (e) {
+          console.error("decide/auto: קריאת הקלטות הצוות ביומן נכשלה", e instanceof Error ? e.message : String(e));
+          return { approved: false, reason: "error" };
+        }
+      }
     }
 
     const verdict = autoApproveVerdict({ switchOn, approvedSameDay, firstBookingNeedsApproval });

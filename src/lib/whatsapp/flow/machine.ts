@@ -84,6 +84,8 @@ export const FLOW_STEPS = [
   "mine",
   "manage",
   "cancel-confirm",
+  // E9-6: the free-text "to when?" of a move request for a team recording
+  "move-request",
 ] as const;
 export type FlowStep = (typeof FLOW_STEPS)[number];
 
@@ -101,6 +103,12 @@ export type RecordingOption = {
   durationMinutes: number | null;
   guest: string | null;
   note: string | null;
+  /**
+   * E9-6: "calendar" = written by the team by hand in the shared calendar —
+   * no request row behind it. The bot only passes a cancel / move request on;
+   * `guest` and `note` stay null (the event's title is never shown).
+   */
+  source?: "calendar";
 };
 
 export type FlowState = {
@@ -282,7 +290,13 @@ export type Transition =
   /** state.step is "submitting": cancel state.target, then call afterCancel */
   | { kind: "cancel"; state: FlowState }
   /** within 24 hours: notify the team, then call afterForward */
-  | { kind: "forward"; state: FlowState; change: "cancel-request" | "move-request" };
+  | {
+      kind: "forward";
+      state: FlowState;
+      change: "cancel-request" | "move-request";
+      /** E9-6: the client's own words for a move request of a team recording */
+      requestText?: string;
+    };
 
 /** What a cancellation by the bot came to (E9-5). */
 export type CancelOutcome = "cancelled" | "not-active" | "error";
@@ -557,7 +571,10 @@ export function render(s: FlowState): Transition {
             rows: s.recordings.map((r) => ({
               id: FLOW_ID.recording(r.id),
               title: C.MINE.title(r.date, r.start),
-              description: C.MINE.description(r.showName, r.studio),
+              description:
+                r.source === "calendar"
+                  ? C.MINE.descriptionTeam(r.durationMinutes, r.studio)
+                  : C.MINE.description(r.showName, r.studio),
             })),
           },
           { title: C.NAV.sectionNav, rows: navRows(C) },
@@ -566,6 +583,18 @@ export function render(s: FlowState): Transition {
 
     case "manage": {
       const t = s.target as RecordingOption;
+      // E9-6: a team recording — requests only, and never its title or a guest
+      if (t.source === "calendar") {
+        return out({
+          type: "buttons",
+          body: body(C.MANAGE.teamBody(t)),
+          buttons: [
+            { id: FLOW_ID.cancelBooking, title: C.MANAGE.teamCancel },
+            { id: FLOW_ID.move, title: C.MANAGE.teamMove },
+            { id: FLOW_ID.back, title: C.NAV.back },
+          ],
+        });
+      }
       return out({
         type: "buttons",
         body: body(C.MANAGE.body(t)),
@@ -576,6 +605,13 @@ export function render(s: FlowState): Transition {
         ],
       });
     }
+
+    case "move-request":
+      return out({
+        type: "buttons",
+        body: body(C.MANAGE.teamMoveAsk),
+        buttons: [{ id: FLOW_ID.back, title: C.NAV.back }],
+      });
 
     case "cancel-confirm": {
       const t = s.target as RecordingOption;
@@ -833,6 +869,7 @@ function back(s: FlowState): Transition {
     case "manage":
       return go(s, { step: "mine", target: null });
     case "cancel-confirm":
+    case "move-request":
       return go(s, { step: "manage" });
     case "duration":
       return go(s, { step: "menu", ...clearFrom("duration") });
@@ -1003,6 +1040,14 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
 
     case "manage": {
       const t = s.target as RecordingOption;
+      // E9-6: a team recording — the bot never acts on it, at any distance:
+      // a cancel request goes straight to the team, a move asks "to when?"
+      if (t.source === "calendar") {
+        if (e.type === "cancel-booking") return { kind: "forward", state: { ...s, step: "submitting" }, change: "cancel-request" };
+        if (e.type === "move") return go(s, { step: "move-request" });
+        if (e.type === "text") return pick();
+        return stale();
+      }
       // 🔴 within 24 hours the bot does not act (owner rule 3): it forwards.
       // Checked here for an immediate answer, and AGAIN by the driver at
       // execution, against a fresh read.
@@ -1020,6 +1065,14 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
         }
         return go(s, { ...clearFrom("duration"), mode: "move", duration: d, step: "studio-default", filter: null, durationFromDefault: false });
       }
+      if (e.type === "text") return pick();
+      return stale();
+    }
+
+    case "move-request": {
+      // E9-6: any typed text is the wanted time, passed on as written
+      const wanted = e.type === "text" ? e.text.replace(/\s+/g, " ").trim().slice(0, 300) : "";
+      if (wanted) return { kind: "forward", state: { ...s, step: "submitting" }, change: "move-request", requestText: wanted };
       if (e.type === "text") return pick();
       return stale();
     }
@@ -1907,6 +1960,12 @@ export function afterCancel(s: FlowState, outcome: CancelOutcome): Transition {
     return { kind: "reply", state: { ...s, step: "done", notice: null }, reply: { type: "text", body: C.OUTCOME.notActive } };
   }
   return render({ ...s, step: "manage", notice: C.NOTICE.manageFailed });
+}
+
+/** E9-6: a request about a team recording was passed on (owner wording). */
+export function afterTeamForward(s: FlowState): Transition {
+  const C = copy(s.lang);
+  return { kind: "reply", state: { ...s, step: "done", mode: "book", notice: null }, reply: { type: "text", body: C.OUTCOME.teamForwarded } };
 }
 
 /** Within 24 hours: the team was told; the client is told that it was. */

@@ -169,6 +169,24 @@ const studioHe = (s: string) => s;
 const recLinesHe = (r: Rec) =>
   [`🎙️ ${r.showName}`, `📅 ${dayHe(r.date)}, ${r.start}–${r.end}`, `📍 אולפן ${studioHe(r.studio)}`].join("\n");
 
+/** E9-6: a team recording's length, any number of minutes ("שעה", "שעה וחצי", "3 שעות") */
+export function lengthHe(minutes: number | null | undefined): string {
+  const m = Number(minutes);
+  if (!Number.isFinite(m) || m <= 0) return "";
+  if (m === 60) return "שעה";
+  if (m === 90) return "שעה וחצי";
+  if (m === 120) return "שעתיים";
+  if (m === 150) return "שעתיים וחצי";
+  if (m % 60 === 0) return `${m / 60} שעות`;
+  if (m % 30 === 0) return `${m / 60} שעות`;
+  return `${m} דקות`;
+}
+/** E9-6: date, time, length, room — never a title or a guest */
+type TeamRec = { date: string; start: string; end: string; studio: string; durationMinutes: number | null };
+const studioOrUnknownHe = (s: string) => (s ? `אולפן ${studioHe(s)}` : "אולפן לא צוין");
+const teamLinesHe = (r: TeamRec) =>
+  [`📅 ${dayHe(r.date)}, ${r.start}–${r.end}`, `⏱️ ${lengthHe(r.durationMinutes) || "—"}`, `📍 ${studioOrUnknownHe(r.studio)}`].join("\n");
+
 const HE = {
   /** the language's own formatters, so the machine never formats by itself */
   fmt: {
@@ -262,12 +280,21 @@ const HE = {
     button: "בחירת הקלטה",
     title: (date: string, start: string) => `${dayHe(date)} · ${start}`,
     description: (showName: string, studio: string) => `${showName} · אולפן ${studioHe(studio)}`,
+    /** E9-6: a recording the team wrote in the calendar */
+    descriptionTeam: (minutes: number | null, studio: string) =>
+      [lengthHe(minutes), studioOrUnknownHe(studio), "נקבע ע\"י הצוות"].filter(Boolean).join(" · "),
   },
 
   MANAGE: {
     body: (r: Rec) => `מה עושים עם ההקלטה הזאת?\n${recLinesHe(r)}`,
     move: "🔁 להזיז",
     cancel: "❌ לבטל",
+    /** E9-6: a team recording — the bot only passes a request on */
+    teamBody: (r: TeamRec) => `הקלטה שנקבעה ע"י הצוות:\n${teamLinesHe(r)}\n\nאפשר לבקש מהצוות לבטל או להזיז אותה:`,
+    teamCancel: "❌ בקשה לביטול",
+    teamMove: "🔁 בקשה להזזה",
+    teamMoveAsk:
+      "לאיזה מועד תרצו להזיז? כתבו בהודעה חופשית (למשל: \"יום שלישי אחרי 14:00\"), ונעביר את הבקשה לצוות.",
   },
 
   CANCEL_CONFIRM: {
@@ -414,6 +441,8 @@ const HE = {
     forwardedMove:
       "ההקלטה מתחילה בעוד פחות מ-24 שעות, אז את ההזזה מעבירים לצוות. הבקשה הועברה, ונחזור אליכם בהקדם 🙏",
     notActive: "ההקלטה הזאת כבר לא פעילה. אפשר לבדוק שוב ב\"ההקלטות שלי\".",
+    /** E9-6: a request about a team recording was passed on (owner wording) */
+    teamForwarded: "הבקשה הועברה לצוות, נחזור אליכם 🙏",
   },
 
   /** One-line prefixes, put above a re-sent step. */
@@ -502,6 +531,15 @@ const SCREEN_IS_HEBREW = " (the page is in Hebrew)";
 const recLinesEn = (r: Rec) =>
   [`🎙️ ${r.showName}`, `📅 ${dayEn(r.date)}, ${r.start}–${r.end}`, `📍 ${studioEn(r.studio)} studio`].join("\n");
 
+function lengthEn(minutes: number | null | undefined): string {
+  const m = Number(minutes);
+  if (!Number.isFinite(m) || m <= 0) return "";
+  if (m === 60) return "1 hour";
+  return m % 30 === 0 ? `${m / 60} hours` : `${m} min`;
+}
+const teamLinesEn = (r: TeamRec) =>
+  [`📅 ${dayEn(r.date)}, ${r.start}–${r.end}`, `⏱️ ${lengthEn(r.durationMinutes) || "—"}`, `📍 ${r.studio ? `${studioEn(r.studio)} studio` : "studio not set"}`].join("\n");
+
 const EN: BotCopy = {
   fmt: {
     day: dayEn,
@@ -572,12 +610,19 @@ const EN: BotCopy = {
     button: "Choose recording",
     title: (date: string, start: string) => `${dayEn(date)} · ${start}`,
     description: (showName: string, studio: string) => `${showName} · ${studioEn(studio)} studio`,
+    descriptionTeam: (minutes: number | null, studio: string) =>
+      [lengthEn(minutes), studio ? `${studioEn(studio)} studio` : "studio not set", "booked by the team"].filter(Boolean).join(" · "),
   },
 
   MANAGE: {
     body: (r: Rec) => `What would you like to do with this recording?\n${recLinesEn(r)}`,
     move: "🔁 Move",
     cancel: "❌ Cancel",
+    teamBody: (r: TeamRec) =>
+      `A recording booked by the team:\n${teamLinesEn(r)}\n\nYou can ask the team to cancel or move it:`,
+    teamCancel: "❌ Ask to cancel",
+    teamMove: "🔁 Ask to move",
+    teamMoveAsk: "When would you like to move it to? Write it freely (e.g. \"Tuesday after 14:00\") and we'll pass it on to the team.",
   },
 
   CANCEL_CONFIRM: {
@@ -713,6 +758,7 @@ const EN: BotCopy = {
     forwardedMove:
       "The recording starts in less than 24 hours, so changes go through the team. We've passed on your request and will get back to you soon 🙏",
     notActive: "This recording is no longer active. You can check again under \"My recordings\".",
+    teamForwarded: "Your request was passed on to the team, we'll get back to you 🙏",
   },
 
   NOTICE: {

@@ -189,7 +189,10 @@ export type BookingChange =
   | "client-moved"
   | "cancel-request"
   | "move-request"
-  | "calendar-delete-failed";
+  | "calendar-delete-failed"
+  // E9-6: a request about a recording the team wrote in the calendar by hand
+  | "team-cancel-request"
+  | "team-move-request";
 
 /** `{{1}}` — what happened, in the owner's words. Never starts the template. */
 export const BOOKING_CHANGE_LABEL: Record<BookingChange, string> = {
@@ -198,6 +201,8 @@ export const BOOKING_CHANGE_LABEL: Record<BookingChange, string> = {
   "cancel-request": "בקשת ביטול בתוך 24 השעות שלפני ההקלטה",
   "move-request": "בקשת הזזה בתוך 24 השעות שלפני ההקלטה",
   "calendar-delete-failed": "הקלטה בוטלה אבל המחיקה מהיומן נכשלה",
+  "team-cancel-request": "בקשת ביטול להקלטה שנקבעה ידנית ביומן",
+  "team-move-request": "בקשת הזזה להקלטה שנקבעה ידנית ביומן",
 };
 
 /** Why a request stayed pending. Each one is a different sentence to the owner. */
