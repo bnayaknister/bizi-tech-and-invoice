@@ -138,7 +138,8 @@ async function main() {
   ok("the step rides the EXISTING hourly cron (no new cron)", /sweepUnsentComments\(admin, Date\.now\(\)\)/.test(cron));
   ok("…in its own try: a failure never fails the Bunny sync", /try \{\s*unsent = await sweepUnsentComments/.test(cron) && /catch \(e\) \{\s*unsent = \{ error:/.test(cron));
   const vj = JSON.parse(readFileSync(join(root, "vercel.json"), "utf8")) as { crons: { path: string }[] };
-  check("vercel.json: 7 cron entries (E13-10 added purge-review-media), review-versions among them", [vj.crons.length, vj.crons.some((x) => x.path === "/api/cron/review-versions")], [7, true]);
+  // B38-2 (+2 unrecorded-check) and E14-3 (+2 freetext-summary) added four since
+  check("vercel.json: 11 cron entries, review-versions among them", [vj.crons.length, vj.crons.some((x) => x.path === "/api/cron/review-versions")], [11, true]);
   const page = strip(readFileSync(join(root, "src/app/productions/page.tsx"), "utf8"));
   ok("board page: flags loaded in try/catch (rule 38)", /try \{\s*reviewFlags = await loadReviewFlags\(/.test(page) && /board_review_flags_failed/.test(page));
   const pc = strip(readFileSync(join(root, "src/app/productions/ProductionsClient.tsx"), "utf8"));

@@ -197,6 +197,28 @@ export async function isInsideFolder(
   return false; // not found within maxDepth levels (or the walk ran out of parents)
 }
 
+/**
+ * owner 22.10 — the folder names from just under `rootId` down to the file's
+ * own folder ("סדרת חינוך - אור מיכאלי וגיא", "EP 13"), following the first
+ * parent. Best effort for a WARNING: any failure answers [] (no warning),
+ * never a refusal.
+ */
+export async function folderChain(parents: string[], rootId: string, token: string, maxDepth: number = REVIEW_FOLDER_MAX_DEPTH): Promise<string[]> {
+  const names: string[] = [];
+  let id = parents[0];
+  try {
+    for (let d = 0; d < maxDepth && id && id !== rootId; d++) {
+      const b = await filesGet(id, "id,name,parents", token);
+      names.unshift(typeof b.name === "string" ? b.name : "");
+      const ps = Array.isArray(b.parents) ? b.parents.filter((p): p is string => typeof p === "string") : [];
+      id = ps[0];
+    }
+  } catch {
+    return [];
+  }
+  return id === rootId ? names : [];
+}
+
 export type ReviewFileRejection =
   | "bad_link"
   | "folder"
@@ -216,6 +238,8 @@ export type CheckedReviewFile = {
   mimeType: string;
   sha256: string | null;
   isAudioOnly: boolean;
+  /** owner 22.10: the Drive parents, for the folder shown before sending */
+  parents?: string[];
 };
 
 export type ReviewFileCheck =
@@ -276,6 +300,7 @@ export async function checkReviewFile(input: string, opts: { token: string; fold
       mimeType: meta.mimeType,
       sha256: /^[0-9a-f]{64}$/.test(sha) ? sha : null,
       isAudioOnly: mime.startsWith("audio/"),
+      parents: meta.parents,
     },
   };
 }

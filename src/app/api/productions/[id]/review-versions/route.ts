@@ -24,11 +24,27 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const { data: profile } = await supabase.from("profiles").select("can_edit_stages").eq("id", user.id).single();
   if (!profile?.can_edit_stages) return NextResponse.json({ error: "אין הרשאת עריכת שלבים" }, { status: 403 });
 
-  const body = (await request.json().catch(() => ({}))) as { kind?: unknown; reel_index?: unknown; drive_url?: unknown };
+  const body = (await request.json().catch(() => ({}))) as {
+    kind?: unknown;
+    reel_index?: unknown;
+    drive_url?: unknown;
+    /** owner 22.10: check and describe only (the confirmation screen) */
+    preview?: unknown;
+    /** owner 22.10: "לשלוח בכל זאת" over the warnings */
+    ack_warnings?: unknown;
+  };
   try {
     const store = supabaseVersionStore(createTypedAdminClient());
     const res = await sendForReview(
-      { productionId: params.id, kind: body.kind, reelIndex: body.reel_index, driveUrl: body.drive_url, userId: user.id },
+      {
+        productionId: params.id,
+        kind: body.kind,
+        reelIndex: body.reel_index,
+        driveUrl: body.drive_url,
+        userId: user.id,
+        preview: body.preview === true,
+        ackWarnings: body.ack_warnings === true,
+      },
       { store }
     );
     // E13-6 (owner 17.10): a new version for an item puts out the red dot a

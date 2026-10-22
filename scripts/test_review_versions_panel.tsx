@@ -53,10 +53,25 @@ ok("an item WITHOUT a versions field (older answer) → renders, no crash", !leg
 const full = render({
   items: [
     { kind: "episode", reel_index: null, versions: [v({ id: "d1", source: "drive", status: null, integrity: null, file_name: null, number: 1 }), v({ id: "b2", number: 2 })] },
-    { kind: "reel", reel_index: 1, versions: [v({ id: "r1", number: null, status: "uploading", integrity: null, has_guid: false, final: false, file_name: "._x.wav", is_audio_only: true })] },
+    { kind: "reel", reel_index: 1, versions: [v({ id: "r1", number: null, status: "uploading", integrity: null, has_guid: false, final: false, file_name: "._x.wav", is_audio_only: true, created_at: new Date().toISOString() })] },
   ],
 });
 ok("labels: Drive history, מוכן ✓, נשלח", ["Drive (היסטוריה)", "מוכן ✓", "נשלח"].every((t) => full.includes(t)), full);
+// owner 22.10: not ready an hour after it was sent -> "תקוע", with "שליחה מחדש" (canEdit)
+const stuck = render({
+  canEdit: true,
+  items: [{ kind: "reel", reel_index: 1, versions: [v({ id: "s1", number: 2, status: "processing", integrity: null, final: false, created_at: new Date(Date.now() - 2 * 3600_000).toISOString() })] }],
+});
+ok("a version processing for 2 hours: 'תקוע — מעל שעה' + 'שליחה מחדש'", stuck.includes("תקוע — מעל שעה") && stuck.includes("שליחה מחדש"), stuck);
+const fresh = render({
+  canEdit: true,
+  items: [{ kind: "reel", reel_index: 1, versions: [v({ id: "s2", number: 2, status: "processing", integrity: null, final: false, created_at: new Date(Date.now() - 10 * 60_000).toISOString() })] }],
+});
+ok("…10 minutes: 'בקידוד', no resend", fresh.includes("בקידוד") && !fresh.includes("שליחה מחדש"), fresh);
+const failedV = render({ canEdit: true, items: [{ kind: "episode", reel_index: null, versions: [v({ id: "f1", status: "failed", final: true })] }] });
+ok("a failed version: 'נכשל' + 'שליחה מחדש'", failedV.includes("נכשל") && failedV.includes("שליחה מחדש"), failedV);
+const noEdit = render({ canEdit: false, items: [{ kind: "episode", reel_index: null, versions: [v({ id: "f2", status: "failed", final: true })] }] });
+ok("…without edit permission: no resend button", !noEdit.includes("שליחה מחדש"), noEdit);
 ok("an unnumbered version shows —, numbered ones vN", full.includes("v1") && full.includes("v2") && full.includes("—"), full);
 ok("a null file name renders nothing for it, no crash", !full.startsWith("THREW"));
 

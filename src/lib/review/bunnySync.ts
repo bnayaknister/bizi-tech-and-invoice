@@ -3,7 +3,8 @@ import { getVideo, listVideos } from "@/lib/bunny/client";
 import { describeError } from "@/lib/bunny/errors";
 import type { BunnyVideo } from "@/lib/bunny/status";
 import { verifyBunnySignature, type HeaderSource } from "@/lib/bunny/webhookSignature";
-import { integrityLog, syncVersion, type Answer, type Deps } from "./versions";
+import { integrityLog, isFinal, syncVersion, type Answer, type Deps } from "./versions";
+import { isStuck } from "./versionLabel";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // E13-5 — Bunny's webhook and the two backup crons (plan §9.2 E13-5).
@@ -137,11 +138,14 @@ export const INTEGRITY_STUCK_MS = 3 * 24 * 3_600_000; // still unchecked this lo
 
 export type CronSummary = Record<string, unknown>;
 
-export async function runVersionsCron(deps: Deps): Promise<CronSummary> {
+/** owner 22.10: one alert for a version not ready an hour after it was sent (the route sends the WhatsApp) */
+export type StuckAlert = { versionId: string; productionId: string; number: number | null; fileName: string | null; sentAt: string; status: string | null };
+
+export async function runVersionsCron(deps: Deps & { onStuck?: (a: StuckAlert) => Promise<void> }): Promise<CronSummary> {
   const { store } = deps;
   const now = (deps.now ?? (() => new Date()))();
   const pending = await store.pendingVersions(CRON_BATCH);
-  const summary = { checked: 0, advanced: 0, ready: 0, stuck_failed: 0, video_missing_failed: 0, integrity_stuck_reported: 0, errors: 0 };
+  const summary = { checked: 0, advanced: 0, ready: 0, stuck_failed: 0, video_missing_failed: 0, integrity_stuck_reported: 0, stuck_alerted: 0, errors: 0 };
   const lines: Record<string, unknown>[] = [];
 
   for (const { row, productionId } of pending) {
@@ -156,6 +160,31 @@ export async function runVersionsCron(deps: Deps): Promise<CronSummary> {
       if (synced.note === "video_missing_failed") summary.video_missing_failed++;
       const log = integrityLog(synced, productionId);
       if (log) lines.push(log);
+
+      // owner 22.10: not ready an HOUR after it was sent → one event + one
+      // alert to the owner, once per version (the drawer shows "תקוע" and
+      // offers "שליחה מחדש" from the same hour). The 24h no-guid → failed
+      // rule above is unchanged.
+      const sentAt = after.fetch_requested_at ?? after.created_at;
+      if (
+        isStuck({ final: isFinal(after), status: after.bunny_status, sent_at: sentAt }, now) &&
+        !(await store.eventExists("review_encoding_stuck", "version_id", after.id))
+      ) {
+        await store.event("review_encoding_stuck", productionId, {
+          version_id: after.id,
+          sent_at: sentAt,
+          status: after.bunny_status,
+          minutes: Math.floor((now.getTime() - Date.parse(sentAt)) / 60_000),
+        });
+        if (deps.onStuck) {
+          try {
+            await deps.onStuck({ versionId: after.id, productionId, number: after.number, fileName: after.original_filename, sentAt, status: after.bunny_status });
+          } catch {
+            /* the alert is best effort; the event and the drawer carry it */
+          }
+        }
+        summary.stuck_alerted++;
+      }
 
       // decision (c)(2): unchecked for 3 days after ready → one event, the version stays hidden (Q14)
       if (

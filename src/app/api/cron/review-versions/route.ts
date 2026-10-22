@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createTypedAdminClient } from "@/lib/supabase/admin";
-import { runVersionsCron } from "@/lib/review/bunnySync";
+import { runVersionsCron, type StuckAlert } from "@/lib/review/bunnySync";
+import { recordBookingNotification } from "@/lib/whatsapp/notify";
 import { supabaseVersionStore } from "@/lib/review/versionStore";
 import { describeError } from "@/lib/bunny/errors";
 import { sweepUnsentComments } from "@/lib/review/attentionFlags";
@@ -27,7 +28,22 @@ export async function GET(request: Request) {
   }
   try {
     const admin = createTypedAdminClient();
-    const out = await runVersionsCron({ store: supabaseVersionStore(admin) });
+    // owner 22.10: a version not ready an hour after it was sent — one
+    // bizi_ops_alert to the owner (once per version; the event is the de-dup)
+    const onStuck = async (a: StuckAlert) => {
+      const { data: p } = await admin.from("productions").select("podcast_name,record_date").eq("id", a.productionId).maybeSingle();
+      const date = p?.record_date ? `${Number(p.record_date.slice(8, 10))}.${Number(p.record_date.slice(5, 7))}` : "";
+      const minutes = Math.floor((Date.now() - Date.parse(a.sentAt)) / 60_000);
+      await recordBookingNotification(admin, {
+        kind: "ops-alert",
+        subjectId: `review-stuck:${a.versionId}`,
+        audience: "owner",
+        title: "גרסה לביקורת תקועה בקידוד מעל שעה",
+        details: [p?.podcast_name ?? "", date, a.number ? `v${a.number}` : "", a.fileName ?? "", `${minutes} דקות`].filter(Boolean).join(" · "),
+        action: "בחלון ההפקה, בגרסאות לביקורת: \"שליחה מחדש\"",
+      });
+    };
+    const out = await runVersionsCron({ store: supabaseVersionStore(admin), onStuck });
     console.log(JSON.stringify({ tag: "cron_review_versions", ...out }));
     let unsent: { lit: number; skipped: number } | { error: string };
     try {

@@ -1,10 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { bunnyApiConfig, bunnyCdnReferer, isBunnyDryRun } from "@/lib/bunny/config";
-import { fetchVideoFromUrl, findVideosByTitle, getVideo } from "@/lib/bunny/client";
+import { deleteVideo, fetchVideoFromUrl, findVideosByTitle, getVideo } from "@/lib/bunny/client";
+import { driveFileViewUrl } from "./itemLinks";
+import { isStuck } from "./versionLabel";
 import { describeError } from "@/lib/bunny/errors";
 import { signedOriginalUrl } from "@/lib/bunny/sign";
 import { deriveVersionFromVideo, type BunnyVideo, type ReviewVersionStatus } from "@/lib/bunny/status";
-import { checkReviewFile, driveMediaUrl, serviceAccountToken, type CheckedReviewFile } from "@/lib/google/drive";
+import { checkReviewFile, driveMediaUrl, folderChain, reviewFolderId, serviceAccountToken, type CheckedReviewFile } from "@/lib/google/drive";
+import {
+  folderWarning,
+  nameKindWarning,
+  otherShowInName,
+  sameFileWarnings,
+  targetLabel,
+  type SameFileRow,
+  type SendWarning,
+  type ShowForWarn,
+} from "./sendWarnings";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // E13-4 — "שלח לביקורת": a Drive file becomes a Bunny review version (plan §5).
@@ -91,6 +103,8 @@ export type VersionPatch = Partial<{
   ready_at: string;
   integrity: Integrity;
   integrity_at: string;
+  /** set ONLY after Bunny confirmed the delete (0114) — the resend of a stuck version */
+  media_deleted_at: string;
 }>;
 
 export type ItemKind = "episode" | "reel";
@@ -124,10 +138,25 @@ export interface VersionStore {
   eventExists(type: string, key: string, value: string): Promise<boolean>;
   /** An event that belongs to no production (an orphan video): entity 'system', the zero uuid. */
   systemEvent(type: string, payload: Record<string, unknown>): Promise<void>;
+  // ── owner 22.10: the warnings and the confirmation screen (optional: a store without them sends no warnings) ──
+  /** the production's show and date, for the confirmation screen */
+  sendContext?(productionId: string): Promise<{ showId: string | null; showName: string | null; podcastName: string | null; recordDate: string | null }>;
+  /** every non-failed version carrying this Drive file, with where it lives */
+  sameDriveFile?(driveFileId: string): Promise<SameFileRow[]>;
+  /** the active shows, for the name / folder warnings */
+  warnShows?(): Promise<ShowForWarn[]>;
+  /** the item's highest version number (0 = none) — the number the next one gets is this + 1 */
+  itemMaxNumber?(itemId: string): Promise<number>;
+  /** owner 22.10: the item a version belongs to — the resend sends to the same slot */
+  itemOf?(itemId: string): Promise<{ kind: ItemKind; reel_index: number | null } | null>;
 }
 
 export type Deps = {
   store: VersionStore;
+  /** owner 22.10: the Drive folder walk for the confirmation screen; absent = the live one */
+  folderChain?: typeof folderChain;
+  /** owner 22.10: the Bunny delete of a stuck version that is re-sent; absent = the live one */
+  deleteVideo?: typeof deleteVideo;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   newId?: () => string;
@@ -197,6 +226,10 @@ export type SendInput = {
   reelIndex: unknown;
   driveUrl: unknown;
   userId: string;
+  /** owner 22.10: only check and describe — nothing is sent */
+  preview?: boolean;
+  /** owner 22.10: the sender saw the warnings and chose "לשלוח בכל זאת" */
+  ackWarnings?: boolean;
 };
 
 /** POST /api/productions/[id]/review-versions — the caller already checked can_edit_stages. */
@@ -238,6 +271,55 @@ export async function sendForReview(input: SendInput, deps: Deps): Promise<Answe
         version_id: same.id,
       });
     }
+  }
+
+  // 3b. owner 22.10 — the warnings, and what the confirmation screen shows.
+  // Each is a warning, never a refusal: the sender may send anyway, and the
+  // server holds a send with warnings until it is acknowledged.
+  const ctx = store.sendContext ? await store.sendContext(input.productionId) : null;
+  const warnings: SendWarning[] = [];
+  let folders: string[] = [];
+  if (ctx) {
+    const [shows, same] = await Promise.all([
+      store.warnShows ? store.warnShows() : Promise.resolve([] as ShowForWarn[]),
+      store.sameDriveFile ? store.sameDriveFile(file.fileId) : Promise.resolve([] as SameFileRow[]),
+    ]);
+    folders = file.parents?.length ? await (deps.folderChain ?? folderChain)(file.parents, reviewFolderId(), token) : [];
+    warnings.push(...sameFileWarnings(same, { productionId: input.productionId, showId: ctx.showId, itemId: item?.id ?? null }));
+    const nk = nameKindWarning(file.name, kind);
+    if (nk) warnings.push(nk);
+    const os = otherShowInName(file.name, shows, ctx.showId);
+    if (os) warnings.push(os);
+    const fw = folderWarning(folders, shows, ctx.showId);
+    if (fw) warnings.push(fw);
+  }
+  if (input.preview) {
+    const max = item && store.itemMaxNumber ? await store.itemMaxNumber(item.id) : 0;
+    return {
+      status: 200,
+      body: {
+        preview: {
+          file: { name: file.name, size_bytes: file.sizeBytes },
+          folder: folders.join(" / ") || null,
+          show: ctx?.showName ?? ctx?.podcastName ?? null,
+          record_date: ctx?.recordDate ?? null,
+          target: targetLabel(kind, reelIndex),
+          next_version: max + 1,
+          warnings,
+        },
+      },
+    };
+  }
+  if (warnings.length && !input.ackWarnings) {
+    return err(409, "יש אזהרות לפני השליחה — יש לאשר \"לשלוח בכל זאת\"", { code: "warnings", warnings });
+  }
+  if (warnings.length) {
+    await store.event(
+      "review_send_warnings_overridden",
+      input.productionId,
+      { kind, reel_index: reelIndex, file_name: file.name, drive_file_id: file.fileId, warnings: warnings.map((w) => w.code) },
+      input.userId
+    );
   }
 
   const versionId = (deps.newId ?? randomUUID)();
@@ -350,6 +432,63 @@ export async function sendForReview(input: SendInput, deps: Deps): Promise<Answe
     status: 200,
     body: { ok: true, message: "נשלח. Bunny מושך את הקובץ מ-Drive", version: row ? publicVersion(row) : { id: versionId } },
   };
+}
+
+// ── owner 22.10: "שליחה מחדש" of a stuck / failed version ──────────────────
+
+/**
+ * The version is marked failed (it never becomes the client's), its Bunny
+ * video deleted (best effort — a delete that fails is recorded and the resend
+ * still happens; the daily orphan sweep reports what is left), and the SAME
+ * Drive file is sent again to the SAME item: a new version, the next number.
+ * Only a version that is failed, or not ready an hour after it was sent.
+ */
+export async function resendVersion(
+  input: { productionId: string; versionId: string; userId: string },
+  deps: Deps
+): Promise<Answer> {
+  const { store } = deps;
+  const now = (deps.now ?? (() => new Date()))();
+  if ((await store.versionProduction(input.versionId)) !== input.productionId) return err(404, "הגרסה לא נמצאה בהפקה הזאת");
+  const row = await store.getVersion(input.versionId);
+  if (!row || row.source !== "bunny" || !row.drive_file_id) return err(400, "אפשר לשלוח מחדש רק גרסה שנשלחה מ-Drive ל-Bunny");
+  const stuck = isStuck({ final: isFinal(row), status: row.bunny_status, sent_at: row.fetch_requested_at ?? row.created_at }, now);
+  if (row.bunny_status !== "failed" && !stuck) return err(409, "הגרסה לא תקועה — אין מה לשלוח מחדש");
+  const item = store.itemOf ? await store.itemOf(row.item_id) : null;
+  if (!item) return err(404, "הפריט של הגרסה לא נמצא");
+
+  if (row.bunny_status !== "failed") await store.update(row.id, { bunny_status: "failed", bunny_status_at: now.toISOString() });
+  let deleted: string = "no_guid";
+  if (row.bunny_video_id) {
+    try {
+      const r = await (deps.deleteVideo ?? deleteVideo)(row.bunny_video_id);
+      if ("dryRun" in r && r.dryRun) deleted = "dry_run";
+      else {
+        await store.update(row.id, { media_deleted_at: now.toISOString() });
+        deleted = "deleted";
+      }
+    } catch (e) {
+      deleted = `failed: ${describeError(e)}`;
+    }
+  }
+  await store.event(
+    "review_version_resent",
+    input.productionId,
+    { version_id: row.id, was: row.bunny_status, stuck, bunny_delete: deleted, drive_file_id: row.drive_file_id },
+    input.userId
+  );
+  return sendForReview(
+    {
+      productionId: input.productionId,
+      kind: item.kind,
+      reelIndex: item.reel_index,
+      driveUrl: driveFileViewUrl(row.drive_file_id),
+      userId: input.userId,
+      // the same file to the same slot, chosen again on purpose
+      ackWarnings: true,
+    },
+    deps
+  );
 }
 
 // ── status ─────────────────────────────────────────────────────────────────

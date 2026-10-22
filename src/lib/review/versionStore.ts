@@ -206,5 +206,77 @@ export function supabaseVersionStore(admin: SupabaseClient<Database>): VersionSt
         ...(actorId ? { actor_id: actorId } : {}),
       });
     },
+
+    // ── owner 22.10: the warnings and the confirmation screen ──
+    async sendContext(productionId) {
+      const { data, error } = await admin
+        .from("productions")
+        .select("show_id,podcast_name,record_date,shows(name)")
+        .eq("id", productionId)
+        .maybeSingle();
+      if (error) throw new Error(`productions: ${error.message}`);
+      const show = (data as unknown as { shows?: { name?: string } | null } | null)?.shows ?? null;
+      return {
+        showId: (data?.show_id as string | null) ?? null,
+        showName: show?.name ?? null,
+        podcastName: (data?.podcast_name as string | null) ?? null,
+        recordDate: (data?.record_date as string | null) ?? null,
+      };
+    },
+
+    async sameDriveFile(driveFileId) {
+      const { data, error } = await admin
+        .from("client_review_versions")
+        .select("item_id,number,client_review_items!inner(production_id,kind,reel_index,productions!inner(show_id,record_date,shows(name)))")
+        .eq("drive_file_id", driveFileId)
+        .neq("bunny_status", "failed")
+        .limit(50);
+      if (error) throw new Error(`client_review_versions: ${error.message}`);
+      type R = {
+        item_id: string;
+        number: number | null;
+        client_review_items: {
+          production_id: string;
+          kind: string;
+          reel_index: number | null;
+          productions: { show_id: string | null; record_date: string | null; shows: { name: string } | null };
+        };
+      };
+      return ((data ?? []) as unknown as R[]).map((r) => ({
+        itemId: r.item_id,
+        productionId: r.client_review_items.production_id,
+        showId: r.client_review_items.productions?.show_id ?? null,
+        showName: r.client_review_items.productions?.shows?.name ?? null,
+        kind: r.client_review_items.kind,
+        reelIndex: r.client_review_items.reel_index,
+        recordDate: r.client_review_items.productions?.record_date ?? null,
+        number: r.number,
+      }));
+    },
+
+    async warnShows() {
+      const { data, error } = await admin.from("shows").select("id,name,aliases").eq("active", true);
+      if (error) throw new Error(`shows: ${error.message}`);
+      return (data ?? []).map((r) => ({ id: r.id as string, name: r.name as string, aliases: (r.aliases as string[] | null) ?? [] }));
+    },
+
+    async itemOf(itemId) {
+      const { data, error } = await admin.from("client_review_items").select("kind,reel_index").eq("id", itemId).maybeSingle();
+      if (error) throw new Error(`client_review_items: ${error.message}`);
+      if (!data) return null;
+      return { kind: data.kind === "reel" ? "reel" : "episode", reel_index: (data.reel_index as number | null) ?? null };
+    },
+
+    async itemMaxNumber(itemId) {
+      const { data, error } = await admin
+        .from("client_review_versions")
+        .select("number")
+        .eq("item_id", itemId)
+        .not("number", "is", null)
+        .order("number", { ascending: false })
+        .limit(1);
+      if (error) throw new Error(`client_review_versions: ${error.message}`);
+      return Number(data?.[0]?.number) || 0;
+    },
   };
 }

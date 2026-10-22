@@ -102,6 +102,14 @@ export const EVENT_LABEL: Record<string, string> = {
   status_advanced: "הסטטוס התקדם",
   status_auto_advanced: "הסטטוס התקדם אוטומטית",
   whatsapp_test_alert: "נשלחה התראת בדיקה בוואטסאפ",
+  // B38 (21.10) — were missing
+  work_order_on_recorded_failed: "יצירת הזמנת העבודה בסיום ההקלטה נכשלה",
+  cron_unrecorded_check: "בדיקת 21:00 — הקלטות שלא סומנו",
+  work_order_deferred_until_recorded: "הזמנת העבודה תיווצר בסיום ההקלטה",
+  // owner 22.10 — review
+  review_send_warnings_overridden: "נשלח לביקורת למרות אזהרות",
+  review_encoding_stuck: "גרסה תקועה בקידוד מעל שעה",
+  review_version_resent: "גרסה נשלחה מחדש",
   wa_freetext_message: "הודעה חופשית בבוט",
   wa_freetext_booking: "הזמנה נקבעה בבוט",
   freetext_monitor_started: "התחיל מעקב טקסט חופשי",

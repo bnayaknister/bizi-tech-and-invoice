@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { REFRESH_MS, versionLabel, type VersionTone } from "@/lib/review/versionLabel";
+import { REFRESH_MS, isStuck, versionLabel, type VersionTone } from "@/lib/review/versionLabel";
 import { FOLDER_LINK_ERROR, isDriveFolderLink } from "@/lib/review/itemLinks";
+import ReviewSendConfirm, { type SendPreview } from "@/components/ReviewSendConfirm";
 
 // E13-4 — "שלח לביקורת" from the drawer (plan §9.2). One row per deliverable
 // (episode, reel 1..n): a Drive link field, the send button, and the item's
@@ -55,6 +56,8 @@ export default function ReviewVersionsPanel({
   const [links, setLinks] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<Record<string, { text: string; bad: boolean }>>({});
+  // owner 22.10: the confirmation screen of one row at a time
+  const [confirm, setConfirm] = useState<{ key: string; url: string; preview: SendPreview } | null>(null);
 
   const rows: Row[] = [];
   const versionsOf = (kind: string, idx: number | null) =>
@@ -92,13 +95,38 @@ export default function ReviewVersionsPanel({
     }
     setBusy(row.key);
     setNotice((n) => ({ ...n, [row.key]: { text: "בודק את הקובץ ב-Drive…", bad: false } }));
+    // owner 22.10: first what would be sent where (and the warnings) — nothing is sent yet
     const res = await fetch(`/api/productions/${productionId}/review-versions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: row.kind, reel_index: row.reelIndex, drive_url: url }),
+      body: JSON.stringify({ kind: row.kind, reel_index: row.reelIndex, drive_url: url, preview: true }),
     }).catch(() => null);
     const b = res ? await res.json().catch(() => ({})) : {};
     setBusy(null);
+    if (!res || !res.ok || !(b as { preview?: SendPreview }).preview) {
+      setNotice((n) => ({ ...n, [row.key]: { text: (b as { error?: string }).error ?? "הבדיקה נכשלה", bad: true } }));
+      return;
+    }
+    setNotice((n) => {
+      const next = { ...n };
+      delete next[row.key];
+      return next;
+    });
+    setConfirm({ key: row.key, url, preview: (b as { preview: SendPreview }).preview });
+  }
+
+  async function sendConfirmed(row: Row) {
+    if (!confirm || confirm.key !== row.key) return;
+    const { url, preview } = confirm;
+    setBusy(row.key);
+    const res = await fetch(`/api/productions/${productionId}/review-versions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: row.kind, reel_index: row.reelIndex, drive_url: url, ack_warnings: (preview.warnings ?? []).length > 0 }),
+    }).catch(() => null);
+    const b = res ? await res.json().catch(() => ({})) : {};
+    setBusy(null);
+    setConfirm(null);
     if (!res || !res.ok) {
       setNotice((n) => ({ ...n, [row.key]: { text: (b as { error?: string }).error ?? "השליחה נכשלה", bad: true } }));
       return;
@@ -108,6 +136,24 @@ export default function ReviewVersionsPanel({
     onChanged();
   }
 
+  // owner 22.10: a stuck (an hour) or failed version is sent again, same file, same item
+  async function resend(row: Row, v: PanelVersion) {
+    if (!window.confirm(`לשלוח מחדש את ${v.number ? `v${v.number}` : "הגרסה"}? הגרסה התקועה תסומן כנכשלה, תימחק מ-Bunny, והקובץ יישלח שוב כגרסה חדשה.`)) return;
+    setBusy(row.key);
+    setNotice((n) => ({ ...n, [row.key]: { text: "שולח מחדש…", bad: false } }));
+    const res = await fetch(`/api/productions/${productionId}/review-versions/${v.id}/resend`, { method: "POST" }).catch(() => null);
+    const b = res ? await res.json().catch(() => ({})) : {};
+    setBusy(null);
+    setNotice((n) => ({
+      ...n,
+      [row.key]: res && res.ok
+        ? { text: (b as { message?: string }).message ?? "נשלח מחדש", bad: false }
+        : { text: (b as { error?: string }).error ?? "השליחה מחדש נכשלה", bad: true },
+    }));
+    onChanged();
+  }
+
+  const now = new Date();
   if (!rows.length) return null;
   return (
     <div className="rounded-lg px-2.5 py-2 space-y-2.5 border border-[var(--rule)]">
@@ -128,22 +174,42 @@ export default function ReviewVersionsPanel({
                 />
                 <button
                   onClick={() => void send(row)}
-                  disabled={busy !== null || !(links[row.key] ?? "").trim()}
+                  disabled={busy !== null || confirm !== null || !(links[row.key] ?? "").trim()}
                   className="shrink-0 text-[11px] rounded-md px-2.5 py-1 border border-[var(--violet-light)] text-[var(--violet-light)] hover:bg-[rgba(139,92,246,0.14)] disabled:opacity-50 transition-colors"
                 >
                   {busy === row.key ? "שולח…" : "שלח לביקורת"}
                 </button>
               </div>
             )}
+            {confirm?.key === row.key && (
+              <ReviewSendConfirm
+                preview={confirm.preview}
+                busy={busy === row.key}
+                onConfirm={() => void sendConfirmed(row)}
+                onCancel={() => setConfirm(null)}
+              />
+            )}
             {note && <div className={`text-[10px] ${note.bad ? "text-rose-400" : "text-[var(--dim)]"}`}>{note.text}</div>}
             {row.versions.length > 0 && (
               <div className="space-y-0.5">
                 {row.versions.map((v) => {
-                  const l = versionLabel(v);
+                  const stuck = isStuck({ final: v.final, status: v.status, sent_at: v.created_at }, now);
+                  const l = versionLabel({ ...v, stuck });
+                  const canResend = canEdit && v.source === "bunny" && (stuck || v.status === "failed");
                   return (
                     <div key={v.id} className="flex items-center gap-2 text-[10px]">
                       <span className="font-bold w-7">{v.number ? `v${v.number}` : "—"}</span>
                       <span className={TONE[l.tone]}>{l.text}</span>
+                      {canResend && (
+                        <button
+                          data-action="review-resend"
+                          onClick={() => void resend(row, v)}
+                          disabled={busy !== null}
+                          className="shrink-0 rounded px-1.5 border border-rose-500 text-rose-400 disabled:opacity-50"
+                        >
+                          שליחה מחדש
+                        </button>
+                      )}
                       {v.file_name && (
                         <span className="text-[var(--faint)] truncate" dir="ltr" title={v.file_name}>
                           {v.is_audio_only ? "🎧 " : ""}
