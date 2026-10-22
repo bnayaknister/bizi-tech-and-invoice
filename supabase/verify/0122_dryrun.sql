@@ -163,8 +163,13 @@ begin
 
   -- ── 3. המספור לא דורס ──
   select max(number) into v_max from public.client_review_versions where item_id = v_item;
-  insert into public.client_review_versions (item_id, source, bunny_library_id, bunny_video_id, bunny_status)
-  values (v_item, 'bunny', 1, gen_random_uuid(), 'created')
+  -- a row that satisfies the LIVE crv_bunny_fields_chk (0116/0117: a bunny row
+  -- carries its Drive source and fetch time) and crv_drive_source_chk
+  insert into public.client_review_versions
+    (item_id, source, bunny_library_id, bunny_video_id, bunny_status,
+     drive_file_id, drive_size_bytes, drive_mime_type, is_audio_only, fetch_requested_at)
+  values (v_item, 'bunny', 1, gen_random_uuid(), 'created',
+          'DRYRUN0122000000000001', 1, 'video/mp4', false, now())
   returning id into v_new;
   v_num := public.assign_review_version_number(v_new);
   if v_num <> v_max + 1 then
