@@ -92,6 +92,8 @@ export type HistoryComment = HcComment & {
   unread: boolean;
   version_number: number | null;
   version_file: string | null;
+  /** 0122: the version this comment is on was withdrawn */
+  version_withdrawn: boolean;
   acked_by_name: string | null;
   resolved_by_name: string | null;
 };
@@ -116,7 +118,7 @@ export function buildCommentHistory(input: {
   items: { id: string; kind: string; reel_index: number | null; approved: boolean }[];
   comments: HcComment[];
   approvals: HcApproval[];
-  versions: { id: string; item_id?: string; number: number | null; original_filename: string | null }[];
+  versions: { id: string; item_id?: string; number: number | null; original_filename: string | null; withdrawn_at?: string | null }[];
   names: Record<string, string>;
 }): HistoryItem[] {
   const vById = new Map(input.versions.map((v) => [v.id, v]));
@@ -137,6 +139,8 @@ export function buildCommentHistory(input: {
             unread: !c.acked_at && !c.resolved_at,
             version_number: v?.number ?? null,
             version_file: v?.original_filename ?? null,
+            // 0122: the comment stays; its version was withdrawn ("גרסה הוסרה")
+            version_withdrawn: !!v?.withdrawn_at,
             acked_by_name: c.acked_by ? input.names[c.acked_by] ?? null : null,
             resolved_by_name: c.resolved_by ? input.names[c.resolved_by] ?? null : null,
           };
@@ -186,7 +190,7 @@ export async function loadCommentHistory(admin: SupabaseClient<Database>, produc
       .select("id,item_id,version_id,link_id,kind,pin_number,time_ms,body,author_kind,created_at,acked_at,acked_by,resolved_at,resolved_by,after_response,is_backfill")
       .in("item_id", ids),
     admin.from("client_review_approvals").select("item_id,link_id,decision,decided_at,revoked_at,revoked_reason").in("item_id", ids),
-    admin.from("client_review_versions").select("id,item_id,number,original_filename").in("item_id", ids),
+    admin.from("client_review_versions").select("id,item_id,number,original_filename,withdrawn_at").in("item_id", ids),
   ]);
   if (cErr) throw new Error(`client_review_comments: ${cErr.message}`);
   if (aErr) throw new Error(`client_review_approvals: ${aErr.message}`);

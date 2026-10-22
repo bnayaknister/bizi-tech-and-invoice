@@ -115,6 +115,8 @@ type DrawerData = {
   // `linked` is populated for can_view_money, and creating a job is a money
   // WRITE — a bookkeeper who may read the pipeline must not be offered it.
   canEditMoney: boolean;
+  /** 0122: "הסרת גרסה" in the review versions panel */
+  canWithdrawReview?: boolean;
   // E17-3: studio_admin only — "הרשאות הזמנת חדרים" is not drawn otherwise.
   // Optional: an older response without it reads as "no", never as "yes".
   canManageBookingContacts?: boolean;
@@ -2210,6 +2212,7 @@ export function DrawerProvider({ children }: { children: ReactNode }) {
                           reelCount={reelCount}
                           items={data.reviewItems ?? []}
                           canEdit={data.canEditStages}
+                          canWithdraw={!!data.canWithdrawReview}
                           onChanged={() => void load(ref, true)}
                         />
                       )}

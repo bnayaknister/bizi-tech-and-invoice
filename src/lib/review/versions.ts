@@ -72,6 +72,11 @@ export type VersionRow = {
   fetch_requested_at: string | null;
   is_backfill: boolean;
   created_at: string;
+  /** set only after Bunny confirmed a delete (0114) */
+  media_deleted_at?: string | null;
+  /** 0122: withdrawn from the client's view (sent by mistake) */
+  withdrawn_at?: string | null;
+  withdrawn_reason?: string | null;
 };
 
 export type NewBunnyVersion = {
@@ -149,6 +154,8 @@ export interface VersionStore {
   itemMaxNumber?(itemId: string): Promise<number>;
   /** owner 22.10: the item a version belongs to — the resend sends to the same slot */
   itemOf?(itemId: string): Promise<{ kind: ItemKind; reel_index: number | null } | null>;
+  /** 0122: mark withdrawn (who, why) — false when it already was */
+  withdraw?(versionId: string, userId: string | null, reason: string): Promise<boolean>;
 }
 
 export type Deps = {
@@ -491,6 +498,71 @@ export async function resendVersion(
   );
 }
 
+// ── 0122 (owner 22.10): "הסרת גרסה" ───────────────────────────────────────
+
+export const WITHDRAW_REASON_MIN = 3;
+export const WITHDRAW_REASON_MAX = 500;
+
+/** The reason's rule — the same as crv_withdrawn_chk, so the form and the route agree. PURE. */
+export function withdrawReasonError(raw: unknown): string | null {
+  const r = typeof raw === "string" ? raw.trim() : "";
+  if (r.length < WITHDRAW_REASON_MIN) return "יש לכתוב סיבה להסרה";
+  if (r.length > WITHDRAW_REASON_MAX) return `הסיבה ארוכה מדי (עד ${WITHDRAW_REASON_MAX} תווים)`;
+  return null;
+}
+
+/**
+ * Withdraw a version: the client never sees it again (clientVersions.ts), its
+ * row, number, comments and approvals stay. Then its Bunny video is deleted
+ * (best effort: a failed delete is recorded in the event and the row keeps
+ * media_deleted_at null — the daily orphan sweep and a retry see it).
+ */
+export async function withdrawVersion(
+  input: { productionId: string; versionId: string; userId: string | null; reason: unknown },
+  deps: Deps
+): Promise<Answer> {
+  const { store } = deps;
+  const now = (deps.now ?? (() => new Date()))();
+  const bad = withdrawReasonError(input.reason);
+  if (bad) return err(400, bad);
+  const reason = (input.reason as string).trim();
+  if ((await store.versionProduction(input.versionId)) !== input.productionId) return err(404, "הגרסה לא נמצאה בהפקה הזאת");
+  const row = await store.getVersion(input.versionId);
+  if (!row) return err(404, "הגרסה לא נמצאה");
+  if (row.withdrawn_at) return err(409, "הגרסה כבר הוסרה");
+  if (!store.withdraw || !(await store.withdraw(row.id, input.userId, reason))) return err(409, "הגרסה כבר הוסרה");
+
+  let bunnyDelete = "not_bunny";
+  if (row.source === "bunny" && row.bunny_video_id && !row.media_deleted_at) {
+    try {
+      const r = await (deps.deleteVideo ?? deleteVideo)(row.bunny_video_id);
+      if ("dryRun" in r && r.dryRun) bunnyDelete = "dry_run";
+      else {
+        await store.update(row.id, { media_deleted_at: now.toISOString() });
+        bunnyDelete = (r as { alreadyGone?: boolean }).alreadyGone ? "already_gone" : "deleted";
+      }
+    } catch (e) {
+      bunnyDelete = `failed: ${describeError(e)}`;
+    }
+  } else if (row.media_deleted_at) {
+    bunnyDelete = "already_deleted";
+  }
+  await store.event(
+    "review_version_withdrawn",
+    input.productionId,
+    { version_id: row.id, item_id: row.item_id, number: row.number, file_name: row.original_filename, reason, bunny_delete: bunnyDelete },
+    input.userId
+  );
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      bunny_delete: bunnyDelete,
+      message: bunnyDelete.startsWith("failed") ? "הגרסה הוסרה מתצוגת הלקוח. המחיקה מ-Bunny נכשלה ותיבדק שוב." : "הגרסה הוסרה מתצוגת הלקוח.",
+    },
+  };
+}
+
 // ── status ─────────────────────────────────────────────────────────────────
 
 /**
@@ -684,6 +756,11 @@ export type PublicVersion = {
   is_backfill: boolean;
   final: boolean;
   created_at: string;
+  /** 0122: withdrawn from the client's view, and why */
+  withdrawn_at: string | null;
+  withdrawn_reason: string | null;
+  /** 0122: the last time a client opened this version (filled by the drawer read) */
+  last_viewed_at?: string | null;
 };
 
 /** No guid, no Drive id, no hashes — the drawer needs a label and whether to keep polling. */
@@ -698,7 +775,10 @@ export function publicVersion(v: VersionRow): PublicVersion {
     is_audio_only: v.is_audio_only,
     file_name: v.original_filename,
     is_backfill: v.is_backfill,
-    final: isFinal(v),
+    // a withdrawn version is final for the drawer: never polled again
+    final: isFinal(v) || !!v.withdrawn_at,
     created_at: v.created_at,
+    withdrawn_at: v.withdrawn_at ?? null,
+    withdrawn_reason: v.withdrawn_reason ?? null,
   };
 }

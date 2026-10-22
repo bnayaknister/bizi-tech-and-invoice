@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { REFRESH_MS, isStuck, versionLabel, type VersionTone } from "@/lib/review/versionLabel";
 import { FOLDER_LINK_ERROR, isDriveFolderLink } from "@/lib/review/itemLinks";
 import ReviewSendConfirm, { type SendPreview } from "@/components/ReviewSendConfirm";
+import { displayDateTime } from "@/lib/dates";
 
 // E13-4 — "שלח לביקורת" from the drawer (plan §9.2). One row per deliverable
 // (episode, reel 1..n): a Drive link field, the send button, and the item's
@@ -25,6 +26,11 @@ export type PanelVersion = {
   file_name: string | null;
   final: boolean;
   created_at: string;
+  /** 0122: withdrawn from the client's view, and why (older answers: absent) */
+  withdrawn_at?: string | null;
+  withdrawn_reason?: string | null;
+  /** 0122: the last time a client opened it */
+  last_viewed_at?: string | null;
 };
 
 export type PanelItem = { kind: string; reel_index: number | null; versions?: PanelVersion[] };
@@ -44,6 +50,7 @@ export default function ReviewVersionsPanel({
   reelCount,
   items,
   canEdit,
+  canWithdraw = false,
   onChanged,
 }: {
   productionId: string;
@@ -51,6 +58,8 @@ export default function ReviewVersionsPanel({
   reelCount: number;
   items: PanelItem[];
   canEdit: boolean;
+  /** 0122: owner / admin — "הסרת גרסה" */
+  canWithdraw?: boolean;
   onChanged: () => void;
 }) {
   const [links, setLinks] = useState<Record<string, string>>({});
@@ -153,6 +162,32 @@ export default function ReviewVersionsPanel({
     onChanged();
   }
 
+  // 0122: withdraw a version sent by mistake — a reason, a confirmation, then the route
+  async function withdraw(row: Row, v: PanelVersion) {
+    const reason = window.prompt(`סיבת ההסרה של ${v.number ? `v${v.number}` : "הגרסה"} (חובה):`)?.trim() ?? "";
+    if (!reason) return;
+    if (reason.length < 3) {
+      setNotice((n) => ({ ...n, [row.key]: { text: "יש לכתוב סיבה של 3 תווים לפחות", bad: true } }));
+      return;
+    }
+    if (!window.confirm(`להסיר את ${v.number ? `v${v.number}` : "הגרסה"}${v.file_name ? ` (${v.file_name})` : ""}? הלקוח לא יראה אותה יותר והקובץ יימחק מ-Bunny. ההיסטוריה וההערות נשמרות.`)) return;
+    setBusy(row.key);
+    const res = await fetch(`/api/productions/${productionId}/review-versions/${v.id}/withdraw`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason }),
+    }).catch(() => null);
+    const b = res ? await res.json().catch(() => ({})) : {};
+    setBusy(null);
+    setNotice((n) => ({
+      ...n,
+      [row.key]: res && res.ok
+        ? { text: (b as { message?: string }).message ?? "הגרסה הוסרה", bad: false }
+        : { text: (b as { error?: string }).error ?? "ההסרה נכשלה", bad: true },
+    }));
+    onChanged();
+  }
+
   const now = new Date();
   if (!rows.length) return null;
   return (
@@ -193,9 +228,10 @@ export default function ReviewVersionsPanel({
             {row.versions.length > 0 && (
               <div className="space-y-0.5">
                 {row.versions.map((v) => {
-                  const stuck = isStuck({ final: v.final, status: v.status, sent_at: v.created_at }, now);
-                  const l = versionLabel({ ...v, stuck });
-                  const canResend = canEdit && v.source === "bunny" && (stuck || v.status === "failed");
+                  const withdrawn = !!v.withdrawn_at;
+                  const stuck = !withdrawn && isStuck({ final: v.final, status: v.status, sent_at: v.created_at }, now);
+                  const l = withdrawn ? { text: "הוסרה", tone: "bad" as VersionTone } : versionLabel({ ...v, stuck });
+                  const canResend = !withdrawn && canEdit && v.source === "bunny" && (stuck || v.status === "failed");
                   return (
                     <div key={v.id} className="flex items-center gap-2 text-[10px]">
                       <span className="font-bold w-7">{v.number ? `v${v.number}` : "—"}</span>
@@ -211,10 +247,30 @@ export default function ReviewVersionsPanel({
                         </button>
                       )}
                       {v.file_name && (
-                        <span className="text-[var(--faint)] truncate" dir="ltr" title={v.file_name}>
+                        <span className={`text-[var(--faint)] truncate ${withdrawn ? "line-through" : ""}`} dir="ltr" title={v.file_name}>
                           {v.is_audio_only ? "🎧 " : ""}
                           {v.file_name}
                         </span>
+                      )}
+                      {withdrawn && v.withdrawn_reason && (
+                        <span className="text-[var(--faint)] truncate" title={v.withdrawn_reason}>
+                          · {v.withdrawn_reason}
+                        </span>
+                      )}
+                      {!withdrawn && v.last_viewed_at && (
+                        <span data-review-last-viewed="" className="shrink-0 text-[var(--dim)]" title="הפעם האחרונה שהלקוח פתח את הגרסה">
+                          👁 נצפה לאחרונה {displayDateTime(v.last_viewed_at)}
+                        </span>
+                      )}
+                      {canWithdraw && !withdrawn && (
+                        <button
+                          data-action="review-withdraw"
+                          onClick={() => void withdraw(row, v)}
+                          disabled={busy !== null}
+                          className="shrink-0 rounded px-1.5 border border-[var(--rule)] text-[var(--dim)] hover:text-rose-400 disabled:opacity-50"
+                        >
+                          הסרת גרסה
+                        </button>
                       )}
                     </div>
                   );

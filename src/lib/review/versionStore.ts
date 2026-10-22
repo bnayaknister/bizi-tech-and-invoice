@@ -9,14 +9,14 @@ import type { ReviewVersionStatus } from "@/lib/bunny/status";
 // fields (same rule as scripts/e13_backfill_v1.ts).
 
 const VERSION_COLS =
-  "id,item_id,number,source,media_link,bunny_video_id,bunny_status,bunny_status_raw,is_audio_only,original_filename,original_size_bytes,drive_file_id,drive_sha256,drive_size_bytes,integrity,ready_at,fetch_requested_at,is_backfill,created_at";
+  "id,item_id,number,source,media_link,bunny_video_id,bunny_status,bunny_status_raw,is_audio_only,original_filename,original_size_bytes,drive_file_id,drive_sha256,drive_size_bytes,integrity,ready_at,fetch_requested_at,is_backfill,created_at,media_deleted_at,withdrawn_at,withdrawn_reason";
 
 const STATUSES: ReviewVersionStatus[] = ["created", "uploading", "processing", "playable", "ready", "failed"];
 const INTEGRITIES: Integrity[] = ["hash_match", "size_match", "mismatch", "unchecked"];
 
 type Row = Database["public"]["Tables"]["client_review_versions"]["Row"];
 
-export function toVersionRow(r: Pick<Row, keyof VersionRow>): VersionRow {
+export function toVersionRow(r: Pick<Row, Exclude<keyof VersionRow, "media_deleted_at" | "withdrawn_at" | "withdrawn_reason">> & Partial<Pick<Row, "media_deleted_at" | "withdrawn_at" | "withdrawn_reason">>): VersionRow {
   const status = STATUSES.find((s) => s === r.bunny_status) ?? null;
   const integrity = INTEGRITIES.find((s) => s === r.integrity) ?? null;
   return {
@@ -39,6 +39,9 @@ export function toVersionRow(r: Pick<Row, keyof VersionRow>): VersionRow {
     fetch_requested_at: r.fetch_requested_at,
     is_backfill: r.is_backfill,
     created_at: r.created_at,
+    media_deleted_at: r.media_deleted_at ?? null,
+    withdrawn_at: r.withdrawn_at ?? null,
+    withdrawn_reason: r.withdrawn_reason ?? null,
   };
 }
 
@@ -89,6 +92,7 @@ export function supabaseVersionStore(admin: SupabaseClient<Database>): VersionSt
         .eq("drive_file_id", driveFileId)
         .eq("drive_sha256", sha256)
         .is("media_deleted_at", null)
+        .is("withdrawn_at", null)
         .neq("bunny_status", "failed")
         .limit(1);
       if (error) throw new Error(`client_review_versions: ${error.message}`);
@@ -157,6 +161,8 @@ export function supabaseVersionStore(admin: SupabaseClient<Database>): VersionSt
         .select(VERSION_COLS)
         .eq("source", "bunny")
         .is("media_deleted_at", null)
+        // 0122: a withdrawn version is never polled again (nor reported stuck)
+        .is("withdrawn_at", null)
         .or("bunny_status.in.(uploading,created,processing,playable),and(bunny_status.eq.ready,or(integrity.is.null,integrity.eq.unchecked))")
         .order("fetch_requested_at", { ascending: true })
         .limit(limit);
@@ -230,6 +236,7 @@ export function supabaseVersionStore(admin: SupabaseClient<Database>): VersionSt
         .select("item_id,number,client_review_items!inner(production_id,kind,reel_index,productions!inner(show_id,record_date,shows(name)))")
         .eq("drive_file_id", driveFileId)
         .neq("bunny_status", "failed")
+        .is("withdrawn_at", null)
         .limit(50);
       if (error) throw new Error(`client_review_versions: ${error.message}`);
       type R = {
@@ -258,6 +265,18 @@ export function supabaseVersionStore(admin: SupabaseClient<Database>): VersionSt
       const { data, error } = await admin.from("shows").select("id,name,aliases").eq("active", true);
       if (error) throw new Error(`shows: ${error.message}`);
       return (data ?? []).map((r) => ({ id: r.id as string, name: r.name as string, aliases: (r.aliases as string[] | null) ?? [] }));
+    },
+
+    async withdraw(versionId, userId, reason) {
+      // only a version not withdrawn yet: a double click is "already" (false)
+      const { data, error } = await admin
+        .from("client_review_versions")
+        .update({ withdrawn_at: new Date().toISOString(), withdrawn_by: userId, withdrawn_reason: reason })
+        .eq("id", versionId)
+        .is("withdrawn_at", null)
+        .select("id");
+      if (error) throw new Error(`client_review_versions withdraw: ${error.message}`);
+      return (data ?? []).length > 0;
     },
 
     async itemOf(itemId) {

@@ -20,6 +20,8 @@ export type HistoryCommentView = {
   created_at: string;
   version_number: number | null;
   version_file: string | null;
+  /** 0122 — older answers: absent */
+  version_withdrawn?: boolean;
   state: CommentState;
   state_label: string;
   open: boolean;
@@ -143,6 +145,11 @@ export default function ClientCommentHistory({
                       <span title={c.version_file ?? undefined} style={{ opacity: 0.8 }}>
                         {c.version_number !== null ? `v${c.version_number}` : "בלי גרסה"}
                       </span>
+                      {c.version_withdrawn && (
+                        <span data-comment-version-withdrawn="" style={{ color: "#fb7185", fontWeight: 700 }}>
+                          גרסה הוסרה
+                        </span>
+                      )}
                       <span style={{ opacity: 0.7 }}>{displayDateTime(c.created_at) ?? ""}</span>
                       <span style={{ background: tone.bg, color: tone.fg, borderRadius: 999, padding: "1px 8px", fontWeight: 700 }}>{c.state_label}</span>
                       {c.is_backfill && <span style={{ opacity: 0.7 }}>היסטוריה</span>}

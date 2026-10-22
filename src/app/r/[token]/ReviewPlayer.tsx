@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { logVersionView } from "@/lib/review/views";
 
 // E13-6 — the client's player, version picker and download (plan §9.2 E13-6).
 // OUR player, not Bunny's embed: an embed is a cross-origin iframe, so the page
@@ -273,6 +274,11 @@ export default function ReviewPlayer({
   onApi?: (api: PlayerApi | null) => void;
 }) {
   const apiRef = useRef<PlayerApi | null>(null);
+  // 0122 (owner 22.10): each version the client opens is logged (no viewer data) — before the early return (hooks)
+  const viewedId = versions.length ? (versions.find((v) => v.id === selectedId) ?? versions[versions.length - 1]).id : null;
+  useEffect(() => {
+    if (viewedId) logVersionView(token, viewedId);
+  }, [token, viewedId]);
   if (!versions.length) return null;
   const latest = versions[versions.length - 1];
   const selected = versions.find((v) => v.id === selectedId) ?? latest;

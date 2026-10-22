@@ -110,6 +110,7 @@ export const EVENT_LABEL: Record<string, string> = {
   review_send_warnings_overridden: "נשלח לביקורת למרות אזהרות",
   review_encoding_stuck: "גרסה תקועה בקידוד מעל שעה",
   review_version_resent: "גרסה נשלחה מחדש",
+  review_version_withdrawn: "גרסה הוסרה מתצוגת הלקוח",
   wa_freetext_message: "הודעה חופשית בבוט",
   wa_freetext_booking: "הזמנה נקבעה בבוט",
   freetext_monitor_started: "התחיל מעקב טקסט חופשי",

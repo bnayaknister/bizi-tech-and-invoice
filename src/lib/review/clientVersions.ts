@@ -38,6 +38,8 @@ export type VersionForClient = {
   original_filename: string | null;
   drive_file_id: string | null;
   media_deleted_at: string | null;
+  /** 0122 (owner 22.10): withdrawn — sent by mistake. Never shown, never served, never "current". */
+  withdrawn_at?: string | null;
 };
 
 export type ClientVersion =
@@ -56,13 +58,14 @@ export function isPlayableBunny(v: VersionForClient): boolean {
     INTEGRITY_OK.has(v.integrity ?? "") &&
     v.has_original === true &&
     !v.media_deleted_at &&
+    !v.withdrawn_at &&
     v.number !== null
   );
 }
 
 /** Verified once, deleted since (E13-10): the client gets the Drive original instead. */
 export function isArchivedBunny(v: VersionForClient): boolean {
-  return v.source === "bunny" && !!v.media_deleted_at && INTEGRITY_OK.has(v.integrity ?? "") && !!v.drive_file_id && v.number !== null;
+  return v.source === "bunny" && !!v.media_deleted_at && !v.withdrawn_at && INTEGRITY_OK.has(v.integrity ?? "") && !!v.drive_file_id && v.number !== null;
 }
 
 /**
@@ -81,9 +84,12 @@ export const driveDownloadUrl = (fileId: string) =>
  * `sign`, which is injected so tests need no keys.
  */
 export function clientVersionsForItem(
-  rows: VersionForClient[],
+  allRows: VersionForClient[],
   sign: (guid: string) => SignedUrl = (g) => signedPlaybackUrl(g, PLAYBACK_TTL_SECONDS)
 ): ClientVersion[] {
+  // 0122: a withdrawn version does not exist for the client — not in the
+  // list, not as "pending", not as history. Its number stays taken.
+  const rows = allRows.filter((r) => !r.withdrawn_at);
   const sorted = [...rows].filter((r) => r.number !== null).sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
   if (!sorted.some((r) => isPlayableBunny(r) || isArchivedBunny(r))) {
     // owner 18.10: "שלח לביקורת" now writes the item's media_link to the NEW
@@ -112,7 +118,7 @@ export function clientVersionsForItem(
 }
 
 const SELECT =
-  "id,item_id,number,source,media_link,bunny_video_id,bunny_status,integrity,has_original,is_audio_only,original_filename,drive_file_id,media_deleted_at";
+  "id,item_id,number,source,media_link,bunny_video_id,bunny_status,integrity,has_original,is_audio_only,original_filename,drive_file_id,media_deleted_at,withdrawn_at";
 /** The columns VersionForClient needs, for callers that read versions themselves. */
 export const CLIENT_VERSION_SELECT = SELECT;
 
@@ -127,7 +133,7 @@ export const CLIENT_VERSION_SELECT = SELECT;
 export function latestShownVersionId(rows: VersionForClient[]): string | null {
   const shown = clientVersionsForItem(rows, () => ({ url: "", expires: 0 }));
   if (shown.length) return shown[shown.length - 1].id;
-  const drive = rows.filter((r) => r.source === "drive" && r.number !== null).sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
+  const drive = rows.filter((r) => r.source === "drive" && r.number !== null && !r.withdrawn_at).sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
   return drive.length ? drive[drive.length - 1].id : null;
 }
 

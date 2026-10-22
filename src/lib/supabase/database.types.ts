@@ -881,6 +881,59 @@ export type Database = {
           },
         ]
       }
+      client_review_version_views: {
+        Row: {
+          id: number
+          item_id: string
+          link_id: string | null
+          version_id: string
+          viewed_at: string
+        }
+        Insert: {
+          id?: never
+          item_id: string
+          link_id?: string | null
+          version_id: string
+          viewed_at?: string
+        }
+        Update: {
+          id?: never
+          item_id?: string
+          link_id?: string | null
+          version_id?: string
+          viewed_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "client_review_version_views_item_id_fkey"
+            columns: ["item_id"]
+            isOneToOne: false
+            referencedRelation: "client_review_items"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_review_version_views_link_id_fkey"
+            columns: ["link_id"]
+            isOneToOne: false
+            referencedRelation: "client_review_links"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_review_version_views_version_id_fkey"
+            columns: ["version_id"]
+            isOneToOne: false
+            referencedRelation: "client_review_versions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_review_version_views_version_id_fkey"
+            columns: ["version_id"]
+            isOneToOne: false
+            referencedRelation: "v_review_media_purge_due"
+            referencedColumns: ["latest_version_id"]
+          },
+        ]
+      }
       client_review_versions: {
         Row: {
           bunny_library_id: number | null
@@ -915,6 +968,9 @@ export type Database = {
           ready_at: string | null
           source: string
           timeline_offset_ms: number | null
+          withdrawn_at: string | null
+          withdrawn_by: string | null
+          withdrawn_reason: string | null
         }
         Insert: {
           bunny_library_id?: number | null
@@ -949,6 +1005,9 @@ export type Database = {
           ready_at?: string | null
           source: string
           timeline_offset_ms?: number | null
+          withdrawn_at?: string | null
+          withdrawn_by?: string | null
+          withdrawn_reason?: string | null
         }
         Update: {
           bunny_library_id?: number | null
@@ -983,6 +1042,9 @@ export type Database = {
           ready_at?: string | null
           source?: string
           timeline_offset_ms?: number | null
+          withdrawn_at?: string | null
+          withdrawn_by?: string | null
+          withdrawn_reason?: string | null
         }
         Relationships: [
           {
@@ -997,6 +1059,13 @@ export type Database = {
             columns: ["item_id"]
             isOneToOne: false
             referencedRelation: "client_review_items"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_review_versions_withdrawn_by_fkey"
+            columns: ["withdrawn_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
             referencedColumns: ["id"]
           },
         ]

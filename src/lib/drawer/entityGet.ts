@@ -198,8 +198,22 @@ export async function entityGet(deps: EntityGetDeps): Promise<{ status: number; 
         .select(VERSION_SELECT)
         .in("item_id", ids)
         .order("created_at", { ascending: true });
+      // 0122 (owner 22.10): "נצפה לאחרונה" — the newest view per version of
+      // these items. Its own read; a failure leaves the field out (rule 38).
+      const lastView = new Map<string, string>();
+      try {
+        const { data: views } = await admin
+          .from("client_review_version_views")
+          .select("version_id,viewed_at")
+          .in("item_id", ids)
+          .order("viewed_at", { ascending: false })
+          .limit(1000);
+        for (const w of views ?? []) if (!lastView.has(w.version_id as string)) lastView.set(w.version_id as string, w.viewed_at as string);
+      } catch {
+        /* the drawer never fails for it */
+      }
       for (const v of vRows ?? []) {
-        const pv = publicVersion(toVersionRow(v));
+        const pv = { ...publicVersion(toVersionRow(v)), last_viewed_at: lastView.get(v.id as string) ?? null };
         const list = byItem.get(v.item_id as string) ?? [];
         list.push(pv);
         byItem.set(v.item_id as string, list);
@@ -419,6 +433,8 @@ export async function entityGet(deps: EntityGetDeps): Promise<{ status: number; 
       canEditStages: !!profile.can_edit_stages,
       // gates "יצירת עבודה לחיוב"; the route that does it re-checks
       canEditMoney: !!profile.can_edit_money,
+      // 0122: "הסרת גרסה" — owner / admin (the route re-checks)
+      canWithdrawReview: hasOwnerAccess(profile),
       // E17-3: "הרשאות הזמנת חדרים" is drawn for studio_admin only
       canManageBookingContacts: canManageBookingContacts(profile),
       // 0098 — set only when this episode is beyond its contract's quota
