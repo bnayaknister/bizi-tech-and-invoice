@@ -6,6 +6,7 @@ import { normalizeClientName } from "@/lib/clients/match";
 import { backfillDocumentClients } from "@/lib/documents/backfill";
 import { persistMorningMapping } from "@/lib/morning/clientMapping";
 import { ACTIVE_CLIENT, isActiveClient } from "@/lib/clients/status";
+import { optionalTaxId } from "@/lib/clients/taxId";
 
 // Create a client in Morning and map it — the single shared "צור לקוח במורנינג"
 // action behind the ClientPicker (owner spec). Two modes, one route:
@@ -45,6 +46,11 @@ export async function POST(request: Request) {
   };
   const name = (body.name ?? "").trim();
   if (!name) return NextResponse.json({ error: "חסר שם לקוח" }, { status: 400 });
+  // owner 24.10: ח.פ / ע.מ / ת.ז optional (a private client), but a number
+  // that is given is 9 digits — checked before anything reaches Morning
+  const tax = optionalTaxId(body.taxId);
+  if (!tax.ok) return NextResponse.json({ error: tax.error }, { status: 400 });
+  body.taxId = tax.value ?? undefined;
 
   const admin = createAdminClient();
 

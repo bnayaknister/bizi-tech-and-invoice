@@ -17,8 +17,11 @@
 // So: length and digits. Anything else is the operator's call, and the
 // confirmation window is what makes it a deliberate one.
 
-/** The approved message, verbatim. One constant so the screen cannot reword it. */
-export const TAX_ID_INVALID = "ח.פ / ע.מ צריך להיות 9 ספרות.";
+/**
+ * The approved message, verbatim. One constant so the screen cannot reword it.
+ * Owner 24.10: names ת.ז too (a private client), and says empty is allowed.
+ */
+export const TAX_ID_INVALID = "ח.פ / ע.מ / ת.ז צריך להיות 9 ספרות בדיוק, בלי מקפים ורווחים. אפשר גם להשאיר ריק.";
 
 /** The approved empty-state label, verbatim. */
 export const TAX_ID_UNKNOWN = "לא ידוע";
@@ -53,6 +56,19 @@ export function validateTaxId(raw: unknown): TaxIdVerdict {
   // reason, and because Morning stores this as text.
   if (!/^[0-9]{9}$/.test(trimmed)) return { ok: false, error: TAX_ID_INVALID };
   return { ok: true, value: trimmed, clears: false };
+}
+
+/**
+ * Owner 24.10 — creating a client in Morning: the number is OPTIONAL (a
+ * private client may have none), but a number that IS given must be 9 digits.
+ * Absent / null / blank → null (the field is left out of the Morning body);
+ * anything else goes through validateTaxId. PURE.
+ */
+export function optionalTaxId(raw: unknown): { ok: true; value: string | null } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  const v = validateTaxId(raw);
+  if (!v.ok) return v;
+  return { ok: true, value: v.clears ? null : v.value };
 }
 
 /**

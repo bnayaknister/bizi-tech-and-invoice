@@ -19,7 +19,9 @@
  * to a number written out here.
  */
 import { canSeeClients } from "../src/lib/clients/access";
-import { TAX_ID_INVALID, TAX_ID_UNKNOWN, displayTaxId, validateTaxId } from "../src/lib/clients/taxId";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { TAX_ID_INVALID, TAX_ID_UNKNOWN, displayTaxId, optionalTaxId, validateTaxId } from "../src/lib/clients/taxId";
 import {
   EMPTY_LIST,
   NOT_MAPPED,
@@ -146,6 +148,26 @@ console.log("\n=== ח.פ: exactly 9 digits, or an explicit clear ===");
     error: TAX_ID_INVALID,
   });
   check("null is refused", validateTaxId(null), { ok: false, error: TAX_ID_INVALID });
+  // owner 24.10 — creating a client in Morning: optional, but 9 digits when given
+  check("create: absent -> no number (a private client)", optionalTaxId(undefined), { ok: true, value: null });
+  check("create: null -> no number", optionalTaxId(null), { ok: true, value: null });
+  check("create: blank -> no number", optionalTaxId("   "), { ok: true, value: null });
+  check("create: 9 digits (a ת.ז too) -> kept, trimmed", optionalTaxId(" 012345678 "), { ok: true, value: "012345678" });
+  check("create: 8 digits -> refused", optionalTaxId("51600698"), { ok: false, error: TAX_ID_INVALID });
+  check("create: with a dash -> refused", optionalTaxId("516-006988"), { ok: false, error: TAX_ID_INVALID });
+  check("create: a number, not a string -> refused", optionalTaxId(516006988), { ok: false, error: TAX_ID_INVALID });
+  check("the message names ח.פ, ע.מ and ת.ז and says empty is fine", ["ח.פ", "ע.מ", "ת.ז", "9 ספרות", "להשאיר ריק"].every((w) => TAX_ID_INVALID.includes(w)), true);
+  {
+    const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8");
+    const route = read("src/app/api/morning/clients/create/route.ts");
+    check(
+      "create route: validated before Morning is read or written",
+      route.indexOf("optionalTaxId(body.taxId)") > 0 && route.indexOf("optionalTaxId(body.taxId)") < route.indexOf("await listClients()") && route.indexOf("optionalTaxId(body.taxId)") < route.indexOf("createMorningClient({"),
+      true
+    );
+    check("create window: checked before posting", read("src/components/CreateMorningClientModal.tsx").includes("const tax = optionalTaxId(taxId);"), true);
+    check("client card: still validateTaxId before the Morning write", read("src/app/api/entity/[type]/[id]/route.ts").includes("validateTaxId(morningOnly.taxId)"), true);
+  }
   check("undefined is refused", validateTaxId(undefined), { ok: false, error: TAX_ID_INVALID });
   check("an array is refused", validateTaxId(["516006988"]), { ok: false, error: TAX_ID_INVALID });
   // a leading zero survives, which is the whole reason strings are required
@@ -156,7 +178,7 @@ console.log("\n=== ח.פ: exactly 9 digits, or an explicit clear ===");
   });
 
   // the approved message and label, verbatim — asserted so a reword is a failure
-  check("the invalid message is the approved wording", TAX_ID_INVALID, "ח.פ / ע.מ צריך להיות 9 ספרות.");
+  check("the invalid message is the approved wording", TAX_ID_INVALID, "ח.פ / ע.מ / ת.ז צריך להיות 9 ספרות בדיוק, בלי מקפים ורווחים. אפשר גם להשאיר ריק.");
   check("the unknown label is the approved wording", TAX_ID_UNKNOWN, "לא ידוע");
   check("display of a value", displayTaxId("516006988"), "516006988");
   check("display of null", displayTaxId(null), TAX_ID_UNKNOWN);

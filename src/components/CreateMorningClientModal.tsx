@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { optionalTaxId } from "@/lib/clients/taxId";
 
 export type MorningCreateResult = { clientId: string; morningId: string; name: string };
 type Gate1 = {
@@ -40,6 +41,13 @@ export default function CreateMorningClientModal({
   const [dryRunNotice, setDryRunNotice] = useState(false); // B23: dry run mapped nothing
 
   async function post(confirm: boolean, mapToMorningId?: string) {
+    // owner 24.10: a number that is given must be 9 digits — said here at once
+    // (the route refuses it too); empty is allowed (a private client)
+    const tax = optionalTaxId(taxId);
+    if (!tax.ok) {
+      setErr(tax.error);
+      return;
+    }
     setBusy(true);
     setErr(null);
     try {
@@ -141,7 +149,7 @@ export default function CreateMorningClientModal({
           <>
             <label className="block text-[11px] text-[var(--dim)] mb-1">שם *</label>
             <input value={name} onChange={(e) => setName(e.target.value)} autoFocus className="w-full bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-xs mb-2" />
-            <label className="block text-[11px] text-[var(--dim)] mb-1">ח.פ / ת.ז / ע.מ</label>
+            <label className="block text-[11px] text-[var(--dim)] mb-1">ח.פ / ת.ז / ע.מ (לא חובה · 9 ספרות)</label>
             <input value={taxId} onChange={(e) => setTaxId(e.target.value)} inputMode="numeric" className="w-full bg-transparent border border-[var(--rule)] rounded-xl px-3 py-2 text-xs mb-2 font-mono" />
             <div className="grid grid-cols-2 gap-2 mb-2">
               <div>
