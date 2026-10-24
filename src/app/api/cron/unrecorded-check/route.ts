@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { israelDate, israelHour } from "@/lib/dates";
 import { planUnrecordedCheck, unrecordedLine, minusDays, UNRECORDED_LOOKBACK_DAYS, type UnrecordedRow } from "@/lib/productions/unrecorded";
 import { enqueueWorkOrderWhenPerformed, ensureJobWhenRecorded } from "@/lib/documents/workOrderOnRecorded";
 import { recordBookingNotification } from "@/lib/whatsapp/notify";
@@ -31,9 +32,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 function israelNow(now: Date): { hour: number; date: string } {
-  const hour = Number(new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Jerusalem", hour: "2-digit", hour12: false }).format(now));
-  const date = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jerusalem" }).format(now);
-  return { hour, date };
+  return { hour: israelHour(now), date: israelDate(now) };
 }
 
 export async function GET(request: Request) {

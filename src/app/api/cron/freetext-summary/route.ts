@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { israelDate } from "@/lib/dates";
+import { israelDate, israelHour } from "@/lib/dates";
 import { recordBookingNotification } from "@/lib/whatsapp/notify";
 import { isFreeTextOn, parseFreeTextAllowlist } from "@/lib/whatsapp/flow/run";
 import {
@@ -33,10 +33,6 @@ import {
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
-
-function israelHour(now: Date): number {
-  return Number(new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Jerusalem", hour: "2-digit", hour12: false }).format(now));
-}
 
 export async function GET(request: Request) {
   const cronSecret = process.env.CRON_SECRET;

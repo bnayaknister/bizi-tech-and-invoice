@@ -48,6 +48,16 @@ export function israelTimeHHMM(d: Date): string {
   return ISRAEL_TIME.format(d);
 }
 
+/**
+ * The hour (0-23) in Israel at `d`. The evening crons (21:00 check, 21:30
+ * free-text summary) run at BOTH 18 and 19 UTC and act only when this is 21,
+ * so exactly one run acts in summer (+03:00) and in winter (+02:00) — no
+ * schedule change at the clock change (25.10.2026, 26.3.2027).
+ */
+export function israelHour(d: Date): number {
+  return Number(israelTimeHHMM(d).slice(0, 2)) % 24;
+}
+
 // Which month a production belongs to, "YYYY-MM".
 //
 // record_date is the business truth — the day the work happened — and

@@ -110,12 +110,12 @@ console.log("\n=== 1. when the model is called (owner decision 21.10, 1) ===");
 console.log("\n=== 2. the 40-message set, with a CORRECT model's answers (owner decision 21.10, 7) ===");
 {
   const { today, messages } = loadFixtures();
-  eq("74 messages, today = Wed 21.10.2026", [messages.length, today], [74, TODAY]);
+  eq("80 messages, today = Wed 21.10.2026", [messages.length, today], [80, TODAY]);
   let full = 0;
   const wrong: string[] = [];
   for (const f of messages) {
     const p = pipeline(f.text, today, expandModel(f.model), f.step);
-    const s = score(f, appliedOf(p.event));
+    const s = score(f, appliedOf(p.event), p.event);
     if (s.full) full++;
     for (const w of s.wrong) wrong.push(`#${f.id} ${w}`);
     if (!s.full) console.log(`     #${f.id} not full: wrong=${s.wrong} missing=${s.missing}`);

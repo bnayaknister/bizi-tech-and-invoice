@@ -7,7 +7,8 @@
     "model: the answer a CORRECT model gives — the offline suite feeds it through the real validation (scripts/test_wa_freetext_llm.ts);",
     "  the live eval (scripts/eval_e14_2c.ts --live) asks the real model instead and scores against the same expect.",
     "  compact form: day [quote, {weekday, next_week, dom, month, rel}] · time [quote, hour, minute, daypart, kind] · duration [quote, minutes] · studio [quote, room] · guest [quote, name] · note [quote, text] · unsure [fields with sure=false]",
-    "pass (owner decision 21.10, 7): 0 wrong fields applied, and at least 90% of the set fully understood."
+    "pass (owner decision 21.10, 7): 0 wrong fields applied, and at least 90% of the set fully understood.",
+    "manage (owner, 24.10): true = a cancel / move of an existing recording; the rule parser must turn it into the manage-intent event (found and shown with buttons, never applied as a booking). false = it must not."
   ],
   "today": "2026-10-21",
   "messages": [
@@ -108,10 +109,10 @@
       "expect": { "day": "2026-10-21", "studio": "גבעון", "time": null, "duration": null, "guest": null, "note": null },
       "model": { "intent": "query", "day": ["היום", { "rel": "today" }], "studio": ["בגבעון", "גבעון"] } },
 
-    { "id": 32, "cat": "other", "text": "אני רוצה לבטל את ההקלטה של יום שני",
+    { "id": 32, "cat": "other", "manage": true, "text": "אני רוצה לבטל את ההקלטה של יום שני",
       "expect": { "day": null, "studio": null, "time": null, "duration": null, "guest": null, "note": null },
       "model": { "intent": "other", "day": ["יום שני", { "weekday": 1 }] } },
-    { "id": 33, "cat": "other", "text": "אפשר להזיז את ההקלטה שלנו מיום ראשון לשלישי?",
+    { "id": 33, "cat": "other", "manage": true, "text": "אפשר להזיז את ההקלטה שלנו מיום ראשון לשלישי?",
       "expect": { "day": null, "studio": null, "time": null, "duration": null, "guest": null, "note": null },
       "model": { "intent": "other" } },
     { "id": 34, "cat": "other", "text": "תודה רבה, היה מעולה אתמול!",
@@ -247,6 +248,24 @@
       "model": {"intent": "query", "time": ["בשמונה בערב", 8, 0, "evening", "at"]} },
     { "id": 74, "cat": "hour-words", "text": "שלוש שעות ביום שני",
       "expect": {"day": "2026-10-26", "studio": null, "time": null, "duration": 180, "guest": null, "note": null},
-      "model": {"intent": "query", "day": ["ביום שני", {"weekday": 1}], "duration": ["שלוש שעות", 180]} }
+      "model": {"intent": "query", "day": ["ביום שני", {"weekday": 1}], "duration": ["שלוש שעות", 180]} },
+    { "id": 75, "cat": "manage", "text": "אני רוצה לבטל את ההקלטות של יום א׳ הקרוב בשעה 15:00", "manage": true,
+      "expect": {"day": null, "studio": null, "time": null, "duration": null, "guest": null, "note": null},
+      "model": {"intent": "other", "day": ["יום א׳ הקרוב", {"weekday": 0}], "time": ["בשעה 15:00", 15, 0, "none", "at"]} },
+    { "id": 76, "cat": "manage", "text": "רוצה להזיז את ההקלטה של מחר ב-3", "manage": true,
+      "expect": {"day": null, "studio": null, "time": null, "duration": null, "guest": null, "note": null},
+      "model": {"intent": "other", "day": ["מחר", {"rel": "tomorrow"}]} },
+    { "id": 77, "cat": "manage", "text": "אפשר לדחות את ההקלטה של יום ה' בעשר?", "manage": true,
+      "expect": {"day": null, "studio": null, "time": null, "duration": null, "guest": null, "note": null},
+      "model": {"intent": "other"} },
+    { "id": 78, "cat": "manage", "text": "תבטלו לי בבקשה את ההקלטה של 28.10", "manage": true,
+      "expect": {"day": null, "studio": null, "time": null, "duration": null, "guest": null, "note": null},
+      "model": {"intent": "other"} },
+    { "id": 79, "cat": "manage", "text": "רגע, אני רוצה לבטל את ההקלטה שקבעתי ליום ראשון", "step": "day", "manage": true,
+      "expect": {"day": null, "studio": null, "time": null, "duration": null, "guest": null, "note": null},
+      "model": {"intent": "other"} },
+    { "id": 80, "cat": "manage", "text": "ביטול", "step": "summary", "manage": false,
+      "expect": {"day": null, "studio": null, "time": null, "duration": null, "guest": null, "note": null},
+      "model": {"intent": "other"} }
   ]
 }

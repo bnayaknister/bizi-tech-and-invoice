@@ -14,7 +14,7 @@ import { STUDIO_LIST_FROM, isStartInStudioHours } from "@/lib/calendar/bookingWi
 import type { SubmitResult } from "@/lib/booking/submit";
 import { selfServeAllowed } from "@/lib/booking/manage";
 import { COPY, copy, isLang, DEFAULT_LANG, type BotCopy, type Lang } from "./copy";
-import { earlyOrLate, stripGuestLabel, yesNo, type ParsedAvailability, type ParsedEdit } from "./freetext";
+import { earlyOrLate, stripGuestLabel, yesNo, type ManageIntent, type ParsedAvailability, type ParsedEdit } from "./freetext";
 import { langButtonId } from "../lang";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -226,6 +226,12 @@ export type FlowState = {
    * new hour goes straight back to the summary. Absent = no.
    */
   fromSummary?: boolean;
+  /**
+   * owner, 24.10: a typed "cancel / move my recording" — the day and start it
+   * named, carried to withRecordings, which finds that recording (or shows the
+   * list). Consumed there; absent = none.
+   */
+  seek?: ManageIntent | null;
 };
 
 export type FlowEvent =
@@ -265,7 +271,9 @@ export type FlowEvent =
   | { type: "switch-room"; studio: string }
   | { type: "other-times" }
   // E14-2c: the answer to "08:00 או 20:00?"
-  | { type: "pick-hour"; hhmm: string };
+  | { type: "pick-hour"; hhmm: string }
+  // owner, 24.10: a typed "cancel / move my recording" — finds it, never acts
+  | { type: "manage-intent"; intent: ManageIntent; text: string };
 
 export type FlowRow = { id: string; title: string; description?: string };
 
@@ -983,6 +991,16 @@ export function reduce(s: FlowState, e: FlowEvent, ctx: { now?: Date } = {}): Tr
     return start(showOf(s));
   }
   if (e.type === "back") return back(s);
+
+  // owner, 24.10: "אני רוצה לבטל את ההקלטה של יום א׳ ב-15:00", from any step
+  // the parser reads it at — the recording is FOUND and shown with the usual
+  // buttons (the same 24-hour rule, a team recording only as a request). A
+  // booking in progress is left; nothing is cancelled or moved without a tap.
+  if (e.type === "manage-intent") {
+    if (s.step === "submitting") return render(s);
+    if (!s.manageOn || !layerOn(s)) return reduce(s, { type: "text", text: e.text }, ctx);
+    return { kind: "need-recordings", state: { ...initialState(showOf(s)), step: "mine", seek: e.intent } };
+  }
 
   // E14-2c (owner, 21.10): an availability QUESTION at any step of a booking —
   // the summary included — shows the options; it never changes the booking
@@ -1939,10 +1957,37 @@ export function parsePendingEvent(raw: unknown): FlowEvent | null {
 /** The client's upcoming approved recordings arrived. None -> the menu, saying so. */
 export function withRecordings(s: FlowState, recordings: RecordingOption[]): Transition {
   const C = copy(s.lang);
+  const seek = s.seek ?? null;
+  s = { ...s, seek: null };
   if (recordings.length === 0) {
     return render({ ...s, step: "menu", recordings: [], target: null, notice: C.NOTICE.noRecordings });
   }
+  if (seek) {
+    // owner, 24.10: the recording the client wrote about — one match is shown
+    // with its buttons; several -> those; none -> every upcoming one, saying so
+    const hits = matchRecordings(recordings, seek);
+    if (hits.length === 1) {
+      return render({ ...s, step: "manage", recordings: recordings.slice(0, MINE_MAX), target: hits[0], notice: C.NOTICE.manageFound });
+    }
+    if (hits.length > 1) {
+      // nothing named ("אני רוצה לבטל הקלטה"): the plain list, which already asks "which one?"
+      const named = seek.date !== null || seek.times.length > 0;
+      return render({ ...s, step: "mine", recordings: hits.slice(0, MINE_MAX), target: null, notice: named ? C.NOTICE.manageSeveral : null });
+    }
+    return render({ ...s, step: "mine", recordings: recordings.slice(0, MINE_MAX), target: null, notice: C.NOTICE.manageNoMatch });
+  }
   return render({ ...s, step: "mine", recordings: recordings.slice(0, MINE_MAX), target: null });
+}
+
+/**
+ * The recordings a typed "cancel / move" named: the day if one was written,
+ * the start if one was (either reading of an unsure hour). Nothing named ->
+ * every one (so a single upcoming recording is shown directly). PURE.
+ */
+export function matchRecordings(recordings: RecordingOption[], seek: ManageIntent): RecordingOption[] {
+  return recordings.filter(
+    (r) => (seek.date === null || r.date === seek.date) && (seek.times.length === 0 || seek.times.includes(r.start))
+  );
 }
 
 /** The bot's own cancellation answered. */

@@ -797,3 +797,80 @@ export function parseStepText(raw: string, todayIsrael: string, step: ChoiceStep
   if (edits.length === 0 && parsed.dropped.length === 0) return null;
   return parsed.maybe ? { edits, dropped: parsed.dropped, maybe: parsed.maybe } : { edits, dropped: parsed.dropped };
 }
+
+// ─── cancel / move an EXISTING recording, in free text (owner, 24.10) ──────
+
+/**
+ * What a "cancel / move my recording" message said: which, and the day and
+ * start it named (to find the recording in "ההקלטות שלי"). It never acts —
+ * the machine shows the recording with the usual buttons, and only a tap
+ * cancels or moves.
+ */
+export type ManageIntent = {
+  intent: "cancel" | "move";
+  /** the day named, or null */
+  date: string | null;
+  /** the start(s) named — two for an unsure hour ("ב-4": 04:00 / 16:00) */
+  times: string[];
+};
+
+const CANCEL_VERB_RE = new RegExp(
+  "(?<![\\p{L}])(?:לבטל|לבטלה|תבטל|תבטלי|תבטלו|נבטל|ביטול|מבטל|מבטלת|מבטלים|בטל|בטלו)(?![\\p{L}])",
+  "u"
+);
+const MOVE_VERB_RE = new RegExp(
+  "(?<![\\p{L}])(?:להזיז|תזיז|תזיזי|תזיזו|נזיז|הזזה|להעביר|תעביר|תעבירי|תעבירו|לדחות|תדחה|תדחי|תדחו|להקדים|תקדים|תקדימי|תקדימו|לשנות\\s+(?:את\\s+)?(?:ה)?מועד|שינוי\\s+(?:ה)?מועד)(?![\\p{L}])",
+  "u"
+);
+/** the recording itself is named: "ההקלטה", "הקלטות", "ההזמנה" */
+const RECORDING_NOUN_RE = new RegExp("(?:הקלטה|הקלטות|ההזמנה|הזמנה)(?![\\p{L}])", "u");
+/** …and it is one that already exists ("שקבעתי", "שלי", "הקרובה") */
+const EXISTING_RE = new RegExp(
+  "(?<![\\p{L}])(?:שקבעתי|שקבענו|שקבעו|שנקבעה|שנקבע|שהזמנתי|שלי|שלנו|הקרובה|הקרובות)(?![\\p{L}])",
+  "u"
+);
+const NEGATED_RE = new RegExp("(?<![\\p{L}])(?:לא|אל)\\s+(?:רוצה\\s+|צריך\\s+|צריכה\\s+)?(?:לבטל|להזיז|להעביר|לדחות|תבטל|תזיז)(?![\\p{L}])", "u");
+
+/** "יום א׳" / "ביום ה'" -> "יום ראשון" / "ביום חמישי": the abbreviations are read here only */
+const DAY_LETTER: Record<string, string> = { א: "ראשון", ב: "שני", ג: "שלישי", ד: "רביעי", ה: "חמישי", ו: "שישי", ש: "שבת" };
+function expandDayLetters(text: string): string {
+  return text.replace(
+    new RegExp("(?<![\\p{L}])(ב?יום)\\s+([אבגדהוש])\\s*['׳\"״]?(?![\\p{L}])", "gu"),
+    (_m, yom: string, letter: string) => `${yom} ${DAY_LETTER[letter]}`
+  );
+}
+
+/**
+ * A message asking to cancel or move an existing recording -> the intent and
+ * the day / start it named, or null. PURE.
+ *
+ * `inBooking`: a booking is in progress (any step after the menu). There a
+ * verb alone ("תזיז ל-12", "ביטול") is about THAT booking and is not read
+ * here: the recording must be named AND be one that exists — "שקבעתי",
+ * "הקרובה", or a day / time of its own ("ההקלטה של יום שלישי").
+ */
+export function parseManageIntent(raw: string, todayIsrael: string, opts: { inBooking?: boolean } = {}): ManageIntent | null {
+  const text = expandDayLetters(raw.replace(/\s+/g, " ").trim());
+  if (text === "" || text.length > 400) return null;
+  const cancel = CANCEL_VERB_RE.test(text);
+  const move = MOVE_VERB_RE.test(text);
+  if (!cancel && !move) return null;
+  if (NEGATED_RE.test(text)) return null;
+
+  // the day and the start, through the same parser the summary uses
+  const parsed = parseEditText(text, todayIsrael);
+  let date: string | null = null;
+  const times: string[] = [];
+  for (const e of parsed?.edits ?? []) {
+    if (e.field === "day" && date === null) date = e.date;
+    if (e.field === "time-at" && !times.includes(e.hhmm)) times.push(e.hhmm);
+  }
+  if (times.length === 0) for (const m of parsed?.maybe ?? []) for (const o of m.options) if (!times.includes(o)) times.push(o);
+
+  if (opts.inBooking) {
+    if (!RECORDING_NOUN_RE.test(text)) return null;
+    if (!EXISTING_RE.test(text) && date === null && times.length === 0) return null;
+  }
+  // both verbs ("לבטל או להזיז") — the buttons offer both anyway; cancel is named first
+  return { intent: cancel ? "cancel" : "move", date, times };
+}

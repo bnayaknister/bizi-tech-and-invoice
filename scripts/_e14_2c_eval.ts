@@ -43,6 +43,13 @@ export type Fixture = {
   expect: Applied;
   ignore?: Field[];
   model: Compact;
+  /**
+   * owner, 24.10: true = a cancel / move of an existing recording — the rule
+   * parser must turn it into the "manage-intent" event (find the recording,
+   * show its buttons); false = it must NOT (a booking's own edit, "ביטול" at
+   * the summary). Absent = not scored.
+   */
+  manage?: boolean;
 };
 
 export function loadFixtures(): { today: string; messages: Fixture[] } {
@@ -130,8 +137,10 @@ const norm = (t: string) => t.replace(/\s+/g, " ").trim();
  * "from 12:00" vs "at 12:00" is the same hour, a different kind: not wrong,
  * not fully understood either. The note passes if it contains the core phrase.
  */
-export function score(f: Fixture, a: Applied): { wrong: Field[]; missing: Field[]; full: boolean } {
-  const wrong: Field[] = [];
+export function score(f: Fixture, a: Applied, event?: FlowEvent): { wrong: (Field | "manage")[]; missing: Field[]; full: boolean } {
+  const wrong: (Field | "manage")[] = [];
+  // owner, 24.10: a cancel / move is found and shown, never read as a booking
+  if (f.manage !== undefined && event && (event.type === "manage-intent") !== f.manage) wrong.push("manage");
   const missing: Field[] = [];
   for (const k of FIELDS) {
     if (f.ignore?.includes(k)) continue;

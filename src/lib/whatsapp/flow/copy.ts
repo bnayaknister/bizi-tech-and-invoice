@@ -464,6 +464,10 @@ const HE = {
     // ── E9-5 ──
     noRecordings: "אין כרגע הקלטות מאושרות קרובות 🙂",
     manageFailed: "משהו השתבש ולא הצלחנו לבצע את זה. אפשר לנסות שוב:",
+    // ── owner, 24.10: "cancel / move my recording" written in free text ──
+    manageFound: "מצאתי את ההקלטה 👇 (שום דבר לא בוטל או הוזז — בוחרים בכפתורים)",
+    manageSeveral: "יש כמה הקלטות שמתאימות למה שכתבתם:",
+    manageNoMatch: "לא מצאתי הקלטה שמתאימה בדיוק למה שכתבתם. אלה ההקלטות הקרובות שלכם:",
     // ── E14 ──
     // only the buttons move on from here — free text is not parsed at this step
     noMatchDates: "בימים שביקשתם אין פנוי 😕 אפשר לראות את כל הימים הפנויים, או לחזור אחורה — בכפתורים למטה 👇",
@@ -777,6 +781,9 @@ const EN: BotCopy = {
     feedFailed: "We couldn't load the available times right now. Please try again in a minute 🙏",
     noRecordings: "You have no upcoming confirmed recordings right now 🙂",
     manageFailed: "Something went wrong and we couldn't do that. You can try again:",
+    manageFound: "Found it 👇 (nothing was cancelled or moved — choose with the buttons)",
+    manageSeveral: "A few recordings match what you wrote:",
+    manageNoMatch: "I couldn't find a recording that matches exactly. These are your upcoming recordings:",
     // ── E14 ──
     noMatchDates: "Nothing is free on the days you asked for 😕 You can see all the free days, or go back — with the buttons below 👇",
     noMatchHours: "Nothing is free at those times on that day 😕 Want to see all the free times that day?",

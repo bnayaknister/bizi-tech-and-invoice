@@ -47,6 +47,7 @@ import {
   isAvailabilityQuestion,
   isSlotPhrase,
   parseAvailabilityText,
+  parseManageIntent,
   parseEditText,
   parseStepText,
   yesNo,
@@ -197,6 +198,15 @@ export function eventFromMessage(
   // then re-sends the step, exactly as it does today.
   if (opts.freeTextOn && opts.now && opts.lang === "he") {
     const today = israelDateOf(opts.now);
+    // owner, 24.10: "אני רוצה לבטל את ההקלטה של יום א׳ ב-15:00" — at the menu
+    // (or after a finished conversation, or on the recordings list) a cancel /
+    // move verb is enough; inside a booking the recording must be named as an
+    // existing one. The machine finds it and shows the buttons — never acts.
+    const step = opts.step ?? "menu";
+    if (MANAGE_INTENT_STEPS.has(step)) {
+      const intent = parseManageIntent(body, today, { inBooking: !MANAGE_INTENT_FREE_STEPS.has(step) });
+      if (intent) return { type: "manage-intent", intent, text: body };
+    }
     // E14-2c (owner, 21.10): "כן" / "לא" to "באולפן X, כמו תמיד?" = the two buttons
     if (opts.step === "studio-default") {
       const yn = yesNo(body);
@@ -245,6 +255,14 @@ export function eventFromMessage(
   }
   return nav;
 }
+
+/** where a typed cancel / move is read: every step but the ones that ARE a cancel / move already */
+const MANAGE_INTENT_STEPS: ReadonlySet<FlowStep> = new Set<FlowStep>([
+  "menu", "done", "mine",
+  "duration", "studio-default", "studio", "day", "hour", "guest", "note", "summary",
+]);
+/** …and where the verb alone is enough (no booking in progress) */
+const MANAGE_INTENT_FREE_STEPS: ReadonlySet<FlowStep> = new Set<FlowStep>(["menu", "done", "mine"]);
 
 const showInfo = (show: ContactShow, multiShow: boolean, linkUrl: string | null, lang: Lang, freeTextOn: boolean) => ({
   showId: show.showId,
@@ -567,8 +585,10 @@ export async function runFlow(
       { now }
     );
   } else {
-    // step 0 (owner, E9-3): several podcasts and no conversation -> the list
-    if (multi) {
+    // step 0 (owner, E9-3): several podcasts and no conversation -> the list.
+    // owner, 24.10: a typed cancel / move needs no podcast choice — "ההקלטות
+    // שלי" already lists every one of this number's podcasts
+    if (multi && event.type !== "manage-intent") {
       // E14-2c (owner, 21.10): a request written before the podcast was
       // chosen is HELD (the row is not a live conversation) and applied
       // right after the choice. Held only if the write won; else the list as before.
@@ -591,7 +611,7 @@ export async function runFlow(
     if (!f) return { kind: "link", show: shows[0] };
     t = f;
     // E14-2c: the FIRST message's request is applied at once (before, it got the menu only)
-    if (layerRequest && f.kind === "reply") t = reduce(f.state, event, { now });
+    if ((layerRequest || event.type === "manage-intent") && f.kind === "reply") t = reduce(f.state, event, { now });
   }
 
   let currentVersion = version;

@@ -100,7 +100,7 @@ async function main() {
     }
     const p = pipeline(f.text, today, model, f.step);
     const a = appliedOf(p.event);
-    const s = score(f, a);
+    const s = score(f, a, p.event);
     if (s.full) full++;
     for (const w of s.wrong) wrong.push(`#${f.id} ${w}`);
     const mark = s.wrong.length ? "❌ WRONG" : s.full ? "✅" : "· partial";

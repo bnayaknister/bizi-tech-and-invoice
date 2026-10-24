@@ -17,6 +17,8 @@
  * lives only in WHATSAPP_APP_SECRET on Vercel and is never read by this file.
  */
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   BODY_MAX_CHARS,
   messageBody,
@@ -401,6 +403,23 @@ console.log("\n=== 7. the DRY_RUN switch (rule 40) ===");
     if (original === undefined) delete process.env.WHATSAPP_DRY_RUN;
     else process.env.WHATSAPP_DRY_RUN = original;
   }
+}
+
+// ── the inbound message is STORED, as direction 'in', before any reply (24.10) ──
+// The owner asked (24.10) after a report that inbound rows had stopped since
+// 22.10 — they had not: the report queried direction = 'inbound', and the
+// column holds 'in' / 'out'. This pins the value AND the route's order.
+{
+  const route = readFileSync(join(__dirname, "..", "src", "app", "api", "wa", "webhook", "route.ts"), "utf-8");
+  const store = route.indexOf('.from("wa_messages")');
+  const upsert = route.indexOf(".upsert(rows", store);
+  const reply = route.indexOf("replyToInbound(admin", store);
+  check("the route writes the parsed messages into wa_messages", store > 0 && upsert > store, true);
+  check("…de-duplicated on wamid", route.includes('onConflict: "wamid"'), true);
+  check("…a failed write is a 500 (Meta retries), never a silent drop", /if \(error\)[\s\S]{0,400}status: 500/.test(route.slice(upsert)), true);
+  check("…and the reply comes only AFTER the write", reply > upsert, true);
+  const [row] = toWaMessageRows(parseInboundMessages(delivery([textMessage("wamid.IN1", "שלום", "972528933975")])));
+  check("the stored row: direction 'in' (not 'inbound'), the text, status 'received'", [row?.direction, row?.body, row?.status], ["in", "שלום", "received"]);
 }
 
 console.log(`\n${failed === 0 ? "✅" : "❌"}  ${passed}/${passed + failed} assertions passed\n`);
